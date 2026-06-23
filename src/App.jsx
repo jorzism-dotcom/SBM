@@ -2653,6 +2653,19 @@ function SubscriptionGate({ children }) {
       if (data.shopFirebaseConfig) {
         try {
           FB.init(data.shopFirebaseConfig);
+          // প্রথমে Firestore (FSS) থেকে সব collection এক-বারে pull করি — এটাই primary source
+          const fssOk = FSS.init(data.shopFirebaseConfig);
+          if (fssOk) {
+            const fssKeys = ["customers","products","invoices","txns","paymentInvoices",
+                             "purchaseOrders","stockMovements","cashLogs","suppliers","smsLog","users"];
+            for (const key of fssKeys) {
+              try {
+                const arr = await FSS.getAllOnce(key);
+                if (arr && arr.length > 0) await save(SK[key] || ("sbm-" + key), arr);
+              } catch {}
+            }
+          }
+          // Firestore-এ data না থাকলে RTDB snapshot fallback (legacy)
           const snap = await FB.loadBackup();
           if (snap?.ok && snap?.data) {
             const d = snap.data;
@@ -2666,7 +2679,7 @@ function SubscriptionGate({ children }) {
             if (d.stockMovements)  await save(SK.stockMovements, d.stockMovements);
             if (d.users)           await save(SK.users, d.users); // সর্বশেষ users (permission সহ)
           }
-        } catch { /* silent — polling পরে এমনিতেই চেষ্টা করবে */ }
+        } catch { /* silent — app reload-এর পর Firestore subscribeAll থেকে আসবে */ }
       }
 
       setRestoreMsg("✅ ডেটা ফিরে পাওয়া গেছে! অ্যাপ রিলোড হচ্ছে...");
@@ -8345,31 +8358,10 @@ function SmartBusinessMgmt() {
       // 2️⃣ Save snapshot for local multi-device (use IndexedDB SnapshotDB, not raw save)
       await SnapshotDB.save({ ...data, _savedAt: ts });
 
-      // 3️⃣ 🔥 Save to Firebase (if enabled)
-      if (FB.isReady() && firebaseEnabled) {
-        setFbStatus("syncing");
-        SyncLog.add("sync", "Firebase backup শুরু...");
-        const result = await FB.saveBackup(data, filename);
-        if (result.ok) {
-          SyncLog.add("sync", `✓ Firebase snapshot সফল (slot: ${result.slot})`);
-          // Refresh snapshot list after save
-          const snaps = await FB.listSnapshots();
-          setFbBackupList(snaps);
-          setFbStatus("synced");
-          FB._connectionState = "online";
-          showToast("💾 লোকাল + ☁️ Firebase ব্যাকআপ সম্পন্ন");
-          setTimeout(() => setFbStatus(null), 4000);
-        } else {
-          SyncLog.add("error", "Firebase backup ব্যর্থ: " + result.msg);
-          setFbStatus("error");
-          FB._connectionState = result.msg.includes("নেটওয়ার্ক") ? "offline" : "online";
-          showToast(`💾 লোকাল সেভ | Firebase: ${result.msg}`, "#f59e0b");
-          setTimeout(() => setFbStatus(null), 6000);
-        }
-        // 4️⃣ 🔄 Firestore force re-seed — কোনো corrupt/stale remote state থাকলে
-        // এই ডিভাইসের বর্তমান data দিয়ে সব collection জোর করে ওভাররাইট করে দেয়,
-        // সবার অ্যাপে সাথে সাথে সঠিক data পৌঁছায়।
-        if (FSS.isReady()) {
+      // 3️⃣ 🔥 Firestore force re-seed (if enabled) — এই ডিভাইসের বর্তমান data দিয়ে
+      // সব collection ওভাররাইট করে সব ডিভাইসে সাথে সাথে পৌঁছায়।
+      if (FSS.isReady() && firebaseEnabled) {
+        try {
           await Promise.all([
             FSS.setMany("customers", customers),
             FSS.setMany("products", products),
@@ -8384,7 +8376,13 @@ function SmartBusinessMgmt() {
             FSS.setMany("paymentInvoices", paymentInvoices),
             FSS.setSettings({ shopName, smsTemplates, smsGateway }),
           ]);
-          SyncLog.add("sync", "✓ Firestore data সব ডিভাইসে push করা হয়েছে");
+          const ts2 = new Date().toISOString();
+          setFbBackupList([{ at: ts2, slot: "firestore" }]);
+          SyncLog.add("sync", "✓ Firestore manual sync সম্পন্ন");
+          showToast("💾 লোকাল + ☁️ Firestore ব্যাকআপ সম্পন্ন");
+        } catch (fe) {
+          SyncLog.add("error", "Firestore sync ব্যর্থ: " + fe.message);
+          showToast("💾 লোকাল সেভ | Firestore: ব্যর্থ", "#f59e0b");
         }
       } else {
         showToast("💾 লোকাল ব্যাকআপ সম্পন্ন");
@@ -8455,21 +8453,31 @@ function SmartBusinessMgmt() {
   useEffect(() => { _fssPushArrayKey("users", users); }, [users, _fssPushArrayKey]);
   useEffect(() => { _fssPushSettings(); }, [shopName, smsTemplates, smsGateway, _fssPushSettings]);
 
-  // 🔥 Restore from Firebase backup — optionally pass a specific slot number
-  const restoreFromFirebase = useCallback(async (slot = null) => {
-    if (!FB.isReady()) return { ok: false, msg: "Firebase সংযুক্ত নেই" };
-    return await FB.loadBackup(slot);
+  // 🔥 Restore from Firestore — সব collection একবারে pull করে state-এ বসায়
+  const restoreFromFirebase = useCallback(async () => {
+    if (!FSS.isReady()) return { ok: false, msg: "Firestore সংযুক্ত নেই" };
+    try {
+      const keys = ["customers","products","invoices","txns","paymentInvoices",
+                    "purchaseOrders","stockMovements","cashLogs","suppliers","smsLog","users"];
+      const results = await Promise.all(keys.map(k => FSS.getAllOnce(k)));
+      const data = {};
+      keys.forEach((k, i) => { if (results[i]?.length) data[k] = results[i]; });
+      // settings
+      try {
+        const sSnap = await FSS.getAllOnce("settings"); // unused — settings/main আলাদা
+      } catch {}
+      return { ok: true, data };
+    } catch (e) {
+      return { ok: false, msg: e.message || "Firestore restore ব্যর্থ" };
+    }
   }, []);
 
-  // 🔥 Load Firebase snapshot list on mount
+  // 🔥 Firestore-এ data থাকলে fbBackupList-এ একটা entry রাখি — "Last sync" দেখাতে
   useEffect(() => {
-    if (!loaded || !firebaseEnabled || !firebaseConfig) return;
-    FB.init(firebaseConfig);
-    (async () => {
-      const snaps = await FB.listSnapshots();
-      if (snaps.length) setFbBackupList(snaps);
-    })();
-  }, [loaded, firebaseEnabled, firebaseConfig]);
+    if (!loaded || !firebaseEnabled || !FSS.isReady()) return;
+    // lastAutoBackup থেকেই "Last sync" দেখাবে — আলাদা list দরকার নেই
+    if (lastAutoBackup) setFbBackupList([{ at: lastAutoBackup, slot: "firestore" }]);
+  }, [loaded, firebaseEnabled, lastAutoBackup]);
 
   const sendSMS = useCallback(async (customer, type, amount) => {
     const text = await generateSMS(customer, type, amount, customer.balance, shopName, anthropicKey, smsTemplates);
@@ -18107,7 +18115,7 @@ function Settings_({ T, S, shopName,
 
               {/* Action button */}
               <button
-                onClick={() => { if (!fbUnlocked) { setMkTarget("firebase"); setShowFbSetup(false); } else { setShowFbSetup(v => !v); } }}
+                onClick={() => { if (firebaseEnabled && !fbUnlocked) { setMkTarget("firebase"); setShowFbSetup(false); } else { setShowFbSetup(v => !v); } }}
                 style={{
                   width:"100%", padding:"8px 0", borderRadius:10, border:`1px solid ${COLOR}44`,
                   background: isActive ? `${COLOR}22` : `${COLOR}15`,
@@ -18777,79 +18785,57 @@ function Settings_({ T, S, shopName,
         <div style={{ position:"fixed", inset:0, background:"#000000cc", display:"flex", alignItems:"center", justifyContent:"center", zIndex:200, padding:20 }}>
           <div style={{ background:T.card, borderRadius:20, padding:24, maxWidth:380, width:"100%", maxHeight:"90vh", overflowY:"auto" }}>
             <div style={{ fontSize:28, textAlign:"center", marginBottom:6 }}>🗄️</div>
-            <div style={{ color:T.text, fontWeight:700, fontSize:15, textAlign:"center", marginBottom:4 }}>Restore from Firebase Snapshot</div>
-            <div style={{ color:T.sub, fontSize:11, textAlign:"center", marginBottom:14 }}>Select a snapshot to restore from</div>
-            {fbBackupList.length === 0 ? (
-              <div style={{ color:T.sub, fontSize:13, textAlign:"center", padding:"20px 0" }}>No snapshots found</div>
-            ) : (
-              <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:14 }}>
-                {fbBackupList.map((snap) => {
-                  const isSelected = (restoreSlot || fbBackupList[0]?.slot) === snap.slot;
-                  const d = snap.at ? new Date(snap.at) : null;
-                  const diff = d ? Math.floor((Date.now()-d)/60000) : null;
-                  const ago = diff===null?"":diff<1?"just now":diff<60?`${diff}m ago`:diff<1440?`${Math.floor(diff/60)}h ago`:`${Math.floor(diff/1440)}d ago`;
-                  return (
-                    <div key={snap.slot} onClick={() => setRestoreSlot(snap.slot)}
-                      style={{ border:`2px solid ${isSelected?"#f97316":"#334155"}`, borderRadius:12, padding:"10px 14px", cursor:"pointer", background:isSelected?"#f9731610":T.bg, transition:"all 0.15s" }}>
-                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
-                        <span style={{ background:isSelected?"#f97316":"#334155", color:"#fff", borderRadius:6, padding:"1px 8px", fontSize:11, fontWeight:800 }}>
-                          {snap.isCurrent?"Latest":snap.slot==="legacy"?"Legacy":`Slot ${snap.slot}`}
-                        </span>
-                        <span style={{ color:"#94a3b8", fontSize:10 }}>{ago}</span>
-                      </div>
-                      <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
-                        {snap.meta && [
-                          {icon:"👥",val:snap.meta.c,label:"Customers"},
-                          {icon:"🧾",val:snap.meta.i,label:"Invoices"},
-                          {icon:"💳",val:snap.meta.t,label:"Txns"},
-                          {icon:"📦",val:snap.meta.p,label:"Products"},
-                        ].filter(x=>x.val!==undefined).map(({icon,val,label})=>(
-                          <span key={label} style={{color:T.sub,fontSize:11,display:"flex",alignItems:"center",gap:3}}>
-                            {icon} <strong style={{color:T.text}}>{val}</strong> {label}
-                          </span>
-                        ))}
-                      </div>
-                      {d && <div style={{color:"#475569",fontSize:10,marginTop:4}}>{d.toLocaleString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}</div>}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+            <div style={{ color:T.text, fontWeight:700, fontSize:15, textAlign:"center", marginBottom:4 }}>Firestore থেকে ডেটা পুনরুদ্ধার</div>
+            <div style={{ color:T.sub, fontSize:11, textAlign:"center", marginBottom:14 }}>Firestore-এর বর্তমান data এই ডিভাইসে টেনে আনবে</div>
+            <div style={{ background:"#0ea5e915", border:"1px solid #0ea5e930", borderRadius:10, padding:"10px 14px", marginBottom:14 }}>
+              {[
+                { icon:"👥", label:"Customers", val:customers.length },
+                { icon:"📦", label:"Products",  val:products.length },
+                { icon:"🧾", label:"Invoices",  val:invoices.length },
+                { icon:"💳", label:"Txns",      val:txns.length },
+              ].map(({ icon, label, val }) => (
+                <div key={label} style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
+                  <span style={{ color:T.sub, fontSize:12 }}>{icon} {label}</span>
+                  <span style={{ color:T.text, fontWeight:700, fontSize:12 }}>{val}</span>
+                </div>
+              ))}
+            </div>
             <div style={{ background:"#ef444415", border:"1px solid #ef444430", borderRadius:10, padding:"8px 12px", marginBottom:14, display:"flex", alignItems:"flex-start", gap:8 }}>
               <span style={{ fontSize:16, flexShrink:0 }}>⚠️</span>
-              <div style={{ color:"#ef4444", fontSize:12, fontWeight:600 }}>Current data will be replaced by the selected snapshot.</div>
+              <div style={{ color:"#ef4444", fontSize:12, fontWeight:600 }}>Firestore-এর data দিয়ে এই ডিভাইসের local data replace হবে।</div>
             </div>
             <div style={{ display:"flex", gap:10 }}>
               <button style={{ ...S.cancelBtn, flex:1 }} onClick={() => { setShowRestore(false); setRestoreSlot(null); }}>Cancel</button>
               <button
-                style={{ ...S.saveBtn, flex:1, opacity:(restoring||!fbBackupList.length)?0.7:1, background:"#f9731622", color:"#f97316", border:"1px solid #f9731644" }}
-                disabled={restoring||!fbBackupList.length}
+                style={{ ...S.saveBtn, flex:1, opacity:restoring?0.7:1, background:"#f9731622", color:"#f97316", border:"1px solid #f9731644" }}
+                disabled={restoring}
                 onClick={async () => {
                   setRestoring(true);
-                  const targetSlot = restoreSlot||fbBackupList[0]?.slot||null;
-                  const result = await restoreFromFirebase(targetSlot==="legacy"?null:targetSlot);
-                  if (result.ok&&result.data) {
-                    const d=result.data;
-                    if(d.customers)setCustomers(d.customers);
-                    if(d.products)setProducts(d.products);
-                    if(d.invoices)setInvoices(d.invoices);
-                    if(d.txns)setTxns(d.txns);
-                    if(d.smsLog)setSmsLog(d.smsLog);
-                    if(d.paymentInvoices)setPaymentInvoices(d.paymentInvoices);
-                    if(d.purchaseOrders)setPurchaseOrders(d.purchaseOrders);
-                    if(d.stockMovements)setStockMovements(d.stockMovements);
-                    if(d.users && d.users.length) setUsers(d.users);
+                  const result = await restoreFromFirebase();
+                  if (result.ok && result.data) {
+                    const d = result.data;
+                    if (d.customers)      setCustomers(d.customers);
+                    if (d.products)       setProducts(d.products);
+                    if (d.invoices)       setInvoices(d.invoices);
+                    if (d.txns)           setTxns(d.txns);
+                    if (d.smsLog)         setSmsLog(d.smsLog);
+                    if (d.paymentInvoices)setPaymentInvoices(d.paymentInvoices);
+                    if (d.purchaseOrders) setPurchaseOrders(d.purchaseOrders);
+                    if (d.stockMovements) setStockMovements(d.stockMovements);
+                    if (d.cashLogs)       setCashLogs(d.cashLogs);
+                    if (d.suppliers)      setSuppliers(d.suppliers);
+                    if (d.users && d.users.length) setUsers(d.users);
                     setShowRestore(false); setRestoreSlot(null);
-                    showToast(`🎉 Slot ${targetSlot} restored!`);
+                    showToast("🎉 Firestore থেকে ডেটা পুনরুদ্ধার সম্পন্ন!");
                   } else {
-                    showToast(result.msg||"Backup not found","#ef4444");
+                    showToast(result.msg || "Firestore-এ কোনো ডেটা নেই", "#ef4444");
                     setShowRestore(false);
                   }
                   setRestoring(false);
                 }}>
                 {restoring
                   ? <span style={{display:"flex",alignItems:"center",gap:6,justifyContent:"center"}}>
-                      <span style={{animation:"hg-spin 1s linear infinite",display:"inline-block"}}>◌</span> Restoring...
+                      <span style={{animation:"hg-spin 1s linear infinite",display:"inline-block"}}>◌</span> আনছে...
                     </span>
                   : "✅ Restore"}
               </button>
