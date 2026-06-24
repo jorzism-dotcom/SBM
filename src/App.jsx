@@ -17758,7 +17758,7 @@ function Settings_({ T, S, shopName,
             placeholder="your-project-id"
             value={fbForm.projectId || ""}
             autoCapitalize="none" autoCorrect="off" spellCheck={false} autoComplete="off"
-            onChange={e => setFbForm(f => ({ ...f, projectId: e.target.value.trim() }))} />
+            onChange={e => setFbForm(f => ({ ...f, projectId: e.target.value.trim().toLowerCase() }))} />
 
           {fbTestMsg && (
             <div style={{ background: fbTestMsg.ok ? "#22c55e18" : "#ef444418", color: fbTestMsg.ok ? "#22c55e" : "#ef4444", borderRadius:8, padding:"8px 12px", fontSize:12, marginBottom:8, fontWeight:600 }}>
