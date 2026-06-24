@@ -7123,6 +7123,7 @@ function SmartBusinessMgmt() {
     firebaseEnabled,  authSession,      googleDriveToken,  lastLocalBackup,
     devContact,       masterResetHash,   activeDevices,     syncToast,
     suppliers,        purchaseOrders,    stockMovements,    cashLogs,
+    lastMasterSync,   autoMasterSyncEnabled,
     set: _set, patch: _patch,
   } = useAppStore();
 
