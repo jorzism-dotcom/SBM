@@ -7944,12 +7944,14 @@ function SmartBusinessMgmt() {
     const firstRun = setTimeout(cycle, 30000); // অ্যাপ ওপেন হওয়ার ৩০ সেকেন্ড পর প্রথমবার
 
     // 🔄 Auto-reconnect: token expired হলে প্রতি ১০ মিনিটে silent re-auth চেষ্টা (Admin only)
+    // APK-তে silentReauth সরাসরি null দেয় (Browser Tab খোলে না) → banner দেখায়
     let autoReconnectTimer = null;
     if (!isStaffDevice) {
       const tryReconnect = async () => {
-        if (!GDrive.isTokenExpired()) return; // token ঠিক আছে — কিছু করার দরকার নেই
+        if (!GDrive.isTokenExpired()) return; // token ঠিক আছে
+        // Web/PWA-তে silent popup চেষ্টা; APK-তে null আসবে (কোনো Tab খুলবে না)
         try {
-          const fresh = await GDrive.ensureTokenSilent(GOOGLE_WEB_CLIENT_ID);
+          const fresh = await GDrive.silentReauth(GOOGLE_WEB_CLIENT_ID);
           if (fresh) {
             await GDrive.saveToken(fresh);
             const tokenData = { token: fresh, savedAt: Date.now() };
@@ -7957,6 +7959,7 @@ function SmartBusinessMgmt() {
             try { FSS.setSettings({ googleDriveToken: tokenData }); } catch {}
           }
         } catch {}
+        // null এলে gdriveBanner useEffect নিজেই banner দেখাবে
       };
       autoReconnectTimer = setInterval(tryReconnect, 10 * 60 * 1000); // প্রতি ১০ মিনিট
     }
@@ -20659,6 +20662,22 @@ const GDrive = {
 
       // APK: Chrome Custom Tab + appUrlOpen deep link
       if (window.Capacitor?.isNativePlatform?.()) {
+        // ⚠️ APK-তে prompt=none redirect flow কাজ করে না —
+        // Google interaction_required error দেয় এবং Netlify oauth.html দোকানদারকে দেখায়।
+        // তাই silent=true হলে সাথে সাথে reject — কোনো Browser Tab খোলা যাবে না।
+        if (silent) {
+          reject(new Error("APK silent auth not supported"));
+          return;
+        }
+
+        const Browser = window.Capacitor?.Plugins?.Browser;
+        const App = window.Capacitor?.Plugins?.App;
+
+        if (!Browser || !App) {
+          reject(new Error("Browser plugin পাওয়া যায়নি — APK rebuild করুন"));
+          return;
+        }
+
         let appListener = null;
         let browserListener = null;
         let timerHandle = null;
@@ -20667,15 +20686,6 @@ const GDrive = {
           if (browserListener) { browserListener.remove?.(); browserListener = null; }
           if (timerHandle) { clearTimeout(timerHandle); timerHandle = null; }
         };
-
-        // সরাসরি window.Capacitor.Plugins থেকে নাও — dynamic import দরকার নেই
-        const Browser = window.Capacitor?.Plugins?.Browser;
-        const App = window.Capacitor?.Plugins?.App;
-
-        if (!Browser || !App) {
-          reject(new Error("Browser plugin পাওয়া যায়নি — APK rebuild করুন"));
-          return;
-        }
 
         // deep link listener — com.protik.sbm://oauth2redirect#access_token=...
         appListener = App.addListener("appUrlOpen", (event) => {
@@ -20705,10 +20715,9 @@ const GDrive = {
 
         Browser.open({ url, windowName: "_blank" });
 
-        // silent হলে ১৫ সেকেন্ড, না হলে ৩ মিনিট timeout
         setTimeout(() => {
           cleanup();
-          reject(new Error(silent ? "Silent re-auth ব্যর্থ" : "Auth timeout — আবার চেষ্টা করুন"));
+          reject(new Error("Auth timeout — আবার চেষ্টা করুন"));
         }, authTimeout);
         return;
       }
@@ -20737,24 +20746,18 @@ const GDrive = {
     return this.interactiveAuth(clientId);
   },
 
-  // 🔇 Background timer থেকে কল হয় — UI ছাড়া token refresh-এর চেষ্টা করে।
-  // ধাপ ১: prompt=none (সম্পূর্ণ নিঃশব্দ) — Google cached session থাকলে সাথে সাথে token আসে
-  // ধাপ ২: silent fail হলে prompt ছাড়া (select_account বাদ) interactive auth চেষ্টা
-  //         — আগে consent দেওয়া থাকলে Google UI দেখায় না, সরাসরি token দেয়
-  // ধাপ ৩: সেটাও fail হলে null → caller floating banner দেখাবে
+  // 🔇 Background timer থেকে কল হয় — UI ছাড়া token refresh চেষ্টা।
+  // APK-তে prompt=none redirect কাজ করে না (interaction_required error) —
+  // তাই APK-তে এই function সরাসরি null দেয়, caller banner দেখাবে।
+  // Web/PWA-তে popup দিয়ে silent auth চেষ্টা করে।
   async silentReauth(clientId) {
-    // ধাপ ১: prompt=none silent try
+    // APK-তে কোনো Browser Tab খোলা যাবে না — সরাসরি null
+    if (window.Capacitor?.isNativePlatform?.()) return null;
+    // Web: prompt=none popup চেষ্টা
     try {
       const t = await this.interactiveAuth(clientId, { silent: true });
       if (t) return t;
     } catch {}
-    // ধাপ ২: APK-তে background interactive (consent আগে দেওয়া থাকলে UI-less)
-    if (window.Capacitor?.isNativePlatform?.()) {
-      try {
-        const t = await this.interactiveAuth(clientId, { silent: false, background: true });
-        if (t) return t;
-      } catch {}
-    }
     return null;
   },
 
