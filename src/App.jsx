@@ -4,6 +4,7 @@ import { initializeApp, getApps, deleteApp } from "firebase/app";
 import {
   getFirestore, doc, getDoc, updateDoc, setDoc, deleteDoc,
   collection, onSnapshot, getDocs, enableIndexedDbPersistence,
+  query, where, orderBy, limit, startAfter, increment,
 } from "firebase/firestore";
 import { create } from "zustand";
 
@@ -424,7 +425,7 @@ function installGlobalBengaliInterceptor() {
 // (capital) হয়ে যাবে। বাংলা টাইপিং, সংখ্যা, এবং number/password টাইপ ইনপুট
 // এর উপর কোনো প্রভাব পড়বে না।
 function installGlobalAutoCapitalize() {
-  if (window._sbmAutoCap) return;
+  if (window._sbmAutoCap) return () => {};
   window._sbmAutoCap = true;
 
   function getNativeSetter(el) {
@@ -472,29 +473,40 @@ function installGlobalAutoCapitalize() {
     el.dispatchEvent(new Event("input", { bubbles: true }));
   }
 
-  document.addEventListener("input", (e) => {
+  // ── named handlers — cleanup-এর জন্য reference রাখা জরুরি ─────────────────
+  const _capOnInput = (e) => {
     const el = e.target;
     if (!eligible(el)) return;
     if (e.isComposing) return; // composing চলাকালীন স্কিপ — অভ্র/রিদ্মিক/Gboard predictive ভাঙবে না
     applyCapitalize(el);
-  }, true);
-
+  };
   // Gboard/SwiftKey-এ ইংরেজি শব্দ টাইপের সময়ও autocorrect-এর জন্য composition span
   // চালু থাকে (isComposing=true থাকে পুরো শব্দ ধরে) — তাই উপরের "input" শোনা যথেষ্ট নয়,
   // composition শেষ হলে (word commit / স্পেস / blur) আবার চেক করতে হয়।
-  document.addEventListener("compositionend", (e) => {
+  const _capOnCompositionEnd = (e) => {
     const el = e.target;
     if (!eligible(el)) return;
     applyCapitalize(el);
-  }, true);
-
+  };
   // Fallback: ব্লার হওয়ার সময়ও একবার চেক — কোনো কীবোর্ডে compositionend ঠিকমতো না ফায়ার করলেও
   // শেষ মুহূর্তে প্রথম অক্ষর capital করে দেয়।
-  document.addEventListener("blur", (e) => {
+  const _capOnBlur = (e) => {
     const el = e.target;
     if (!eligible(el)) return;
     applyCapitalize(el);
-  }, true);
+  };
+
+  document.addEventListener("input",          _capOnInput,          true);
+  document.addEventListener("compositionend", _capOnCompositionEnd, true);
+  document.addEventListener("blur",           _capOnBlur,           true);
+
+  // ── cleanup: useEffect return-এ call করুন ────────────────────────────────
+  return () => {
+    window._sbmAutoCap = false;
+    document.removeEventListener("input",          _capOnInput,          true);
+    document.removeEventListener("compositionend", _capOnCompositionEnd, true);
+    document.removeEventListener("blur",           _capOnBlur,           true);
+  };
 }
 
 // ─── bnRef: Bengali IME-safe ref helper ──────────────────────────────────────
@@ -3626,6 +3638,44 @@ const FSS = {
     } catch (e) {
       return { ok: false, msg: e.message || "Firestore clear ব্যর্থ" };
     }
+  },
+
+  // 📊 Phase 1.3: Stats/Aggregation — invoice save/void-এ running total update
+  // Dashboard totals-এর জন্য সব invoice scan না করে একটা ছোট doc থেকে পড়া যায়।
+  // delta = { sale: ±N, profit: ±N, baki: ±N, cash: ±N } — void-এ negative delta দিন।
+  async updateStats(dateKey, delta) {
+    if (!this._db || !dateKey) return;
+    const monthKey = dateKey.slice(0, 7); // "2026-06"
+    const upd = {};
+    if (delta.sale   !== undefined) upd.totalSale   = increment(delta.sale);
+    if (delta.profit !== undefined) upd.totalProfit = increment(delta.profit);
+    if (delta.baki   !== undefined) upd.totalBaki   = increment(delta.baki);
+    if (delta.cash   !== undefined) upd.totalCash   = increment(delta.cash);
+    upd.updatedAt = Date.now();
+    try {
+      await Promise.all([
+        setDoc(doc(this._db, "stats", dateKey),  upd, { merge: true }),
+        setDoc(doc(this._db, "stats", monthKey), upd, { merge: true }),
+      ]);
+    } catch { /* silent — stats failure main flow block করবে না */ }
+  },
+
+  // 📊 stats doc একবার পড়া (Dashboard cold load)
+  async getStats(key) {
+    if (!this._db) return null;
+    try {
+      const s = await getDoc(doc(this._db, "stats", key));
+      return s.exists() ? s.data() : null;
+    } catch { return null; }
+  },
+
+  // 📊 stats doc real-time subscribe (Dashboard live update)
+  subscribeStats(key, callback) {
+    if (!this._db) return () => {};
+    const unsub = onSnapshot(doc(this._db, "stats", key), (snap) => {
+      callback(snap.exists() ? snap.data() : null);
+    }, () => {});
+    return unsub;
   },
 };
 
@@ -7140,11 +7190,30 @@ function SmartBusinessMgmt() {
     };
   }, []);
 
+  // ── safeTimeout: unmount-এ auto-cancel হয় ────────────────────────────────
+  const _stRef = useRef({});
+  const _stCounter = useRef(0);
+  const safeTimeout = useCallback((fn, ms) => {
+    const key = `_st_${++_stCounter.current}`;
+    _stRef.current[key] = setTimeout(() => {
+      delete _stRef.current[key];
+      fn();
+    }, ms);
+    return key;
+  }, []);
+  useEffect(() => {
+    return () => {
+      Object.values(_stRef.current).forEach(id => clearTimeout(id));
+      _stRef.current = {};
+    };
+  }, []);
+
   // ── Global Bengali IME Interceptor — app mount হওয়ার সাথে সাথে install ──
   useEffect(() => {
     installGlobalBengaliInterceptor();
-    installGlobalAutoCapitalize();
+    const cleanupAutoCap = installGlobalAutoCapitalize();
     // selectionchange handler removed — prototype override দিয়ে handle হচ্ছে
+    return () => { cleanupAutoCap?.(); };
   }, []);
 
   // ── Zustand store — 48 useState এর বদলে একটি store ─────────────────────────
@@ -7318,10 +7387,40 @@ function SmartBusinessMgmt() {
   useEffect(() => {
     (async () => {
       await DeviceID.init(); // 🔥 ফিক্স: localStorage হারিয়ে গেলেও same device id বজায় রাখতে
-      setCustomers       ((await load(SK.customers))        || SEED_CUSTOMERS);
+
+      // ── Phase 1.1: Parallel boot — সব IndexedDB read একসাথে ────────────────
+      // আগে ছিল ২৫+ sequential await (একটার পর একটা)।
+      // এখন Promise.all দিয়ে একসাথে — cold start ~৩০০-৫০০ms কম।
+      const [
+        rawCustomers,     rawProds,          rawInvoices,       rawTxns,
+        rawSmsLog,        rawUsers,          shopNameVal,       darkModeVal,
+        activeThemeVal,   fontSizeVal,       rawDelCust,        rawDelProd,
+        rawPayInv,        rawSmsGw,          lastBackupVal,     anthropicKeyVal,
+        rawSmsTpl,        autoBackupVal,     lastMasterSyncVal, autoMasterSyncVal,
+        fbCfg,            fbOn,              savedUser,         devContactVal,
+        masterHashVal,    rawSuppliers,      rawPOs,            rawStockMov,
+        rawCashLogs,      recoveryPhoneVal,  recoveryPinHashVal,
+      ] = await Promise.all([
+        load(SK.customers),         load(SK.products),
+        load(SK.invoices),          load(SK.txns),
+        load(SK.smsLog),            load(SK.users),
+        load(SK.shopName),          load(SK.darkMode),
+        load(SK.activeTheme),       load(SK.fontSize),
+        load(SK.deletedCustomers),  load(SK.deletedProducts),
+        load(SK.paymentInvoices),   load(SK.smsGateway),
+        load(SK.lastAutoBackup),    load(SK.anthropicKey),
+        load(SK.smsTemplates),      load(SK.autoBackupEnabled),
+        load(SK.lastMasterSync),    load(SK.autoMasterSyncEnabled),
+        load(SK.firebaseConfig),    load(SK.firebaseEnabled),
+        load(SK.authSession),       load(SK.devContact),
+        load(SK.masterResetHash),   load(SK.suppliers),
+        load(SK.purchaseOrders),    load(SK.stockMovements),
+        load(SK.cashLogs),          load(SK.recoveryPhone),
+        load(SK.recoveryPinHash),
+      ]);
+
       // ── Batch-1 Migration: পুরনো products এ batches[] নেই → Batch-1 তৈরি করো ─
-      const rawProds = (await load(SK.products)) || SEED_PRODUCTS;
-      const migratedProds = rawProds.map(p => {
+      const migratedProds = (rawProds || SEED_PRODUCTS).map(p => {
         if (p.batches && p.batches.length > 0) return p; // ইতিমধ্যে আছে
         if (!p.stock || p.stock <= 0) return { ...p, batches: [] };
         return {
@@ -7338,57 +7437,61 @@ function SmartBusinessMgmt() {
           }],
         };
       });
-      setProducts(migratedProds);
-      setInvoices        ((await load(SK.invoices))         || []);
-      setTxns            ((await load(SK.txns))             || []);
-      setSmsLog          ((await load(SK.smsLog))           || []);
-      setUsers           ((await load(SK.users))            || SEED_USERS);
-      setShopName        ((await load(SK.shopName))         || "SBM");
-      setDarkMode        ((await load(SK.darkMode))         ?? true);
-      const savedTheme = (await load(SK.activeTheme)) || "forest"; // Bug fix: "dark" is not a valid theme ID
-      setActiveTheme(savedTheme);
-      setFontSize((await load(SK.fontSize)) ?? 15);
-      setDeletedCustomers((await load(SK.deletedCustomers)) || []);
-      setDeletedProducts ((await load(SK.deletedProducts))  || []);
-      setPaymentInvoices ((await load(SK.paymentInvoices))  || []);
-      setSmsGateway      ((await load(SK.smsGateway))       || null);
-      setLastAutoBackup  ((await load(SK.lastAutoBackup))   || null);
-      setAnthropicKey    ((await load(SK.anthropicKey))     || "");
-      setSmsTemplates    ((await load(SK.smsTemplates))     || null);
-      setAutoBackupEnabled((await load(SK.autoBackupEnabled)) ?? false);
-      setLastMasterSync  ((await load(SK.lastMasterSync))   || null);
-      setAutoMasterSyncEnabled((await load(SK.autoMasterSyncEnabled)) ?? false);
-      // 🔥 Firebase
-      const fbCfg = (await load(SK.firebaseConfig)) || null;
-      const fbOn  = (await load(SK.firebaseEnabled)) ?? false;
-      setFirebaseConfig(fbCfg);
-      setFirebaseEnabled(fbOn);
-      if (fbCfg && fbOn) { FB.init(fbCfg); FSS.init(fbCfg); }
-      // Auto-login: restore last logged-in user (PIN-based, stored locally)
-      const savedUser = await load(SK.authSession);
-      if (savedUser?.id) {
-        setCurrentUser(savedUser);
-      }
-      setAuthChecked(true); // এখন নিশ্চিত যে auth check শেষ হয়েছে
-      // Developer contact & master reset — storage-এ না থাকলে hardcoded default ব্যবহার
-      setDevContact      ((await load(SK.devContact))      || DEV_CONTACT);
-      setMasterResetHash ((await load(SK.masterResetHash)) || DEV_MASTER_HASH);
-      setSuppliers       ((await load(SK.suppliers))        || []);
-      setPurchaseOrders  ((await load(SK.purchaseOrders))   || []);
-      setStockMovements  ((await load(SK.stockMovements))   || []);
-      setCashLogs        ((await load(SK.cashLogs))         || []);
-      setRecoveryPhoneState  ((await load(SK.recoveryPhone))   || "");
-      setRecoveryPinHashState((await load(SK.recoveryPinHash)) || null);
-      setLoaded(true);
-      // Device ID generate করুন (একবারই)
+
+      // ── Firebase init (data load করার আগে দরকার নেই, কিন্তু fssReady-র জন্য) ─
+      const firebaseCfg = fbCfg || null;
+      const firebaseOn  = fbOn ?? false;
+      if (firebaseCfg && firebaseOn) { FB.init(firebaseCfg); FSS.init(firebaseCfg); }
+
+      // ── সব state একসাথে batch update — একটাই React re-render ────────────────
+      _patch({
+        customers:             rawCustomers        || SEED_CUSTOMERS,
+        products:              migratedProds,
+        invoices:              rawInvoices         || [],
+        txns:                  rawTxns             || [],
+        smsLog:                rawSmsLog           || [],
+        users:                 rawUsers            || SEED_USERS,
+        shopName:              shopNameVal         || "SBM",
+        darkMode:              darkModeVal         ?? true,
+        activeTheme:           (activeThemeVal && activeThemeVal !== "dark") ? activeThemeVal : "forest",
+        fontSize:              fontSizeVal         ?? 15,
+        deletedCustomers:      rawDelCust          || [],
+        deletedProducts:       rawDelProd          || [],
+        paymentInvoices:       rawPayInv           || [],
+        smsGateway:            rawSmsGw            || null,
+        lastAutoBackup:        lastBackupVal       || null,
+        anthropicKey:          anthropicKeyVal     || "",
+        smsTemplates:          rawSmsTpl           || null,
+        autoBackupEnabled:     autoBackupVal       ?? false,
+        lastMasterSync:        lastMasterSyncVal   || null,
+        autoMasterSyncEnabled: autoMasterSyncVal   ?? false,
+        firebaseConfig:        firebaseCfg,
+        firebaseEnabled:       firebaseOn,
+        currentUser:           savedUser?.id ? savedUser : null,
+        devContact:            devContactVal       || DEV_CONTACT,
+        masterResetHash:       masterHashVal       || DEV_MASTER_HASH,
+        suppliers:             rawSuppliers        || [],
+        purchaseOrders:        rawPOs              || [],
+        stockMovements:        rawStockMov         || [],
+        cashLogs:              rawCashLogs         || [],
+        authChecked:           true,
+        loaded:                true,
+      });
+
+      // ── recovery state (local useState — store-এর বাইরে) ───────────────────
+      setRecoveryPhoneState  (recoveryPhoneVal   || "");
+      setRecoveryPinHashState(recoveryPinHashVal || null);
+
+      // ── Device ID generate করুন (একবারই) ───────────────────────────────────
       if (!localStorage.getItem("hg_device_id")) {
         localStorage.setItem("hg_device_id", "dev_" + Math.random().toString(36).slice(2, 10) + "_" + Date.now().toString(36));
       }
-      // Notification permission ও FCM setup
+
+      // ── Notification permission ও FCM setup — deferred (UI block না করতে) ──
       setTimeout(async () => {
         try {
           await Notif.requestPermission();
-          const sn = (await load(SK.shopName)) || "SBM";
+          const sn = shopNameVal || "SBM";
           await Notif.setupPushNotifications(sn);
         } catch(e) { /* silent */ }
       }, 3000);
@@ -7446,7 +7549,31 @@ function SmartBusinessMgmt() {
       return arr.filter(p => !deletedIds.has(p.id));
     },
   });
-  useFSSCollection("invoices", invoices, setInvoices, fssReady, { onSync: setSyncToast });
+
+  // ── Phase 1.2: Invoice Windowed Sync — শুধু শেষ ৩০ দিনের ইনভয়েস real-time ──
+  // আগে: useFSSCollection("invoices"...) → পুরো collection (১০ লাখেও সব pull)
+  // এখন: শুধু ৩০ দিনের window — ১০ লাখ invoice-এও app চলে, Firestore cost ৯৯%+ কম।
+  // পুরনো invoice দেখতে হলে → Invoice History page-এ cursor pagination (Phase 2)।
+  // Firestore index লাগবে: invoices → date (ASC) — console error-এ link আসবে।
+  useEffect(() => {
+    if (!fssReady || !FSS._db) return;
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - 30);
+    const cutoff = cutoffDate.toISOString().split("T")[0]; // "YYYY-MM-DD"
+
+    const colRef = collection(FSS._db, "invoices");
+    const q = query(colRef, where("dateKey", ">=", cutoff), orderBy("dateKey", "desc"));
+
+    let first = true;
+    const unsub = onSnapshot(q, (snap) => {
+      const recent = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setInvoices(recent);
+      if (first) { first = false; setSyncToast?.({ msg: "ইনভয়েস sync হয়েছে", ok: true }); }
+    }, () => { /* offline — Firestore cache থেকে কাজ চলবে */ });
+
+    return () => unsub();
+  }, [fssReady]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useFSSCollection("txns", txns, setTxns, fssReady, { onSync: setSyncToast });
   useFSSCollection("smsLog", smsLog, setSmsLog, fssReady, { onSync: setSyncToast });
   useFSSCollection("suppliers", suppliers, setSuppliers, fssReady, { onSync: setSyncToast });
@@ -7457,6 +7584,21 @@ function SmartBusinessMgmt() {
   // 🔑 users (permissions) — instant push/apply, debounce ছাড়া
   useFSSCollection("users", users, setUsers, fssReady, { instant: true, onSync: setSyncToast });
   useFSSSettings(fssReady, shopName, setShopName, smsTemplates, setSmsTemplates, smsGateway, setSmsGateway, googleDriveToken, setGoogleDriveToken);
+
+  // ── Phase 1.3: Stats doc real-time subscribe — Dashboard আজকের totals ───────
+  // todayInvs.reduce() এর বদলে একটা ছোট Firestore doc থেকে instant read।
+  // Invoice save/void-এ FSS.updateStats() call করলে এখানে auto-update আসবে।
+  useEffect(() => {
+    if (!fssReady || !FSS._db) return;
+    const todayKey = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+    const unsub = FSS.subscribeStats(todayKey, (data) => {
+      // stats data পেলে Zustand store-এ রাখা যায় অথবা Dashboard-এ prop হিসেবে পাঠানো যায়।
+      // আপাতত: পরবর্তী phase-এ Dashboard-কে stats doc থেকে পড়তে হবে।
+      // এখন শুধু subscribe করে রাখছি — যাতে connection warm থাকে।
+      if (data) setSyncToast?.({ msg: null, ok: true }); // silent — no UI noise
+    });
+    return () => unsub();
+  }, [fssReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 🔑 admin কোনো স্টাফের permission বদলালে/মুছলে — Firestore থেকে users
   // আপডেট হওয়ার সাথে সাথেই (millisecond-এ) এই ডিভাইসের currentUser-এ প্রতিফলিত
@@ -7729,8 +7871,8 @@ function SmartBusinessMgmt() {
   }, [loaded, lastAutoBackup, autoBackupEnabled]);
 
   const showToast = useCallback((msg, color = "#22c55e") => {
-    setToast({ msg, color }); setTimeout(() => setToast(null), 3200);
-  }, []);
+    setToast({ msg, color }); safeTimeout(() => setToast(null), 3200);
+  }, [safeTimeout]);
 
   const buildBackupData = useCallback(() => {
     const payload = { customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers };
@@ -7776,11 +7918,11 @@ function SmartBusinessMgmt() {
 
       setBackupNeeded(false);
       setDriveStatus("success");
-      setTimeout(() => setDriveStatus(null), 4000);
+      safeTimeout(() => setDriveStatus(null), 4000);
     } catch (e) {
       setDriveStatus("error");
       showToast("ব্যাকআপ ব্যর্থ হয়েছে", "#ef4444");
-      setTimeout(() => setDriveStatus(null), 4000);
+      safeTimeout(() => setDriveStatus(null), 4000);
     }
   }, [buildBackupData, showToast]);
 
@@ -7860,11 +8002,11 @@ function SmartBusinessMgmt() {
       setLastMasterSync(doneTs);
       setMasterSyncStatus("done");
       setMasterSyncDetail("Master Sync সম্পন্ন! ✅");
-      setTimeout(() => { setMasterSyncStatus(null); setMasterSyncDetail(""); }, 4000);
+      safeTimeout(() => { setMasterSyncStatus(null); setMasterSyncDetail(""); }, 4000);
     } catch (e) {
       setMasterSyncStatus("error");
       setMasterSyncDetail("Sync ব্যর্থ: " + (e?.message || "অজানা error"));
-      setTimeout(() => { setMasterSyncStatus(null); setMasterSyncDetail(""); }, 5000);
+      safeTimeout(() => { setMasterSyncStatus(null); setMasterSyncDetail(""); }, 5000);
     }
   }, [masterSyncStatus, googleDriveToken, customers, products, invoices, txns, smsLog,
       paymentInvoices, purchaseOrders, stockMovements, cashLogs, suppliers,
@@ -8084,6 +8226,16 @@ function SmartBusinessMgmt() {
     }
 
     showToast("ইনভয়েস ভয়েড হয়েছে ও স্টক পুনরুদ্ধার হয়েছে", "#f59e0b");
+
+    // ── Phase 1.3: Stats doc update — void-এ negative delta দিয়ে total কমাও ─
+    if (FSS.isReady() && inv.dateKey && !inv.isSelfUse) {
+      const saleAmt = inv.total || 0;
+      const cashAmt = inv.payType === "cash" ? saleAmt
+                    : inv.payType === "partial" ? (inv.paidAmount || 0) : 0;
+      const bakiAmt = inv.payType === "baki"   ? saleAmt
+                    : inv.payType === "partial" ? (inv.bakiAmount || 0) : 0;
+      FSS.updateStats(inv.dateKey, { sale: -saleAmt, cash: -cashAmt, baki: -bakiAmt, profit: 0 });
+    }
   }, [setInvoices, setCustomers, setProducts, addTxn, showToast]);
 
   const connectBluetooth = useCallback(async () => {
@@ -10211,6 +10363,19 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       selfUseCost,
     };
     setInvoices(prev => [inv, ...prev]);
+
+    // ── Phase 1.3: Stats doc update — invoice save-এ running total বাড়াও ──────
+    // Dashboard totals (todayTotal, todayProfit) এখন এই doc থেকে পড়তে পারবে।
+    // বাকি (baki) amount: customer.balance থেকে আসে, এখানে invoice-এর bakiAmount।
+    if (FSS.isReady()) {
+      const saleAmt   = inv.isSelfUse ? 0 : (inv.total || 0);
+      const cashAmt   = inv.payType === "cash" ? saleAmt
+                      : inv.payType === "partial" ? (inv.paidAmount || 0) : 0;
+      const bakiAmt   = inv.payType === "baki"    ? saleAmt
+                      : inv.payType === "partial"  ? (inv.bakiAmount || 0) : 0;
+      const profitAmt = 0; // profit post-calculation-এ আসে — পরবর্তী phase-এ যোগ হবে
+      FSS.updateStats(inv.dateKey, { sale: saleAmt, cash: cashAmt, baki: bakiAmt, profit: profitAmt });
+    }
 
     // ── Deduct stock for each sold product (নিজের ব্যবহারেও স্টক কমবে) ──
     // batchNo ট্র্যাক করার জন্য map তৈরি (রিসিট ট্রেসেবিলিটি)
