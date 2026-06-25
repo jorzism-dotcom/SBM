@@ -3,8 +3,21 @@
 // Deploy: Turjo repo-তে এই path-এ রাখুন, Netlify auto-deploy করবে
 
 exports.handler = async (event) => {
+  // APK (Capacitor) থেকে আসা request-এর origin আলাদা হয়
+  const ALLOWED_ORIGINS = [
+    "https://melodious-axolotl-00b2e7.netlify.app",
+    "capacitor://localhost",   // Capacitor Android/iOS WebView
+    "http://localhost",        // Capacitor dev / some Android WebViews
+    "https://localhost",
+  ];
+
+  const origin = event.headers?.origin || event.headers?.Origin || "";
+  const allowOrigin = ALLOWED_ORIGINS.includes(origin)
+    ? origin
+    : "https://melodious-axolotl-00b2e7.netlify.app"; // fallback
+
   const CORS = {
-    "Access-Control-Allow-Origin": "https://melodious-axolotl-00b2e7.netlify.app",
+    "Access-Control-Allow-Origin": allowOrigin,
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   };
