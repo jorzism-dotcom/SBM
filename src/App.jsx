@@ -5120,8 +5120,12 @@ const todayEn = () => {
 // সব জায়গায় একই formula: cost = it.costPrice ?? p.costPrice ?? 0 (invoice-time দাম আগে)
 //                          revenue = inv.total (discount-পরবর্তী)
 // per-item breakdown-এ revenue discount অনুপাতে scale হয় যাতে যোগফল inv.total-এর সাথে মেলে
-const _itemCostPrice = (item, prodMap) =>
-  (item.costPrice != null) ? item.costPrice : (prodMap?.get?.(item.productId)?.costPrice ?? 0);
+const _itemCostPrice = (item, prodMap) => {
+  const prod = prodMap?.get?.(item.productId);
+  // সেবা পণ্যের costPrice সবসময় 0 (পুরো বিক্রয়মূল্যই লাভ)
+  if (item.productType === "service" || prod?.productType === "service") return 0;
+  return (item.costPrice != null) ? item.costPrice : (prod?.costPrice ?? 0);
+};
 
 const calcInvoiceProfit = (inv, prodMap) => {
   const items = inv.items || [];
@@ -7924,7 +7928,7 @@ function SmartBusinessMgmt() {
           // Staff: Firestore থেকে পাওয়া Admin token ব্যবহার করো
           // expiry window ৫৮ মিনিট — Admin প্রতি ৪৫ মিনিটে refresh করে তাই overlap থাকে
           const tk = googleDriveToken;
-          const fresh = tk?.token && tk?.savedAt && (Date.now() - tk.savedAt) < 58 * 60 * 1000;
+          const fresh = tk?.token && tk?.savedAt && (Date.now() - tk.savedAt) < 68 * 60 * 1000;
           token = fresh ? tk.token : null;
         }
         if (!token) return; // token নেই/expired — এই cycle skip, পরের cycle-এ আবার চেষ্টা
@@ -7939,7 +7943,29 @@ function SmartBusinessMgmt() {
     const timer = setInterval(cycle, tokenRefreshInterval);
     const firstRun = setTimeout(cycle, 30000); // অ্যাপ ওপেন হওয়ার ৩০ সেকেন্ড পর প্রথমবার
 
-    return () => { clearInterval(timer); clearTimeout(firstRun); };
+    // 🔄 Auto-reconnect: token expired হলে প্রতি ১০ মিনিটে silent re-auth চেষ্টা (Admin only)
+    let autoReconnectTimer = null;
+    if (!isStaffDevice) {
+      const tryReconnect = async () => {
+        if (!GDrive.isTokenExpired()) return; // token ঠিক আছে — কিছু করার দরকার নেই
+        try {
+          const fresh = await GDrive.ensureTokenSilent(GOOGLE_WEB_CLIENT_ID);
+          if (fresh) {
+            await GDrive.saveToken(fresh);
+            const tokenData = { token: fresh, savedAt: Date.now() };
+            setGoogleDriveToken(tokenData);
+            try { FSS.setSettings({ googleDriveToken: tokenData }); } catch {}
+          }
+        } catch {}
+      };
+      autoReconnectTimer = setInterval(tryReconnect, 10 * 60 * 1000); // প্রতি ১০ মিনিট
+    }
+
+    return () => {
+      clearInterval(timer);
+      clearTimeout(firstRun);
+      if (autoReconnectTimer) clearInterval(autoReconnectTimer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, firebaseEnabled, firebaseConfig, currentUser?.role]);
 
@@ -8124,6 +8150,33 @@ function SmartBusinessMgmt() {
 
   // ── Android Hardware Back Button Handler ──────────────────────────────────
   const [showExitConfirm, setShowExitConfirm] = useState(false);
+  const [gdriveBanner, setGdriveBanner] = useState(false); // 🔴 Drive disconnect floating banner
+  const [gdriveReconnecting, setGdriveReconnecting] = useState(false);
+
+  // 🔄 Google Drive auto-reconnect: প্রতি ৩ মিনিটে চেক — expired হলে silent→interactive চেষ্টা
+  // Admin-only। Fail হলে floating banner দেখায় যাতে user এক ট্যাপে reconnect করতে পারে।
+  useEffect(() => {
+    if (!loaded || currentUser?.role === "staff") return;
+    const _gdReconnect = async () => {
+      if (!GDrive.isTokenExpired()) { setGdriveBanner(false); return; } // ঠিক আছে
+      try {
+        const fresh = await GDrive.ensureTokenSilent(GOOGLE_WEB_CLIENT_ID);
+        if (fresh) {
+          const tokenData = { token: fresh, savedAt: Date.now() };
+          setGoogleDriveToken(tokenData);
+          try { FSS.setSettings({ googleDriveToken: tokenData }); } catch {}
+          setGdriveBanner(false);
+          return;
+        }
+      } catch {}
+      // Silent fail — banner দেখাও
+      setGdriveBanner(true);
+    };
+    const iv = setInterval(_gdReconnect, 3 * 60 * 1000); // প্রতি ৩ মিনিট
+    _gdReconnect(); // অ্যাপ খুলতেই একবার চেক
+    return () => clearInterval(iv);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, currentUser?.role]);
   useEffect(() => {
     const handleBackButton = (e) => {
       e.preventDefault();
@@ -8721,6 +8774,55 @@ function SmartBusinessMgmt() {
       </nav>
 
       {/* Stock notifications moved to individual home cards */}
+
+      {/* ☁️ Google Drive Disconnect Banner — token expired, auto reconnect চলছে */}
+      {gdriveBanner && !gdriveReconnecting && (
+        <div
+          onClick={async () => {
+            setGdriveReconnecting(true);
+            showToast("🔄 Google Drive পুনরায় সংযোগ হচ্ছে...", "#4285F4");
+            try {
+              const fresh = await GDrive.requestNewToken(GOOGLE_WEB_CLIENT_ID);
+              if (fresh) {
+                const tokenData = { token: fresh, savedAt: Date.now() };
+                setGoogleDriveToken(tokenData);
+                try { FSS.setSettings({ googleDriveToken: tokenData }); } catch {}
+                setGdriveBanner(false);
+                showToast("✅ Google Drive পুনরায় সংযুক্ত হয়েছে!", "#22c55e");
+              }
+            } catch { showToast("❌ সংযোগ ব্যর্থ — আবার ট্যাপ করুন", "#ef4444"); }
+            finally { setGdriveReconnecting(false); }
+          }}
+          style={{
+            position: "fixed", bottom: 72, left: 12, right: 12, zIndex: 280,
+            background: "linear-gradient(135deg,#1a0a00,#2d1500)",
+            border: "1.5px solid #f59e0b88",
+            borderRadius: 14, padding: "10px 14px",
+            display: "flex", alignItems: "center", gap: 10,
+            boxShadow: "0 4px 24px rgba(245,158,11,0.35)",
+            animation: "slideDown 0.3s ease",
+            cursor: "pointer",
+          }}>
+          <div style={{ width: 32, height: 32, borderRadius: 10, background: "#f59e0b22", border: "1px solid #f59e0b44", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <svg width="16" height="16" viewBox="0 0 87.3 78" fill="none">
+              <path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L28.6 53H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
+              <path d="M43.65 25L29.05 1c-1.35.8-2.5 1.9-3.3 3.3L1.2 48.5c-.8 1.4-1.2 2.95-1.2 4.5h28.6z" fill="#4285f4"/>
+              <path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75L86.1 57.5c.8-1.4 1.2-2.95 1.2-4.5H58.7l6.1 11.4z" fill="#00ac47"/>
+              <path d="M43.65 25L58.25 1c-1.35-.8-2.85-1-4.4-1H33.5c-1.55 0-3.05.2-4.4 1z" fill="#00832d"/>
+              <path d="M58.7 53H28.6L13.8 76.8c1.35.8 2.85 1 4.4 1h50.5c1.55 0 3.05-.2 4.4-1z" fill="#2684fc"/>
+              <path d="M73.4 26.5l-13.3-23c-.8-1.4-1.95-2.5-3.3-3.3L43.65 25l15.05 28H87.3c0-1.55-.4-3.1-1.2-4.5z" fill="#00ac47"/>
+            </svg>
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ color: "#f59e0b", fontWeight: 800, fontSize: 12 }}>Google Drive সংযোগ বিচ্ছিন্ন</div>
+            <div style={{ color: "#94a3b8", fontSize: 10, marginTop: 1 }}>ট্যাপ করুন — স্বয়ংক্রিয়ভাবে পুনরায় সংযুক্ত হবে</div>
+          </div>
+          <div style={{
+            background: "#4285F4", color: "#fff", fontSize: 10, fontWeight: 800,
+            borderRadius: 8, padding: "5px 10px", flexShrink: 0,
+          }}>🔄 সংযোগ</div>
+        </div>
+      )}
 
       {toast && (() => {
         const isSuccess = toast.color === "#22c55e";
@@ -14642,6 +14744,7 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
           // নগদ বিক্রয়ের txn-এ কোনো আলাদা void-reversal এন্ট্রি তৈরি হয় না (balance অপরিবর্তিত থাকে বলে) —
           // তাই ইনভয়েস ভয়েড হলে এখানেই badge দেখিয়ে স্পষ্ট করা হচ্ছে যে এই বিক্রয়টি বাতিল হয়ে গেছে।
           const isVoidedCashSale = t.source === "cash-sale" && inv && inv.status === "voided";
+          const isCashSale = t.source === "cash-sale";
           return (
             <div key={t.id} style={{ ...S.txnCard, opacity: isVoidedCashSale ? 0.55 : 1 }}>
               <div style={{ width: 5, flexShrink: 0, background: isBaki ? "#ef4444" : "#22c55e" }} />
@@ -14649,7 +14752,7 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ ...S.txnBadge, background: isBaki ? "#ef444422" : "#22c55e22", color: isBaki ? "#ef4444" : "#22c55e" }}>
-                      {isBaki ? "▲ বাকি" : "▼ জমা"}
+                      {isBaki ? "▲ বাকি" : isCashSale ? "💵 নগদ বিক্রয়" : "▼ জমা"}
                     </span>
                     <span style={{ color: isBaki ? "#ef4444" : "#22c55e", fontWeight: 800, fontSize: 17, textDecoration: isVoidedCashSale ? "line-through" : "none" }}>
                       {isBaki ? "+" : "−"}৳{fmt(t.amount)}
@@ -17274,8 +17377,14 @@ function Settings_({ T, S, shopName,
       if (typeof setCashLogs === "function") setCashLogs([]);
 
       // 2️⃣ Firestore — লাইভ রিয়েল-টাইম ডেটা (সব collection + settings) মুছো
-      //    (googleDriveToken বাঁচিয়ে রাখি — এটা Drive connection, ব্যবসার ডেটা না,
-      //     রিসেটের পরও multi-device backup token সংযুক্ত থাকা উচিত)
+      //    Google Drive সেটিং বাঁচিয়ে রাখা হয় — রিসেটের পরও Drive connection অক্ষুণ্ণ থাকবে
+      const _gdToken    = localStorage.getItem("sbm_gd_token");
+      const _gdTokenAt  = localStorage.getItem("sbm_gd_token_at");
+      const _gdClientId = localStorage.getItem("sbm_gd_client_id");
+      const _gdAuto     = localStorage.getItem("sbm_gd_auto");
+      const _gdFolder   = localStorage.getItem("sbm_gd_folder_id");
+      const _gdEmail    = localStorage.getItem("sbm_gd_email");
+
       if (firebaseEnabled && firebaseConfig) {
         try {
           FSS.init(firebaseConfig);
@@ -17283,6 +17392,17 @@ function Settings_({ T, S, shopName,
           if (googleDriveToken) { try { await FSS.setSettings({ googleDriveToken }); } catch {} }
         } catch {}
       }
+
+      // Google Drive localStorage keys পুনরুদ্ধার করো (FSS.clearAllData localStorage স্পর্শ করে না,
+      // কিন্তু নিরাপত্তার জন্য রিসেটের পরও সব key আবার সেট করে দেওয়া হচ্ছে)
+      try {
+        if (_gdToken)    localStorage.setItem("sbm_gd_token",     _gdToken);
+        if (_gdTokenAt)  localStorage.setItem("sbm_gd_token_at",  _gdTokenAt);
+        if (_gdClientId) localStorage.setItem("sbm_gd_client_id", _gdClientId);
+        if (_gdAuto)     localStorage.setItem("sbm_gd_auto",      _gdAuto);
+        if (_gdFolder)   localStorage.setItem("sbm_gd_folder_id", _gdFolder);
+        if (_gdEmail)    localStorage.setItem("sbm_gd_email",     _gdEmail);
+      } catch {}
 
       // 3️⃣ Google Drive ব্যাকআপ ফাইল
       try {
@@ -17871,6 +17991,31 @@ function Settings_({ T, S, shopName,
                 }}>
                   <div style={{ width:6, height:6, borderRadius:"50%", background: gdConnected ? "#22c55e" : "#94a3b8" }} />
                   <span style={{ fontSize:9, fontWeight:700, color: gdConnected ? "#22c55e" : "#94a3b8" }}>Google Drive</span>
+                  {!gdConnected && isAdmin && (
+                    <button
+                      onClick={async () => {
+                        showToast("🔄 Google Drive পুনরায় সংযোগ করা হচ্ছে...", "#4285F4");
+                        try {
+                          const fresh = await GDrive.ensureTokenSilent(GOOGLE_WEB_CLIENT_ID);
+                          if (fresh) {
+                            await GDrive.saveToken(fresh);
+                            const tokenData = { token: fresh, savedAt: Date.now() };
+                            setGoogleDriveToken(tokenData);
+                            try { FSS.setSettings({ googleDriveToken: tokenData }); } catch {}
+                            showToast("✅ Google Drive পুনরায় সংযুক্ত হয়েছে", "#22c55e");
+                          } else {
+                            showToast("❌ Silent auth ব্যর্থ — Google Drive কার্ড থেকে Connect করুন", "#ef4444");
+                          }
+                        } catch {
+                          showToast("❌ সংযোগ ব্যর্থ — পুনরায় চেষ্টা করুন", "#ef4444");
+                        }
+                      }}
+                      style={{
+                        marginLeft:"auto", background:"#4285F422", border:"1px solid #4285F444",
+                        color:"#4285F4", fontSize:8, fontWeight:800, borderRadius:5,
+                        padding:"2px 6px", cursor:"pointer", fontFamily:"inherit",
+                      }}>🔄 সংযোগ</button>
+                  )}
                 </div>
               </div>
 
@@ -20433,11 +20578,21 @@ const GDrive = {
   async saveToken(token) {
     localStorage.setItem("sbm_gd_token", token);
     localStorage.setItem("sbm_gd_token_at", Date.now().toString());
+    // Google account email বের করে রাখো — পরের silent re-auth-এ login_hint হিসেবে ব্যবহার হবে
+    try {
+      const res = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+        headers: { Authorization: "Bearer " + token }
+      });
+      if (res.ok) {
+        const info = await res.json();
+        if (info.email) localStorage.setItem("sbm_gd_email", info.email);
+      }
+    } catch {}
   },
 
   isTokenExpired() {
     const at = parseInt(localStorage.getItem("sbm_gd_token_at") || "0");
-    return Date.now() - at > 55 * 60 * 1000;
+    return Date.now() - at > 65 * 60 * 1000;
   },
 
 
@@ -20485,16 +20640,22 @@ const GDrive = {
     });
     // silent re-auth: ব্রাউজারে আগে থেকে Google সেশন/অনুমতি থাকলে কোনো UI
     // ছাড়াই token ফিরে আসে; না থাকলে দ্রুত error-এ ফিরে আসে (UI দেখায় না)
-    if (silent) params.set("prompt", "none");
+    if (silent) {
+      params.set("prompt", "none");
+      // login_hint দিলে Google সঠিক account বেছে নেয় — silent auth success rate বাড়ে
+      const hint = localStorage.getItem("sbm_gd_email");
+      if (hint) params.set("login_hint", hint);
+    }
     return "https://accounts.google.com/o/oauth2/v2/auth?" + params.toString();
   },
 
-  async interactiveAuth(clientId, { silent = false } = {}) {
+  async interactiveAuth(clientId, { silent = false, background = false } = {}) {
     return new Promise((resolve, reject) => {
       const state = Math.random().toString(36).slice(2);
       localStorage.setItem("sbm_gd_oauth_state", state);
       const url = GDrive._buildAuthUrl(clientId, state, silent);
-      const authTimeout = silent ? 15000 : 180000; // silent হলে দ্রুত fail করো, UI ব্লক করবে না
+      // silent → ১৫ সেক, background (consent cached) → ৩০ সেক, interactive → ৩ মিনিট
+      const authTimeout = silent ? 15000 : background ? 30000 : 180000;
 
       // APK: Chrome Custom Tab + appUrlOpen deep link
       if (window.Capacitor?.isNativePlatform?.()) {
@@ -20577,14 +20738,24 @@ const GDrive = {
   },
 
   // 🔇 Background timer থেকে কল হয় — UI ছাড়া token refresh-এর চেষ্টা করে।
-  // ব্রাউজারে আগে থেকে Google session/consent থাকলে নিঃশব্দে নতুন token পাওয়া
-  // যায়; না থাকলে দ্রুত fail করে (এই cycle skip, পরের cycle-এ আবার চেষ্টা)।
+  // ধাপ ১: prompt=none (সম্পূর্ণ নিঃশব্দ) — Google cached session থাকলে সাথে সাথে token আসে
+  // ধাপ ২: silent fail হলে prompt ছাড়া (select_account বাদ) interactive auth চেষ্টা
+  //         — আগে consent দেওয়া থাকলে Google UI দেখায় না, সরাসরি token দেয়
+  // ধাপ ৩: সেটাও fail হলে null → caller floating banner দেখাবে
   async silentReauth(clientId) {
+    // ধাপ ১: prompt=none silent try
     try {
-      return await this.interactiveAuth(clientId, { silent: true });
-    } catch {
-      return null;
+      const t = await this.interactiveAuth(clientId, { silent: true });
+      if (t) return t;
+    } catch {}
+    // ধাপ ২: APK-তে background interactive (consent আগে দেওয়া থাকলে UI-less)
+    if (window.Capacitor?.isNativePlatform?.()) {
+      try {
+        const t = await this.interactiveAuth(clientId, { silent: false, background: true });
+        if (t) return t;
+      } catch {}
     }
+    return null;
   },
 
   // ── Gzip compression helper (CompressionStream API — Chrome 80+, Android WebView 94+)
