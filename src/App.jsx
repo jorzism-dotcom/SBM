@@ -7575,6 +7575,22 @@ function SmartBusinessMgmt() {
   // ⚠️ Bug Fix: অফলাইনে save করা invoice অনলাইনে আসার পর হারিয়ে না যায়।
   // includeMetadataChanges:true দিলে hasPendingWrites=true থাকা docs-ও আসে —
   // অর্থাৎ Firestore-এ এখনো পৌঁছায়নি এমন local pending invoice-ও থাকবে।
+  //
+  // ⚠️ Bug Fix (পর্ব ২ — আসল কারণ): উপরের windowed listener আগে শুধু
+  // remote → local দিকে কাজ করত (Firestore থেকে যা আসে তা দিয়ে পুরো local
+  // invoices array সম্পূর্ণ ওভাররাইট করত)। কিন্তু নতুন ইনভয়েস তৈরি হওয়ার সময়
+  // (createInvoice → setInvoices) সেটা কখনো Firestore-এ push হতো না — কারণ
+  // আগের useFSSCollection("invoices"...) বাদ দেওয়ার সময় তার ভেতরের
+  // local → remote push effect-টাও হারিয়ে গিয়েছিল। ফলে অফলাইনে তৈরি হওয়া
+  // ইনভয়েস শুধু RAM-এ থাকত, Firestore cache-এও যেত না — নেট ফিরে এই listener
+  // re-fire করলেই (Firestore-এর data দিয়ে replace) সেগুলো হারিয়ে যেত।
+  // নিচে invLastSynced/invSkipNext + আলাদা push effect দিয়ে সেই missing
+  // local → remote দিকটা যুক্ত করা হলো (অন্য সব collection-এর মতোই)।
+  const invLastSynced = useRef(null);
+  const invSkipNext   = useRef(false);
+  const invoicesRef   = useRef(invoices);
+  useEffect(() => { invoicesRef.current = invoices; }, [invoices]);
+
   useEffect(() => {
     if (!fssReady || !FSS._db) return;
     const cutoffDate = new Date();
@@ -7589,12 +7605,51 @@ function SmartBusinessMgmt() {
       // hasPendingWrites=true মানে এই doc এখনো server-এ যায়নি (offline-এ save হয়েছে)
       // এগুলো include করলে অনলাইনে আসার পর replace হওয়ার আগেই দেখা যাবে
       const recent = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      // ⚠️ Bug Fix (পর্ব ৩ — seed-on-empty): প্রথম snapshot-এ remote/cache খালি
+      // কিন্তু এই ডিভাইসে local invoices আছে (যেমন: cold Firestore cache, নতুন
+      // device, বা সাময়িক query glitch) — তখন ওভাররাইট না করে, useFSSCollection-এর
+      // অন্য সব collection-এর মতোই local data দিয়ে Firestore seed করি।
+      if (first && recent.length === 0 && invoicesRef.current?.length) {
+        first = false;
+        invLastSynced.current = invoicesRef.current;
+        invoicesRef.current.forEach(rec => {
+          if (rec?.id != null) FSS.setRecord("invoices", rec.id, rec._updatedAt ? rec : withTs(rec));
+        });
+        return;
+      }
+      // এই update remote থেকে আসছে — নিচের push effect যেন এটা আবার
+      // Firestore-এ echo করে না পাঠায়, তাই skip flag সেট করি
+      invSkipNext.current = true;
       setInvoices(recent);
       if (first) { first = false; setSyncToast?.({ msg: "ইনভয়েস sync হয়েছে", ok: true }); }
     }, () => { /* offline — Firestore cache থেকে কাজ চলবে */ });
 
     return () => unsub();
   }, [fssReady]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Phase 1.2b: Invoice local → remote push (offline durability fix) ──────
+  // নতুন/পরিবর্তিত ইনভয়েস (createInvoice, void, payment ইত্যাদি যেখানেই
+  // setInvoices হয়) সাথে সাথে diff করে Firestore-এ push করো। অফলাইনে হলে
+  // Firestore SDK নিজের persistentLocalCache-এ রেখে দেবে, নেট ফিরলে নিজেই
+  // sync করবে — উপরের windowed listener-এর includeMetadataChanges:true
+  // সেই pending write-ও সাথে সাথে দেখাবে।
+  useEffect(() => {
+    if (!fssReady || !FSS._db) return;
+    if (invLastSynced.current === null) { invLastSynced.current = invoices; return; }
+    if (invSkipNext.current) { invSkipNext.current = false; invLastSynced.current = invoices; return; }
+    const prevMap = new Map(invLastSynced.current.map(r => [String(r.id), r]));
+    const t = setTimeout(() => {
+      invoices.forEach(rec => {
+        if (rec?.id == null) return;
+        const old = prevMap.get(String(rec.id));
+        if (!old || JSON.stringify(old) !== JSON.stringify(rec)) {
+          FSS.setRecord("invoices", rec.id, rec._updatedAt ? rec : withTs(rec));
+        }
+      });
+      invLastSynced.current = invoices;
+    }, 300);
+    return () => clearTimeout(t);
+  }, [invoices, fssReady]);
 
   useFSSCollection("txns", txns, setTxns, fssReady, { onSync: setSyncToast });
   useFSSCollection("smsLog", smsLog, setSmsLog, fssReady, { onSync: setSyncToast });
