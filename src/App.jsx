@@ -1,17 +1,22 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo, useTransition, useDeferredValue } from "react";
 import ReactDOM from "react-dom";
 import { initializeApp, getApps, deleteApp } from "firebase/app";
 import {
-  getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
-  doc, getDoc, updateDoc, setDoc, deleteDoc, writeBatch,
-  collection, onSnapshot, getDocs,
+  getFirestore, doc, getDoc, updateDoc, setDoc, deleteDoc,
+  collection, onSnapshot, getDocs, enableIndexedDbPersistence,
   query, where, orderBy, limit, startAfter, increment,
 } from "firebase/firestore";
 import { create } from "zustand";
+import { subscribeWithSelector } from "zustand/middleware";
+import { Virtuoso, VirtuosoGrid } from "react-virtuoso";
+import {
+  AreaChart, Area, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+} from "recharts";
 
 // ─── Zustand Store — 48 useState → একটি কেন্দ্রীয় store ─────────────────────
 // prop drilling ছাড়াই যেকোনো component থেকে state access করা যাবে
-const useAppStore = create((set) => ({
+const useAppStore = create(subscribeWithSelector((set) => ({
   // ── App Data ──────────────────────────────────────────────────────────────
   customers:         [],
   products:          [],
@@ -23,6 +28,11 @@ const useAppStore = create((set) => ({
   purchaseOrders:    [],
   stockMovements:    [],
   cashLogs:          [], // 💰 ওপেনিং ক্যাশ ও মালিকের উইথড্রয়াল লগ
+  expenses:          [], // 🧾 দোকানের খরচ (ভাড়া, বিদ্যুৎ, বেতন...)
+  returns:           [], // 🔄 পণ্য ফেরত ও রিফান্ড
+  auditLogs:         [], // 📋 কে কখন কী করলো — security audit trail
+  quotations:        [], // 📋 কোটেশন / এস্টিমেট
+  supplierPayments:  [], // 🏭 সাপ্লায়ার পেমেন্ট লগ
   paymentInvoices:   [],
   deletedCustomers:  [],
   deletedProducts:   [],
@@ -86,7 +96,7 @@ const useAppStore = create((set) => ({
   set: (key, val) => set((s) => ({ [key]: typeof val === "function" ? val(s[key]) : val })),
   // batch update
   patch: (obj) => set(obj),
-}));
+})));
 
 // ── Fix 5: ErrorBoundary — প্রতিটি tab crash isolate করে ──────────────────────
 class ErrorBoundary extends React.Component {
@@ -304,7 +314,7 @@ function HighlightText({ text, query, style, highlightColor = "#22c55e" }) {
 function SearchBar({ placeholder, value, onChange, onClear, color = "#22c55e", T, S, style, voiceColor, showCount, count, accentBorder, autoFocus }) {
   const [focused, setFocused] = React.useState(false);
   const inputRef = React.useRef(null);
-  const { ref: smartRef } = useSmartSearch(onChange, 100);
+  const { ref: smartRef } = useSmartSearch(onChange, 300); // 300ms debounce — Google/Linear approach
 
   const setRef = React.useCallback((el) => {
     inputRef.current = el;
@@ -3436,6 +3446,11 @@ const SK = {
   purchaseOrders:  "sbm-purchase-orders",    // 📋 Purchase orders
   stockMovements:  "sbm-stock-movements",    // 📦 Persistent stock movement log
   cashLogs:        "sbm-cash-logs",          // 💰 ওপেনিং ক্যাশ ও মালিকের উইথড্রয়াল
+  expenses:        "sbm-expenses",            // 🧾 দোকানের খরচ
+  returns:         "sbm-returns",             // 🔄 পণ্য ফেরত
+  auditLogs:       "sbm-audit-logs",           // 📋 অডিট ট্রেইল
+  quotations:       "sbm-quotations",           // 📋 কোটেশন
+  supplierPayments:  "sbm-supplier-payments",     // 🏭 সাপ্লায়ার পেমেন্ট
   recoveryPhone:   "sbm-recovery-phone",     // 📱 Recovery ফোন নম্বর
   recoveryPinHash: "sbm-recovery-pin-hash",  // 🔐 Recovery PIN hash
   lastMasterSync:  "sbm-last-master-sync",   // 🔄 Master Sync শেষ কখন হয়েছিল
@@ -3515,19 +3530,10 @@ const FSS = {
       const appName = "sbm-fss-" + (cfg.projectId || "default");
       const existing = getApps().find(a => a.name === appName);
       this._app = existing || initializeApp(cfg, appName);
-      // Firebase 10+ নতুন persistence API — offline data হারাবে না
+      this._db = getFirestore(this._app);
       if (!this._persistTried) {
         this._persistTried = true;
-        try {
-          this._db = initializeFirestore(this._app, {
-            localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
-          });
-        } catch {
-          // ইতিমধ্যে initialized হলে (same app reuse) getFirestore ব্যবহার করো
-          this._db = getFirestore(this._app);
-        }
-      } else {
-        this._db = getFirestore(this._app);
+        try { enableIndexedDbPersistence(this._db).catch(() => {}); } catch {}
       }
       this._cfg = cfg;
       return true;
@@ -3543,7 +3549,6 @@ const FSS = {
     this._app = null;
     this._db = null;
     this._cfg = null;
-    this._persistTried = false; // Fix: নতুন config-এ persistentLocalCache সঠিকভাবে apply হবে
   },
 
   // একটা collection-এর সব ডকুমেন্ট রিয়েল-টাইমে শোনে — যেকোনো ফোনে কোনো রেকর্ড
@@ -3552,13 +3557,9 @@ const FSS = {
     if (!this._db) return () => {};
     this.unsubscribe(name);
     const colRef = collection(this._db, name);
-    // includeMetadataChanges:true — offline-এ save হওয়া (hasPendingWrites:true) records
-    // সহ আসে। অনলাইনে আসার পর replace হওয়ার আগেই দেখা যাবে — data হারাবে না।
-    const unsub = onSnapshot(colRef, { includeMetadataChanges: true }, (snap) => {
-      // raw: tombstone সহ (LWW merge-এর জন্য), filtered: _deleted বাদ (normal use)
-      const raw      = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      const arr      = raw.filter(r => !r._deleted);
-      callback(arr, raw);
+    const unsub = onSnapshot(colRef, (snap) => {
+      const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      callback(arr);
     }, () => { /* offline/error — Firestore নিজেই retry করবে, cache থেকে কাজ চলবে */ });
     this._unsubs[name] = unsub;
     return unsub;
@@ -3587,39 +3588,11 @@ const FSS = {
     }
   },
 
-  // একসাথে অনেক রেকর্ড লেখো/মুছো — Firestore writeBatch (limit ৪০০/ব্যাচ, bulk entry-র জন্য)
-  async commitBatch(coll, sets, deletes) {
-    if (!this._db) return { ok: false, msg: "Firestore সংযুক্ত নেই" };
-    try {
-      const CHUNK = 400;
-      const ops = [
-        ...sets.map(([id, data]) => ({ type: "set", id, data })),
-        // delete → tombstone: _deleted:true + _updatedAt (LWW conflict resolution)
-        ...deletes.map((id) => ({ type: "set", id, data: { _deleted: true, _updatedAt: Date.now() } })),
-      ];
-      for (let i = 0; i < ops.length; i += CHUNK) {
-        const batch = writeBatch(this._db);
-        ops.slice(i, i + CHUNK).forEach((op) => {
-          const ref = doc(this._db, coll, String(op.id));
-          if (op.type === "set") batch.set(ref, op.data, { merge: true });
-          else batch.delete(ref); // fallback (আসলে আর পৌঁছাবে না)
-        });
-        await batch.commit();
-      }
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, msg: e.message || "Firestore batch write ব্যর্থ" };
-    }
-  },
-
-  // রেকর্ড মুছে ফেলো — Tombstone pattern (deleteDoc নয়):
-  // _deleted:true + _updatedAt সেট করে, document রেখে দাও।
-  // এতে offline delete ও online edit conflict-এ LWW সঠিকভাবে কাজ করে।
-  // subscribeCollection-এ _deleted:true records filter হয়ে যায়।
+  // রেকর্ড মুছে ফেলো (write পরিবর্তন: deleteDoc = delete)
   async deleteRecord(coll, id) {
     if (!this._db || id === undefined || id === null || id === "") return { ok: false, msg: "Firestore সংযুক্ত নেই" };
     try {
-      await setDoc(doc(this._db, coll, String(id)), { _deleted: true, _updatedAt: Date.now() }, { merge: true });
+      await deleteDoc(doc(this._db, coll, String(id)));
       return { ok: true };
     } catch (e) {
       return { ok: false, msg: e.message || "Firestore delete ব্যর্থ" };
@@ -3745,63 +3718,16 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
   useEffect(() => {
     if (!ready) { firstRemote.current = false; return; }
     firstRemote.current = false;
-    const unsub = FSS.subscribeCollection(name, (arr, rawArr) => {
+    const unsub = FSS.subscribeCollection(name, (arr) => {
       const incoming = filterIncoming ? filterIncoming(arr) : arr;
       if (!firstRemote.current) {
         firstRemote.current = true;
-        const localArr = valueRef.current || [];
-
-        // ── First-snapshot LWW (Last Write Wins) + Tombstone merge ───────────
-        // rawArr: Firestore-এর সব records (_deleted tombstone সহ)
-        // incoming: _deleted filter করা (display-এর জন্য)
-        //
-        // Scenario A: remote-এ নেই → local push
-        // Scenario B: উভয়ে আছে → _updatedAt বেশি যার, সে জেতে
-        // Scenario C: remote tombstone (_deleted:true) →
-        //   tombstone নতুন → delete জেতে (local থেকেও বাদ)
-        //   local নতুন → local edit জেতে (tombstone override, push)
-        // ─────────────────────────────────────────────────────────────────────
-        const rawMap   = new Map((rawArr || []).map(r => [String(r.id), r]));
-        const localMap = new Map(localArr.map(r => [String(r.id), r]));
-        const toPush   = [];
-        const merged   = new Map(incoming.map(r => [String(r.id), r]));
-
-        localMap.forEach((localRec, id) => {
-          if (localRec?.id == null) return;
-          const rawRec = rawMap.get(id);
-
-          if (!rawRec) {
-            // remote-এ একদমই নেই → local জেতে
-            const rec = localRec._updatedAt ? localRec : withTs(localRec);
-            toPush.push([id, rec]);
-            merged.set(id, rec);
-          } else if (rawRec._deleted) {
-            // remote tombstone
-            if ((localRec._updatedAt || 0) > (rawRec._updatedAt || 0)) {
-              // local বেশি নতুন → edit জেতে, tombstone override
-              toPush.push([id, localRec]);
-              merged.set(id, localRec);
-            }
-            // else: tombstone জেতে → merged-এ নেই, local থেকেও বাদ
-          } else if ((localRec._updatedAt || 0) > (rawRec._updatedAt || 0)) {
-            // উভয়ে আছে, local বেশি নতুন
-            toPush.push([id, localRec]);
-            merged.set(id, localRec);
-          }
-          // else: remote বেশি নতুন বা সমান → remote জেতে
-        });
-
-        if (toPush.length === 1) {
-          FSS.setRecord(name, toPush[0][0], toPush[0][1]);
-        } else if (toPush.length > 1) {
-          FSS.commitBatch(name, toPush, []);
+        if (arr.length === 0 && valueRef.current?.length) {
+          // নতুন/খালি collection — এই ডিভাইসের বর্তমান data দিয়ে seed করি
+          lastSynced.current = valueRef.current;
+          valueRef.current.forEach(rec => { if (rec?.id != null) FSS.setRecord(name, rec.id, rec); });
+          return;
         }
-
-        const mergedArr = Array.from(merged.values());
-        lastSynced.current = mergedArr;
-        setValue(mergedArr);
-        if (onSync) { onSync("syncing"); setTimeout(() => onSync("synced"), 0); setTimeout(() => onSync(null), 1500); }
-        return;
       }
       lastSynced.current = incoming;
       setValue(incoming);
@@ -3812,56 +3738,22 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
   }, [ready]);
 
   // local → remote (diff by id, push শুধু বদলানো/নতুন/মুছা রেকর্ড)
-  // ⚡ পারফরমেন্স ফিক্স (bulk data-entry): বেশিরভাগ সময় (নতুন কাস্টমার/প্রোডাক্ট অ্যাড)
-  // array-এর শেষে শুধু নতুন রেকর্ড(গুলো) যোগ হয় — আগের সব রেকর্ড অপরিবর্তিত থাকে।
-  // এই "append-only" case ধরতে পারলে পুরো array আবার JSON.stringify diff করার
-  // দরকার নেই (যা ৩০০০ এন্ট্রির শেষদিকে প্রতি-অ্যাডে ভারী হয়ে যায়, O(n²))।
-  // শুধু নতুন/বদলানো অংশ diff হবে, এবং সব write একসাথে writeBatch দিয়ে যাবে।
   useEffect(() => {
     if (!ready || !firstRemote.current) return;
     const prevArr = lastSynced.current || [];
-    const nextArr = value || [];
+    const prevMap = new Map(prevArr.map(r => [String(r.id), r]));
+    const nextMap = new Map((value || []).map(r => [String(r.id), r]));
     const run = () => {
-      const sets = [];
-      const deletes = [];
-
-      // ফাস্ট পাথ: prevArr ঠিক nextArr-এর শুরুর অংশ কিনা (id ধরে) — মানে শুধু
-      // শেষে নতুন রেকর্ড যোগ হয়েছে, পুরোনো কোনোটা বদলায়নি/মুছে যায়নি।
-      const isSimpleAppend =
-        nextArr.length >= prevArr.length &&
-        prevArr.every((r, i) => String(r?.id) === String(nextArr[i]?.id));
-
-      if (isSimpleAppend) {
-        for (let i = prevArr.length; i < nextArr.length; i++) {
-          const rec = nextArr[i];
-          if (rec?.id == null) continue;
+      nextMap.forEach((rec, id) => {
+        const old = prevMap.get(id);
+        if (!old || JSON.stringify(old) !== JSON.stringify(rec)) {
+          // _updatedAt inject করো (নতুন বা পরিবর্তিত record-এ) — Master Sync merge-এর জন্য
           const recWithTs = rec._updatedAt ? rec : withTs(rec);
-          sets.push([rec.id, recWithTs]);
+          FSS.setRecord(name, id, recWithTs);
         }
-      } else {
-        // সাধারণ পাথ (edit/delete/reorder) — পুরো diff, আগের মতোই নিরাপদ
-        const prevMap = new Map(prevArr.map(r => [String(r.id), r]));
-        const nextMap = new Map(nextArr.map(r => [String(r.id), r]));
-        nextMap.forEach((rec, id) => {
-          const old = prevMap.get(id);
-          if (!old || JSON.stringify(old) !== JSON.stringify(rec)) {
-            const recWithTs = rec._updatedAt ? rec : withTs(rec);
-            sets.push([id, recWithTs]);
-          }
-        });
-        prevMap.forEach((rec, id) => { if (!nextMap.has(id)) deletes.push(id); });
-      }
-
-      if (sets.length || deletes.length) {
-        if (sets.length + deletes.length === 1) {
-          // একটা মাত্র পরিবর্তন — ছোট/দ্রুত হওয়ায় সরাসরি setRecord/deleteRecord ই যথেষ্ট
-          sets.forEach(([id, data]) => FSS.setRecord(name, id, data));
-          deletes.forEach((id) => FSS.deleteRecord(name, id));
-        } else {
-          FSS.commitBatch(name, sets, deletes);
-        }
-      }
-      lastSynced.current = nextArr;
+      });
+      prevMap.forEach((rec, id) => { if (!nextMap.has(id)) FSS.deleteRecord(name, id); });
+      lastSynced.current = value;
     };
     if (instant) { run(); return; }
     const t = setTimeout(run, 300);
@@ -5217,6 +5109,81 @@ function PdfActionBar({ htmlContent, title, T, S }) {
   );
 }
 
+// ─── 🔐 E2E Backup Encryption — AES-256-GCM via Web Crypto API ────────────────
+// Owner-এর PIN থেকে key derive (PBKDF2) — কোনো key Anthropic/Firebase-এ যায় না,
+// শুধু device-এই থাকে। PIN ভুলে গেলে backup আর decrypt করা যাবে না — তাই
+// encrypt করার সময় ব্যবহারকারীকে এই সতর্কতা স্পষ্টভাবে দেখানো জরুরি।
+const CRYPTO_MAGIC = "SBM-ENC-V1"; // ফাইল চিনতে — plain backup vs encrypted backup
+const PBKDF2_ITERATIONS = 100000;
+
+async function deriveKeyFromPin(pin, saltBytes) {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw", enc.encode(pin), "PBKDF2", false, ["deriveKey"]
+  );
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt: saltBytes, iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
+    keyMaterial,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+function bufToBase64(buf) {
+  let binary = "";
+  const bytes = new Uint8Array(buf);
+  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+function base64ToBuf(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+// data (plain JS object) → encrypted wrapper object, যেটা সরাসরি JSON.stringify করে সেভ করা যায়
+async function encryptBackupData(data, pin) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv   = crypto.getRandomValues(new Uint8Array(12));
+  const key  = await deriveKeyFromPin(pin, salt);
+  const plaintext = new TextEncoder().encode(JSON.stringify(data));
+  const cipherBuf = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext);
+  return {
+    _magic:   CRYPTO_MAGIC,
+    _encrypted: true,
+    salt:     bufToBase64(salt),
+    iv:       bufToBase64(iv),
+    data:     bufToBase64(cipherBuf),
+    _meta: { version: 3, encryptedAt: new Date().toISOString(), algo: "AES-256-GCM" },
+  };
+}
+
+// encrypted wrapper object + pin → আসল data object (অথবা throw করবে যদি ভুল pin)
+async function decryptBackupData(encWrapper, pin) {
+  if (!encWrapper?._encrypted || encWrapper._magic !== CRYPTO_MAGIC) {
+    throw new Error("এটি এনক্রিপ্টেড ব্যাকআপ ফাইল নয়");
+  }
+  const salt = new Uint8Array(base64ToBuf(encWrapper.salt));
+  const iv   = new Uint8Array(base64ToBuf(encWrapper.iv));
+  const key  = await deriveKeyFromPin(pin, salt);
+  try {
+    const plainBuf = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv }, key, base64ToBuf(encWrapper.data)
+    );
+    const text = new TextDecoder().decode(plainBuf);
+    return JSON.parse(text);
+  } catch (e) {
+    throw new Error("ভুল PIN অথবা ফাইল ক্ষতিগ্রস্ত — ডিক্রিপ্ট করা যায়নি");
+  }
+}
+
+// একটি object যদি encrypted wrapper কিনা চেক করতে (restore flow-এ আগে থেকেই জানতে)
+function isEncryptedBackup(data) {
+  return !!(data && data._encrypted === true && data._magic === CRYPTO_MAGIC);
+}
+
 function downloadBackupFile(data, filename) {
   // Browser fallback — Capacitor uses FS.saveBackup (called in performDriveBackup)
   const json = JSON.stringify(data, null, 2);
@@ -5283,6 +5250,82 @@ const uid      = () => Date.now().toString(36) + Math.random().toString(36).slic
 const todayStr = () => new Date().toLocaleDateString("en-US");
 const nowStr   = () => new Date().toLocaleString("en-US");
 const fmt      = (n) => Number(n).toLocaleString("en-US");
+
+// ─── 📷 Barcode Scanner — Capacitor ML Kit (Android-native, fast, offline) ────
+// সব জায়গা থেকে ব্যবহারযোগ্য: Invoice, Product form, Purchase entry
+async function scanBarcode(showToast) {
+  try {
+    const { BarcodeScanner } = await import("@capacitor-mlkit/barcode-scanning");
+
+    // Permission check
+    const { camera } = await BarcodeScanner.checkPermissions();
+    if (camera !== "granted") {
+      const result = await BarcodeScanner.requestPermissions();
+      if (result.camera !== "granted") {
+        showToast?.("ক্যামেরা পারমিশন প্রয়োজন", "#ef4444");
+        return null;
+      }
+    }
+
+    // Google Barcode Scanner module (Play Services) — প্রথমবার দরকার হলে download হবে
+    const { available } = await BarcodeScanner.isGoogleBarcodeScannerModuleAvailable();
+    if (!available) {
+      showToast?.("স্ক্যানার প্রস্তুত হচ্ছে...", "#f59e0b");
+      await BarcodeScanner.installGoogleBarcodeScannerModule();
+    }
+
+    const { barcodes } = await BarcodeScanner.scan({
+      formats: [], // সব format সাপোর্ট (EAN13, CODE128, QR ইত্যাদি)
+    });
+
+    if (barcodes && barcodes.length > 0) {
+      return barcodes[0].rawValue || barcodes[0].displayValue || null;
+    }
+    return null;
+  } catch (e) {
+    // Web/dev environment-এ plugin না থাকলে silent fail
+    if (e?.message?.includes("not implemented") || e?.message?.includes("not available")) {
+      showToast?.("এই ডিভাইসে ক্যামেরা স্ক্যান সাপোর্ট নেই", "#ef4444");
+    } else if (e?.message?.includes("cancel") || e?.code === "CANCELLED") {
+      // user বাতিল করেছে — toast দরকার নেই
+    } else {
+      console.warn("[BarcodeScanner] error:", e);
+      showToast?.("স্ক্যান করতে সমস্যা হয়েছে", "#ef4444");
+    }
+    return null;
+  }
+}
+
+// ─── 📱 WhatsApp Quick Share — Capacitor Browser দিয়ে wa.me link খোলে ────────
+// বাংলাদেশের মোবাইল নম্বর normalize করে — 01XXXXXXXXX → 8801XXXXXXXXX
+function normalizeBDMobile(mobile) {
+  if (!mobile) return "";
+  let m = String(mobile).replace(/[^0-9]/g, "");
+  if (m.startsWith("880")) return m;
+  if (m.startsWith("0"))   return "88" + m;
+  if (m.length === 10)     return "880" + m; // ১XXXXXXXXX ফরম্যাট হলে
+  return m;
+}
+
+// text + mobile নিয়ে WhatsApp chat খোলে — Capacitor Browser (in-app) দিয়ে,
+// Browser plugin না পেলে সরাসরি window.open fallback
+async function shareViaWhatsApp(mobile, message, showToast) {
+  const phone = normalizeBDMobile(mobile);
+  if (!phone) { showToast?.("কাস্টমারের মোবাইল নম্বর নেই", "#ef4444"); return; }
+  const url = `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+  try {
+    const Browser = window.Capacitor?.Plugins?.Browser;
+    if (Browser?.open) {
+      await Browser.open({ url, windowName: "_blank" });
+    } else {
+      window.open(url, "_blank");
+    }
+  } catch (e) {
+    console.warn("[WhatsApp] open failed:", e);
+    try { window.open(url, "_blank"); } catch {}
+  }
+}
+
 // বাংলাদেশ সময় (UTC+6) অনুযায়ী dateKey — রাত ২টায় নতুন দিন শুরু হয়
 // রাত ২টার আগে (00:00–01:59 BD) আগের দিনের dateKey ব্যবহার হবে
 const todayEn = () => {
@@ -5809,7 +5852,17 @@ function VoiceSearchButton({ onResult, lang = "bn-BD", color = "#22c55e" }) {
 // ── Live Date & Time display ───────────────────────────────────────────────────
 function LiveDateTime({ themeColor = "#fde68a", accentColor = "#7dffc0", compact = true }) {
   const [now, setNow] = useState(new Date());
-  useEffect(() => { const iv = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(iv); }, []);
+  useEffect(() => {
+    // প্রতি মিনিটে আপডেট — 60x কম re-render (Linear, Notion approach)
+    const tick = () => {
+      setNow(new Date());
+      const ms = 60000 - (Date.now() % 60000);
+      timer.current = setTimeout(tick, ms);
+    };
+    const timer = { current: null };
+    timer.current = setTimeout(tick, 60000 - (Date.now() % 60000));
+    return () => clearTimeout(timer.current);
+  }, []);
   const time = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: compact ? undefined : "2-digit" });
   const date = now.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
   if (compact) {
@@ -5874,6 +5927,23 @@ const MemoSBMLogo       = React.memo(SBMLogo);
 const MemoSBMIcon       = React.memo(SBMIcon);
 const MemoVoiceSearch   = React.memo(VoiceSearchButton);
 const MemoPdfActionBar  = React.memo(PdfActionBar);
+
+// ── React.memo — ভারী components যা prop না বদলালে re-render করবে না ──────────
+// Figma/Linear approach: memo = unnecessary re-render বন্ধ
+const MemoSearchBar        = React.memo(SearchBar);
+const MemoHighlightText    = React.memo(HighlightText);
+const MemoWeeklySalesBar   = React.memo(WeeklySalesBar);
+const MemoHealthMeter      = React.memo(HealthMeter);
+const MemoInfoBanner       = React.memo(InfoBanner);
+const MemoInvoiceReceipt   = React.memo(InvoiceReceipt);
+const MemoTransactionModal = React.memo(TransactionModal);
+const MemoInventorySection = React.memo(InventorySection);
+const MemoProfitStatement  = React.memo(ProfitStatementCard);
+const MemoDailyNotif       = React.memo(DailyNotifCard);
+const MemoPasswordChange   = React.memo(PasswordChange);
+const MemoDashPurchaseEntry = React.memo(DashPurchaseEntryModal);
+const MemoCustomerDetail   = React.memo(CustomerDetail);
+const MemoLoginScreen      = React.memo(LoginScreen);
 // ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -5896,7 +5966,7 @@ const MemoPdfActionBar  = React.memo(PdfActionBar);
 //  ✗ ভয়েস বাটন (ডেকোরেটিভ ছিল, কাজ করত না)
 // ════════════════════════════════════════════════════════════════════════════════
 
-function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, shopName, anthropicKey }) {
+function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, shopName, anthropicKey, expenses = [] }) {
   const [aiTab, setAiTab] = React.useState("dashboard");
   const [chatMessages, setChatMessages] = React.useState([]);
   const [chatInput, setChatInput] = React.useState("");
@@ -6311,7 +6381,7 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
                 { icon: "🏠", val: `৳${fmt(monthSelfUseCost)}`, label: "নিজের ব্যবহার (এই মাস)", sub: "মালিকের ড্রয়িং — খরচমূল্যে, লাভ/লসে ধরা হয়নি", color: "#a78bfa" },
               ] : []),
             ].map((item, i) => (
-              <div key={item.label || i} style={{
+              <div key={i} style={{
                 background: T.card, borderRadius: 14, padding: "14px 12px",
                 border: `1px solid ${item.color}33`,
                 boxShadow: `0 2px 14px ${item.color}18`,
@@ -6387,7 +6457,7 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
           <React.Suspense fallback={<div style={{ padding:16, color:T.sub, fontSize:13 }}>📊 Analytics লোড হচ্ছে...</div>}>
             <AnalyticsSection T={T} S={{}} invoices={invAll} products={prodAll} customers={custAll} paymentInvoices={paymentInvoices||[]} />
           </React.Suspense>
-          <ProfitStatementCard T={T} S={{card:{background:T.card,borderRadius:16,padding:"14px 16px",marginBottom:12,border:`1px solid ${T.border}`},label:{fontSize:12,color:T.sub,fontWeight:700,display:"block",marginBottom:5}}} invoices={invAll} products={prodAll} shopName={shopName} />
+          <ProfitStatementCard T={T} S={{card:{background:T.card,borderRadius:16,padding:"14px 16px",marginBottom:12,border:`1px solid ${T.border}`},label:{fontSize:12,color:T.sub,fontWeight:700,display:"block",marginBottom:5}}} invoices={invAll} products={prodAll} shopName={shopName} expenses={expenses} />
         </div>
       )}
 
@@ -6408,7 +6478,7 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
                 📦 এখনই রিঅর্ডার করুন ({forecastData.filter(p => p.needReorder).length}টি)
               </div>
               {forecastData.filter(p => p.needReorder).slice(0, 5).map((p, i) => (
-                <div key={p.id || p.name || i} style={{
+                <div key={i} style={{
                   display: "flex", justifyContent: "space-between",
                   padding: "6px 0",
                   borderBottom: i < 4 ? `1px solid ${T.border}` : "none",
@@ -6436,7 +6506,7 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
               padding: "10px 12px", borderBottom: `1px solid ${T.border}`,
             }}>
               {["পণ্যের নাম", "এই মাস", "আগের মাস", "পূর্বাভাস", "স্টক আছে"].map((h, i) => (
-                <div key={h || i} style={{ color: "#6366f1", fontWeight: 900, fontSize: 11, textAlign: i > 0 ? "center" : "left" }}>{h}</div>
+                <div key={i} style={{ color: "#6366f1", fontWeight: 900, fontSize: 11, textAlign: i > 0 ? "center" : "left" }}>{h}</div>
               ))}
             </div>
             {forecastData.length === 0 ? (
@@ -6444,7 +6514,7 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
                 📊 পর্যাপ্ত বিক্রয় ডেটা নেই
               </div>
             ) : forecastData.slice(0, 25).map((p, i) => (
-              <div key={p.id || p.name || i} style={{
+              <div key={i} style={{
                 display: "grid", gridTemplateColumns: "1fr 56px 64px 72px 68px",
                 padding: "10px 12px",
                 borderBottom: i < forecastData.length - 1 ? `1px solid ${T.border}` : "none",
@@ -6509,7 +6579,7 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
             <div style={{ background: T.card, borderRadius: 14, padding: "12px 14px", border: "1px solid #22c55e33" }}>
               <div style={{ color: "#22c55e", fontWeight: 800, fontSize: 13, marginBottom: 8 }}>🌟 বেশি লাভের পণ্য (এগুলো বেশি বিক্রি করুন)</div>
               {profitAnalysis.heroes.map((p, i) => (
-                <div key={p.id || p.name || i} style={{
+                <div key={i} style={{
                   display: "flex", justifyContent: "space-between", alignItems: "center",
                   padding: "8px 0",
                   borderBottom: i < profitAnalysis.heroes.length - 1 ? `1px solid ${T.border}` : "none",
@@ -6535,7 +6605,7 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
             <div style={{ background: T.card, borderRadius: 14, padding: "12px 14px", border: "1px solid #ef444433" }}>
               <div style={{ color: "#ef4444", fontWeight: 800, fontSize: 13, marginBottom: 8 }}>⚠️ কম লাভের পণ্য (দাম বাড়ান অথবা বিক্রি বন্ধ করুন)</div>
               {profitAnalysis.villains.map((p, i) => (
-                <div key={p.id || p.name || i} style={{
+                <div key={i} style={{
                   display: "flex", justifyContent: "space-between", alignItems: "center",
                   padding: "8px 0",
                   borderBottom: i < profitAnalysis.villains.length - 1 ? `1px solid ${T.border}` : "none",
@@ -6564,7 +6634,7 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
                 🏷️ ডিসকাউন্ট সাজেশন (স্টক আটকে আছে)
               </div>
               {overstockItems.slice(0, 6).map((p, i) => (
-                <div key={p.id || p.name || i} style={{
+                <div key={i} style={{
                   padding: "10px 0",
                   borderBottom: i < Math.min(overstockItems.length, 6) - 1 ? `1px solid ${T.border}` : "none",
                 }}>
@@ -6716,7 +6786,7 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
               <div style={{ color: T.sub, fontSize: 12, marginTop: 4 }}>এখন কোনো জরুরি কাজ নেই। ব্যবসা ভালোভাবেই চলছে।</div>
             </div>
           ) : smartActions.map((action, i) => (
-            <div key={action.label || i} style={{
+            <div key={i} style={{
               background: T.card, borderRadius: 14, padding: "14px 16px",
               border: `1.5px solid ${action.color}44`,
               boxShadow: action.priority === "high" ? `0 4px 20px ${action.color}22` : "none",
@@ -6763,7 +6833,7 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
             ].map((item, i) => {
               const p = Math.min(100, item.target > 0 ? Math.round((item.current / item.target) * 100) : 0);
               return (
-                <div key={item.label || i} style={{ marginBottom: i === 0 ? 12 : 0 }}>
+                <div key={i} style={{ marginBottom: i === 0 ? 12 : 0 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
                     <div style={{ color: T.text, fontWeight: 800, fontSize: 12 }}>{item.label}</div>
                     <div style={{ color: T.sub, fontSize: 12 }}>৳{fmt(item.current)} / ৳{fmt(Math.round(item.target))}</div>
@@ -6829,7 +6899,7 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
                 </div>
               </div>
             ) : chatMessages.map((msg, i) => (
-              <div key={`msg-${i}-${msg.role}`} style={{
+              <div key={i} style={{
                 alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
                 maxWidth: "85%",
                 background: msg.role === "user"
@@ -6975,7 +7045,7 @@ function HealthMeter({ score, label, T, activeColor, growthPct }) {
             { label: "মার্জিন", pct: Math.min(100, Math.max(0, score > 50 ? 70 : 30)), color: "#22c55e" },
             { label: "বকেয়া ঝুঁকি", pct: Math.min(100, Math.max(0, 100 - score)), color: "#ef4444" },
           ].map((bar, i) => (
-            <div key={bar.label || i}>
+            <div key={i}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
                 <span style={{ color: "#94a3b8", fontSize: 10 }}>{bar.label}</span>
               </div>
@@ -7002,34 +7072,39 @@ function HealthMeter({ score, label, T, activeColor, growthPct }) {
 }
 
 function WeeklySalesBar({ invoices, T, color }) {
-  const days = [];
-  const now = new Date();
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date(now - i * 86400000);
-    const key = d.toISOString().split("T")[0];
-    const label = d.toLocaleDateString("en-US", { weekday: "short" }).slice(0, 1);
-    const sale = (invoices || []).filter(inv => inv.date && inv.date.startsWith(key)).reduce((s, inv) => s + (inv.total || 0), 0);
-    days.push({ label, sale, key });
-  }
-  const max = Math.max(...days.map(d => d.sale), 1);
+  // useMemo — invoices না বদলালে recalculate হবে না (React best practice)
+  const chartData = useMemo(() => {
+    const now = new Date();
+    return Array.from({ length: 7 }, (_, idx) => {
+      const d = new Date(now - (6 - idx) * 86400000);
+      const key = d.toISOString().split("T")[0];
+      const label = d.toLocaleDateString("en-US", { weekday: "short" }).slice(0, 2);
+      const sale = (invoices || [])
+        .filter(inv => inv.date && inv.date.startsWith(key))
+        .reduce((s, inv) => s + (inv.total || 0), 0);
+      const isToday = key === now.toISOString().split("T")[0];
+      return { label, বিক্রয়: sale, key, isToday };
+    });
+  }, [invoices]);
+
   return (
     <div style={{ marginTop: 12 }}>
-      <div style={{ color: "#94a3b8", fontSize: 11, marginBottom: 6 }}>সাপ্তাহিক বিক্রয় ট্রেন্ড</div>
-      <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 50 }}>
-        {days.map((d, i) => (
-          <div key={d.key || i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
-            <div style={{
-              width: "100%", borderRadius: "4px 4px 0 0",
-              height: `${Math.max(4, (d.sale / max) * 40)}px`,
-              background: d.key === new Date().toISOString().split("T")[0]
-                ? color
-                : `${color}55`,
-              transition: "height 0.5s ease",
-            }} />
-            <div style={{ color: "#94a3b8", fontSize: 9 }}>{d.label}</div>
-          </div>
-        ))}
-      </div>
+      <div style={{ color: "#94a3b8", fontSize: 11, marginBottom: 4 }}>সাপ্তাহিক বিক্রয় ট্রেন্ড</div>
+      <ResponsiveContainer width="100%" height={70}>
+        <BarChart data={chartData} margin={{ top:4, right:2, left:0, bottom:0 }} barCategoryGap="20%">
+          <XAxis dataKey="label" tick={{ fill:"#94a3b8", fontSize:9 }} axisLine={false} tickLine={false} />
+          <Tooltip
+            contentStyle={{ background:T.card, border:`1px solid ${color}44`, borderRadius:10, fontSize:12, padding:"4px 10px" }}
+            formatter={v => ["৳"+v.toLocaleString("en-US"), "বিক্রয়"]}
+            cursor={{ fill: color+"15" }}
+          />
+          <Bar dataKey="বিক্রয়" radius={[4,4,0,0]} barSize={24}>
+            {chartData.map((entry, i) => (
+              <Cell key={i} fill={entry.isToday ? color : color+"66"} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
     </div>
   );
 }
@@ -7045,7 +7120,7 @@ function ruleBasedAnswer(q, data) {
   const fmt  = n => Number(n || 0).toLocaleString("en-US");
   const fmtK = n => { const a = Math.abs(Number(n||0)); return a>=100000?(a/100000).toFixed(1)+"লাখ":a>=1000?(a/1000).toFixed(1)+"K":String(Math.round(a)); };
   const has  = (...words) => words.some(w => L.includes(w));
-  const prodMap = new Map((prodAll || []).map(p => [p.id, p]));
+  const prodMap = useMemo(() => new Map((prodAll || []).map(p => [p.id, p])), [prodAll]);
 
   // ── আজকের বিক্রয় ───────────────────────────────────────────────────────────
   if (has("আজ","আজকে","today","আজকের")) {
@@ -7340,77 +7415,131 @@ function SmartBusinessMgmt() {
     return () => { cleanupAutoCap?.(); };
   }, []);
 
-  // ── Zustand store — 48 useState এর বদলে একটি store ─────────────────────────
-  const {
-    customers,        products,          invoices,          txns,
-    smsLog,           users,             shopName,          loaded,
-    authChecked,      toast,             modal,             detailCId,
-    preselectedCust,  preselectedType,   invoiceKey,        currentUser,
-    smsCount,         darkMode,          activeTheme,       fontSize,
-    deletedCustomers, deletedProducts,   paymentInvoices,   smsGateway,
-    dashModal,        invModal,          productInitTab,    btConnected,
-    cashModal,
-    btDevice,         lastAutoBackup,    driveStatus,       backupNeeded,
-    anthropicKey,     smsTemplates,      autoBackupEnabled, firebaseConfig,
-    firebaseEnabled,  authSession,      googleDriveToken,  lastLocalBackup,
-    devContact,       masterResetHash,   activeDevices,     syncToast,
-    suppliers,        purchaseOrders,    stockMovements,    cashLogs,
-    lastMasterSync,   autoMasterSyncEnabled,
-    set: _set, patch: _patch,
-  } = useAppStore();
+  // ── Zustand store — Selective subscriptions (Linear/Figma approach) ─────────
+  // ডেটা group-wise নিন — শুধু সেই group বদলালে re-render হবে
+  // Group A: Core business data
+  const customers        = useAppStore(s => s.customers);
+  const products         = useAppStore(s => s.products);
+  const invoices         = useAppStore(s => s.invoices);
+  const txns             = useAppStore(s => s.txns);
+  const suppliers        = useAppStore(s => s.suppliers);
+  const expenses         = useAppStore(s => s.expenses);
+  const returns          = useAppStore(s => s.returns);
+  const auditLogs        = useAppStore(s => s.auditLogs);
+  const quotations       = useAppStore(s => s.quotations);
+  const supplierPayments = useAppStore(s => s.supplierPayments);
+  const purchaseOrders   = useAppStore(s => s.purchaseOrders);
+  const stockMovements   = useAppStore(s => s.stockMovements);
+  const cashLogs         = useAppStore(s => s.cashLogs);
+  const paymentInvoices  = useAppStore(s => s.paymentInvoices);
+  const deletedCustomers = useAppStore(s => s.deletedCustomers);
+  const deletedProducts  = useAppStore(s => s.deletedProducts);
+  // Group B: Auth / shop
+  const shopName         = useAppStore(s => s.shopName);
+  const currentUser      = useAppStore(s => s.currentUser);
+  const authSession      = useAppStore(s => s.authSession);
+  const devContact       = useAppStore(s => s.devContact);
+  const masterResetHash  = useAppStore(s => s.masterResetHash);
+  const users            = useAppStore(s => s.users);
+  const loaded           = useAppStore(s => s.loaded);
+  const authChecked      = useAppStore(s => s.authChecked);
+  // Group C: UI state
+  const toast            = useAppStore(s => s.toast);
+  const modal            = useAppStore(s => s.modal);
+  const detailCId        = useAppStore(s => s.detailCId);
+  const preselectedCust  = useAppStore(s => s.preselectedCust);
+  const preselectedType  = useAppStore(s => s.preselectedType);
+  const invoiceKey       = useAppStore(s => s.invoiceKey);
+  const dashModal        = useAppStore(s => s.dashModal);
+  const invModal         = useAppStore(s => s.invModal);
+  const cashModal        = useAppStore(s => s.cashModal);
+  const productInitTab   = useAppStore(s => s.productInitTab);
+  const syncToast        = useAppStore(s => s.syncToast);
+  // Group D: Theme (rarely changes)
+  const darkMode         = useAppStore(s => s.darkMode);
+  const activeTheme      = useAppStore(s => s.activeTheme);
+  const fontSize         = useAppStore(s => s.fontSize);
+  // Group E: Features
+  const smsLog           = useAppStore(s => s.smsLog);
+  const smsCount         = useAppStore(s => s.smsCount);
+  const smsGateway       = useAppStore(s => s.smsGateway);
+  const smsTemplates     = useAppStore(s => s.smsTemplates);
+  const btConnected      = useAppStore(s => s.btConnected);
+  const btDevice         = useAppStore(s => s.btDevice);
+  const lastAutoBackup   = useAppStore(s => s.lastAutoBackup);
+  const driveStatus      = useAppStore(s => s.driveStatus);
+  const backupNeeded     = useAppStore(s => s.backupNeeded);
+  const autoBackupEnabled= useAppStore(s => s.autoBackupEnabled);
+  const firebaseConfig   = useAppStore(s => s.firebaseConfig);
+  const firebaseEnabled  = useAppStore(s => s.firebaseEnabled);
+  const activeDevices    = useAppStore(s => s.activeDevices);
+  const googleDriveToken = useAppStore(s => s.googleDriveToken);
+  const lastLocalBackup  = useAppStore(s => s.lastLocalBackup);
+  const anthropicKey     = useAppStore(s => s.anthropicKey);
+  const lastMasterSync   = useAppStore(s => s.lastMasterSync);
+  const autoMasterSyncEnabled = useAppStore(s => s.autoMasterSyncEnabled);
+  // Setters
+  const _set             = useAppStore(s => s.set);
+  const _patch           = useAppStore(s => s.patch);
 
-  // ── Setter shims — বাকি code পরিবর্তন না করেই কাজ করে ────────────────────
-  const setCustomers        = (v) => _set("customers",        v);
-  const setProducts         = (v) => _set("products",         v);
-  const setInvoices         = (v) => _set("invoices",         v);
-  const setTxns             = (v) => _set("txns",             v);
-  const setSmsLog           = (v) => _set("smsLog",           v);
-  const setUsers            = (v) => _set("users",            v);
-  const setShopName         = (v) => _set("shopName",         v);
-  const setLoaded           = (v) => _set("loaded",           v);
-  const setAuthChecked      = (v) => _set("authChecked",      v);
-  const setToast            = (v) => _set("toast",            v);
-  const setModal            = (v) => _set("modal",            v);
-  const setDetailCId        = (v) => _set("detailCId",        v);
-  const setPreselectedCust  = (v) => _set("preselectedCust",  v);
-  const setPreselectedType  = (v) => _set("preselectedType",  v);
-  const setInvoiceKey       = (v) => _set("invoiceKey",       v);
-  const setCurrentUser      = (v) => _set("currentUser",      v);
-  const setSmsCount         = (v) => _set("smsCount",         v);
-  const setDarkMode         = (v) => _set("darkMode",         v);
-  const setActiveTheme      = (v) => _set("activeTheme",      v);
-  const setFontSize         = (v) => _set("fontSize",         v);
-  const setDeletedCustomers = (v) => _set("deletedCustomers", v);
-  const setDeletedProducts  = (v) => _set("deletedProducts",  v);
-  const setPaymentInvoices  = (v) => _set("paymentInvoices",  v);
-  const setSmsGateway       = (v) => _set("smsGateway",       v);
-  const setGoogleDriveToken = (v) => _set("googleDriveToken", v);
-  const setLastLocalBackup  = (v) => _set("lastLocalBackup",  v);
-  const setDashModal        = (v) => _set("dashModal",        v);
-  const setInvModal         = (v) => _set("invModal",         v);
-  const setCashModal        = (v) => _set("cashModal",        v);
-  const setProductInitTab   = (v) => _set("productInitTab",   v);
-  const setBtConnected      = (v) => _set("btConnected",      v);
-  const setBtDevice         = (v) => _set("btDevice",         v);
-  const setLastAutoBackup   = (v) => _set("lastAutoBackup",   v);
-  const setDriveStatus      = (v) => _set("driveStatus",      v);
-  const setBackupNeeded     = (v) => _set("backupNeeded",     v);
-  const setAnthropicKey     = (v) => _set("anthropicKey",     v);
-  const setSmsTemplates     = (v) => _set("smsTemplates",     v);
-  const setAutoBackupEnabled= (v) => _set("autoBackupEnabled",v);
-  const setLastMasterSync   = (v) => _set("lastMasterSync",   v);
-  const setAutoMasterSyncEnabled = (v) => _set("autoMasterSyncEnabled", v);
-  const setFirebaseConfig   = (v) => _set("firebaseConfig",   v);
-  const setFirebaseEnabled  = (v) => _set("firebaseEnabled",  v);
-  const setAuthSession      = (v) => _set("authSession",      v);
-  const setDevContact       = (v) => _set("devContact",       v);
-  const setMasterResetHash  = (v) => _set("masterResetHash",  v);
-  const setActiveDevices    = (v) => _set("activeDevices",    v);
-  const setSyncToast        = (v) => _set("syncToast",        v);
-  const setSuppliers        = (v) => _set("suppliers",        v);
-  const setPurchaseOrders   = (v) => _set("purchaseOrders",   v);
-  const setStockMovements   = (v) => _set("stockMovements",   v);
-  const setCashLogs         = (v) => _set("cashLogs",         v);
+  // ── Setter shims — useCallback দিয়ে stable reference (re-render কমায়) ──────
+  // Notion/Linear approach: stable setter refs = child component re-render বন্ধ
+  const setCustomers        = useCallback((v) => _set("customers",        v), [_set]);
+  const setProducts         = useCallback((v) => _set("products",         v), [_set]);
+  const setInvoices         = useCallback((v) => _set("invoices",         v), [_set]);
+  const setTxns             = useCallback((v) => _set("txns",             v), [_set]);
+  const setSmsLog           = useCallback((v) => _set("smsLog",           v), [_set]);
+  const setUsers            = useCallback((v) => _set("users",            v), [_set]);
+  const setShopName         = useCallback((v) => _set("shopName",         v), [_set]);
+  const setLoaded           = useCallback((v) => _set("loaded",           v), [_set]);
+  const setAuthChecked      = useCallback((v) => _set("authChecked",      v), [_set]);
+  const setToast            = useCallback((v) => _set("toast",            v), [_set]);
+  const setModal            = useCallback((v) => _set("modal",            v), [_set]);
+  const setDetailCId        = useCallback((v) => _set("detailCId",        v), [_set]);
+  const setPreselectedCust  = useCallback((v) => _set("preselectedCust",  v), [_set]);
+  const setPreselectedType  = useCallback((v) => _set("preselectedType",  v), [_set]);
+  const setInvoiceKey       = useCallback((v) => _set("invoiceKey",       v), [_set]);
+  const setCurrentUser      = useCallback((v) => _set("currentUser",      v), [_set]);
+  const setSmsCount         = useCallback((v) => _set("smsCount",         v), [_set]);
+  const setDarkMode         = useCallback((v) => _set("darkMode",         v), [_set]);
+  const setActiveTheme      = useCallback((v) => _set("activeTheme",      v), [_set]);
+  const setFontSize         = useCallback((v) => _set("fontSize",         v), [_set]);
+  const setDeletedCustomers = useCallback((v) => _set("deletedCustomers", v), [_set]);
+  const setDeletedProducts  = useCallback((v) => _set("deletedProducts",  v), [_set]);
+  const setPaymentInvoices  = useCallback((v) => _set("paymentInvoices",  v), [_set]);
+  const setSmsGateway       = useCallback((v) => _set("smsGateway",       v), [_set]);
+  const setGoogleDriveToken = useCallback((v) => _set("googleDriveToken", v), [_set]);
+  const setLastLocalBackup  = useCallback((v) => _set("lastLocalBackup",  v), [_set]);
+  const setDashModal        = useCallback((v) => _set("dashModal",        v), [_set]);
+  const setInvModal         = useCallback((v) => _set("invModal",         v), [_set]);
+  const setCashModal        = useCallback((v) => _set("cashModal",        v), [_set]);
+  const setProductInitTab   = useCallback((v) => _set("productInitTab",   v), [_set]);
+  const setBtConnected      = useCallback((v) => _set("btConnected",      v), [_set]);
+  const setBtDevice         = useCallback((v) => _set("btDevice",         v), [_set]);
+  const setLastAutoBackup   = useCallback((v) => _set("lastAutoBackup",   v), [_set]);
+  const setDriveStatus      = useCallback((v) => _set("driveStatus",      v), [_set]);
+  const setBackupNeeded     = useCallback((v) => _set("backupNeeded",     v), [_set]);
+  const setAnthropicKey     = useCallback((v) => _set("anthropicKey",     v), [_set]);
+  const setSmsTemplates     = useCallback((v) => _set("smsTemplates",     v), [_set]);
+  const setAutoBackupEnabled= useCallback((v) => _set("autoBackupEnabled",v), [_set]);
+  const setLastMasterSync   = useCallback((v) => _set("lastMasterSync",   v), [_set]);
+  const setAutoMasterSyncEnabled = useCallback((v) => _set("autoMasterSyncEnabled", v), [_set]);
+  const setFirebaseConfig   = useCallback((v) => _set("firebaseConfig",   v), [_set]);
+  const setFirebaseEnabled  = useCallback((v) => _set("firebaseEnabled",  v), [_set]);
+  const setAuthSession      = useCallback((v) => _set("authSession",      v), [_set]);
+  const setDevContact       = useCallback((v) => _set("devContact",       v), [_set]);
+  const setMasterResetHash  = useCallback((v) => _set("masterResetHash",  v), [_set]);
+  const setActiveDevices    = useCallback((v) => _set("activeDevices",    v), [_set]);
+  const setSyncToast        = useCallback((v) => _set("syncToast",        v), [_set]);
+  const setSuppliers        = useCallback((v) => _set("suppliers",        v), [_set]);
+  const setExpenses         = useCallback((v) => _set("expenses",         v), [_set]);
+  const setReturns          = useCallback((v) => _set("returns",          v), [_set]);
+  const setAuditLogs        = useCallback((v) => _set("auditLogs",        v), [_set]);
+  const setQuotations       = useCallback((v) => _set("quotations",       v), [_set]);
+  const setSupplierPayments = useCallback((v) => _set("supplierPayments",  v), [_set]);
+  const setPurchaseOrders   = useCallback((v) => _set("purchaseOrders",   v), [_set]);
+  const setStockMovements   = useCallback((v) => _set("stockMovements",   v), [_set]);
+  const setCashLogs         = useCallback((v) => _set("cashLogs",         v), [_set]);
 
   // ── 🔐 Recovery (Phone + PIN) — central backup/restore state ─────────────
   const [recoveryPhone, setRecoveryPhoneState] = useState("");
@@ -7507,6 +7636,99 @@ function SmartBusinessMgmt() {
     root.style.setProperty("--t-toast-bg",     T.toastBg || T.card);
     root.style.setProperty("--t-fs-base",      fontSize + "px");
   }, [activeTheme, darkMode, fontSize]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Web Worker Setup — ভারী calculation main thread-এ নয় ─────────────────
+  const workerRef = useRef(null);
+  const [dashStats, setDashStats] = useState(null);
+  const [reorderAlerts, setReorderAlerts] = useState([]);
+
+  useEffect(() => {
+    try {
+      workerRef.current = new Worker(
+        new URL("./worker.js", import.meta.url),
+        { type: "module" }
+      );
+      workerRef.current.onmessage = ({ data }) => {
+        if (data.type === "DASHBOARD_RESULT") setDashStats(data.payload);
+        if (data.type === "REORDER_ALERTS")   setReorderAlerts(data.payload);
+        if (data.type === "ABC_RESULT")        setAbcData(data.payload);
+        if (data.type === "DEAD_STOCK_RESULT") setDeadStock(data.payload);
+        if (data.type === "CASH_FLOW_RESULT")  setCashFlow(data.payload);
+      };
+      workerRef.current.onerror = (e) => console.warn("Worker error:", e);
+    } catch(e) {
+      console.warn("Worker not supported:", e);
+    }
+    return () => workerRef.current?.terminate();
+  }, []);
+
+  // products/invoices/customers বদলালে Worker-এ পাঠান
+  useEffect(() => {
+    if (!workerRef.current || !invoices.length || !products.length) return;
+    const today = new Date().toISOString().split("T")[0];
+    workerRef.current.postMessage({
+      type: "CALC_DASHBOARD",
+      payload: { invoices, products, customers, txns, today }
+    });
+  }, [invoices, products, customers, txns]);
+
+  // Stock reorder prediction
+  useEffect(() => {
+    if (!workerRef.current || !products.length || !invoices.length) return;
+    workerRef.current.postMessage({
+      type: "PREDICT_REORDER",
+      payload: { products, invoices }
+    });
+  }, [products, invoices]);
+
+  // Cash Flow Forecast — Worker
+  useEffect(() => {
+    if (!workerRef.current || !invoices.length) return;
+    workerRef.current.postMessage({
+      type: "CASH_FLOW_FORECAST",
+      payload: { invoices, customers, txns, expenses, purchaseOrders }
+    });
+  }, [invoices, customers, txns, expenses, purchaseOrders]);
+
+  // ABC Analysis — পণ্য শ্রেণীবিভাগ (Worker)
+  const [abcData,    setAbcData]    = React.useState([]);
+  const [deadStock,  setDeadStock]  = React.useState([]);
+  const [cashFlow,   setCashFlow]   = React.useState(null); // Cash Flow Forecast
+
+  useEffect(() => {
+    if (!workerRef.current || !products.length || !invoices.length) return;
+    workerRef.current.postMessage({
+      type: "ABC_ANALYSIS",
+      payload: { products, invoices }
+    });
+    workerRef.current.postMessage({
+      type: "DEAD_STOCK",
+      payload: { products, invoices, thresholdDays: 90 }
+    });
+  }, [products, invoices]);
+
+  // Global prodMap — একবার তৈরি, সব জায়গায় ব্যবহার
+  const globalProdMap = useMemo(
+    () => new Map(products.map(p => [p.id, p])),
+    [products]
+  );
+
+  // ── 🔒 Session Timeout state — actual effect showToast সংজ্ঞার পরে (নিচে) ──
+  const lastActivityRef = useRef(Date.now());
+  const [sessionTimeoutMin, setSessionTimeoutMinState] = useState(() => {
+    try {
+      const saved = localStorage.getItem("sbm-session-timeout");
+      return saved ? parseInt(saved) : null; // null = role-based default ব্যবহার হবে
+    } catch { return null; }
+  });
+
+  const setSessionTimeoutMin = useCallback((mins) => {
+    setSessionTimeoutMinState(mins);
+    try {
+      if (mins === null) localStorage.removeItem("sbm-session-timeout");
+      else localStorage.setItem("sbm-session-timeout", String(mins));
+    } catch {}
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -7678,26 +7900,7 @@ function SmartBusinessMgmt() {
   // আগে: useFSSCollection("invoices"...) → পুরো collection (১০ লাখেও সব pull)
   // এখন: শুধু ৩০ দিনের window — ১০ লাখ invoice-এও app চলে, Firestore cost ৯৯%+ কম।
   // পুরনো invoice দেখতে হলে → Invoice History page-এ cursor pagination (Phase 2)।
-  // Firestore index লাগবে: invoices → dateKey (ASC) — console error-এ link আসবে।
-  // ⚠️ Bug Fix: অফলাইনে save করা invoice অনলাইনে আসার পর হারিয়ে না যায়।
-  // includeMetadataChanges:true দিলে hasPendingWrites=true থাকা docs-ও আসে —
-  // অর্থাৎ Firestore-এ এখনো পৌঁছায়নি এমন local pending invoice-ও থাকবে।
-  //
-  // ⚠️ Bug Fix (পর্ব ২ — আসল কারণ): উপরের windowed listener আগে শুধু
-  // remote → local দিকে কাজ করত (Firestore থেকে যা আসে তা দিয়ে পুরো local
-  // invoices array সম্পূর্ণ ওভাররাইট করত)। কিন্তু নতুন ইনভয়েস তৈরি হওয়ার সময়
-  // (createInvoice → setInvoices) সেটা কখনো Firestore-এ push হতো না — কারণ
-  // আগের useFSSCollection("invoices"...) বাদ দেওয়ার সময় তার ভেতরের
-  // local → remote push effect-টাও হারিয়ে গিয়েছিল। ফলে অফলাইনে তৈরি হওয়া
-  // ইনভয়েস শুধু RAM-এ থাকত, Firestore cache-এও যেত না — নেট ফিরে এই listener
-  // re-fire করলেই (Firestore-এর data দিয়ে replace) সেগুলো হারিয়ে যেত।
-  // নিচে invLastSynced/invSkipNext + আলাদা push effect দিয়ে সেই missing
-  // local → remote দিকটা যুক্ত করা হলো (অন্য সব collection-এর মতোই)।
-  const invLastSynced = useRef(null);
-  const invSkipNext   = useRef(false);
-  const invoicesRef   = useRef(invoices);
-  useEffect(() => { invoicesRef.current = invoices; }, [invoices]);
-
+  // Firestore index লাগবে: invoices → date (ASC) — console error-এ link আসবে।
   useEffect(() => {
     if (!fssReady || !FSS._db) return;
     const cutoffDate = new Date();
@@ -7708,25 +7911,8 @@ function SmartBusinessMgmt() {
     const q = query(colRef, where("dateKey", ">=", cutoff), orderBy("dateKey", "desc"));
 
     let first = true;
-    const unsub = onSnapshot(q, { includeMetadataChanges: true }, (snap) => {
-      // hasPendingWrites=true মানে এই doc এখনো server-এ যায়নি (offline-এ save হয়েছে)
-      // এগুলো include করলে অনলাইনে আসার পর replace হওয়ার আগেই দেখা যাবে
+    const unsub = onSnapshot(q, (snap) => {
       const recent = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      // ⚠️ Bug Fix (পর্ব ৩ — seed-on-empty): প্রথম snapshot-এ remote/cache খালি
-      // কিন্তু এই ডিভাইসে local invoices আছে (যেমন: cold Firestore cache, নতুন
-      // device, বা সাময়িক query glitch) — তখন ওভাররাইট না করে, useFSSCollection-এর
-      // অন্য সব collection-এর মতোই local data দিয়ে Firestore seed করি।
-      if (first && recent.length === 0 && invoicesRef.current?.length) {
-        first = false;
-        invLastSynced.current = invoicesRef.current;
-        invoicesRef.current.forEach(rec => {
-          if (rec?.id != null) FSS.setRecord("invoices", rec.id, rec._updatedAt ? rec : withTs(rec));
-        });
-        return;
-      }
-      // এই update remote থেকে আসছে — নিচের push effect যেন এটা আবার
-      // Firestore-এ echo করে না পাঠায়, তাই skip flag সেট করি
-      invSkipNext.current = true;
       setInvoices(recent);
       if (first) { first = false; setSyncToast?.({ msg: "ইনভয়েস sync হয়েছে", ok: true }); }
     }, () => { /* offline — Firestore cache থেকে কাজ চলবে */ });
@@ -7734,36 +7920,17 @@ function SmartBusinessMgmt() {
     return () => unsub();
   }, [fssReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Phase 1.2b: Invoice local → remote push (offline durability fix) ──────
-  // নতুন/পরিবর্তিত ইনভয়েস (createInvoice, void, payment ইত্যাদি যেখানেই
-  // setInvoices হয়) সাথে সাথে diff করে Firestore-এ push করো। অফলাইনে হলে
-  // Firestore SDK নিজের persistentLocalCache-এ রেখে দেবে, নেট ফিরলে নিজেই
-  // sync করবে — উপরের windowed listener-এর includeMetadataChanges:true
-  // সেই pending write-ও সাথে সাথে দেখাবে।
-  useEffect(() => {
-    if (!fssReady || !FSS._db) return;
-    if (invLastSynced.current === null) { invLastSynced.current = invoices; return; }
-    if (invSkipNext.current) { invSkipNext.current = false; invLastSynced.current = invoices; return; }
-    const prevMap = new Map(invLastSynced.current.map(r => [String(r.id), r]));
-    const t = setTimeout(() => {
-      invoices.forEach(rec => {
-        if (rec?.id == null) return;
-        const old = prevMap.get(String(rec.id));
-        if (!old || JSON.stringify(old) !== JSON.stringify(rec)) {
-          FSS.setRecord("invoices", rec.id, rec._updatedAt ? rec : withTs(rec));
-        }
-      });
-      invLastSynced.current = invoices;
-    }, 300);
-    return () => clearTimeout(t);
-  }, [invoices, fssReady]);
-
   useFSSCollection("txns", txns, setTxns, fssReady, { onSync: setSyncToast });
   useFSSCollection("smsLog", smsLog, setSmsLog, fssReady, { onSync: setSyncToast });
   useFSSCollection("suppliers", suppliers, setSuppliers, fssReady, { onSync: setSyncToast });
   useFSSCollection("purchaseOrders", purchaseOrders, setPurchaseOrders, fssReady, { onSync: setSyncToast });
   useFSSCollection("stockMovements", stockMovements, setStockMovements, fssReady, { onSync: setSyncToast });
   useFSSCollection("cashLogs", cashLogs, setCashLogs, fssReady, { onSync: setSyncToast });
+  useFSSCollection("expenses", expenses, setExpenses, fssReady, { onSync: setSyncToast });
+  useFSSCollection("returns",  returns,  setReturns,  fssReady, { onSync: setSyncToast });
+  useFSSCollection("auditLogs", auditLogs, setAuditLogs, fssReady, { onSync: setSyncToast });
+  useFSSCollection("quotations", quotations, setQuotations, fssReady, { onSync: setSyncToast });
+  useFSSCollection("supplierPayments", supplierPayments, setSupplierPayments, fssReady, { onSync: setSyncToast });
   useFSSCollection("paymentInvoices", paymentInvoices, setPaymentInvoices, fssReady, { onSync: setSyncToast });
   // 🔑 users (permissions) — instant push/apply, debounce ছাড়া
   useFSSCollection("users", users, setUsers, fssReady, { instant: true, onSync: setSyncToast });
@@ -8058,14 +8225,42 @@ function SmartBusinessMgmt() {
     setToast({ msg, color }); safeTimeout(() => setToast(null), 3200);
   }, [safeTimeout]);
 
+  // ── 🔒 Session Timeout — নিষ্ক্রিয় থাকলে auto-logout ──────────────────────
+  // Staff: ৩০ মিনিট, Owner/Admin: ২ ঘণ্টা ডিফল্ট — Settings-এ কাস্টমাইজ করা যায়
+  useEffect(() => {
+    if (!currentUser) return; // লগইন করা না থাকলে টাইমার দরকার নেই
+
+    const defaultMin = currentUser.role === "staff" ? 30 : 120;
+    const timeoutMs  = (sessionTimeoutMin ?? defaultMin) * 60 * 1000;
+
+    lastActivityRef.current = Date.now(); // লগইন করার সাথে সাথে টাইমার রিসেট
+
+    const resetActivity = () => { lastActivityRef.current = Date.now(); };
+    const events = ["touchstart", "mousedown", "keydown", "scroll"];
+    events.forEach(ev => document.addEventListener(ev, resetActivity, { passive: true }));
+
+    const checkInterval = setInterval(() => {
+      const idleMs = Date.now() - lastActivityRef.current;
+      if (idleMs > timeoutMs) {
+        setCurrentUser(null);
+        showToast("⏱️ নিষ্ক্রিয়তার কারণে স্বয়ংক্রিয়ভাবে লগ-আউট হয়েছে", "#f59e0b");
+      }
+    }, 30000); // প্রতি ৩০ সেকেন্ডে চেক
+
+    return () => {
+      events.forEach(ev => document.removeEventListener(ev, resetActivity));
+      clearInterval(checkInterval);
+    };
+  }, [currentUser, sessionTimeoutMin, showToast, setCurrentUser]);
+
   const buildBackupData = useCallback(() => {
-    const payload = { customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers };
-    // Simple checksum: total record count hash
-    const checksum = [customers.length, products.length, invoices.length, txns.length, smsLog.length, paymentInvoices.length, purchaseOrders.length, stockMovements.length, (users||[]).length, (cashLogs||[]).length, (suppliers||[]).length].join("-");
+    const payload = { customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs };
+    // Simple checksum: total record count hash (v4: expenses + returns সহ — auditLogs checksum-এ নেই, optional field)
+    const checksum = [customers.length, products.length, invoices.length, txns.length, smsLog.length, paymentInvoices.length, purchaseOrders.length, stockMovements.length, (users||[]).length, (cashLogs||[]).length, (suppliers||[]).length, (expenses||[]).length, (returns||[]).length].join("-");
     return {
       ...payload,
       _meta: {
-        version: 3,
+        version: 4,
         appVersion: "v14",
         createdAt: Date.now(),
         exportedAt: new Date().toISOString(),
@@ -8077,10 +8272,11 @@ function SmartBusinessMgmt() {
           smsLog: smsLog.length, paymentInvoices: paymentInvoices.length,
           purchaseOrders: purchaseOrders.length, stockMovements: stockMovements.length,
           users: (users||[]).length, cashLogs: (cashLogs||[]).length, suppliers: (suppliers||[]).length,
+          expenses: (expenses||[]).length, returns: (returns||[]).length, auditLogs: (auditLogs||[]).length,
         },
       },
     };
-  }, [customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers]);
+  }, [customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs]);
 
   const performDriveBackup = useCallback(async () => {
     setDriveStatus("uploading");
@@ -8256,7 +8452,7 @@ function SmartBusinessMgmt() {
           // Staff: Firestore থেকে পাওয়া Admin token ব্যবহার করো
           // expiry window ৫৮ মিনিট — Admin প্রতি ৪৫ মিনিটে refresh করে তাই overlap থাকে
           const tk = googleDriveToken;
-          const fresh = tk?.token && tk?.savedAt && (Date.now() - tk.savedAt) < 59 * 60 * 1000; // Fix: 60min expiry-র আগে 59min — expired token দিয়ে upload হবে না
+          const fresh = tk?.token && tk?.savedAt && (Date.now() - tk.savedAt) < 68 * 60 * 1000;
           token = fresh ? tk.token : null;
         }
         if (!token) return; // token নেই/expired — এই cycle skip, পরের cycle-এ আবার চেষ্টা
@@ -8332,6 +8528,26 @@ function SmartBusinessMgmt() {
     return entry;
   }, []);
 
+  // ── 📋 Audit Log — কে কখন কী করলো (security-sensitive actions) ───────────────
+  // action: "INVOICE_VOID" | "PRODUCT_PRICE_CHANGE" | "STOCK_ADJUST" | "DISCOUNT_APPLY" |
+  //         "PRODUCT_DELETE" | "CUSTOMER_DELETE" | "BAKI_COLLECT" | "USER_ROLE_CHANGE" ইত্যাদি
+  const auditLog = useCallback((action, details = {}) => {
+    const entry = {
+      id: uid(),
+      action,
+      details,
+      userId:   currentUser?.id || null,
+      userName: currentUser?.name || "অজানা",
+      role:     currentUser?.role || "unknown",
+      date:     todayStr(),
+      dateKey:  todayEn(),
+      time:     nowStr(),
+      createdAt: new Date().toISOString(),
+    };
+    setAuditLogs(prev => [entry, ...prev].slice(0, 2000)); // সর্বোচ্চ ২০০০টা রাখি — স্টোরেজ সীমিত রাখতে
+    return entry;
+  }, [currentUser, setAuditLogs]);
+
   const createPaymentInvoice = useCallback((customer, amount, note, source = "collection") => {
     const inv = {
       id: uid(), customerId: customer.id, customerName: customer.name,
@@ -8393,8 +8609,8 @@ function SmartBusinessMgmt() {
             if (c.id !== inv.customerId) return c;
             const currentBal = c.balance || 0;
             const newBal = Math.max(0, currentBal - netChange);
-            // addTxn inside setCustomers updater won't work — use safeTimeout (unmount-safe) to fire after state commits
-            safeTimeout(() => {
+            // addTxn inside setCustomers updater won't work — use setTimeout to fire after state commits
+            setTimeout(() => {
               addTxn(
                 inv.customerId, netChange > 0 ? "joma" : "baki", Math.abs(netChange), newBal,
                 inv.id,
@@ -8410,6 +8626,13 @@ function SmartBusinessMgmt() {
     }
 
     showToast("ইনভয়েস ভয়েড হয়েছে ও স্টক পুনরুদ্ধার হয়েছে", "#f59e0b");
+    auditLog("INVOICE_VOID", {
+      invoiceId: inv.id,
+      invoiceNo: inv.invoiceNo || inv.id.slice(-8).toUpperCase(),
+      customerName: inv.customerName || "হাঁটা কাস্টমার",
+      amount: inv.total || 0,
+      reason: voidReason || "(কারণ উল্লেখ করা হয়নি)",
+    });
 
     // ── Phase 1.3: Stats doc update — void-এ negative delta দিয়ে total কমাও ─
     if (FSS.isReady() && inv.dateKey && !inv.isSelfUse) {
@@ -8420,7 +8643,7 @@ function SmartBusinessMgmt() {
                     : inv.payType === "partial" ? (inv.bakiAmount || 0) : 0;
       FSS.updateStats(inv.dateKey, { sale: -saleAmt, cash: -cashAmt, baki: -bakiAmt, profit: 0 });
     }
-  }, [setInvoices, setCustomers, setProducts, addTxn, showToast, safeTimeout]);
+  }, [setInvoices, setCustomers, setProducts, addTxn, showToast, auditLog]);
 
   const connectBluetooth = useCallback(async () => {
     await BT.init();
@@ -8462,9 +8685,8 @@ function SmartBusinessMgmt() {
     return s;
   }, 0), [todayInvs]);
   const todayProfit = useMemo(() => {
-    const prodMap = new Map(products.map(p => [p.id, p]));
-    return calcProfitTotal(todayInvs, prodMap);
-  }, [todayInvs, products]);
+    return calcProfitTotal(todayInvs, globalProdMap);
+  }, [todayInvs, globalProdMap]);
 
   // ── S (styles) এবং navItems — conditional return এর আগে রাখতে হবে (Rules of Hooks) ──
   const S = React.useMemo(() => makeS(T), [activeTheme, darkMode, fontSize]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -8476,6 +8698,10 @@ function SmartBusinessMgmt() {
       { id: "customers", label: "কাস্টমার", icon: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" },
       { id: "invoice",   label: "ইনভয়েস",  icon: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6" },
       { id: "products",  label: "পণ্য",     icon: "M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4zM3 6h18" },
+      { id: "expense",  label: "খরচ",      icon: "M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" },
+      { id: "returns",  label: "ফেরত",     icon: "M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM9 22V12h6v10" },
+      { id: "quotation", label: "কোটেশন",  icon: "M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" },
+      { id: "supplier",  label: "সাপ্লায়ার", icon: "M19 21V5a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v16m14 0h2m-2 0H5m14 0a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2m14 0V5M5 21V5m0 0a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2M9 7h6M9 11h6m-6 4h6" },
       { id: "ai",       label: "AI",       icon: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8 11a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm8 0a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm-4 6c-2.5 0-4.7-1.3-6-3.3h12c-1.3 2-3.5 3.3-6 3.3z" },
       { id: "settings",  label: "সেটিং",   icon: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" },
     ];
@@ -8762,6 +8988,27 @@ function SmartBusinessMgmt() {
         .list-item:nth-child(4) { animation-delay: 120ms; }
         .list-item:nth-child(5) { animation-delay: 160ms; }
 
+        /* ── Content Visibility — off-screen rendering skip ── */
+        /* Chrome/Android team's #1 CSS performance optimization */
+        .sbm-tab-panel {
+          content-visibility: auto;
+          contain-intrinsic-size: 0 600px;
+        }
+
+        /* ── GPU acceleration for animated elements ── */
+        .qc-gradient-card, .list-item {
+          will-change: transform;
+          transform: translateZ(0); /* GPU layer */
+        }
+
+        /* ── Virtuoso Grid — Invoice Product 2-column ── */
+        .sbm-inv-product-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 8px;
+          padding: 0;
+        }
+
         /* ── Nav Active Pill ─────────────────────────── */
         .nav-active-pill {
           position: absolute;
@@ -8938,6 +9185,9 @@ function SmartBusinessMgmt() {
               setPurchaseOrders={setPurchaseOrders}
               cashLogs={cashLogs}
               setCashLogs={setCashLogs}
+              reorderAlerts={reorderAlerts}
+              expenses={expenses}
+              cashFlow={cashFlow}
               onGoToPurchaseEntry={() => { setDashModal({ type: "purchase-entry" }); }}
             />
           </ErrorBoundary>
@@ -8951,6 +9201,9 @@ function SmartBusinessMgmt() {
               deletedCustomers={deletedCustomers} setDeletedCustomers={setDeletedCustomers}
               onGoToInvoice={(c, type) => { setPreselectedCust(c); setPreselectedType(type || null); setTab("invoice"); }}
               currentUser={currentUser} hasPerm={hasPerm}
+              auditLog={auditLog}
+              invoices={invoices}
+              txns={txns}
             />
           </ErrorBoundary>
         )}
@@ -8991,6 +9244,73 @@ function SmartBusinessMgmt() {
               initialTab={productInitTab}
               currentUser={currentUser} hasPerm={hasPerm}
               shopName={shopName}
+              abcData={abcData}
+              deadStock={deadStock}
+              auditLog={auditLog}
+            />
+          </ErrorBoundary>
+        )}
+        {tab === "supplier" && (
+          <ErrorBoundary T={T}>
+            <SupplierPaymentModule T={T} S={S}
+              products={products}
+              purchaseOrders={purchaseOrders}
+              supplierPayments={supplierPayments}
+              setSupplierPayments={setSupplierPayments}
+              showToast={showToast}
+              currentUser={currentUser}
+              shopName={shopName}
+            />
+          </ErrorBoundary>
+        )}
+        {tab === "quotation" && (
+          <ErrorBoundary T={T}>
+            <QuotationModule T={T} S={S}
+              quotations={quotations}
+              setQuotations={setQuotations}
+              customers={customers}
+              products={products}
+              invoices={invoices}
+              setInvoices={setInvoices}
+              setProducts={setProducts}
+              setCustomers={setCustomers}
+              addTxn={addTxn}
+              showToast={showToast}
+              currentUser={currentUser}
+              shopName={shopName}
+              setTab={setTab}
+              setPreselectedCust={setPreselectedCust}
+              setPreselectedType={setPreselectedType}
+            />
+          </ErrorBoundary>
+        )}
+        {tab === "returns" && (
+          <ErrorBoundary T={T}>
+            <ReturnModule T={T} S={S}
+              invoices={invoices}
+              products={products}
+              customers={customers}
+              returns={returns}
+              setReturns={setReturns}
+              setProducts={setProducts}
+              setCustomers={setCustomers}
+              setStockMovements={setStockMovements}
+              addTxn={addTxn}
+              showToast={showToast}
+              currentUser={currentUser}
+              shopName={shopName}
+            />
+          </ErrorBoundary>
+        )}
+        {tab === "expense" && (
+          <ErrorBoundary T={T}>
+            <ExpenseTracker T={T} S={S}
+              expenses={expenses}
+              setExpenses={setExpenses}
+              showToast={showToast}
+              currentUser={currentUser}
+              invoices={invoices}
+              products={products}
             />
           </ErrorBoundary>
         )}
@@ -9048,6 +9368,10 @@ function SmartBusinessMgmt() {
               recoveryPinHash={recoveryPinHash} setRecoveryPinHash={setRecoveryPinHashState}
               cashLogs={cashLogs} setCashLogs={setCashLogs}
               suppliers={suppliers} setSuppliers={setSuppliers}
+              expenses={expenses} setExpenses={setExpenses}
+              returns={returns} setReturns={setReturns}
+              sessionTimeoutMin={sessionTimeoutMin} setSessionTimeoutMin={setSessionTimeoutMin}
+              auditLogs={auditLogs}
               hasPerm={hasPerm} fssReady={fssReady}
             />
             </React.Suspense>
@@ -9071,6 +9395,7 @@ function SmartBusinessMgmt() {
               paymentInvoices={paymentInvoices}
               shopName={shopName}
               anthropicKey={anthropicKey}
+              expenses={expenses}
             />
             </React.Suspense>
           </ErrorBoundary>
@@ -9195,6 +9520,8 @@ function SmartBusinessMgmt() {
           sendSMS={sendSMS} showToast={showToast} addTxn={addTxn}
           createPaymentInvoice={createPaymentInvoice}
           currentUser={currentUser}
+          auditLog={auditLog}
+          shopName={shopName}
           onClose={() => setModal(null)}
         />
       )}
@@ -10262,6 +10589,35 @@ function parseVoiceInvoiceCommand(text, customers, products) {
   return { customer, items, payType, transcript: text };
 }
 
+// Invoice state reducer — 32 useState → 1 useReducer (React best practice)
+const invoiceInitState = (preselectedCustomer) => ({
+  step: preselectedCustomer ? 2 : 1,
+  selCust: preselectedCustomer || null,
+  custSearch: "",
+  items: [],
+  payType: "cash",
+  partialAmt: "",
+  dueDate: "",
+  walkInPayType: "cash",
+  walkInPartialAmt: "",
+  walkInName: "",
+  walkInMobile: "",
+  walkInAddress: "",
+  walkInDueDate: "",
+  note: "",
+  discount: "",
+  discountPct: 0,
+  extraCharge: "",
+});
+function invoiceReducer(state, action) {
+  switch (action.type) {
+    case "SET": return { ...state, [action.key]: action.value };
+    case "SET_MANY": return { ...state, ...action.payload };
+    case "RESET": return invoiceInitState(null);
+    default: return state;
+  }
+}
+
 function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoices, setProducts, sendSMS, showToast, addTxn, shopName, btConnected, btDevice, onConnectBluetooth, createPaymentInvoice, preselectedCustomer, preselectedType, setTab, onDone, purchaseOrders = [], currentUser }) {
   const [step,       setStep]       = useState(preselectedCustomer ? 2 : 1);
   const [selCust,    setSelCust]    = useState(preselectedCustomer || null);
@@ -10282,6 +10638,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
   const [note,       setNote]       = useState("");
   const [discount,   setDiscount]   = useState(""); // টাকায় ডিসকাউন্ট
   const [discountPct, setDiscountPct] = useState(0); // % ডিসকাউন্ট (স্ট্যাকেবল)
+  const [redeemedPoints, setRedeemedPoints] = useState(0); // 🏆 loyalty point থেকে redeem করা amount
   const [extraCharge, setExtraCharge] = useState(""); // অতিরিক্ত চার্জ (৳)
   const [creating,   setCreating]   = useState(false);
   const [printInv,   setPrintInv]   = useState(null);
@@ -10352,9 +10709,8 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
   }, [productsWithSerial, catFilter, prodSearch]);
 
   // C1 fix: Invoice Step2 product pagination (৫০টি করে)
-  const INV_PROD_PAGE_SIZE = 50;
-  const invProdTotalPages = Math.ceil(filteredProducts.length / INV_PROD_PAGE_SIZE);
-  const pagedProducts = filteredProducts.slice((prodPage - 1) * INV_PROD_PAGE_SIZE, prodPage * INV_PROD_PAGE_SIZE);
+  // VirtuosoGrid ব্যবহার হচ্ছে — pagination ও pagedProducts সরানো হয়েছে
+  // filteredProducts সরাসরি VirtuosoGrid-এ যাচ্ছে
 
   const getQty = (pid) => (items.find(i => i.productId === pid)?.qty || 0);
 
@@ -10433,7 +10789,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
   const resetAll = () => {
     setStep(1); setSelCust(null); setCustSearch(""); setItems([]);
     setCatFilter("সব"); setProdSearch(""); setPayType("baki");
-    setPartialAmt(""); setNote(""); setDiscount(""); setDiscountPct(0); setExtraCharge(""); setPrintInv(null); setPrintMode(null); setShowAllSummaryItems(false);
+    setPartialAmt(""); setNote(""); setDiscount(""); setDiscountPct(0); setExtraCharge(""); setPrintInv(null); setPrintMode(null); setShowAllSummaryItems(false); setRedeemedPoints(0);
     onDone?.();
     setTab?.("dashboard");
   };
@@ -10547,6 +10903,24 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       selfUseCost,
     };
     setInvoices(prev => [inv, ...prev]);
+
+    // ── 🏆 Loyalty Points: earn (প্রতি ৳১০০-এ ১ পয়েন্ট) + redeem deduct একসাথে ──
+    // walk-in/self-use বাদে — শুধু নিবন্ধিত কাস্টমার পয়েন্ট পাবে/ব্যবহার করতে পারবে
+    if (!isWalkIn && !isSelfUse && selCust?.id) {
+      const earnedPoints = Math.floor((inv.total || 0) / 100);
+      if (earnedPoints > 0 || redeemedPoints > 0) {
+        setCustomers(prev => prev.map(c =>
+          c.id === selCust.id
+            ? { ...c, loyaltyPoints: Math.max(0, (c.loyaltyPoints || 0) - redeemedPoints + earnedPoints) }
+            : c
+        ));
+      }
+      if (redeemedPoints > 0) {
+        inv.redeemedPoints = redeemedPoints;
+        inv.redeemedValue  = Math.floor(redeemedPoints / 100) * 50;
+      }
+      if (earnedPoints > 0) inv.earnedPoints = earnedPoints;
+    }
 
     // ── Phase 1.3: Stats doc update — invoice save-এ running total বাড়াও ──────
     // Dashboard totals (todayTotal, todayProfit) এখন এই doc থেকে পড়তে পারবে।
@@ -10739,6 +11113,31 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
 
         {/* ── Single invoice ── */}
         <InvoiceReceipt T={T} S={S} inv={printInv} customer={c} type="buyer" />
+
+        {(c?.mobile || printInv.customerMobile) && (
+          <button
+            onClick={() => {
+              const mobile = c?.mobile || printInv.customerMobile;
+              const itemLines = (printInv.items || []).slice(0, 5)
+                .map(it => `${it.name} ×${it.qty}`).join(", ");
+              const more = (printInv.items || []).length > 5 ? ` +আরও ${printInv.items.length - 5}টি` : "";
+              const payLabel = printInv.payType === "cash" ? "নগদ" : printInv.payType === "baki" ? "বাকি" : "আংশিক";
+              let msg = `${shopName ? shopName + ": " : ""}${printInv.customerName || "প্রিয় কাস্টমার"}, আপনার ইনভয়েস তৈরি হয়েছে।\n`;
+              msg += `পণ্য: ${itemLines}${more}\n`;
+              msg += `মোট: ৳${Math.round(printInv.total).toLocaleString("en-US")} (${payLabel})`;
+              if (printInv.payType === "partial") {
+                msg += `\nনগদ: ৳${Math.round(printInv.paidAmount||0).toLocaleString("en-US")} · বাকি: ৳${Math.round(printInv.bakiAmount||0).toLocaleString("en-US")}`;
+              }
+              msg += "\nধন্যবাদ।";
+              shareViaWhatsApp(mobile, msg, showToast);
+            }}
+            style={{ ...S.saveBtn, width: "100%", marginTop: 10, marginBottom: 4,
+              background: "linear-gradient(135deg,#22c55e,#16a34a)",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="#fff"><path d="M17.6 6.32A8.86 8.86 0 0 0 12.05 4a8.94 8.94 0 0 0-7.93 13.13L3 21l3.95-1.04a8.93 8.93 0 0 0 4.95 1.5h.01a8.92 8.92 0 0 0 8.92-8.91 8.85 8.85 0 0 0-2.63-6.23zm-5.55 13.7h-.01a7.4 7.4 0 0 1-3.78-1.03l-.27-.16-2.81.74.75-2.74-.18-.28a7.43 7.43 0 0 1 6.31-11.4 7.36 7.36 0 0 1 5.24 2.17 7.34 7.34 0 0 1 2.18 5.25 7.43 7.43 0 0 1-7.43 7.45zm4.08-5.56c-.22-.11-1.32-.65-1.53-.73-.2-.07-.36-.11-.51.11-.15.22-.58.73-.71.88-.13.15-.26.16-.49.05-.22-.11-.95-.35-1.81-1.12a6.8 6.8 0 0 1-1.25-1.56c-.13-.22-.01-.34.1-.45.1-.1.22-.27.33-.4.11-.13.15-.22.22-.37.07-.15.04-.28-.02-.39-.06-.11-.51-1.23-.7-1.68-.18-.44-.37-.38-.51-.39h-.43c-.15 0-.39.06-.6.28-.2.22-.78.77-.78 1.87s.8 2.16.92 2.31c.11.15 1.58 2.42 3.84 3.39.54.23.96.37 1.28.47.54.17 1.03.15 1.42.09.43-.06 1.32-.54 1.51-1.06.19-.52.19-.96.13-1.06-.06-.09-.21-.15-.43-.26z"/></svg>
+            ইনভয়েস WhatsApp-এ পাঠান
+          </button>
+        )}
 
         {printMode && (
           <div ref={printRef} style={{ display: "none" }}>
@@ -10973,7 +11372,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
           }}>
             {filteredCustomers.map((c, idx) => (
               <div key={c.id}
-                onClick={() => { setSelCust(prev => (prev?.id === c.id ? null : c)); setCustSearch(""); }}
+                onClick={() => { setSelCust(prev => (prev?.id === c.id ? null : c)); setCustSearch(""); setRedeemedPoints(0); }}
                 style={{
                   display: "flex", alignItems: "center", gap: 12,
                   padding: "12px 14px", borderRadius: 14, cursor: "pointer",
@@ -11181,11 +11580,37 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
             {prodSearch && (
               <button onPointerDown={e => e.preventDefault()} onClick={e => { e.currentTarget.closest("div").querySelector("input")?.value !== undefined && (e.currentTarget.closest("div").querySelector("input").value = ""); setProdSearch(""); setProdPage(1); }} style={{ background:"#22c55e22",border:"none",color:"#22c55e",cursor:"pointer",borderRadius:8,width:22,height:22,fontSize:11,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0 }}>✕</button>
             )}
+            <button
+              onClick={async () => {
+                const code = await scanBarcode(showToast);
+                if (!code) return;
+                const match = products.find(p => p.barcode && p.barcode === code);
+                if (match) {
+                  changeQty(match, 1);
+                  showToast(`✅ ${match.name} যোগ হয়েছে`, "#22c55e");
+                } else {
+                  showToast(`বারকোড "${code}" এর কোনো পণ্য পাওয়া যায়নি`, "#f59e0b");
+                  setProdSearch(code); setProdPage(1);
+                }
+              }}
+              style={{ background:"#22c55e22", border:"1px solid #22c55e44", borderRadius:8,
+                width:30, height:30, display:"flex", alignItems:"center", justifyContent:"center",
+                cursor:"pointer", flexShrink:0 }}
+              title="বারকোড স্ক্যান করুন">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/>
+                <line x1="7" y1="8" x2="7" y2="16"/><line x1="11" y1="8" x2="11" y2="16"/>
+                <line x1="14" y1="8" x2="14" y2="16"/><line x1="17" y1="8" x2="17" y2="16"/>
+              </svg>
+            </button>
           </div>
 
-          {/* Product Grid — 2 column */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
-            {pagedProducts.map(p => {
+          {/* Product Grid — 2 column — Virtuoso Virtual */}
+          <VirtuosoGrid
+            style={{ height: "calc(100dvh - 340px)" }}
+            data={filteredProducts}
+            listClassName="sbm-inv-product-grid"
+            itemContent={(_, p) => {
               const qty = getQty(p.id);
               const batch = productBatchMap[p.id];
               const liveStock = (p.stock !== undefined && p.stock !== null) ? p.stock - qty : null;
@@ -11353,23 +11778,14 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                   )}
                 </div>
               );
-            })}
-            {filteredProducts.length === 0 && (
-              <div style={{ gridColumn: "1 / -1", textAlign: "center", color: T.sub, fontSize: 13, padding: "24px 0" }}>
-                কোনো পণ্য পাওয়া যায়নি
-              </div>
-            )}
-          </div>
-          {/* C1 fix: পণ্য pagination */}
-          {invProdTotalPages > 1 && (
-            <div style={{ display:"flex", justifyContent:"center", alignItems:"center", gap:8, marginBottom:8 }}>
-              <button disabled={prodPage <= 1} onClick={() => setProdPage(p => p - 1)}
-                style={{ background:"#1e293b", border:"1px solid #334155", color: prodPage<=1?"#475569":"#94a3b8", borderRadius:8, padding:"4px 12px", fontSize:12, cursor: prodPage<=1?"not-allowed":"pointer", fontFamily:"inherit" }}>←</button>
-              <span style={{ color:"#94a3b8", fontSize:12 }}>{prodPage} / {invProdTotalPages}</span>
-              <button disabled={prodPage >= invProdTotalPages} onClick={() => setProdPage(p => p + 1)}
-                style={{ background:"#1e293b", border:"1px solid #334155", color: prodPage>=invProdTotalPages?"#475569":"#94a3b8", borderRadius:8, padding:"4px 12px", fontSize:12, cursor: prodPage>=invProdTotalPages?"not-allowed":"pointer", fontFamily:"inherit" }}>→</button>
+            }}
+          />
+          {filteredProducts.length === 0 && (
+            <div style={{ textAlign: "center", color: T.sub, fontSize: 13, padding: "24px 0" }}>
+              কোনো পণ্য পাওয়া যায়নি
             </div>
           )}
+          {/* Virtuoso Grid — pagination সরানো হয়েছে */}
 
           {/* Qty Direct Edit Modal removed — qty box এখন সরাসরি নিউমেরিক ইনপুট */}
 
@@ -11480,6 +11896,60 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                 </>
               )}
             </div>
+
+            {/* 🏆 Loyalty Points Redeem — নিবন্ধিত কাস্টমারের জন্য */}
+            {!isSelfUse && !isWalkIn && selCust?.id && (selCust.loyaltyPoints || 0) >= 100 && (
+              <div className="qc-gradient-card" style={{ ...S.card, marginBottom:10, padding:"10px 14px",
+                border:"1.5px solid #fbbf2444", background:"linear-gradient(135deg,#78350f12,#fbbf2410)" }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                    <span style={{ fontSize:18 }}>🏆</span>
+                    <div>
+                      <div style={{ color:"#fbbf24", fontWeight:800, fontSize:12 }}>
+                        {selCust.name}-এর পয়েন্ট: {selCust.loyaltyPoints || 0}
+                      </div>
+                      <div style={{ color:T.sub, fontSize:10, marginTop:1 }}>
+                        ১০০ পয়েন্ট = ৳৫০ ছাড় · ব্যবহারযোগ্য: ৳{Math.floor((selCust.loyaltyPoints||0)/100)*50}
+                      </div>
+                    </div>
+                  </div>
+                  {redeemedPoints === 0 ? (
+                    <button
+                      onClick={() => {
+                        const maxRedeemable = Math.floor((selCust.loyaltyPoints || 0) / 100) * 100;
+                        const redeemValue = Math.floor(maxRedeemable / 100) * 50; // ১০০pt = ৫০৳
+                        const finalRedeemValue = Math.min(redeemValue, subtotal); // discount subtotal-এর বেশি না হয়
+                        const finalRedeemPoints = Math.floor(finalRedeemValue / 50) * 100;
+                        setRedeemedPoints(finalRedeemPoints);
+                        setDiscountPct(0);
+                        setDiscount(prev => (parseFloat(prev)||0) + finalRedeemValue);
+                      }}
+                      style={{ background:"linear-gradient(135deg,#d97706,#fbbf24)", border:"none",
+                        borderRadius:10, padding:"7px 14px", color:"#fff", fontWeight:800, fontSize:11,
+                        cursor:"pointer", fontFamily:"inherit", flexShrink:0 }}>
+                      ব্যবহার করুন
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        const redeemValue = Math.floor(redeemedPoints / 100) * 50;
+                        setDiscount(prev => Math.max(0, (parseFloat(prev)||0) - redeemValue));
+                        setRedeemedPoints(0);
+                      }}
+                      style={{ background:"#ef444422", border:"1px solid #ef444444",
+                        borderRadius:10, padding:"7px 14px", color:"#ef4444", fontWeight:800, fontSize:11,
+                        cursor:"pointer", fontFamily:"inherit", flexShrink:0 }}>
+                      ✕ বাতিল
+                    </button>
+                  )}
+                </div>
+                {redeemedPoints > 0 && (
+                  <div style={{ marginTop:6, color:"#22c55e", fontSize:11, fontWeight:700 }}>
+                    ✅ {redeemedPoints} পয়েন্ট ব্যবহার হয়েছে (৳{Math.floor(redeemedPoints/100)*50} ছাড়)
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Discount + Extra Charge — পাশাপাশি */}
             {!isSelfUse && (
@@ -11814,48 +12284,6 @@ function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [],
 
   const fmt = n => n?.toLocaleString("en-US") ?? "0";
 
-  // ── Mini SVG Line Chart ───────────────────────────────────────────────────
-  const MiniLineChart = ({ data, labels, color, label }) => {
-    const W = 320, H = 120, PAD = { top:12, right:8, bottom:24, left:40 };
-    const iW = W - PAD.left - PAD.right, iH = H - PAD.top - PAD.bottom;
-    const maxV = Math.max(...data, 1);
-    const fmtN = n => n >= 1000000 ? (n/1000000).toFixed(1)+"M" : n >= 1000 ? (n/1000).toFixed(0)+"K" : String(Math.round(n));
-    const xs = data.map((_, i) => PAD.left + (i / Math.max(data.length-1,1)) * iW);
-    const ys = data.map(v => PAD.top + iH - (v / maxV) * iH);
-    const pathD = data.map((_, i) => `${i===0?"M":"L"}${xs[i].toFixed(1)},${ys[i].toFixed(1)}`).join(" ");
-    const areaD = pathD + ` L${xs[xs.length-1].toFixed(1)},${(PAD.top+iH).toFixed(1)} L${xs[0].toFixed(1)},${(PAD.top+iH).toFixed(1)} Z`;
-    const grids = [0, 0.5, 1].map(f => maxV * f);
-    const gid = "g" + color.replace("#","");
-    return (
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
-          <div style={{ width:10, height:10, borderRadius:"50%", background:color, flexShrink:0 }} />
-          <span style={{ color:"#e2e8f0", fontWeight:800, fontSize:13 }}>{label}</span>
-        </div>
-        <svg viewBox={`0 0 ${W} ${H}`} style={{ width:"100%", height:H, display:"block" }}>
-          <defs>
-            <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={color} stopOpacity="0.4"/>
-              <stop offset="100%" stopColor={color} stopOpacity="0.02"/>
-            </linearGradient>
-          </defs>
-          {grids.map((v, i) => {
-            const y = PAD.top + iH - (v / maxV) * iH;
-            return <g key={i}>
-              <line x1={PAD.left} y1={y} x2={W-PAD.right} y2={y} stroke="#1a3a24" strokeWidth="0.8" strokeDasharray="3,3"/>
-              <text x={PAD.left-4} y={y+3.5} textAnchor="end" fontSize="8" fill="#64748b">{fmtN(v)}</text>
-            </g>;
-          })}
-          <path d={areaD} fill={`url(#${gid})`}/>
-          <path d={pathD} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-          {data.length <= 12 && data.map((v,i) => <circle key={i} cx={xs[i]} cy={ys[i]} r="3" fill={color} stroke="#071a0f" strokeWidth="1.5"/>)}
-          <line x1={PAD.left} y1={PAD.top+iH} x2={W-PAD.right} y2={PAD.top+iH} stroke="#1a3a24" strokeWidth="1"/>
-          {labels.map((l,i) => l.label ? <text key={i} x={xs[i]} y={H-5} textAnchor="middle" fontSize="8" fill="#64748b">{l.label}</text> : null)}
-        </svg>
-      </div>
-    );
-  };
-
   // ── Gradient Bar Row ──────────────────────────────────────────────────────
   const BAR_GRADS = [
     "linear-gradient(90deg,#22d3ee,#3b82f6,#6366f1)",
@@ -11916,7 +12344,28 @@ function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [],
             <span style={{ color:"#4ade80", fontWeight:800, fontSize:12 }}>মোট বিক্রয়</span>
             <span style={{ color:"#22c55e", fontSize:11, marginLeft:"auto" }}>৳{(chartData.revenue.reduce((a,b)=>a+b,0)).toLocaleString("en-US")}</span>
           </div>
-          <MiniLineChart data={chartData.revenue} labels={chartData.labels} color="#22c55e" label="" />
+          <ResponsiveContainer width="100%" height={110}>
+            <AreaChart data={chartData.labels.map((l,i) => ({ name: l.label||"", বিক্রয়: chartData.revenue[i]||0 }))}
+              margin={{ top:5, right:4, left:0, bottom:0 }}>
+              <defs>
+                <linearGradient id="revenueGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%"  stopColor="#22c55e" stopOpacity={0.4}/>
+                  <stop offset="95%" stopColor="#22c55e" stopOpacity={0}/>
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#22c55e11" />
+              <XAxis dataKey="name" tick={{ fill:"#4ade8099", fontSize:9 }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fill:"#4ade8099", fontSize:9 }} axisLine={false} tickLine={false}
+                tickFormatter={v => v>=1000 ? (v/1000).toFixed(0)+"K" : v} width={34} />
+              <Tooltip
+                contentStyle={{ background:"#0a1e0f", border:"1px solid #22c55e44", borderRadius:10, fontSize:12 }}
+                labelStyle={{ color:"#4ade80" }}
+                formatter={v => ["৳"+v.toLocaleString("en-US"), "বিক্রয়"]}
+              />
+              <Area type="monotone" dataKey="বিক্রয়" stroke="#22c55e" strokeWidth={2}
+                fill="url(#revenueGrad)" dot={false} activeDot={{ r:5, fill:"#22c55e" }} />
+            </AreaChart>
+          </ResponsiveContainer>
         </div>
         {/* Profit chart - purple bg */}
         <div style={{ background:"linear-gradient(135deg,#100520,#1e0d38)", borderRadius:14, padding:"12px 10px", border:"1px solid #a855f722" }}>
@@ -11925,9 +12374,134 @@ function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [],
             <span style={{ color:"#c084fc", fontWeight:800, fontSize:12 }}>মোট লাভ</span>
             <span style={{ color:"#a855f7", fontSize:11, marginLeft:"auto" }}>৳{(chartData.profit.reduce((a,b)=>a+b,0)).toLocaleString("en-US")}</span>
           </div>
-          <MiniLineChart data={chartData.profit} labels={chartData.labels} color="#a855f7" label="" />
+          <ResponsiveContainer width="100%" height={110}>
+            <AreaChart data={chartData.labels.map((l,i) => ({ name: l.label||"", লাভ: Math.max(0,chartData.profit[i]||0) }))}
+              margin={{ top:5, right:4, left:0, bottom:0 }}>
+              <defs>
+                <linearGradient id="profitGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%"  stopColor="#a855f7" stopOpacity={0.4}/>
+                  <stop offset="95%" stopColor="#a855f7" stopOpacity={0}/>
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#a855f711" />
+              <XAxis dataKey="name" tick={{ fill:"#c084fc99", fontSize:9 }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fill:"#c084fc99", fontSize:9 }} axisLine={false} tickLine={false}
+                tickFormatter={v => v>=1000 ? (v/1000).toFixed(0)+"K" : v} width={34} />
+              <Tooltip
+                contentStyle={{ background:"#12052a", border:"1px solid #a855f744", borderRadius:10, fontSize:12 }}
+                labelStyle={{ color:"#c084fc" }}
+                formatter={v => ["৳"+v.toLocaleString("en-US"), "লাভ"]}
+              />
+              <Area type="monotone" dataKey="লাভ" stroke="#a855f7" strokeWidth={2}
+                fill="url(#profitGrad)" dot={false} activeDot={{ r:5, fill:"#a855f7" }} />
+            </AreaChart>
+          </ResponsiveContainer>
         </div>
       </div>
+
+      {/* ── Top Products BarChart ── */}
+      {topProducts.length > 0 && (
+        <div style={{ background:"linear-gradient(135deg,#050d14,#0a1e30)", border:"1px solid #0ea5e922",
+          borderRadius:20, padding:"16px 14px", marginBottom:12 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:14 }}>
+            <div style={{ width:4, height:18, borderRadius:2, background:"linear-gradient(180deg,#f59e0b,#d97706)" }} />
+            <span style={{ color:"#fcd34d", fontWeight:900, fontSize:13 }}>🏆 সেরা পণ্য (৩০ দিন)</span>
+          </div>
+          <ResponsiveContainer width="100%" height={160}>
+            <BarChart data={topProducts.map(p => ({ name: p.name.length>8?p.name.slice(0,8)+"…":p.name, রাজস্ব: Math.round(p.revenue), পরিমাণ: p.qty }))}
+              layout="vertical" margin={{ top:0, right:40, left:0, bottom:0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" horizontal={false} />
+              <XAxis type="number" tick={{ fill:"#94a3b8", fontSize:9 }} axisLine={false} tickLine={false}
+                tickFormatter={v => v>=1000?(v/1000).toFixed(0)+"K":v} />
+              <YAxis type="category" dataKey="name" tick={{ fill:"#e2e8f0", fontSize:10, fontWeight:700 }}
+                axisLine={false} tickLine={false} width={60} />
+              <Tooltip
+                contentStyle={{ background:"#0a1e30", border:"1px solid #f59e0b44", borderRadius:10, fontSize:12 }}
+                formatter={(v,n) => [n==="রাজস্ব"?"৳"+v.toLocaleString("en-US"):v+"টি", n]}
+              />
+              <Bar dataKey="রাজস্ব" fill="#f59e0b" radius={[0,6,6,0]} barSize={14} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* ── Top Customers BarChart ── */}
+      {topCustomers.length > 0 && (
+        <div style={{ background:"linear-gradient(135deg,#050d14,#0a1e30)", border:"1px solid #0ea5e922",
+          borderRadius:20, padding:"16px 14px", marginBottom:12 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:14 }}>
+            <div style={{ width:4, height:18, borderRadius:2, background:"linear-gradient(180deg,#38bdf8,#0ea5e9)" }} />
+            <span style={{ color:"#7dd3fc", fontWeight:900, fontSize:13 }}>👑 সেরা কাস্টমার (৩০ দিন)</span>
+          </div>
+          <ResponsiveContainer width="100%" height={150}>
+            <BarChart data={topCustomers.map(c => ({ name: c.name.length>8?c.name.slice(0,8)+"…":c.name, মোট: Math.round(c.total), ইনভয়েস: c.count }))}
+              layout="vertical" margin={{ top:0, right:40, left:0, bottom:0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" horizontal={false} />
+              <XAxis type="number" tick={{ fill:"#94a3b8", fontSize:9 }} axisLine={false} tickLine={false}
+                tickFormatter={v => v>=1000?(v/1000).toFixed(0)+"K":v} />
+              <YAxis type="category" dataKey="name" tick={{ fill:"#e2e8f0", fontSize:10, fontWeight:700 }}
+                axisLine={false} tickLine={false} width={60} />
+              <Tooltip
+                contentStyle={{ background:"#0a1e30", border:"1px solid #38bdf844", borderRadius:10, fontSize:12 }}
+                formatter={(v,n) => [n==="মোট"?"৳"+v.toLocaleString("en-US"):v+"টি", n]}
+              />
+              <Bar dataKey="মোট" fill="#38bdf8" radius={[0,6,6,0]} barSize={14} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* ── Payment Type PieChart ── */}
+      {(() => {
+        const cash  = invoices.filter(i => i.payType==="cash").reduce((s,i)=>s+(i.total||0),0);
+        const baki  = invoices.filter(i => i.payType==="baki").reduce((s,i)=>s+(i.total||0),0);
+        const part  = invoices.filter(i => i.payType==="partial").reduce((s,i)=>s+(i.total||0),0);
+        const total = cash + baki + part;
+        if (total === 0) return null;
+        const pieData = [
+          { name:"নগদ", value:Math.round(cash), color:"#22c55e" },
+          { name:"বাকি", value:Math.round(baki), color:"#ef4444" },
+          { name:"আংশিক", value:Math.round(part), color:"#f59e0b" },
+        ].filter(d => d.value > 0);
+        return (
+          <div style={{ background:"linear-gradient(135deg,#050d14,#0a1e30)", border:"1px solid #0ea5e922",
+            borderRadius:20, padding:"16px 14px", marginBottom:12 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:14 }}>
+              <div style={{ width:4, height:18, borderRadius:2, background:"linear-gradient(180deg,#ec4899,#db2777)" }} />
+              <span style={{ color:"#f9a8d4", fontWeight:900, fontSize:13 }}>💳 পেমেন্ট ধরন</span>
+            </div>
+            <div style={{ display:"flex", alignItems:"center", gap:16 }}>
+              <ResponsiveContainer width={140} height={140}>
+                <PieChart>
+                  <Pie data={pieData} cx={65} cy={65} innerRadius={38} outerRadius={60}
+                    dataKey="value" paddingAngle={3} strokeWidth={0}>
+                    {pieData.map((entry,i) => <Cell key={i} fill={entry.color} />)}
+                  </Pie>
+                  <Tooltip
+                    contentStyle={{ background:"#0a1e30", border:"1px solid #ec489944", borderRadius:10, fontSize:12 }}
+                    formatter={v => ["৳"+v.toLocaleString("en-US")]}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+              <div style={{ flex:1 }}>
+                {pieData.map(d => (
+                  <div key={d.name} style={{ display:"flex", justifyContent:"space-between",
+                    alignItems:"center", marginBottom:8 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                      <div style={{ width:10, height:10, borderRadius:"50%", background:d.color, flexShrink:0 }} />
+                      <span style={{ color:"#e2e8f0", fontSize:12, fontWeight:700 }}>{d.name}</span>
+                    </div>
+                    <div style={{ textAlign:"right" }}>
+                      <div style={{ color:d.color, fontWeight:800, fontSize:12 }}>৳{d.value.toLocaleString("en-US")}</div>
+                      <div style={{ color:"#64748b", fontSize:10 }}>{total>0?Math.round(d.value/total*100):0}%</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
     </div>
   );
@@ -12136,128 +12710,296 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
 }
 
 // ── Profit Statement Card ─────────────────────────────────────────────────────
-function ProfitStatementCard({ T, S, invoices, products, shopName }) {
-  const [profitMonths, setProfitMonths] = useState(null);
+function ProfitStatementCard({ T, S, invoices, products, shopName, expenses = [] }) {
+  const [range,    setRange]    = React.useState("month"); // today|week|month|3m|6m|year|all
+  const [showDetail, setShowDetail] = React.useState(false);
+
+  const fmt  = n => Math.round(n || 0).toLocaleString("en-US");
+  const fmtD = n => (n || 0).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+
   const prodMap = React.useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
 
-  const buildDailyProfit = (months) => {
-    const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - months);
-    const dailyMap = {};
-    invoices.forEach(inv => {
-      const dateStr = inv.createdAt || inv.dateKey;
-      const d = dateStr ? new Date(dateStr) : null;
-      if (!d || isNaN(d.getTime()) || d < cutoff) return;
-      const key = d.toISOString().split("T")[0];
-      if (!dailyMap[key]) dailyMap[key] = 0;
-      const cost = (inv.items || []).reduce((cs, item) => {
-        const prod = prodMap.get(item.productId) || products.find(pr => pr.name === item.name);
-        return cs + _itemCostPrice(item, new Map([[item.productId, prod]])) * (item.qty || 1);
-      }, 0);
-      dailyMap[key] += (inv.total || 0) - cost;
+  // ── Date range compute ────────────────────────────────────────────────────
+  const { fromKey, label } = React.useMemo(() => {
+    const now = new Date();
+    if (range === "today")  return { fromKey: now.toISOString().split("T")[0], label: "আজকের" };
+    if (range === "week")   return { fromKey: new Date(now - 7*86400000).toISOString().split("T")[0], label: "৭ দিনের" };
+    if (range === "month")  return { fromKey: now.toISOString().slice(0,7), label: "এই মাসের" };
+    if (range === "3m")     return { fromKey: new Date(now.setMonth(now.getMonth()-3)).toISOString().split("T")[0], label: "৩ মাসের" };
+    if (range === "6m")     return { fromKey: new Date(now.setMonth(now.getMonth()-3)).toISOString().split("T")[0], label: "৬ মাসের" };
+    if (range === "year")   return { fromKey: new Date().getFullYear() + "-01-01", label: "এই বছরের" };
+    return { fromKey: "", label: "সব সময়ের" };
+  }, [range]);
+
+  // ── Full P&L calculation ──────────────────────────────────────────────────
+  const pnl = React.useMemo(() => {
+    const filtInv = invoices.filter(inv => {
+      if (!fromKey) return true;
+      const d = inv.dateKey || (inv.createdAt||"").split("T")[0];
+      return range === "month" ? d.startsWith(fromKey) : d >= fromKey;
     });
-    return Object.entries(dailyMap).sort((a, b) => b[0].localeCompare(a[0]));
-  };
+    const filtExp = expenses.filter(e => {
+      if (!fromKey) return true;
+      return range === "month" ? (e.dateKey||e.date||"").startsWith(fromKey) : (e.dateKey||e.date||"") >= fromKey;
+    });
 
-  const handleProfitPrint = (months) => {
-    const rows = buildDailyProfit(months);
-    const totalP = rows.reduce((s, [, v]) => s + v, 0);
-    const rowsHtml = rows.map(([date, profit], i) =>
-      `<tr>
-        <td class="serial">${i+1}</td>
-        <td>${date}</td>
-        <td class="num" style="color:${profit >= 0 ? "#16a34a" : "#dc2626"}">৳${Number(profit.toFixed(2)).toLocaleString("en-US")}</td>
-      </tr>`
+    let revenue = 0, cogs = 0, cashSales = 0, bakiSales = 0;
+    const dailyMap = {};
+    const topProducts = {};
+
+    filtInv.forEach(inv => {
+      const total = inv.total || 0;
+      revenue += total;
+      if (inv.payType === "cash") cashSales += total;
+      else if (inv.payType === "baki") bakiSales += total;
+      else if (inv.payType === "partial") { cashSales += inv.paid||0; bakiSales += inv.due||0; }
+
+      const dateKey = inv.dateKey || (inv.createdAt||"").split("T")[0];
+      if (!dailyMap[dateKey]) dailyMap[dateKey] = { revenue: 0, profit: 0 };
+      dailyMap[dateKey].revenue += total;
+
+      (inv.items||[]).forEach(it => {
+        const p = prodMap.get(it.productId);
+        const cost = (p?.costPrice||0) * (it.qty||1);
+        cogs += cost;
+        dailyMap[dateKey].profit += (it.price||0)*(it.qty||1) - cost;
+        const key = it.name || it.productId;
+        if (!topProducts[key]) topProducts[key] = { name: it.name||key, revenue: 0, qty: 0 };
+        topProducts[key].revenue += (it.price||0)*(it.qty||1);
+        topProducts[key].qty += it.qty||1;
+      });
+    });
+
+    const totalExpense = filtExp.reduce((s, e) => s + (e.amount||0), 0);
+    const expByCat    = {};
+    filtExp.forEach(e => { expByCat[e.category] = (expByCat[e.category]||0) + (e.amount||0); });
+
+    const grossProfit = revenue - cogs;
+    const netProfit   = grossProfit - totalExpense;
+    const grossMargin = revenue > 0 ? (grossProfit / revenue * 100) : 0;
+    const netMargin   = revenue > 0 ? (netProfit   / revenue * 100) : 0;
+
+    const dailyRows = Object.entries(dailyMap)
+      .sort((a,b) => b[0].localeCompare(a[0]));
+    const topProds = Object.values(topProducts)
+      .sort((a,b) => b.revenue - a.revenue).slice(0,5);
+
+    return {
+      revenue, cogs, grossProfit, totalExpense, netProfit,
+      grossMargin, netMargin, cashSales, bakiSales,
+      invoiceCount: filtInv.length, expenseCount: filtExp.length,
+      dailyRows, topProds, expByCat,
+    };
+  }, [invoices, expenses, prodMap, fromKey, range]);
+
+  // ── Print ─────────────────────────────────────────────────────────────────
+  const handlePrint = React.useCallback(() => {
+    const rowsHtml = pnl.dailyRows.map(([date, d], i) =>
+      `<tr><td class="serial">${i+1}</td><td>${date}</td>
+       <td class="num">৳${fmtD(d.revenue)}</td>
+       <td class="num" style="color:${d.profit>=0?"#16a34a":"#dc2626"}">৳${fmtD(d.profit)}</td></tr>`
     ).join("");
-    const html = buildPdfHtml(`
+    const summary = `
       <div class="section">
+        <h3>${label} P&L সারসংক্ষেপ — ${shopName}</h3>
+        <table><tbody>
+          <tr><td>মোট রাজস্ব</td><td class="num">৳${fmt(pnl.revenue)}</td></tr>
+          <tr><td>পণ্যের ক্রয়মূল্য (COGS)</td><td class="num">৳${fmt(pnl.cogs)}</td></tr>
+          <tr><td>মোট গ্রস লাভ</td><td class="num">৳${fmt(pnl.grossProfit)} (${pnl.grossMargin.toFixed(1)}%)</td></tr>
+          <tr><td>মোট খরচ</td><td class="num">৳${fmt(pnl.totalExpense)}</td></tr>
+          <tr style="font-weight:900"><td>নেট লাভ / লোকসান</td><td class="num" style="color:${pnl.netProfit>=0?"#16a34a":"#dc2626"}">৳${fmt(pnl.netProfit)} (${pnl.netMargin.toFixed(1)}%)</td></tr>
+        </tbody></table>
+      </div>
+      <div class="section">
+        <h3>দৈনিক বিবরণ</h3>
         <table>
-          <thead><tr><th class="serial">#</th><th>তারিখ</th><th class="num">মোট লাভ</th></tr></thead>
+          <thead><tr><th class="serial">#</th><th>তারিখ</th><th class="num">রাজস্ব</th><th class="num">লাভ</th></tr></thead>
           <tbody>${rowsHtml}</tbody>
-          <tfoot><tr class="total-row"><td class="serial"></td><td><b>মোট</b></td><td class="num">৳${Math.round(totalP).toLocaleString("en-US")}</td></tr></tfoot>
         </table>
-      </div>`, shopName, `প্রফিট স্টেটমেন্ট — শেষ ${months} মাস`);
+      </div>`;
+    const html = buildPdfHtml(summary, shopName, `P&L Statement — ${label}`);
     openPrintWindow(html);
-  };
+  }, [pnl, label, shopName]);
 
-  const handleProfitWhatsApp = (months) => {
-    const rows = buildDailyProfit(months);
-    const totalP = rows.reduce((s, [, v]) => s + v, 0);
-    const lines = rows.map(([date, profit]) => `${date}: ৳${Number(profit.toFixed(2)).toLocaleString("en-US")}`).join("\n");
-    const msg = encodeURIComponent(`প্রফিট স্টেটমেন্ট — ${shopName}\nশেষ ${months} মাস\n\n${lines}\n\nমোট লাভ: ৳${Math.round(totalP).toLocaleString("en-US")}`);
-    window.open(`https://wa.me/?text=${msg}`, "_blank");
-  };
+  const RANGES = [
+    { id:"today", label:"আজ" }, { id:"week", label:"৭ দিন" },
+    { id:"month", label:"এই মাস" }, { id:"3m", label:"৩ মাস" },
+    { id:"6m", label:"৬ মাস" }, { id:"year", label:"এই বছর" },
+    { id:"all", label:"সব" },
+  ];
 
-  const fmt = n => Math.round(n)?.toLocaleString("en-US") ?? "0";
+  const isProfit = pnl.netProfit >= 0;
 
   return (
-    <div style={{ background:"linear-gradient(145deg,#1a0a2e,#2d1052,#1a0a2e)", borderRadius:18, padding:"16px 16px", marginBottom:14, border:"1.5px solid #7c3aed44", boxShadow:"0 6px 28px #7c3aed33, 0 0 0 1px #a855f722", position:"relative", overflow:"hidden" }}>
-      <div style={{ position:"absolute", inset:0, background:"radial-gradient(ellipse at 20% 30%,#7c3aed18 0%,transparent 60%), radial-gradient(ellipse at 80% 70%,#a855f715 0%,transparent 60%)", pointerEvents:"none" }} />
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: profitMonths !== null ? 12 : 0, position:"relative" }}>
+    <div style={{ background:"linear-gradient(145deg,#1a0a2e,#2d1052,#1a0a2e)", borderRadius:18,
+      padding:"16px", marginBottom:14, border:"1.5px solid #7c3aed44",
+      boxShadow:"0 6px 28px #7c3aed33", position:"relative", overflow:"hidden" }}>
+      <div style={{ position:"absolute", inset:0, background:"radial-gradient(ellipse at 20% 30%,#7c3aed18 0%,transparent 60%)", pointerEvents:"none" }} />
+
+      {/* Header */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12, position:"relative" }}>
         <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-          <div style={{ width:36, height:36, borderRadius:10, background:"linear-gradient(135deg,#7c3aed,#a855f7)", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 4px 12px #7c3aed44", flexShrink:0 }}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+          <div style={{ width:36, height:36, borderRadius:10, background:"linear-gradient(135deg,#7c3aed,#a855f7)",
+            display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 4px 12px #7c3aed44" }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+            </svg>
           </div>
           <div>
-            <div style={{ color:"#fff", fontWeight:800, fontSize:14, letterSpacing:0.2 }}>প্রফিট স্টেটমেন্ট</div>
-            <div style={{ color:"#c4b5fd", fontSize:11, fontWeight:600 }}>মাসিক লাভের ইতিহাস দেখুন</div>
+            <div style={{ color:"#fff", fontWeight:800, fontSize:14 }}>P&L Statement</div>
+            <div style={{ color:"#c4b5fd", fontSize:11 }}>{label} · {pnl.invoiceCount}টি ইনভয়েস</div>
           </div>
         </div>
-        <button style={{ background: profitMonths !== null ? "rgba(255,255,255,0.15)" : "linear-gradient(135deg,#7c3aed,#a855f7)", color:"#fff", border: profitMonths !== null ? "1px solid rgba(255,255,255,0.3)" : "none", borderRadius:10, padding:"7px 14px", fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit", boxShadow: profitMonths !== null ? "none" : "0 4px 14px #7c3aed55", transition:"all 0.2s" }}
-          onClick={() => setProfitMonths(profitMonths !== null ? null : 1)}>
-          {profitMonths !== null ? "✕ বন্ধ" : "তৈরি করুন →"}
-        </button>
+        <div style={{ display:"flex", gap:6 }}>
+          <button onClick={() => setShowDetail(v => !v)}
+            style={{ background:"rgba(139,92,246,0.2)", color:"#c4b5fd", border:"1px solid #7c3aed44",
+              borderRadius:10, padding:"7px 12px", fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
+            {showDetail ? "সংক্ষিপ্ত" : "বিস্তারিত"}
+          </button>
+          <button onClick={handlePrint}
+            style={{ background:"linear-gradient(135deg,#7c3aed,#a855f7)", color:"#fff", border:"none",
+              borderRadius:10, padding:"7px 12px", fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
+            🖨️ Print
+          </button>
+        </div>
       </div>
-      {profitMonths !== null && (
-        <div style={{ position:"relative" }}>
-          <div style={{ color:"#c4b5fd", fontSize:12, marginBottom:10, fontWeight:600 }}>কত মাসের প্রফিট ইতিহাস চান?</div>
-          <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:10 }}>
-            {[1,2,3,4,5,6,9,12].map(m => (
-              <button key={m}
-                style={{ background: profitMonths===m?"linear-gradient(135deg,#7c3aed,#a855f7)":"rgba(139,92,246,0.15)", color: profitMonths===m?"#fff":"#c4b5fd",
-                  border:`1px solid ${profitMonths===m?"#a855f7":"#7c3aed44"}`, borderRadius:8, padding:"6px 12px", fontSize:13,
-                  fontWeight:700, cursor:"pointer", fontFamily:"inherit", boxShadow: profitMonths===m?"0 3px 10px #7c3aed55":"none", transition:"all 0.15s" }}
-                onClick={() => setProfitMonths(m)}>
-                {m} মাস
-              </button>
-            ))}
+
+      {/* Range selector */}
+      <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:14, position:"relative" }}>
+        {RANGES.map(r => (
+          <button key={r.id} onClick={() => setRange(r.id)}
+            style={{ padding:"5px 10px", borderRadius:16, border:`1px solid ${range===r.id?"#a855f7":"#7c3aed44"}`,
+              background: range===r.id ? "linear-gradient(135deg,#7c3aed,#a855f7)" : "rgba(139,92,246,0.1)",
+              color: range===r.id ? "#fff" : "#c4b5fd",
+              fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit", transition:"all 0.15s" }}>
+            {r.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Net Profit Hero */}
+      <div style={{ background: isProfit ? "rgba(34,197,94,0.12)" : "rgba(239,68,68,0.12)",
+        border:`1px solid ${isProfit?"#22c55e44":"#ef444444"}`,
+        borderRadius:14, padding:"14px 16px", marginBottom:12, position:"relative",
+        display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+        <div>
+          <div style={{ color: isProfit?"#86efac":"#fca5a5", fontSize:12, fontWeight:700, marginBottom:2 }}>
+            {isProfit ? "✅ নেট লাভ" : "❌ নেট লোকসান"}
           </div>
-          <div style={{ color:"#c4b5fd", fontSize:11, marginBottom:10 }}>নির্বাচিত: শেষ <b style={{color:"#fff"}}>{profitMonths} মাস</b></div>
-          {/* Preview table */}
-          {(() => {
-            const rows = buildDailyProfit(profitMonths);
-            const totalP = rows.reduce((s,[,v])=>s+v,0);
-            return (
-              <div style={{ background:"rgba(0,0,0,0.3)", borderRadius:10, padding:"10px 12px", marginBottom:10, maxHeight:160, overflowY:"auto" }}>
-                <div style={{ color:"#c4b5fd", fontSize:11, fontWeight:700, marginBottom:6 }}>মোট লাভ: <span style={{color:"#a855f7"}}>৳{fmt(totalP)}</span></div>
-                {rows.slice(0,10).map(([date, profit]) => (
-                  <div key={date} style={{ display:"flex", justifyContent:"space-between", padding:"4px 0", borderBottom:"1px solid #7c3aed22" }}>
-                    <span style={{ color:"#e2e8f0", fontSize:12 }}>{date}</span>
-                    <span style={{ color: profit>=0?"#a855f7":"#ef4444", fontWeight:700, fontSize:12 }}>৳{fmt(profit)}</span>
+          <div style={{ color: isProfit?"#22c55e":"#ef4444", fontWeight:900, fontSize:26 }}>
+            ৳{fmt(Math.abs(pnl.netProfit))}
+          </div>
+          <div style={{ color:"#94a3b8", fontSize:11, marginTop:2 }}>
+            নেট মার্জিন: {pnl.netMargin.toFixed(1)}%
+          </div>
+        </div>
+        <div style={{ textAlign:"right" }}>
+          <div style={{ color:"#c4b5fd", fontSize:11, marginBottom:4 }}>গ্রস মার্জিন</div>
+          <div style={{ color:"#a855f7", fontWeight:900, fontSize:18 }}>{pnl.grossMargin.toFixed(1)}%</div>
+          <div style={{ color:"#94a3b8", fontSize:10, marginTop:2 }}>{pnl.invoiceCount}টি ইনভয়েস</div>
+        </div>
+      </div>
+
+      {/* P&L Waterfall */}
+      {[
+        { label:"মোট রাজস্ব",        value: pnl.revenue,       color:"#22c55e", icon:"💰", pct:100 },
+        { label:"(-) ক্রয়মূল্য (COGS)", value: pnl.cogs,        color:"#f59e0b", icon:"📦", pct: pnl.revenue>0?pnl.cogs/pnl.revenue*100:0 },
+        { label:"= গ্রস লাভ",        value: pnl.grossProfit,   color:"#6366f1", icon:"📊", pct: pnl.revenue>0?Math.abs(pnl.grossProfit)/pnl.revenue*100:0 },
+        { label:"(-) মোট খরচ",       value: pnl.totalExpense,  color:"#ef4444", icon:"💸", pct: pnl.revenue>0?pnl.totalExpense/pnl.revenue*100:0 },
+        { label:"= নেট লাভ",         value: pnl.netProfit,     color: isProfit?"#22c55e":"#ef4444", icon: isProfit?"📈":"📉",
+          pct: pnl.revenue>0?Math.abs(pnl.netProfit)/pnl.revenue*100:0 },
+      ].map(row => (
+        <div key={row.label} style={{ marginBottom:8, position:"relative" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:3 }}>
+            <span style={{ color:"#c4b5fd", fontSize:12, fontWeight:700 }}>{row.icon} {row.label}</span>
+            <span style={{ color:row.color, fontWeight:900, fontSize:13 }}>
+              {row.value < 0 ? "-" : ""}৳{fmt(Math.abs(row.value))}
+              <span style={{ color:"#64748b", fontSize:10, fontWeight:400, marginLeft:4 }}>
+                ({row.pct.toFixed(0)}%)
+              </span>
+            </span>
+          </div>
+          <div style={{ height:5, borderRadius:5, background:"rgba(255,255,255,0.06)" }}>
+            <div style={{ height:"100%", width:`${Math.min(row.pct,100)}%`,
+              background:row.color, borderRadius:5, transition:"width 0.6s ease",
+              opacity:0.8 }} />
+          </div>
+        </div>
+      ))}
+
+      {/* Payment breakdown */}
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginTop:12, position:"relative" }}>
+        {[
+          { label:"নগদ বিক্রয়", value:pnl.cashSales, color:"#22c55e" },
+          { label:"বাকি বিক্রয়", value:pnl.bakiSales, color:"#f59e0b" },
+          { label:"মোট খরচ",   value:pnl.totalExpense, color:"#ef4444" },
+        ].map(c => (
+          <div key={c.label} style={{ background:"rgba(255,255,255,0.05)", borderRadius:10, padding:"10px 8px", textAlign:"center", border:"1px solid rgba(255,255,255,0.07)" }}>
+            <div style={{ color:c.color, fontWeight:900, fontSize:13 }}>৳{fmt(c.value)}</div>
+            <div style={{ color:"#94a3b8", fontSize:10, marginTop:2 }}>{c.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Detail section */}
+      {showDetail && (
+        <div style={{ marginTop:14, position:"relative" }}>
+          {/* Expense by category */}
+          {Object.keys(pnl.expByCat).length > 0 && (
+            <div style={{ marginBottom:12 }}>
+              <div style={{ color:"#c4b5fd", fontSize:12, fontWeight:700, marginBottom:8 }}>💸 খরচের বিভাজন</div>
+              {Object.entries(pnl.expByCat).sort((a,b)=>b[1]-a[1]).map(([cat, amt]) => (
+                <div key={cat} style={{ display:"flex", justifyContent:"space-between",
+                  padding:"5px 0", borderBottom:"1px solid rgba(255,255,255,0.05)" }}>
+                  <span style={{ color:"#e2e8f0", fontSize:12 }}>{cat}</span>
+                  <span style={{ color:"#ef4444", fontWeight:700, fontSize:12 }}>৳{fmt(amt)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Top products */}
+          {pnl.topProds.length > 0 && (
+            <div style={{ marginBottom:12 }}>
+              <div style={{ color:"#c4b5fd", fontSize:12, fontWeight:700, marginBottom:8 }}>🏆 সেরা পণ্য (রাজস্ব)</div>
+              {pnl.topProds.map((p, i) => (
+                <div key={p.name} style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+                  padding:"5px 0", borderBottom:"1px solid rgba(255,255,255,0.05)" }}>
+                  <span style={{ color:"#e2e8f0", fontSize:12 }}>
+                    <span style={{ color:"#a855f7", fontWeight:800, marginRight:6 }}>#{i+1}</span>
+                    {p.name}
+                  </span>
+                  <span style={{ color:"#22c55e", fontWeight:700, fontSize:12 }}>৳{fmt(p.revenue)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Daily breakdown */}
+          {pnl.dailyRows.length > 0 && (
+            <div>
+              <div style={{ color:"#c4b5fd", fontSize:12, fontWeight:700, marginBottom:8 }}>📅 দৈনিক বিবরণ</div>
+              <div style={{ maxHeight:200, overflowY:"auto", background:"rgba(0,0,0,0.3)", borderRadius:10, padding:"8px 10px" }}>
+                {pnl.dailyRows.map(([date, d]) => (
+                  <div key={date} style={{ display:"flex", justifyContent:"space-between",
+                    padding:"4px 0", borderBottom:"1px solid rgba(255,255,255,0.05)" }}>
+                    <span style={{ color:"#94a3b8", fontSize:11 }}>{date}</span>
+                    <div style={{ display:"flex", gap:12 }}>
+                      <span style={{ color:"#c4b5fd", fontSize:11 }}>৳{fmt(d.revenue)}</span>
+                      <span style={{ color: d.profit>=0?"#22c55e":"#ef4444", fontWeight:700, fontSize:11 }}>
+                        ৳{fmt(d.profit)}
+                      </span>
+                    </div>
                   </div>
                 ))}
-                {rows.length > 10 && <div style={{ color:"#64748b", fontSize:11, marginTop:6, textAlign:"center" }}>আরো {rows.length-10}টি...</div>}
               </div>
-            );
-          })()}
-          <div style={{ display:"flex", gap:8 }}>
-            <button style={{ flex:1, background:"linear-gradient(135deg,#1e40af,#3b82f6)", color:"#fff", border:"none", borderRadius:10, padding:"11px", fontWeight:700, cursor:"pointer", fontFamily:"inherit", fontSize:13, display:"flex", alignItems:"center", justifyContent:"center", gap:6, boxShadow:"0 4px 14px #3b82f655" }}
-              onClick={() => handleProfitPrint(profitMonths)}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>
-              Print
-            </button>
-            <button style={{ flex:1, background:"linear-gradient(135deg,#065f46,#10b981)", color:"#fff", border:"none", borderRadius:10, padding:"11px", fontWeight:700, cursor:"pointer", fontFamily:"inherit", fontSize:13, display:"flex", alignItems:"center", justifyContent:"center", gap:6, boxShadow:"0 4px 14px #22c55e44" }}
-              onClick={() => handleProfitWhatsApp(profitMonths)}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413Z"/></svg>
-              WhatsApp
-            </button>
-          </div>
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
-
-
 
 // ── DashPurchaseEntryModal — হোম পেজ থেকে সরাসরি ক্রয় এন্ট্রি ──────────────
 function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements, purchaseOrders = [], setPurchaseOrders, suppliers = [], onBack }) {
@@ -12569,7 +13311,7 @@ function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements
 }
 
 // ── Dashboard ──────────────────────────────────────────────────────────────────
-function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, currentUser, onGoToPurchaseEntry, setProducts, setStockMovements, setPurchaseOrders, cashLogs, setCashLogs }) {
+function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, currentUser, onGoToPurchaseEntry, setProducts, setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null }) {
   const [viewInv,    setViewInv]    = useState(null);
   const [viewPayInv, setViewPayInv] = useState(null);
   const [listDate,   setListDate]   = useState(() => todayEn()); // YYYY-MM-DD
@@ -13718,7 +14460,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
           {dashModal.rows.length === 0 && <div style={S.empty}>কোনো তথ্য নেই</div>}
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {dashModal.rows.map((row, i) => (
-              <div key={row.id || row.name + (row.mobile || "") || i} className="qc-gradient-card" style={{ ...S.card, marginBottom: 0, padding: "12px 14px" }}>
+              <div key={i} className="qc-gradient-card" style={{ ...S.card, marginBottom: 0, padding: "12px 14px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
                   <div style={{ ...S.avatar, width: 34, height: 34, fontSize: 13 }}>{row.name[0]}</div>
                   <div>
@@ -14231,7 +14973,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
           {filteredItems.length === 0 && <div style={S.empty}>এই সময়ে কোনো জমার রশিদ নেই</div>}
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {filteredItems.map((pinv, i) => (
-              <div key={pinv.id || i} className="qc-gradient-card" style={{ ...S.card, marginBottom: 0, padding: "12px 14px" }}>
+              <div key={i} className="qc-gradient-card" style={{ ...S.card, marginBottom: 0, padding: "12px 14px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <div style={{ ...S.avatar, width: 34, height: 34, fontSize: 13, background: "linear-gradient(135deg,#0369a1,#0ea5e9)" }}>{pinv.customerName[0]}</div>
@@ -14545,6 +15287,172 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
           })}
         </div>
 
+        {/* ══ Worker AI: স্টক সতর্কতা ══ */}
+        {reorderAlerts.length > 0 && (
+          <div style={{ marginBottom: 12, background: reorderAlerts.some(a=>a.status==="red") ? "#ef444410" : "#f59e0b10", border: `1px solid ${reorderAlerts.some(a=>a.status==="red") ? "#ef444430" : "#f59e0b30"}`, borderRadius: 14, padding: "12px 14px" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
+              <div style={{ width:4, height:20, borderRadius:2, background: reorderAlerts.some(a=>a.status==="red") ? "linear-gradient(180deg,#ef4444,#b91c1c)" : "linear-gradient(180deg,#f59e0b,#d97706)", flexShrink:0 }} />
+              <span style={{ color: reorderAlerts.some(a=>a.status==="red") ? "#fca5a5" : "#fcd34d", fontWeight:900, fontSize:13, letterSpacing:0.5 }}>
+                🔮 AI স্টক পূর্বাভাস
+              </span>
+              <div style={{ marginLeft:"auto", background:"#ef444415", border:"1px solid #ef444430", borderRadius:8, padding:"3px 10px" }}>
+                <span style={{ color:"#fca5a5", fontSize:11, fontWeight:900 }}>{reorderAlerts.length}টি পণ্য</span>
+              </div>
+            </div>
+            {reorderAlerts.filter(a=>a.status==="red").slice(0,3).map(a => (
+              <div key={a.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 0", borderBottom:"1px solid #ef444415" }}>
+                <div>
+                  <div style={{ color:"#fca5a5", fontSize:12, fontWeight:700 }}>🔴 {a.name}</div>
+                  <div style={{ color:"#94a3b8", fontSize:10 }}>দৈনিক বিক্রয়: {a.avgDaily}টি · স্টক: {a.stock}টি</div>
+                </div>
+                <div style={{ background:"#ef444422", border:"1px solid #ef444440", borderRadius:8, padding:"4px 10px", textAlign:"center" }}>
+                  <div style={{ color:"#ef4444", fontSize:16, fontWeight:900, lineHeight:1 }}>{a.daysLeft}</div>
+                  <div style={{ color:"#fca5a5", fontSize:9, fontWeight:700 }}>দিন বাকি</div>
+                </div>
+              </div>
+            ))}
+            {reorderAlerts.filter(a=>a.status==="yellow").length > 0 && (
+              <div style={{ marginTop:8, color:"#fcd34d", fontSize:11, fontWeight:700 }}>
+                🟡 আরও {reorderAlerts.filter(a=>a.status==="yellow").length}টি পণ্য ১৪ দিনের মধ্যে শেষ হবে
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ══ এই মাসের P&L Quick View ══ */}
+        {(() => {
+          const monthKey = new Date().toISOString().slice(0,7);
+          const prodMap  = new Map((products||[]).map(p => [p.id, p]));
+          const mInvs    = (invoices||[]).filter(i => (i.dateKey||"").startsWith(monthKey));
+          const mExps    = (expenses||[]).filter(e => (e.dateKey||e.date||"").startsWith(monthKey));
+          const revenue  = mInvs.reduce((s,i) => s+(i.total||0), 0);
+          const cogs     = mInvs.reduce((s,inv) => s+(inv.items||[]).reduce((c,it) => {
+            const p = prodMap.get(it.productId); return c+(p?.costPrice||0)*(it.qty||1);
+          }, 0), 0);
+          const expense  = mExps.reduce((s,e) => s+(e.amount||0), 0);
+          const net      = revenue - cogs - expense;
+          const margin   = revenue > 0 ? (net/revenue*100).toFixed(1) : "0.0";
+          if (revenue === 0) return null;
+          return (
+            <div style={{ marginBottom:12, background: net>=0?"rgba(34,197,94,0.08)":"rgba(239,68,68,0.08)",
+              border:`1px solid ${net>=0?"#22c55e30":"#ef444430"}`, borderRadius:14, padding:"12px 14px" }}
+              onClick={() => setTab("ai")}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <div style={{ width:4, height:20, borderRadius:2, background:`linear-gradient(180deg,${net>=0?"#22c55e":"#ef4444"},${net>=0?"#16a34a":"#dc2626"})` }} />
+                  <span style={{ color: net>=0?"#86efac":"#fca5a5", fontWeight:900, fontSize:13 }}>
+                    📊 এই মাসের P&L
+                  </span>
+                </div>
+                <span style={{ color: net>=0?"#22c55e":"#ef4444", fontWeight:900, fontSize:16 }}>
+                  {net>=0?"":"-"}৳{Math.abs(Math.round(net)).toLocaleString("en-US")}
+                </span>
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
+                {[
+                  { label:"রাজস্ব", value:revenue, color:"#22c55e" },
+                  { label:"খরচ+COGS", value:cogs+expense, color:"#f59e0b" },
+                  { label:"মার্জিন", value:margin+"%", color: net>=0?"#6366f1":"#ef4444", isStr:true },
+                ].map(c => (
+                  <div key={c.label} style={{ background:"rgba(255,255,255,0.04)", borderRadius:8, padding:"6px 8px", textAlign:"center" }}>
+                    <div style={{ color:c.color, fontWeight:900, fontSize:12 }}>
+                      {c.isStr ? c.value : "৳"+Math.round(c.value).toLocaleString("en-US")}
+                    </div>
+                    <div style={{ color:"#64748b", fontSize:10 }}>{c.label}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ══ আজকের খরচ সারসংক্ষেপ ══ */}
+        {(() => {
+          const todayK = new Date().toISOString().split("T")[0];
+          const todayExpenses = expenses.filter(e => e.date === todayK);
+          const todayExpTotal = todayExpenses.reduce((s, e) => s + (e.amount || 0), 0);
+          if (todayExpenses.length === 0) return null;
+          return (
+            <div style={{ marginBottom: 12, background: "#ef444410", border: "1px solid #ef444430", borderRadius: 14, padding: "12px 14px" }}
+              onClick={() => setTab("expense")} >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ width: 4, height: 20, borderRadius: 2, background: "linear-gradient(180deg,#f59e0b,#ef4444)", flexShrink: 0 }} />
+                  <span style={{ color: "#fca5a5", fontWeight: 900, fontSize: 13 }}>💸 আজকের খরচ</span>
+                </div>
+                <span style={{ color: "#ef4444", fontWeight: 900, fontSize: 16 }}>৳{Number(todayExpTotal).toLocaleString("en-US")}</span>
+              </div>
+              <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {todayExpenses.slice(0, 3).map(e => (
+                  <span key={e.id} style={{ background: "#ef444415", border: "1px solid #ef444425", borderRadius: 8, padding: "3px 8px", color: "#fca5a5", fontSize: 11, fontWeight: 700 }}>
+                    {e.category}: ৳{Number(e.amount).toLocaleString("en-US")}
+                  </span>
+                ))}
+                {todayExpenses.length > 3 && <span style={{ color: "#ef4444", fontSize: 11, fontWeight: 700 }}>+{todayExpenses.length - 3}টি আরও</span>}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ══ Cash Flow Forecast (৭ দিন) ══ */}
+        {cashFlow && (() => {
+          const fmt = n => Math.abs(Math.round(n || 0)).toLocaleString("en-US");
+          const isPositive = cashFlow.totalNet >= 0;
+          return (
+            <div style={{ marginBottom:12, background:"linear-gradient(135deg,#0a1628,#0d2040)",
+              border:"1px solid #6366f133", borderRadius:14, padding:"12px 14px" }}
+              onClick={() => setTab && setTab("ai")}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <div style={{ width:4, height:20, borderRadius:2,
+                    background:`linear-gradient(180deg,${isPositive?"#22c55e":"#ef4444"},${isPositive?"#16a34a":"#dc2626"})` }} />
+                  <span style={{ color:"#c4b5fd", fontWeight:900, fontSize:13 }}>📈 ৭ দিনের ক্যাশ ফ্লো</span>
+                </div>
+                <div style={{ textAlign:"right" }}>
+                  <div style={{ color: isPositive?"#22c55e":"#ef4444", fontWeight:900, fontSize:15 }}>
+                    {isPositive?"+":"-"}৳{fmt(cashFlow.totalNet)}
+                  </div>
+                  <div style={{ color:"#64748b", fontSize:10 }}>আনুমানিক নেট</div>
+                </div>
+              </div>
+
+              {/* Mini bar chart */}
+              <div style={{ display:"flex", gap:3, alignItems:"flex-end", height:50, marginBottom:8 }}>
+                {(cashFlow.forecast || []).map((d, i) => {
+                  const maxVal = Math.max(...cashFlow.forecast.map(f => Math.max(f.inflow, f.outflow)), 1);
+                  const inH = Math.max(4, (d.inflow / maxVal) * 44);
+                  const outH = Math.max(4, (d.outflow / maxVal) * 44);
+                  return (
+                    <div key={i} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:1 }}>
+                      <div style={{ width:"100%", display:"flex", gap:1, alignItems:"flex-end", height:44 }}>
+                        <div style={{ flex:1, height:inH, background:"#22c55e88", borderRadius:"2px 2px 0 0" }} />
+                        <div style={{ flex:1, height:outH, background:"#ef444488", borderRadius:"2px 2px 0 0" }} />
+                      </div>
+                      <div style={{ color: d.isWeekend?"#f59e0b":"#64748b", fontSize:8, fontWeight:700 }}>
+                        {d.dayLabel.slice(0,2)}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Legend + summary */}
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
+                {[
+                  { label:"আনুমানিক আয়",    value:`৳${fmt(cashFlow.totalInflow)}`,  color:"#22c55e" },
+                  { label:"আনুমানিক ব্যয়",   value:`৳${fmt(cashFlow.totalOutflow)}`, color:"#ef4444" },
+                  { label:"বাকি সংগ্রহযোগ্য", value:`৳${fmt(cashFlow.overdueTotal)}`, color:"#f59e0b" },
+                ].map(s => (
+                  <div key={s.label} style={{ background:"rgba(255,255,255,0.04)", borderRadius:8, padding:"6px 8px", textAlign:"center" }}>
+                    <div style={{ color:s.color, fontWeight:800, fontSize:11 }}>{s.value}</div>
+                    <div style={{ color:"#64748b", fontSize:9, marginTop:1 }}>{s.label}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
         {/* ══ বাকি পরিসংখ্যান ══ */}
         <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12, padding:"10px 14px", background:"linear-gradient(135deg,#0d1f38,#0f2a50)", borderRadius:14, border:"1px solid #0ea5e922" }}>
           <div style={{ width:4, height:20, borderRadius:2, background:"linear-gradient(180deg,#0ea5e9,#0369a1)", flexShrink:0 }} />
@@ -14612,7 +15520,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
 }
 
 // ── Customers List ─────────────────────────────────────────────────────────────
-function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenDetail, deletedCustomers, setDeletedCustomers, onGoToInvoice, currentUser, hasPerm }) {
+function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenDetail, deletedCustomers, setDeletedCustomers, onGoToInvoice, currentUser, hasPerm, auditLog, invoices = [], txns = [] }) {
   const [search,          setSearch]          = useState("");
   const [showAdd,         setShowAdd]         = useState(false);
   const [form,            setForm]            = useState({ name: "", mobile: "", address: "" });
@@ -14622,30 +15530,56 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
   const [editId,          setEditId]          = useState(null);
   const [confirmId,       setConfirmId]       = useState(null);
   const [page,            setPage]            = useState(1);
-  const [invoicePickCust, setInvoicePickCust] = useState(null); // কোন কাস্টমারের জন্য type picker দেখাবে
-  const PAGE_SIZE = 30;
+  const [invoicePickCust, setInvoicePickCust] = useState(null);
+  const [segFilter,       setSegFilter]       = useState("all"); // analytics segment filter
+  const [showAnalytics,   setShowAnalytics]   = useState(false);
 
-  // সিরিয়াল নম্বর সহ কাস্টমার তালিকা (যোগ করার ক্রমে ১, ২, ৩...)
-  const customersWithSerial = useMemo(() =>
-    customers.map((c, i) => ({ ...c, serial: i + 1, serialStr: String(i + 1) })),
-    [customers]
-  );
-  const filtered = useMemo(() => {
-    if (!search.trim()) return customersWithSerial;
-    const q = search.trim();
-    return customersWithSerial
-      .map(c => {
-        const nameScore   = smartMatch(c.name,      q);
-        const mobileScore = smartMatch(c.mobile,    q);
-        const serialScore = smartMatch(c.serialStr, q);
-        const score = Math.max(nameScore, mobileScore, serialScore);
-        return { ...c, _score: score };
-      })
-      .filter(c => c._score > 0)
-      .sort((a, b) => b._score - a._score);
-  }, [customersWithSerial, search]);
-  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
-  const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  // ── RFM Customer Analytics ─────────────────────────────────────────────────
+  const SEGMENTS = {
+    champion: { label:"চ্যাম্পিয়ন", color:"#22c55e", icon:"🏆", desc:"নিয়মিত, বেশি কেনে" },
+    loyal:    { label:"বিশ্বস্ত",   color:"#3b82f6", icon:"💎", desc:"নিয়মিত ক্রেতা" },
+    active:   { label:"সক্রিয়",    color:"#f59e0b", icon:"⚡", desc:"মাঝেমাঝে আসে" },
+    at_risk:  { label:"ঝুঁকিতে",   color:"#ef4444", icon:"⚠️", desc:"বাকি আছে, আসছে না" },
+    inactive: { label:"নিষ্ক্রিয়", color:"#64748b", icon:"😴", desc:"৬০+ দিন নেই" },
+  };
+
+  const rfmData = useMemo(() => {
+    const now = Date.now();
+    const d30 = new Date(now - 30 * 86400000).toISOString().split("T")[0];
+    const totalSales = invoices.reduce((s, i) => s + (i.total || 0), 0);
+    const monthSale  = invoices.filter(i => (i.dateKey || "") >= d30).reduce((s, i) => s + (i.total || 0), 0);
+
+    return customers.map(c => {
+      const custInvs = invoices.filter(i => i.customerId === c.id);
+      const custTxns = txns.filter(t => t.customerId === c.id);
+      const ltv      = custInvs.reduce((s, i) => s + (i.total || 0), 0);
+      const frequency = custInvs.length;
+      const sorted   = [...custInvs].sort((a, b) => (b.dateKey||"").localeCompare(a.dateKey||""));
+      const lastInv  = sorted[0];
+      const daysSince = lastInv?.dateKey
+        ? Math.floor((now - new Date(lastInv.dateKey).getTime()) / 86400000) : 999;
+      const avgOrder = frequency > 0 ? ltv / frequency : 0;
+      const recentPaid = custTxns
+        .filter(t => t.type === "joma" && (t.dateKey || "") >= d30)
+        .reduce((s, t) => s + (t.amount || 0), 0);
+      const riskScore = ((c.balance || 0) > ltv * 0.4 ? 30 : 0)
+        + (daysSince > 45 && (c.balance || 0) > 0 ? 30 : 0)
+        + ((c.balance || 0) > 5000 ? 20 : 0)
+        + (frequency < 2 ? 10 : 0);
+      const segment = daysSince <= 14 && frequency >= 3 ? "champion"
+        : daysSince <= 30 && ltv > monthSale * 0.1 ? "loyal"
+        : daysSince > 60 && (c.balance || 0) > 0 ? "at_risk"
+        : daysSince <= 30 ? "active"
+        : "inactive";
+      const loyaltyTier = (c.loyaltyPoints || 0) >= 1000 ? "🥇"
+        : (c.loyaltyPoints || 0) >= 300 ? "🥈"
+        : (c.loyaltyPoints || 0) >= 100 ? "🥉" : null;
+      return { ...c, ltv, frequency, daysSince, avgOrder, riskScore, segment, recentPaid, loyaltyTier };
+    }).sort((a, b) => b.ltv - a.ltv);
+  }, [customers, invoices, txns]);
+
+  // rfmData-কে Map-এ রাখি যাতে O(1) lookup হয়
+  const rfmMap = useMemo(() => new Map(rfmData.map(c => [c.id, c])), [rfmData]);
 
   const addCustomer = () => {
     const name = (nameRef.current?.value?.trim() || form.name || "").trim();
@@ -14678,6 +15612,7 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
     setDeletedCustomers(prev => [c, ...prev]);
     setCustomers(prev => prev.filter(x => x.id !== id));
     showToast("কাস্টমার সরানো হয়েছে", "#f59e0b");
+    auditLog?.("CUSTOMER_DELETE", { customerId: id, customerName: c?.name || "অজানা", mobile: c?.mobile || "" });
     setConfirmId(null);
   };
 
@@ -14701,8 +15636,8 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
         <SearchBar
           placeholder="খুঁজুন..."
           value={search}
-          onChange={v => { setSearch(v); setPage(1); }}
-          onClear={() => { setSearch(""); setPage(1); }}
+          onChange={v => { setSearch(v); }}
+          onClear={() => { setSearch(""); }}
           color="#3b82f6"
           T={T} S={S}
           showCount count={customers.length + "জন"}
@@ -14745,6 +15680,101 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
         </div>
       )}
       {/* Scrollable customer cards box */}
+
+      {/* ── Analytics Summary bar ── */}
+      <div style={{ display:"flex", gap:5, marginBottom:8, overflowX:"auto" }}>
+        <button onClick={() => setShowAnalytics(v => !v)}
+          style={{ padding:"5px 10px", borderRadius:14, border:`1px solid ${T.border}`,
+            background:showAnalytics?T.accent+"22":T.card, color:showAnalytics?T.accent:T.sub,
+            fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit", flexShrink:0 }}>
+          📊 {showAnalytics?"লুকান":"Analytics"}
+        </button>
+        {Object.entries(SEGMENTS).map(([key, seg]) => {
+          const count = rfmData.filter(c => c.segment === key).length;
+          if (!count) return null;
+          return (
+            <button key={key} onClick={() => setSegFilter(segFilter === key ? "all" : key)}
+              style={{ padding:"5px 10px", borderRadius:14, fontFamily:"inherit", flexShrink:0,
+                border:`1.5px solid ${segFilter===key ? seg.color : T.border}`,
+                background:segFilter===key ? seg.color+"22" : T.card,
+                color:segFilter===key ? seg.color : T.sub,
+                fontSize:11, fontWeight:700, cursor:"pointer" }}>
+              {seg.icon} {seg.label} ({count})
+            </button>
+          );
+        })}
+        {segFilter !== "all" && (
+          <button onClick={() => setSegFilter("all")}
+            style={{ padding:"5px 10px", borderRadius:14, border:`1px solid ${T.border}`,
+              background:T.card, color:T.sub, fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
+            ✕ সব
+          </button>
+        )}
+      </div>
+
+      {/* Analytics panel */}
+      {showAnalytics && (() => {
+        const totalLTV   = rfmData.reduce((s, c) => s + c.ltv, 0);
+        const avgLTV     = rfmData.length ? Math.round(totalLTV / rfmData.length) : 0;
+        const atRisk     = rfmData.filter(c => c.segment === "at_risk");
+        const champions  = rfmData.filter(c => c.segment === "champion");
+        const churnBaki  = atRisk.reduce((s, c) => s + (c.balance || 0), 0);
+        return (
+          <div className="qc-gradient-card" style={{ ...S.card, marginBottom:8, padding:"12px 14px",
+            border:"1.5px solid #6366f133" }}>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
+              {[
+                { label:"মোট LTV", value:`৳${Math.round(totalLTV).toLocaleString("en-US")}`, color:"#6366f1" },
+                { label:"গড় LTV",  value:`৳${avgLTV.toLocaleString("en-US")}`, color:"#a855f7" },
+                { label:"চ্যাম্পিয়ন", value:`${champions.length}জন`, color:"#22c55e" },
+                { label:"ঝুঁকিতে বাকি", value:`৳${Math.round(churnBaki).toLocaleString("en-US")}`, color:"#ef4444" },
+              ].map(s => (
+                <div key={s.label} style={{ background:T.border+"44", borderRadius:10, padding:"8px 10px" }}>
+                  <div style={{ color:s.color, fontWeight:900, fontSize:14 }}>{s.value}</div>
+                  <div style={{ color:T.sub, fontSize:11 }}>{s.label}</div>
+                </div>
+              ))}
+            </div>
+            {/* Segment breakdown bar */}
+            <div style={{ height:8, borderRadius:8, overflow:"hidden", display:"flex" }}>
+              {Object.entries(SEGMENTS).map(([key, seg]) => {
+                const count = rfmData.filter(c => c.segment === key).length;
+                const pct   = rfmData.length ? count / rfmData.length * 100 : 0;
+                if (!pct) return null;
+                return <div key={key} style={{ width:`${pct}%`, background:seg.color, transition:"width 0.5s" }}
+                  title={`${seg.label}: ${count}জন`} />;
+              })}
+            </div>
+            <div style={{ display:"flex", gap:8, marginTop:6, flexWrap:"wrap" }}>
+              {Object.entries(SEGMENTS).map(([key, seg]) => {
+                const count = rfmData.filter(c => c.segment === key).length;
+                if (!count) return null;
+                return (
+                  <span key={key} style={{ color:seg.color, fontSize:10, fontWeight:700 }}>
+                    {seg.icon} {seg.label}: {count}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Virtuoso infinite scroll — filtered by search + segment */}
+      {(() => {
+        const withSerial = customers.map((c, i) => ({ ...c, serial: i + 1, serialStr: String(i + 1) }));
+        const q = search.trim();
+        const bySearch = !q ? withSerial : withSerial.filter(c => {
+          const score = Math.max(smartMatch(c.name, q), smartMatch(c.mobile, q), smartMatch(c.serialStr, q));
+          return score > 0;
+        });
+        const filtered = segFilter === "all" ? bySearch
+          : bySearch.filter(c => {
+              const rfm = rfmMap.get(c.id);
+              return rfm?.segment === segFilter;
+            });
+
+        return (
       <div style={{
         overflowY: "auto",
         maxHeight: "calc(100dvh - 200px)",
@@ -14754,15 +15784,21 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
         padding: "8px",
       }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {paged.length === 0 && <div style={S.empty}>কোনো কাস্টমার পাওয়া যায়নি</div>}
-        {paged.length === 0 && search.trim() && (
+        {filtered.length === 0 && <div style={S.empty}>কোনো কাস্টমার পাওয়া যায়নি</div>}
+        {filtered.length === 0 && search.trim() && (
           <div style={{ textAlign:"center", padding:"40px 20px", color: T.sub }}>
             <div style={{ fontSize:32, marginBottom:8 }}>🔍</div>
             <div style={{ fontSize:14, fontWeight:700, color:T.text, marginBottom:4 }}>কোনো ফলাফল পাওয়া যায়নি</div>
             <div style={{ fontSize:12 }}>"{search}" দিয়ে কোনো কাস্টমার মিলেনি</div>
           </div>
         )}
-        {paged.map((c, idx) => (
+        {filtered.length > 0 && (
+        <Virtuoso
+          style={{ height: "calc(100dvh - 220px)" }}
+          data={filtered}
+          itemContent={(idx, c) => {
+            const rfm = rfmMap.get(c.id);
+            return (
           <div key={c.id} className="list-item" style={{ ...S.custCard, animationDelay: `${idx*20}ms`, position:"relative", overflow:"hidden" }}>
             {/* Dynamic background glow */}
             <div style={{ position:"absolute", top:-20, right:-20, width:100, height:100, borderRadius:"50%", background: c.balance > 0 ? "radial-gradient(circle,#ef444412 0%,transparent 70%)" : "radial-gradient(circle,#22c55e12 0%,transparent 70%)", pointerEvents:"none" }} />
@@ -14789,6 +15825,14 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
                 <div style={{ background: c.balance > 0 ? "#ef444418" : "#22c55e18", color: c.balance > 0 ? "#f87171" : "#4ade80", fontSize: 11, fontWeight: 800, borderRadius:8, padding:"2px 8px", marginTop:4, border: `1px solid ${c.balance > 0 ? "#ef444433" : "#22c55e33"}` }}>
                   {c.balance > 0 ? "বাকি আছে" : "✓ পরিশোধ"}
                 </div>
+                {rfm && rfm.segment !== "active" && (
+                  <div style={{ marginTop:4, fontSize:10, fontWeight:800, color:SEGMENTS[rfm.segment]?.color }}>
+                    {SEGMENTS[rfm.segment]?.icon} {SEGMENTS[rfm.segment]?.label}
+                  </div>
+                )}
+                {rfm?.loyaltyTier && (
+                  <div style={{ fontSize:13, marginTop:2 }}>{rfm.loyaltyTier}</div>
+                )}
               </div>
             </div>
             {/* Action row */}
@@ -14845,17 +15889,15 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
               ))}
             </div>
           </div>
-        ))}
+            );
+          }}
+        />
+        )}
       </div>
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 12, marginTop: 16 }}>
-          <button style={{ ...S.cancelBtn, flex: "none", padding: "8px 16px", opacity: page===1?0.4:1 }} onClick={() => setPage(p=>Math.max(1,p-1))} disabled={page===1}>←</button>
-          <span style={{ color: T.sub, fontSize: 13 }}>{page} / {totalPages} ({filtered.length}জন)</span>
-          <button style={{ ...S.cancelBtn, flex: "none", padding: "8px 16px", opacity: page===totalPages?0.4:1 }} onClick={() => setPage(p=>Math.min(totalPages,p+1))} disabled={page===totalPages}>→</button>
-        </div>
-      )}
+      {/* Analytics + Virtuoso */}
       </div>
+        );
+      })()}
     </div>
   );
 }
@@ -14867,22 +15909,19 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
   const [txnPage,          setTxnPage]          = useState(1);
   const [histMonths,       setHistMonths]       = useState(null);
   const [showInvoicePicker,setShowInvoicePicker]= useState(false); // type picker
-  const TXN_PAGE_SIZE = 20;
   if (!customer) return null;
-
-  // Paginated txn slice — avoids rendering thousands of rows
-  const totalTxnPages   = Math.ceil(txns.length / TXN_PAGE_SIZE);
-  const pagedTxns       = txns.slice((txnPage - 1) * TXN_PAGE_SIZE, txnPage * TXN_PAGE_SIZE);
+  // Virtuoso handles virtualization — pagination removed
 
   const handleCall = () => {
     if (customer.mobile) window.open(`tel:${customer.mobile}`, "_self");
   };
   const handleWhatsApp = () => {
-    if (customer.mobile) {
-      const num = customer.mobile.replace(/\D/g,"");
-      const bdNum = num.startsWith("88") ? num : "88" + num;
-      window.open(`https://wa.me/${bdNum}`, "_blank");
-    }
+    if (!customer.mobile) return;
+    const balance = customer.balance || 0;
+    const msg = balance > 0
+      ? `${shopName ? shopName + ": " : ""}${customer.name} ভাই, আপনার বর্তমান বাকি ৳${Math.round(balance).toLocaleString("en-US")}। সুবিধামতো পরিশোধ করার অনুরোধ রইলো। ধন্যবাদ।`
+      : `${shopName ? shopName + ": " : ""}${customer.name} ভাই, আপনার কোনো বাকি নেই। ধন্যবাদ আমাদের সাথে থাকার জন্য।`;
+    shareViaWhatsApp(customer.mobile, msg);
   };
   const handleHistoryPdf = (months) => {
     const effectiveShopName = shopName || customer.shopName || "SBM";
@@ -14937,6 +15976,19 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
             {customer.mobile && <div style={{ color:"#93c5fd", fontSize:11, fontWeight:700 }}>
               {customer.mobile}
             </div>}
+            {(customer.loyaltyPoints || 0) > 0 && (() => {
+              const pts = customer.loyaltyPoints || 0;
+              const tier = pts >= 1000 ? { label:"গোল্ড", icon:"🥇", color:"#fbbf24" }
+                : pts >= 300 ? { label:"সিলভার", icon:"🥈", color:"#cbd5e1" }
+                : { label:"ব্রোঞ্জ", icon:"🥉", color:"#d97706" };
+              return (
+                <div style={{ display:"flex", alignItems:"center", gap:5, marginTop:4 }}>
+                  <span style={{ fontSize:11 }}>{tier.icon}</span>
+                  <span style={{ color:tier.color, fontSize:11, fontWeight:800 }}>{pts} পয়েন্ট</span>
+                  <span style={{ color:"#64748b", fontSize:10 }}>({tier.label})</span>
+                </div>
+              );
+            })()}
           </div>
           {/* Balance badge */}
           <div style={{ background: customer.balance > 0 ? "linear-gradient(135deg,#7f1d1d55,#ef444433)" : "linear-gradient(135deg,#14532d55,#22c55e33)", border:`1.5px solid ${customer.balance > 0 ? "#ef444455" : "#22c55e55"}`, borderRadius:12, padding:"6px 10px", textAlign:"center", flexShrink:0 }}>
@@ -15043,8 +16095,11 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
 
       <div style={S.histLabel}>লেনদেনের ইতিহাস ({txns.length}টি)</div>
       {txns.length === 0 && <div style={S.empty}>এখনো কোনো লেনদেন নেই</div>}
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {pagedTxns.map(t => {
+      {txns.length > 0 && (
+      <Virtuoso
+        style={{ height: "calc(100dvh - 320px)" }}
+        data={txns}
+        itemContent={(_, t) => {
           const inv = t.invoiceId ? invoices.find(iv => iv.id === t.invoiceId) : null;
           const payInv = t.paymentInvoiceId ? paymentInvoices.find(p => p.id === t.paymentInvoiceId) : null;
           const isBaki = t.type === "baki";
@@ -15090,17 +16145,8 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
               </div>
             </div>
           );
-        })}
-      </div>
-      {/* Pagination for large transaction histories */}
-      {totalTxnPages > 1 && (
-        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 12, marginTop: 16, marginBottom: 8 }}>
-          <button style={{ ...S.cancelBtn, flex: "none", padding: "8px 16px", opacity: txnPage===1?0.4:1 }}
-            onClick={() => setTxnPage(p=>Math.max(1,p-1))} disabled={txnPage===1}>←</button>
-          <span style={{ color: T.sub, fontSize: 13 }}>{txnPage} / {totalTxnPages} ({txns.length}টি)</span>
-          <button style={{ ...S.cancelBtn, flex: "none", padding: "8px 16px", opacity: txnPage===totalTxnPages?0.4:1 }}
-            onClick={() => setTxnPage(p=>Math.min(totalTxnPages,p+1))} disabled={txnPage===totalTxnPages}>→</button>
-        </div>
+        }}
+      />
       )}
     </div>
   );
@@ -15212,7 +16258,7 @@ function PaymentInvoiceReceipt({ T, S, inv }) {
 }
 
 // ── Transaction Modal ──────────────────────────────────────────────────────────
-function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, addTxn, createPaymentInvoice, onClose, currentUser }) {
+function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, addTxn, createPaymentInvoice, onClose, currentUser, auditLog, shopName }) {
   const [mode,        setMode]        = useState(customer._mode || "baki");
   const [amount,      setAmount]      = useState("");
   const [note,        setNote]        = useState("");
@@ -15263,6 +16309,13 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
       setShowInv(payInv);
     }
     addTxn(customer.id, mode, amt, newBalance, null, note, payInvId);
+    // ── বড় অংকের লেনদেন (৫,০০০+) audit log-এ রাখি — সন্দেহজনক activity ধরতে ──
+    if (amt >= 5000) {
+      auditLog?.(mode === "baki" ? "LARGE_BAKI_ADD" : "LARGE_JOMA_COLLECT", {
+        customerId: customer.id, customerName: customer.name,
+        amount: amt, newBalance, note: note || "",
+      });
+    }
     await Haptic.heavy();
     await sendSMS({ ...customer, balance: newBalance }, mode, amt);
     if (mode !== "joma") { showToast(mode === "baki" ? "বাকি যোগ হয়েছে" : "জমা নেওয়া হয়েছে"); setSending(false); onClose(); }
@@ -15275,7 +16328,17 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
         <div style={{ ...S.modalCard, maxHeight: "90vh", overflowY: "auto" }}>
           <div style={{ display:"flex", alignItems:"center", gap:8, color: "#22c55e", fontWeight: 700, fontSize: 15, marginBottom: 14 }}><div style={{ width:24, height:24, borderRadius:"50%", background:"#22c55e", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div> জমা সম্পন্ন হয়েছে!</div>
           <PaymentInvoiceReceipt T={T} S={S} inv={showInv} />
-          <button style={{ ...S.cancelBtn, width: "100%", marginTop: 14 }} onClick={onClose}>ব্যাক করুন</button>
+          <button
+            onClick={() => {
+              const msg = `${shopName ? shopName + ": " : ""}${customer.name} ভাই, ৳${Math.round(showInv.amount).toLocaleString("en-US")} জমা নেওয়া হয়েছে। বর্তমান বাকি: ৳${Math.round(showInv.remainingBalance || 0).toLocaleString("en-US")}। ধন্যবাদ।`;
+              shareViaWhatsApp(customer.mobile, msg, showToast);
+            }}
+            style={{ ...S.saveBtn, width: "100%", marginTop: 10, background: "linear-gradient(135deg,#22c55e,#16a34a)",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="#fff"><path d="M17.6 6.32A8.86 8.86 0 0 0 12.05 4a8.94 8.94 0 0 0-7.93 13.13L3 21l3.95-1.04a8.93 8.93 0 0 0 4.95 1.5h.01a8.92 8.92 0 0 0 8.92-8.91 8.85 8.85 0 0 0-2.63-6.23zm-5.55 13.7h-.01a7.4 7.4 0 0 1-3.78-1.03l-.27-.16-2.81.74.75-2.74-.18-.28a7.43 7.43 0 0 1 6.31-11.4 7.36 7.36 0 0 1 5.24 2.17 7.34 7.34 0 0 1 2.18 5.25 7.43 7.43 0 0 1-7.43 7.45zm4.08-5.56c-.22-.11-1.32-.65-1.53-.73-.2-.07-.36-.11-.51.11-.15.22-.58.73-.71.88-.13.15-.26.16-.49.05-.22-.11-.95-.35-1.81-1.12a6.8 6.8 0 0 1-1.25-1.56c-.13-.22-.01-.34.1-.45.1-.1.22-.27.33-.4.11-.13.15-.22.22-.37.07-.15.04-.28-.02-.39-.06-.11-.51-1.23-.7-1.68-.18-.44-.37-.38-.51-.39h-.43c-.15 0-.39.06-.6.28-.2.22-.78.77-.78 1.87s.8 2.16.92 2.31c.11.15 1.58 2.42 3.84 3.39.54.23.96.37 1.28.47.54.17 1.03.15 1.42.09.43-.06 1.32-.54 1.51-1.06.19-.52.19-.96.13-1.06-.06-.09-.21-.15-.43-.26z"/></svg>
+            WhatsApp-এ পাঠান
+          </button>
+          <button style={{ ...S.cancelBtn, width: "100%", marginTop: 10 }} onClick={onClose}>ব্যাক করুন</button>
         </div>
       </div>
     );
@@ -15451,6 +16514,8 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
         <div class="info-row" style="border-top:1px dashed #ccc;padding-top:8px;margin-top:8px;"><span class="info-label" style="color:#f59e0b;font-weight:700;">পূর্বের বাকি:</span><span class="info-val" style="color:#f59e0b;font-weight:700;">৳${(inv.prevBalance||0).toLocaleString("en-US")}</span></div>
         <div class="info-row"><span class="info-label" style="color:#ef4444;font-weight:800;">বর্তমান বাকি:</span><span class="info-val" style="color:#ef4444;font-size:16px;font-weight:800;">৳${((inv.prevBalance||0)+(inv.bakiAmount||0)-(inv.overpayAmount||0)).toLocaleString("en-US")}</span></div>
         ` : ""}
+        ${inv.redeemedPoints > 0 ? `<div class="info-row"><span class="info-label" style="color:#fbbf24;">পয়েন্ট ব্যবহার:</span><span class="info-val" style="color:#fbbf24;">${inv.redeemedPoints} পয়েন্ট (– ৳${inv.redeemedValue||0})</span></div>` : ""}
+        ${inv.earnedPoints > 0 ? `<div class="info-row"><span class="info-label" style="color:#22c55e;">অর্জিত পয়েন্ট:</span><span class="info-val" style="color:#22c55e;">+${inv.earnedPoints}</span></div>` : ""}
         ${inv.note?`<div class="info-row"><span class="info-label">নোট:</span><span class="info-val">${inv.note}</span></div>`:""}
       </div>`;
     const html = buildPdfHtml(content, shopName, `${isBuyer?"ক্রেতার":"বিক্রেতার"} ইনভয়েস`);
@@ -15567,6 +16632,21 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
           <span>পরিশোধ পদ্ধতি</span>
           <span>{inv.payType === "baki" ? "বাকি" : inv.payType === "partial" ? "আংশিক" : "নগদ"}</span>
         </div>
+        {(inv.redeemedPoints > 0 || inv.earnedPoints > 0) && (
+          <div style={{ display:"flex", flexDirection:"column", gap:2, marginTop:6, padding:"8px 10px",
+            background:"#fbbf2412", borderRadius:10, border:"1px solid #fbbf2430" }}>
+            {inv.redeemedPoints > 0 && (
+              <div style={{ display:"flex", justifyContent:"space-between", color:"#fbbf24", fontSize:12, fontWeight:700 }}>
+                <span>🏆 পয়েন্ট ব্যবহার</span><span>{inv.redeemedPoints}pt (–৳{inv.redeemedValue||0})</span>
+              </div>
+            )}
+            {inv.earnedPoints > 0 && (
+              <div style={{ display:"flex", justifyContent:"space-between", color:"#22c55e", fontSize:12, fontWeight:700 }}>
+                <span>✨ অর্জিত পয়েন্ট</span><span>+{inv.earnedPoints}pt</span>
+              </div>
+            )}
+          </div>
+        )}
         {(inv.payType === "baki" || inv.payType === "partial" || (inv.prevBalance||0) > 0) && (
           <>
             <div style={{ borderTop: `1px dashed ${T.border}`, marginTop: 8, paddingTop: 8 }} />
@@ -15638,7 +16718,7 @@ function InvoiceReceiptPrint({ inv, customer, type }) {
         <thead><tr><th>#</th><th>পণ্য</th><th className="right">পরিমাণ</th><th className="right">দাম</th><th className="right">মোট</th></tr></thead>
         <tbody>
           {inv.items.map((item, i) => (
-            <tr key={item.productId ? item.productId + "_" + i : i}><td style={{ color: "#666", fontSize: 10 }}>{i+1}</td><td>{item.name}</td><td className="right">{item.qty}</td><td className="right">৳{item.price}</td><td className="right">৳{item.qty * item.price}</td></tr>
+            <tr key={i}><td style={{ color: "#666", fontSize: 10 }}>{i+1}</td><td>{item.name}</td><td className="right">{item.qty}</td><td className="right">৳{item.price}</td><td className="right">৳{item.qty * item.price}</td></tr>
           ))}
         </tbody>
       </table>
@@ -15663,12 +16743,13 @@ function InvoiceReceiptPrint({ inv, customer, type }) {
 }
 
 // ── Products ───────────────────────────────────────────────────────────────────
-function Products({ T, S, products, setProducts, showToast, stockMovements = [], setStockMovements, purchaseOrders = [], setPurchaseOrders, deletedProducts = [], setDeletedProducts, initialTab, currentUser, hasPerm, shopName }) {
+function Products({ T, S, products, setProducts, showToast, stockMovements = [], setStockMovements, purchaseOrders = [], setPurchaseOrders, deletedProducts = [], setDeletedProducts, initialTab, currentUser, hasPerm, shopName, abcData = [], deadStock = [], auditLog }) {
   const [showAdd,      setShowAdd]      = useState(false);
   const [editId,       setEditId]       = useState(null);
   const [form,         setForm]         = useState({ name: "", price: "", stock: "", minStockAlert: "5", category: "অন্যান্য", company: "", productType: "product", costPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false });
   const [search,       setSearch]       = useState("");
-  const [page,         setPage]         = useState(1);
+  // React 18 useDeferredValue — type করলে UI block হবে না
+  const deferredSearch = useDeferredValue(search);
   const [activeTab,    setActiveTab]    = useState(initialTab || "retail"); // "retail" | "purchase"
   const [quickStockId, setQuickStockId]= useState(null); // product being quick-edited
   const [quickStockVal,setQuickStockVal]= useState("");
@@ -15684,55 +16765,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     setCustomUnits(units);
     try { localStorage.setItem("sbm_custom_units", JSON.stringify(units)); } catch {}
   };
-  const PAGE_SIZE = 20;
-
-  // ── ক্রয় এন্ট্রি state ──────────────────────────────────────────────────────
-  const EMPTY_PE = { productId: "", productSearch: "", qty: "", unitCost: "", unitSell: "", expiryDate: "", batch: "", supplier: "", note: "" };
-  const [peForm,       setPeForm]       = useState(EMPTY_PE);
-  const [peSearch,     setPeSearch]     = useState("");
-  const [peFilter,     setPeFilter]     = useState("today"); // "all" | "today" | "date"
-  const [peHistDate,   setPeHistDate]   = useState(() => new Date().toISOString().split("T")[0]); // নির্দিষ্ট দিন ফিল্টার
-  const [peSearchOpen, setPeSearchOpen] = useState(false);
-  const [peShowForm,   setPeShowForm]   = useState(false); // ফর্ম দেখানো/লুকানো
-  const [peNewProduct, setPeNewProduct] = useState(null); // { name, unit, company, price } — ক্রয় এন্ট্রি থেকে নতুন পণ্য তৈরির ফর্ম
-  const [peCompanyCustom, setPeCompanyCustom] = useState(false);
-
-  const productsWithSerial = React.useMemo(() => products.map((p, i) => ({ ...p, serial: i + 1, serialStr: String(i + 1) })), [products]);
-
-  // ── PE ব্যাচ ম্যাপ: প্রতিটি পণ্যের সক্রিয় ব্যাচ (FIFO) ──────────────────────
-  // ── PE ব্যাচ ম্যাপ: শুধু p.batches (qty>0) থেকে FIFO — shared helper ব্যবহার ──
-  // ── PE ব্যাচ ম্যাপ: শুধু p.batches (qty>0) থেকে FIFO — shared helper ব্যবহার ──
-  const prodBatchMap = React.useMemo(() => {
-    const map = {};
-    products.forEach(p => {
-      const fifo = getActiveBatch(p);
-      if (fifo) {
-        map[p.id] = { batch: fifo.batchNo || "", expiryDate: fifo.expiryDate || "" };
-      }
-    });
-    return map;
-  }, [products]);
-  const filteredAll = React.useMemo(() => {
-    const q = search.trim();
-    if (!q) return productsWithSerial;
-    if (q === "__outofstock__") return productsWithSerial.filter(p => (p.stock||0) === 0);
-    if (q === "__critical__") return productsWithSerial.filter(p => { const m = p.minStockAlert||5; return (p.stock||0) > 0 && (p.stock||0) <= m; });
-    if (q === "__instock__") return productsWithSerial.filter(p => (p.stock||0) > 0);
-    if (q.startsWith("__")) return productsWithSerial;
-    return productsWithSerial
-      .map(p => ({
-        ...p,
-        _score: Math.max(
-          smartMatch(p.name, q),
-          smartMatch(p.serialStr, q),
-          smartMatch(p.company || "", q)
-        )
-      }))
-      .filter(p => p._score > 0)
-      .sort((a, b) => b._score - a._score);
-  }, [productsWithSerial, search]);
-  const totalPages = Math.ceil(filteredAll.length / PAGE_SIZE);
-  const paged = filteredAll.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  // Virtuoso — pagination সরানো
   const lowStock = products.filter(p => (p.stock || 0) <= 5 && (p.stock || 0) > 0);
   const outOfStock = products.filter(p => (p.stock || 0) === 0);
 
@@ -15755,6 +16788,12 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       isFreeStock: !!form.isFreeStock,
     };
     if (editId) {
+      // ── audit log-এর জন্য আগের ভ্যালু সংরক্ষণ ────────────────────────────
+      const originalProduct = products.find(p => p.id === editId);
+      const oldPrice = originalProduct?.price || 0;
+      const newPrice = parseFloat(form.price) || 0;
+      const oldStock = originalProduct?.stock || 0;
+
       // ── Delta-based stock update: শুধু পার্থক্যটা লগ করো ─────────────────
       setProducts(prev => prev.map(p => {
         if (p.id !== editId) return p;
@@ -15801,6 +16840,18 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
 
         return { ...p, ...prodFields, stock: updatedStock, batches: updatedBatches };
       }));
+      // ── Audit log: price change ও stock adjust আলাদাভাবে track ────────────
+      if (oldPrice !== newPrice) {
+        auditLog?.("PRODUCT_PRICE_CHANGE", {
+          productId: editId, productName: form.name, oldPrice, newPrice,
+        });
+      }
+      if (newStockVal !== oldStock) {
+        auditLog?.("STOCK_ADJUST", {
+          productId: editId, productName: form.name,
+          oldStock, newStock: newStockVal, delta: newStockVal - oldStock,
+        });
+      }
       showToast("পণ্য আপডেট হয়েছে");
       setEditId(null);
     } else {
@@ -16536,6 +17587,93 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
 
       {activeTab === "retail" && <>
 
+      {/* ══ ABC Analysis Card ══ */}
+      {abcData.length > 0 && (() => {
+        const aCount = abcData.filter(p => p.category === "A").length;
+        const bCount = abcData.filter(p => p.category === "B").length;
+        const cCount = abcData.filter(p => p.category === "C").length;
+        const [showAbc, setShowAbc] = React.useState(false);
+        return (
+          <div className="qc-gradient-card" style={{ ...S.card, marginBottom:10, padding:"12px 14px", border:"1.5px solid #6366f133" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: showAbc?10:0 }}
+              onClick={() => setShowAbc(v=>!v)}>
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                <span style={{ fontSize:18 }}>📊</span>
+                <div>
+                  <div style={{ color:T.text, fontWeight:900, fontSize:13 }}>ABC বিশ্লেষণ</div>
+                  <div style={{ color:T.sub, fontSize:11 }}>A:{aCount} · B:{bCount} · C:{cCount} পণ্য</div>
+                </div>
+              </div>
+              <span style={{ color:T.sub, fontSize:13 }}>{showAbc?"▲":"▼"}</span>
+            </div>
+            {showAbc && (
+              <div>
+                {[
+                  { cat:"A", label:"উচ্চ মূল্য (৮০% রাজস্ব)", color:"#ef4444", emoji:"🔴", items: abcData.filter(p=>p.category==="A") },
+                  { cat:"B", label:"মধ্যম মূল্য (১৫% রাজস্ব)", color:"#f59e0b", emoji:"🟡", items: abcData.filter(p=>p.category==="B") },
+                  { cat:"C", label:"কম মূল্য (৫% রাজস্ব)", color:"#22c55e", emoji:"🟢", items: abcData.filter(p=>p.category==="C") },
+                ].map(group => (
+                  <div key={group.cat} style={{ marginBottom:8 }}>
+                    <div style={{ color:group.color, fontWeight:800, fontSize:12, marginBottom:4 }}>
+                      {group.emoji} Category {group.cat} — {group.label}
+                    </div>
+                    <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
+                      {group.items.slice(0,5).map(p => (
+                        <span key={p.id} style={{ background:group.color+"18", border:`1px solid ${group.color}33`,
+                          borderRadius:8, padding:"3px 8px", color:group.color, fontSize:11, fontWeight:700 }}>
+                          {p.name}
+                        </span>
+                      ))}
+                      {group.items.length > 5 && <span style={{ color:T.sub, fontSize:11 }}>+{group.items.length-5}টি</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ══ Dead Stock Alert ══ */}
+      {deadStock.length > 0 && (() => {
+        const totalValue = deadStock.reduce((s,p) => s+(p.stockValue||0), 0);
+        const [showDead, setShowDead] = React.useState(false);
+        return (
+          <div className="qc-gradient-card" style={{ ...S.card, marginBottom:10, padding:"12px 14px", border:"1.5px solid #f59e0b33" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: showDead?10:0 }}
+              onClick={() => setShowDead(v=>!v)}>
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                <span style={{ fontSize:18 }}>🗃️</span>
+                <div>
+                  <div style={{ color:"#f59e0b", fontWeight:900, fontSize:13 }}>ডেড স্টক সতর্কতা</div>
+                  <div style={{ color:T.sub, fontSize:11 }}>{deadStock.length}টি পণ্য · মূল্য ৳{Math.round(totalValue).toLocaleString("en-US")}</div>
+                </div>
+              </div>
+              <span style={{ color:T.sub, fontSize:13 }}>{showDead?"▲":"▼"}</span>
+            </div>
+            {showDead && (
+              <Virtuoso
+                style={{ height: Math.min(deadStock.length * 64, 280) }}
+                data={deadStock}
+                itemContent={(_, p) => (
+                  <div style={{ padding:"6px 0", borderBottom:`1px solid ${T.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                    <div>
+                      <div style={{ color:T.text, fontWeight:700, fontSize:12 }}>{p.name}</div>
+                      <div style={{ color:T.sub, fontSize:11 }}>
+                        স্টক: {p.stock}টি · {p.daysSinceLastSale < 9999 ? `${p.daysSinceLastSale} দিন আগে বিক্রি` : "কখনো বিক্রি হয়নি"}
+                      </div>
+                    </div>
+                    <div style={{ color:"#f59e0b", fontWeight:800, fontSize:12, textAlign:"right" }}>
+                      ৳{Math.round(p.stockValue||0).toLocaleString("en-US")}
+                    </div>
+                  </div>
+                )}
+              />
+            )}
+          </div>
+        );
+      })()}
+
       {/* ── ক্রয় এন্ট্রি কার্ড — হোম থেকে স্থানান্তরিত ── */}
       {(currentUser?.role !== "staff" || (hasPerm && hasPerm(currentUser, "purchase_entry"))) && (() => {
         const todayKey2 = new Date().toISOString().split("T")[0];
@@ -16580,14 +17718,32 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
         <SearchBar
           placeholder={search.startsWith("__") ? "ফিল্টার সক্রিয়..." : "খুঁজুন..."}
           value={search.startsWith("__") ? "" : search}
-          onChange={v => { setSearch(v); setPage(1); }}
-          onClear={() => { setSearch(""); setPage(1); }}
+          onChange={v => { setSearch(v); }}
+          onClear={() => { setSearch(""); }}
           color="#22c55e"
           T={T} S={S}
           showCount count={filteredAll.length + "টি"}
           voiceColor="#22c55e"
           style={{ flex: 1, marginBottom: 0 }}
         />
+        <button
+          onClick={async () => {
+            const code = await scanBarcode(showToast);
+            if (!code) return;
+            const match = products.find(p => p.barcode === code);
+            if (match) { setSearch(match.name); showToast(`✅ ${match.name} পাওয়া গেছে`, "#22c55e"); }
+            else { setSearch(code); showToast(`বারকোড "${code}" এর কোনো পণ্য নেই`, "#f59e0b"); }
+          }}
+          style={{ background:"#22c55e22", border:"1px solid #22c55e44", borderRadius:10,
+            width:38, height:38, display:"flex", alignItems:"center", justifyContent:"center",
+            cursor:"pointer", flexShrink:0 }}
+          title="বারকোড স্ক্যান করে পণ্য খুঁজুন">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/>
+            <line x1="7" y1="8" x2="7" y2="16"/><line x1="11" y1="8" x2="11" y2="16"/>
+            <line x1="14" y1="8" x2="14" y2="16"/><line x1="17" y1="8" x2="17" y2="16"/>
+          </svg>
+        </button>
       </div>
 
       {showAdd && (
@@ -16611,6 +17767,34 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               autoCorrect="off" autoCapitalize="off" spellCheck="false" autoComplete="off"
               inputMode="text" enterKeyHint="next" />
           </div>
+          {/* ── বারকোড — ক্যামেরা স্ক্যান সাপোর্ট ── */}
+          {form.productType !== "service" && (<>
+          <label style={S.label}>📷 বারকোড (ঐচ্ছিক)</label>
+          <div style={{ display:"flex", gap:6, alignItems:"center", marginBottom:4 }}>
+            <input style={{ ...S.input, flex:1, marginBottom:0 }}
+              placeholder="স্ক্যান করুন বা টাইপ করুন"
+              value={form.barcode || ""}
+              onChange={e => setForm({ ...form, barcode: e.target.value })}
+              autoComplete="off" inputMode="text" />
+            <button type="button"
+              onClick={async () => {
+                const code = await scanBarcode(showToast);
+                if (code) {
+                  setForm(f => ({ ...f, barcode: code }));
+                  showToast("✅ বারকোড স্ক্যান হয়েছে", "#22c55e");
+                }
+              }}
+              style={{ background:"#22c55e22", border:"1px solid #22c55e44", borderRadius:10,
+                width:42, height:42, display:"flex", alignItems:"center", justifyContent:"center",
+                cursor:"pointer", flexShrink:0 }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/>
+                <line x1="7" y1="8" x2="7" y2="16"/><line x1="11" y1="8" x2="11" y2="16"/>
+                <line x1="14" y1="8" x2="14" y2="16"/><line x1="17" y1="8" x2="17" y2="16"/>
+              </svg>
+            </button>
+          </div>
+          </>)}
           {/* ── সাপ্লায়ার selector — শুধু পণ্যের জন্য ── */}
           {form.productType !== "service" && (<>
           <label style={S.label}>🏭 সাপ্লায়ার</label>
@@ -16682,12 +17866,20 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {paged.length === 0 && (
+        {filteredAll.length === 0 && (
           <div style={S.empty}>
             কোনো পণ্য নেই
           </div>
         )}
-        {paged.map(p => (
+        {filteredAll.length > 0 && (
+        <Virtuoso
+          style={{ height: "calc(100dvh - 260px)" }}
+          data={filteredAll}
+          itemContent={(_, p) => {
+            const abcInfo = abcData.find(a => a.id === p.id);
+            const abcColors = { A:"#ef4444", B:"#f59e0b", C:"#22c55e" };
+            return (
+          <div style={{ paddingBottom: 8 }}>
           <div key={p.id} className="qc-gradient-card" style={{
             ...S.card, marginBottom: 0, padding: "12px 14px",
             borderLeft: (p.stock||0)===0 ? "3px solid #ef4444" : (p.stock||0)<=(p.minStockAlert||5) ? "3px solid #f59e0b" : `3px solid #22c55e44`,
@@ -16702,7 +17894,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               <div style={{ flex: 1 }}>
                 {/* ── সারি ১: নাম + সার্ভিস ব্যাজ ── */}
                 <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
-                  <span style={{ color: T.text, fontWeight: 700, fontSize: 14 }}>{p.name}{p.unit ? <span style={{ color: T.sub, fontWeight: 600, fontSize: 12, marginLeft: 4 }}>({p.unit})</span> : null}</span>
+                  <span style={{ color: T.text, fontWeight: 700, fontSize: 14 }}>{p.name}{p.unit ? <span style={{ color: T.sub, fontWeight: 600, fontSize: 12, marginLeft: 4 }}>({p.unit})</span> : null}{abcInfo && <span style={{ marginLeft:6, background:abcColors[abcInfo.category]+"22", border:`1px solid ${abcColors[abcInfo.category]}44`, borderRadius:6, padding:"1px 6px", fontSize:10, fontWeight:800, color:abcColors[abcInfo.category] }}>{abcInfo.category}</span>}</span>
                   {p.productType === "service" && <span style={{ background:"#0ea5e922", color:"#38bdf8", fontSize:10, borderRadius:6, padding:"1px 7px", fontWeight:800, border:"1px solid #38bdf844", flexShrink:0 }}>🔧 সার্ভিস</span>}
                 </div>
                 {/* ── সারি ২: ক্রয়|বিক্রয়|স্টক|সাপ্লায়ার ── */}
@@ -16779,6 +17971,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                         setProducts(prev => prev.filter(x => x.id !== p.id));
                         setEditId(null);
                         showToast(`${p.name} Recycle Bin-এ গেছে`, "#ef4444");
+                        auditLog?.("PRODUCT_DELETE", { productId: p.id, productName: p.name, stock: p.stock || 0 });
                       }
                     }}>
                     🗑️ Delete
@@ -16822,20 +18015,1685 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               </div>
             )}
           </div>
-        ))}
+          </div>
+            );
+          }}
+        />
+        )}
       </div>
-
-      {totalPages > 1 && (
-        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 12, marginTop: 16 }}>
-          <button style={{ ...S.cancelBtn, flex: "none", padding: "8px 16px", opacity: page===1?0.4:1 }} onClick={() => setPage(p=>Math.max(1,p-1))} disabled={page===1}>←</button>
-          <span style={{ color: T.sub, fontSize: 13 }}>{page} / {totalPages}</span>
-          <button style={{ ...S.cancelBtn, flex: "none", padding: "8px 16px", opacity: page===totalPages?0.4:1 }} onClick={() => setPage(p=>Math.min(totalPages,p+1))} disabled={page===totalPages}>→</button>
-        </div>
-      )}
+      {/* Virtuoso ব্যবহার — Pagination সরানো */}
       </>}
 
       {/* Product Quick-Edit Popup */}
 
+    </div>
+  );
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 🏭 SupplierPaymentModule — সাপ্লায়ার পেমেন্ট ট্র্যাকিং
+// ══════════════════════════════════════════════════════════════════════════════
+function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
+  supplierPayments = [], setSupplierPayments, showToast, currentUser, shopName }) {
+
+  const fmt = n => Math.round(n || 0).toLocaleString("en-US");
+  const todayKey = new Date().toISOString().split("T")[0];
+
+  // ── Build supplier list from products + purchase orders ────────────────────
+  const suppliers = useMemo(() => {
+    const map = {};
+    // Products থেকে company/supplier নাম extract
+    products.forEach(p => {
+      const name = (p.company || p.supplier || "").trim();
+      if (!name) return;
+      if (!map[name]) map[name] = { name, productCount: 0, totalStock: 0, totalPurchased: 0 };
+      map[name].productCount++;
+      map[name].totalStock += (p.stock || 0);
+    });
+    // Purchase Orders থেকে total purchased amount calculate
+    purchaseOrders.forEach(po => {
+      const name = (po.supplier || po.company || "").trim();
+      if (!name || !map[name]) return;
+      const amt = (po.items || []).reduce((s, it) => s + (it.qty || 0) * (it.costPrice || it.price || 0), 0);
+      map[name].totalPurchased += amt;
+    });
+    return Object.values(map).sort((a, b) => b.totalPurchased - a.totalPurchased);
+  }, [products, purchaseOrders]);
+
+  // ── Per-supplier payment summary ───────────────────────────────────────────
+  const paymentSummary = useMemo(() => {
+    const summary = {};
+    supplierPayments.forEach(p => {
+      if (!summary[p.supplierName]) summary[p.supplierName] = { paid: 0, count: 0, lastPaid: "" };
+      summary[p.supplierName].paid += p.amount || 0;
+      summary[p.supplierName].count++;
+      if (p.dateKey > (summary[p.supplierName].lastPaid || "")) {
+        summary[p.supplierName].lastPaid = p.dateKey;
+      }
+    });
+    return summary;
+  }, [supplierPayments]);
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  const [selectedSupplier, setSelectedSupplier] = React.useState(null);
+  const [showPayForm, setShowPayForm]     = React.useState(false);
+  const [payAmount, setPayAmount]         = React.useState("");
+  const [payNote, setPayNote]             = React.useState("");
+  const [payDate, setPayDate]             = React.useState(todayKey);
+  const [payMethod, setPayMethod]         = React.useState("নগদ");
+  const [search, setSearch]              = React.useState("");
+
+  const PAY_METHODS = ["নগদ", "ব্যাংক ট্রান্সফার", "চেক", "bKash", "Nagad", "অন্যান্য"];
+
+  // ── Filtered suppliers ─────────────────────────────────────────────────────
+  const filteredSuppliers = useMemo(() => {
+    if (!search.trim()) return suppliers;
+    const q = search.toLowerCase();
+    return suppliers.filter(s => s.name.toLowerCase().includes(q));
+  }, [suppliers, search]);
+
+  // ── Selected supplier data ─────────────────────────────────────────────────
+  const selSummary = selectedSupplier ? (paymentSummary[selectedSupplier.name] || { paid: 0, count: 0 }) : null;
+  const selDue = selectedSupplier ? Math.max(0, (selectedSupplier.totalPurchased || 0) - (selSummary?.paid || 0)) : 0;
+  const selPayments = supplierPayments.filter(p => p.supplierName === selectedSupplier?.name)
+    .sort((a, b) => (b.dateKey || "").localeCompare(a.dateKey || ""));
+
+  // ── Save payment ───────────────────────────────────────────────────────────
+  const savePayment = React.useCallback(() => {
+    const amt = parseFloat(payAmount);
+    if (!amt || amt <= 0) { showToast("সঠিক পরিমাণ দিন", "#ef4444"); return; }
+    const entry = {
+      id: uid(),
+      supplierName: selectedSupplier.name,
+      amount: amt,
+      method: payMethod,
+      note: payNote.trim(),
+      dateKey: payDate || todayKey,
+      addedBy: currentUser?.name || "মালিক",
+      createdAt: new Date().toISOString(),
+    };
+    setSupplierPayments(prev => [entry, ...prev]);
+    showToast(`✅ ৳${fmt(amt)} পেমেন্ট রেকর্ড হয়েছে`, "#22c55e");
+    setPayAmount(""); setPayNote(""); setPayDate(todayKey); setShowPayForm(false);
+  }, [payAmount, payMethod, payNote, payDate, selectedSupplier, currentUser, todayKey,
+      setSupplierPayments, showToast]);
+
+  // ── Delete payment ─────────────────────────────────────────────────────────
+  const deletePayment = React.useCallback((id) => {
+    setSupplierPayments(prev => prev.filter(p => p.id !== id));
+    showToast("পেমেন্ট মুছে ফেলা হয়েছে", "#f59e0b");
+  }, [setSupplierPayments, showToast]);
+
+  // ── Total stats ────────────────────────────────────────────────────────────
+  const totalPurchased = suppliers.reduce((s, sup) => s + sup.totalPurchased, 0);
+  const totalPaid = Object.values(paymentSummary).reduce((s, p) => s + p.paid, 0);
+  const totalDue = Math.max(0, totalPurchased - totalPaid);
+
+  return (
+    <div style={{ ...S.page, paddingBottom: 100 }}>
+
+      {/* ── Header ── */}
+      <div style={{ ...S.header, marginBottom: 0 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          {selectedSupplier ? (
+            <button onClick={() => { setSelectedSupplier(null); setShowPayForm(false); }}
+              style={{ background:"none", border:"none", color:T.accent, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700, padding:0 }}>← সব</button>
+          ) : (
+            <>
+              <div style={{ width:4, height:22, borderRadius:2, background:"linear-gradient(180deg,#f59e0b,#d97706)" }} />
+              <span style={{ ...S.headerTitle, fontSize:17 }}>🏭 সাপ্লায়ার</span>
+            </>
+          )}
+        </div>
+        {selectedSupplier && (
+          <button onClick={() => setShowPayForm(v => !v)}
+            style={{ ...S.addBtn, width:"auto", padding:"8px 16px", margin:0,
+              background:"linear-gradient(135deg,#d97706,#f59e0b)",
+              display:"flex", alignItems:"center", gap:6 }}>
+            <IcPlus /><span style={{ fontSize:13, fontWeight:800 }}>পেমেন্ট যোগ</span>
+          </button>
+        )}
+      </div>
+
+      {/* ══ SUPPLIER LIST ══ */}
+      {!selectedSupplier && (
+        <div style={{ marginTop:14 }}>
+
+          {/* Summary cards */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:12 }}>
+            {[
+              { label:"মোট ক্রয়",   value:`৳${fmt(totalPurchased)}`, color:"#6366f1" },
+              { label:"মোট পরিশোধ", value:`৳${fmt(totalPaid)}`,     color:"#22c55e" },
+              { label:"মোট বাকি",   value:`৳${fmt(totalDue)}`,     color: totalDue>0?"#ef4444":"#22c55e" },
+            ].map(s => (
+              <div key={s.label} className="qc-gradient-card" style={{ ...S.card, padding:"10px 12px" }}>
+                <div style={{ color:s.color, fontWeight:900, fontSize:15 }}>{s.value}</div>
+                <div style={{ color:T.sub, fontSize:10, marginTop:2 }}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Search */}
+          <input placeholder="সাপ্লায়ার খুঁজুন..." value={search}
+            onChange={e => setSearch(e.target.value)}
+            style={{ ...S.input, marginBottom:10 }} />
+
+          {/* Supplier list */}
+          {filteredSuppliers.length === 0 ? (
+            <div style={S.empty}>
+              <div style={{ fontSize:36, marginBottom:8 }}>🏭</div>
+              <div style={{ color:T.text, fontWeight:700 }}>কোনো সাপ্লায়ার নেই</div>
+              <div style={{ color:T.sub, fontSize:12, marginTop:4 }}>পণ্য যোগ করার সময় Company/Supplier দিন</div>
+            </div>
+          ) : (
+            <Virtuoso
+              style={{ height:"calc(100dvh - 300px)", minHeight:200 }}
+              data={filteredSuppliers}
+              itemContent={(_, sup) => {
+                const sum = paymentSummary[sup.name] || { paid:0, count:0, lastPaid:"" };
+                const due = Math.max(0, sup.totalPurchased - sum.paid);
+                const pctPaid = sup.totalPurchased > 0 ? Math.min(100, sum.paid / sup.totalPurchased * 100) : 0;
+                return (
+                  <div style={{ paddingBottom:8 }}>
+                    <div className="qc-gradient-card list-item" style={{ ...S.card, padding:"12px 14px",
+                      borderLeft:`3px solid ${due>0?"#ef4444":"#22c55e"}`, marginBottom:0, cursor:"pointer" }}
+                      onClick={() => setSelectedSupplier(sup)}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
+                        <div>
+                          <div style={{ color:T.text, fontWeight:900, fontSize:14 }}>{sup.name}</div>
+                          <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>
+                            {sup.productCount}টি পণ্য · মোট ক্রয়: ৳{fmt(sup.totalPurchased)}
+                          </div>
+                        </div>
+                        <div style={{ textAlign:"right" }}>
+                          {due > 0 ? (
+                            <div style={{ color:"#ef4444", fontWeight:900, fontSize:14 }}>
+                              বাকি ৳{fmt(due)}
+                            </div>
+                          ) : (
+                            <div style={{ color:"#22c55e", fontWeight:700, fontSize:12 }}>✓ পরিশোধ</div>
+                          )}
+                          {sum.lastPaid && <div style={{ color:T.sub, fontSize:10 }}>শেষ: {sum.lastPaid}</div>}
+                        </div>
+                      </div>
+                      {/* Progress bar */}
+                      {sup.totalPurchased > 0 && (
+                        <div>
+                          <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
+                            <span style={{ color:T.sub, fontSize:10 }}>পরিশোধ {Math.round(pctPaid)}%</span>
+                            <span style={{ color:T.sub, fontSize:10 }}>৳{fmt(sum.paid)} / ৳{fmt(sup.totalPurchased)}</span>
+                          </div>
+                          <div style={{ height:4, borderRadius:4, background:T.border }}>
+                            <div style={{ height:"100%", width:`${pctPaid}%`, borderRadius:4,
+                              background: pctPaid>=100 ? "#22c55e" : pctPaid>=50 ? "#f59e0b" : "#ef4444",
+                              transition:"width 0.5s ease" }} />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              }}
+            />
+          )}
+        </div>
+      )}
+
+      {/* ══ SUPPLIER DETAIL ══ */}
+      {selectedSupplier && (
+        <div style={{ marginTop:14 }}>
+
+          {/* Summary */}
+          <div className="qc-gradient-card" style={{ ...S.card, padding:"14px 16px", marginBottom:12,
+            border:`1.5px solid ${selDue>0?"#ef444433":"#22c55e33"}` }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+              <div>
+                <div style={{ color:T.text, fontWeight:900, fontSize:16 }}>{selectedSupplier.name}</div>
+                <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>
+                  {selectedSupplier.productCount}টি পণ্য · {selPayments.length}টি পেমেন্ট
+                </div>
+              </div>
+              <div style={{ textAlign:"right" }}>
+                <div style={{ color:selDue>0?"#ef4444":"#22c55e", fontWeight:900, fontSize:18 }}>
+                  {selDue>0?`৳${fmt(selDue)} বাকি`:"✓ পরিশোধ"}
+                </div>
+              </div>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
+              {[
+                { label:"মোট ক্রয়", value:`৳${fmt(selectedSupplier.totalPurchased)}`, color:"#6366f1" },
+                { label:"পরিশোধ",   value:`৳${fmt(selSummary?.paid||0)}`, color:"#22c55e" },
+                { label:"বাকি",     value:`৳${fmt(selDue)}`, color:selDue>0?"#ef4444":"#22c55e" },
+              ].map(s => (
+                <div key={s.label} style={{ background:T.border+"44", borderRadius:10, padding:"8px 10px", textAlign:"center" }}>
+                  <div style={{ color:s.color, fontWeight:800, fontSize:13 }}>{s.value}</div>
+                  <div style={{ color:T.sub, fontSize:10 }}>{s.label}</div>
+                </div>
+              ))}
+            </div>
+            {/* Progress */}
+            {selectedSupplier.totalPurchased > 0 && (
+              <div style={{ marginTop:10 }}>
+                <div style={{ height:6, borderRadius:6, background:T.border }}>
+                  <div style={{ height:"100%", borderRadius:6, transition:"width 0.6s ease",
+                    width:`${Math.min(100,(selSummary?.paid||0)/selectedSupplier.totalPurchased*100)}%`,
+                    background: selDue===0?"#22c55e":selSummary?.paid>=selectedSupplier.totalPurchased/2?"#f59e0b":"#ef4444" }} />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Payment form */}
+          {showPayForm && (
+            <div className="qc-gradient-card" style={{ ...S.card, padding:"14px 16px", marginBottom:12,
+              border:"1.5px solid #f59e0b44" }}>
+              <div style={{ color:T.text, fontWeight:800, fontSize:13, marginBottom:12 }}>➕ পেমেন্ট রেকর্ড করুন</div>
+
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
+                <div>
+                  <div style={{ color:T.sub, fontSize:11, fontWeight:700, marginBottom:4 }}>পরিমাণ (৳)</div>
+                  <input type="number" inputMode="numeric" placeholder="০"
+                    value={payAmount} onChange={e => setPayAmount(e.target.value)}
+                    style={{ ...S.input, marginTop:0, fontSize:18, fontWeight:800, color:"#22c55e" }} />
+                </div>
+                <div>
+                  <div style={{ color:T.sub, fontSize:11, fontWeight:700, marginBottom:4 }}>তারিখ</div>
+                  <input type="date" value={payDate} onChange={e => setPayDate(e.target.value)}
+                    style={{ ...S.input, marginTop:0, fontSize:13 }} />
+                </div>
+              </div>
+
+              {/* Payment method */}
+              <div style={{ marginBottom:10 }}>
+                <div style={{ color:T.sub, fontSize:11, fontWeight:700, marginBottom:6 }}>পদ্ধতি</div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
+                  {PAY_METHODS.map(m => (
+                    <button key={m} onClick={() => setPayMethod(m)}
+                      style={{ padding:"5px 10px", borderRadius:14, fontFamily:"inherit", fontSize:11, fontWeight:700, cursor:"pointer",
+                        border:`1.5px solid ${payMethod===m?"#f59e0b":T.border}`,
+                        background:payMethod===m?"#f59e0b22":T.card,
+                        color:payMethod===m?"#f59e0b":T.sub }}>
+                      {m}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <input placeholder="নোট (ঐচ্ছিক)" value={payNote}
+                onChange={e => setPayNote(e.target.value)}
+                style={{ ...S.input, marginTop:0, marginBottom:12 }} />
+
+              <div style={{ display:"flex", gap:8 }}>
+                <button onClick={() => { setShowPayForm(false); setPayAmount(""); setPayNote(""); }}
+                  style={{ ...S.cancelBtn, flex:1 }}>বাতিল</button>
+                <button onClick={savePayment}
+                  style={{ ...S.saveBtn, flex:2, background:"linear-gradient(135deg,#d97706,#f59e0b)" }}>
+                  ✓ পেমেন্ট সেভ
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Payment history */}
+          <div style={{ color:T.sub, fontSize:12, fontWeight:700, marginBottom:8 }}>📋 পেমেন্ট ইতিহাস</div>
+          {selPayments.length === 0 ? (
+            <div style={{ textAlign:"center", padding:"24px 0", color:T.sub, fontSize:13 }}>
+              কোনো পেমেন্ট নেই — উপরের "পেমেন্ট যোগ" বাটন ব্যবহার করুন
+            </div>
+          ) : (
+            <Virtuoso
+              style={{ height:"calc(100dvh - 480px)", minHeight:150 }}
+              data={selPayments}
+              itemContent={(_, p) => (
+                <div style={{ paddingBottom:8 }}>
+                  <div className="qc-gradient-card list-item" style={{ ...S.card, padding:"11px 14px",
+                    borderLeft:"3px solid #22c55e", marginBottom:0 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                      <div>
+                        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                          <span style={{ color:"#22c55e", fontWeight:900, fontSize:14 }}>৳{fmt(p.amount)}</span>
+                          <span style={{ background:T.border, borderRadius:8, padding:"2px 7px",
+                            color:T.sub, fontSize:10, fontWeight:700 }}>{p.method}</span>
+                        </div>
+                        <div style={{ color:T.sub, fontSize:11, marginTop:3 }}>
+                          {p.dateKey} · {p.addedBy}
+                          {p.note ? ` · ${p.note}` : ""}
+                        </div>
+                      </div>
+                      {currentUser?.role !== "staff" && (
+                        <button onClick={() => deletePayment(p.id)}
+                          style={{ background:"#ef444415", border:"none", borderRadius:8, padding:"5px 8px",
+                            color:"#ef4444", cursor:"pointer", fontFamily:"inherit", fontSize:11 }}>🗑️</button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 📋 QuotationModule — কোটেশন / এস্টিমেট ব্যবস্থাপনা
+// ══════════════════════════════════════════════════════════════════════════════
+
+const QUOT_STATUS_LABELS = {
+  pending:  { label:"অপেক্ষমান", color:"#f59e0b", icon:"⏳" },
+  approved: { label:"অনুমোদিত",  color:"#22c55e", icon:"✅" },
+  rejected: { label:"প্রত্যাখ্যাত", color:"#ef4444", icon:"❌" },
+  expired:  { label:"মেয়াদোত্তীর্ণ", color:"#64748b", icon:"⌛" },
+  converted:{ label:"ইনভয়েসে রূপান্তরিত", color:"#6366f1", icon:"🔄" },
+};
+
+function QuotationModule({ T, S, quotations = [], setQuotations, customers = [],
+  products = [], invoices = [], setInvoices, setProducts, setCustomers,
+  addTxn, showToast, currentUser, shopName, setTab, setPreselectedCust, setPreselectedType }) {
+
+  const fmt     = n => Math.round(n || 0).toLocaleString("en-US");
+  const todayKey = new Date().toISOString().split("T")[0];
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  const [view,        setView]       = React.useState("list"); // list | create | detail
+  const [selectedQt,  setSelectedQt] = React.useState(null);
+  const [filterStatus, setFilterStatus] = React.useState("all");
+  const [search,      setSearch]     = React.useState("");
+
+  // Create form state
+  const [selCust,     setSelCust]    = React.useState(null);
+  const [custSearch,  setCustSearch] = React.useState("");
+  const [items,       setItems]      = React.useState([]); // [{productId, name, qty, price, unit}]
+  const [prodSearch,  setProdSearch] = React.useState("");
+  const [note,        setNote]       = React.useState("");
+  const [validDays,   setValidDays]  = React.useState(7);
+  const [discount,    setDiscount]   = React.useState("");
+  const [walkInName,  setWalkInName] = React.useState("");
+
+  // ── Computed ───────────────────────────────────────────────────────────────
+  const prodMap  = React.useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
+  const custMap  = React.useMemo(() => new Map(customers.map(c => [c.id, c])), [customers]);
+
+  const subtotal = items.reduce((s, it) => s + (it.price||0) * (it.qty||1), 0);
+  const discAmt  = Math.min(parseFloat(discount)||0, subtotal);
+  const total    = subtotal - discAmt;
+
+  const filteredCustomers = React.useMemo(() => {
+    if (!custSearch.trim()) return customers.slice(0, 20);
+    const q = custSearch.toLowerCase();
+    return customers.filter(c =>
+      c.name?.toLowerCase().includes(q) || c.mobile?.includes(q)
+    ).slice(0, 15);
+  }, [customers, custSearch]);
+
+  const filteredProducts = React.useMemo(() => {
+    if (!prodSearch.trim()) return products.filter(p => (p.stock||0) > 0).slice(0, 30);
+    const q = prodSearch.toLowerCase();
+    return products.filter(p =>
+      p.name?.toLowerCase().includes(q) || p.barcode?.includes(prodSearch)
+    ).slice(0, 20);
+  }, [products, prodSearch]);
+
+  // ── Quotation list filtered ────────────────────────────────────────────────
+  const filteredQt = React.useMemo(() => {
+    let list = filterStatus === "all" ? [...quotations] : quotations.filter(q => q.status === filterStatus);
+    if (search.trim()) {
+      const s = search.toLowerCase();
+      list = list.filter(q =>
+        (q.customerName||"").toLowerCase().includes(s) ||
+        (q.id||"").toLowerCase().includes(s) ||
+        (q.quotNo||"").toLowerCase().includes(s)
+      );
+    }
+    // Auto-expire: যেগুলোর validUntil পার হয়ে গেছে এবং pending
+    list = list.map(q => {
+      if (q.status === "pending" && q.validUntil && q.validUntil < todayKey) {
+        return { ...q, status: "expired" };
+      }
+      return q;
+    });
+    return list.sort((a,b) => (b.createdAt||"").localeCompare(a.createdAt||""));
+  }, [quotations, filterStatus, search, todayKey]);
+
+  // ── Item management ────────────────────────────────────────────────────────
+  const addItem = React.useCallback((p) => {
+    setItems(prev => {
+      const existing = prev.findIndex(it => it.productId === p.id);
+      if (existing >= 0) {
+        return prev.map((it,i) => i === existing ? { ...it, qty: it.qty + 1 } : it);
+      }
+      return [...prev, { productId:p.id, name:p.name, qty:1, price:p.price||0, unit:p.unit||"" }];
+    });
+    setProdSearch("");
+  }, []);
+
+  const removeItem = React.useCallback((idx) => {
+    setItems(prev => prev.filter((_,i) => i !== idx));
+  }, []);
+
+  const updateItem = React.useCallback((idx, field, val) => {
+    setItems(prev => prev.map((it,i) => i===idx ? {...it, [field]:val} : it));
+  }, []);
+
+  // ── Save quotation ─────────────────────────────────────────────────────────
+  const saveQuotation = React.useCallback(() => {
+    if (!selCust && !walkInName.trim()) {
+      showToast("কাস্টমার বা নাম দিন", "#ef4444"); return;
+    }
+    if (items.length === 0) {
+      showToast("অন্তত একটি পণ্য যোগ করুন", "#ef4444"); return;
+    }
+    const validUntil = new Date(Date.now() + validDays * 86400000).toISOString().split("T")[0];
+    const qt = {
+      id:           uid(),
+      quotNo:       "QT-" + Date.now().toString(36).slice(-6).toUpperCase(),
+      customerId:   selCust?.id || null,
+      customerName: selCust?.name || walkInName.trim() || "Walk-in",
+      customerMobile: selCust?.mobile || "",
+      items:        items.map(it => ({ ...it })),
+      subtotal,
+      discount:     discAmt,
+      total,
+      note:         note.trim(),
+      validDays,
+      validUntil,
+      status:       "pending",
+      dateKey:      todayKey,
+      date:         new Date().toLocaleDateString("bn-BD"),
+      shopName:     shopName || "SBM",
+      createdBy:    currentUser?.name || "মালিক",
+      createdAt:    new Date().toISOString(),
+    };
+    setQuotations(prev => [qt, ...prev]);
+    showToast(`✅ কোটেশন ${qt.quotNo} তৈরি হয়েছে`, "#22c55e");
+    // Reset form
+    setSelCust(null); setItems([]); setNote(""); setDiscount(""); setWalkInName(""); setValidDays(7);
+    setView("list");
+  }, [selCust, walkInName, items, subtotal, discAmt, total, note, validDays, todayKey,
+      shopName, currentUser, setQuotations, showToast]);
+
+  // ── Status update ──────────────────────────────────────────────────────────
+  const updateStatus = React.useCallback((qtId, newStatus) => {
+    setQuotations(prev => prev.map(q => q.id === qtId ? {...q, status: newStatus} : q));
+    showToast(`কোটেশন ${newStatus === "approved" ? "অনুমোদিত" : "আপডেট"} হয়েছে`, "#22c55e");
+  }, [setQuotations, showToast]);
+
+  // ── Convert to Invoice ─────────────────────────────────────────────────────
+  const convertToInvoice = React.useCallback((qt) => {
+    const cust = custMap.get(qt.customerId);
+    // Invoice builder-এ send করি — preselected customer + items
+    if (cust) {
+      setPreselectedCust?.(cust);
+      setPreselectedType?.("retail");
+    }
+    // Status update
+    updateStatus(qt.id, "converted");
+    showToast("Invoice Builder-এ পাঠানো হয়েছে — পণ্য আবার যোগ করুন", "#6366f1");
+    setTab("invoice");
+  }, [custMap, setPreselectedCust, setPreselectedType, updateStatus, showToast, setTab]);
+
+  // ── WhatsApp share ─────────────────────────────────────────────────────────
+  const shareQuotationWhatsApp = React.useCallback((qt) => {
+    if (!qt.customerMobile) { showToast("কাস্টমারের মোবাইল নম্বর নেই", "#ef4444"); return; }
+    const nl = "\n";
+    const itemLines = (qt.items||[]).map(it =>
+      `  \u2022 ${it.name} \u00d7${it.qty} @ \u09f3${it.price} = \u09f3${Math.round(it.qty*it.price).toLocaleString("en-US")}`
+    ).join(nl);
+    let msg = `\ud83d\udccb *\u0995\u09cb\u099f\u09c7\u09b6\u09a8 ${qt.quotNo}*${nl}`;
+    msg += `${qt.shopName || shopName}${nl}${nl}`;
+    msg += `\u0995\u09be\u09b8\u09cd\u099f\u09ae\u09be\u09b0: ${qt.customerName}${nl}`;
+    msg += `\u09a4\u09be\u09b0\u09bf\u0996: ${qt.dateKey}${nl}`;
+    msg += `\u09ac\u09c8\u09a7\u09a4\u09be: ${qt.validUntil} \u09aa\u09b0\u09cd\u09af\u09a8\u09cd\u09a4${nl}${nl}`;
+    msg += `\u09aa\u09a3\u09cd\u09af:${nl}${itemLines}${nl}${nl}`;
+    if ((qt.discount||0) > 0) msg += `\u09a1\u09bf\u09b8\u0995\u09be\u0989\u09a8\u09cd\u099f: \u2013\u09f3${Math.round(qt.discount).toLocaleString("en-US")}${nl}`;
+    msg += `*\u09ae\u09cb\u099f: \u09f3${Math.round(qt.total).toLocaleString("en-US")}*${nl}${nl}`;
+    if (qt.note) msg += `\u09a8\u09cb\u099f: ${qt.note}${nl}${nl}`;
+    msg += "\u09a7\u09a8\u09cd\u09af\u09ac\u09be\u09a6\u0964 \u0985\u09a8\u09c1\u09ae\u09cb\u09a6\u09a8 \u0995\u09b0\u09b2\u09c7 \u099c\u09be\u09a8\u09be\u09a8\u0964";
+    shareViaWhatsApp(qt.customerMobile, msg, showToast);
+  }, [shopName, showToast]);
+
+  // ══════════════════════════════════════════════════════
+  // RENDER
+  // ══════════════════════════════════════════════════════
+  return (
+    <div style={{ ...S.page, paddingBottom:100 }}>
+
+      {/* ── Header ── */}
+      <div style={{ ...S.header, marginBottom:0 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <div style={{ width:4, height:22, borderRadius:2, background:"linear-gradient(180deg,#6366f1,#8b5cf6)" }} />
+          <span style={{ ...S.headerTitle, fontSize:17 }}>📋 কোটেশন</span>
+        </div>
+        <div style={{ display:"flex", gap:8 }}>
+          {view !== "list" && (
+            <button onClick={() => setView("list")}
+              style={{ ...S.cancelBtn, padding:"8px 14px", margin:0 }}>← তালিকা</button>
+          )}
+          {view === "list" && (
+            <button onClick={() => setView("create")}
+              style={{ ...S.addBtn, width:"auto", padding:"8px 16px", margin:0,
+                display:"flex", alignItems:"center", gap:6,
+                background:"linear-gradient(135deg,#6366f1,#8b5cf6)" }}>
+              <IcPlus /><span style={{ fontSize:13, fontWeight:800 }}>নতুন কোটেশন</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* ══ LIST VIEW ══ */}
+      {view === "list" && (
+        <div style={{ marginTop:14 }}>
+          {/* Stats */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:12 }}>
+            {[
+              { label:"মোট",       value:quotations.length, color:"#6366f1" },
+              { label:"অপেক্ষমান",  value:quotations.filter(q=>q.status==="pending").length, color:"#f59e0b" },
+              { label:"অনুমোদিত",  value:quotations.filter(q=>q.status==="approved").length, color:"#22c55e" },
+            ].map(s => (
+              <div key={s.label} className="qc-gradient-card" style={{ ...S.card, padding:"10px 12px" }}>
+                <div style={{ color:s.color, fontWeight:900, fontSize:16 }}>{s.value}</div>
+                <div style={{ color:T.sub, fontSize:11 }}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Search */}
+          <input placeholder="কোটেশন নম্বর বা কাস্টমার খুঁজুন..."
+            value={search} onChange={e => setSearch(e.target.value)}
+            style={{ ...S.input, marginBottom:8 }} />
+
+          {/* Status filter */}
+          <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:12 }}>
+            {[["all","সব"],["pending","অপেক্ষমান"],["approved","অনুমোদিত"],["converted","রূপান্তরিত"],["rejected","প্রত্যাখ্যাত"],["expired","মেয়াদোত্তীর্ণ"]].map(([k,l]) => (
+              <button key={k} onClick={() => setFilterStatus(k)}
+                style={{ padding:"5px 10px", borderRadius:16, fontFamily:"inherit",
+                  border:`1.5px solid ${filterStatus===k?"#6366f1":T.border}`,
+                  background:filterStatus===k?"#6366f122":T.card,
+                  color:filterStatus===k?"#6366f1":T.sub, fontSize:11, fontWeight:700, cursor:"pointer" }}>
+                {l}
+              </button>
+            ))}
+          </div>
+
+          {/* List */}
+          {filteredQt.length === 0 ? (
+            <div style={S.empty}>
+              <div style={{ fontSize:36, marginBottom:10 }}>📋</div>
+              <div style={{ color:T.text, fontWeight:700 }}>কোনো কোটেশন নেই</div>
+              <div style={{ color:T.sub, fontSize:13, marginTop:4 }}>"নতুন কোটেশন" বাটন দিয়ে তৈরি করুন</div>
+            </div>
+          ) : (
+            <Virtuoso
+              style={{ height:"calc(100dvh - 340px)", minHeight:200 }}
+              data={filteredQt}
+              itemContent={(_, qt) => {
+                const info = QUOT_STATUS_LABELS[qt.status] || QUOT_STATUS_LABELS.pending;
+                const isExpired = qt.status === "pending" && qt.validUntil < todayKey;
+                const daysLeft = qt.validUntil
+                  ? Math.max(0, Math.round((new Date(qt.validUntil) - new Date()) / 86400000))
+                  : null;
+                return (
+                  <div style={{ paddingBottom:8 }}>
+                    <div className="qc-gradient-card list-item" style={{ ...S.card, padding:"12px 14px",
+                      borderLeft:`3px solid ${isExpired?"#64748b":info.color}`, marginBottom:0 }}
+                      onClick={() => { setSelectedQt(qt); setView("detail"); }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:6 }}>
+                        <div>
+                          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                            <span style={{ color:T.text, fontWeight:900, fontSize:13 }}>{qt.quotNo}</span>
+                            <span style={{ background:info.color+"22", border:`1px solid ${info.color}44`,
+                              borderRadius:8, padding:"2px 7px", fontSize:10, fontWeight:800, color:info.color }}>
+                              {info.icon} {isExpired?"মেয়াদোত্তীর্ণ":info.label}
+                            </span>
+                          </div>
+                          <div style={{ color:T.sub, fontSize:11, marginTop:3 }}>
+                            {qt.customerName} · {qt.dateKey}
+                          </div>
+                          {daysLeft !== null && qt.status==="pending" && !isExpired && (
+                            <div style={{ color:daysLeft<=2?"#ef4444":"#f59e0b", fontSize:10, marginTop:2, fontWeight:700 }}>
+                              ⏱️ {daysLeft} দিন বাকি
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ color:"#6366f1", fontWeight:900, fontSize:15 }}>৳{fmt(qt.total)}</div>
+                      </div>
+                      <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
+                        {(qt.items||[]).slice(0,3).map((it,i) => (
+                          <span key={i} style={{ background:T.border, borderRadius:8, padding:"2px 7px",
+                            color:T.sub, fontSize:10, fontWeight:600 }}>
+                            {it.name} ×{it.qty}
+                          </span>
+                        ))}
+                        {(qt.items||[]).length > 3 && <span style={{ color:T.sub, fontSize:10 }}>+{qt.items.length-3}টি</span>}
+                      </div>
+                    </div>
+                  </div>
+                );
+              }}
+            />
+          )}
+        </div>
+      )}
+
+      {/* ══ CREATE VIEW ══ */}
+      {view === "create" && (
+        <div style={{ marginTop:14 }}>
+          {/* Customer select */}
+          <div className="qc-gradient-card" style={{ ...S.card, marginBottom:10, padding:"12px 14px" }}>
+            <div style={{ color:T.sub, fontSize:12, fontWeight:700, marginBottom:6 }}>👤 কাস্টমার</div>
+            {selCust ? (
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <div>
+                  <div style={{ color:T.text, fontWeight:800 }}>{selCust.name}</div>
+                  <div style={{ color:T.sub, fontSize:11 }}>{selCust.mobile}</div>
+                </div>
+                <button onClick={() => setSelCust(null)}
+                  style={{ background:"#ef444415", border:"none", borderRadius:8, padding:"6px 10px",
+                    color:"#ef4444", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>✕</button>
+              </div>
+            ) : (
+              <>
+                <input placeholder="কাস্টমার খুঁজুন..." value={custSearch}
+                  onChange={e => setCustSearch(e.target.value)}
+                  style={{ ...S.input, marginBottom:6, marginTop:0 }} />
+                {custSearch ? (
+                  <div style={{ maxHeight:160, overflowY:"auto" }}>
+                    {filteredCustomers.map(c => (
+                      <div key={c.id} onClick={() => { setSelCust(c); setCustSearch(""); }}
+                        style={{ padding:"8px 10px", borderRadius:8, cursor:"pointer",
+                          color:T.text, fontSize:13, fontWeight:600,
+                          background:"transparent", borderBottom:`1px solid ${T.border}` }}>
+                        {c.name} <span style={{ color:T.sub, fontSize:11 }}>{c.mobile}</span>
+                      </div>
+                    ))}
+                    {filteredCustomers.length === 0 && (
+                      <div style={{ color:T.sub, fontSize:12, padding:8 }}>পাওয়া যায়নি</div>
+                    )}
+                  </div>
+                ) : (
+                  <input placeholder="অথবা হাঁটা কাস্টমারের নাম লিখুন..."
+                    value={walkInName} onChange={e => setWalkInName(e.target.value)}
+                    style={{ ...S.input, marginTop:0 }} />
+                )}
+              </>
+            )}
+          </div>
+
+          {/* Product search + add */}
+          <div className="qc-gradient-card" style={{ ...S.card, marginBottom:10, padding:"12px 14px" }}>
+            <div style={{ color:T.sub, fontSize:12, fontWeight:700, marginBottom:6 }}>📦 পণ্য যোগ করুন</div>
+            <input placeholder={`পণ্য খুঁজুন... (${products.length}টি)`}
+              value={prodSearch} onChange={e => setProdSearch(e.target.value)}
+              style={{ ...S.input, marginTop:0, marginBottom:6 }} />
+            {prodSearch && filteredProducts.map(p => (
+              <div key={p.id} onClick={() => addItem(p)}
+                style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+                  padding:"8px 10px", borderRadius:8, cursor:"pointer",
+                  background:T.border+"44", marginBottom:4, borderRadius:8 }}>
+                <div>
+                  <div style={{ color:T.text, fontSize:13, fontWeight:700 }}>{p.name}</div>
+                  <div style={{ color:T.sub, fontSize:11 }}>৳{p.price} · স্টক: {p.stock||0}</div>
+                </div>
+                <IcPlus />
+              </div>
+            ))}
+          </div>
+
+          {/* Cart items */}
+          {items.length > 0 && (
+            <div className="qc-gradient-card" style={{ ...S.card, marginBottom:10, padding:"12px 14px" }}>
+              <div style={{ color:T.sub, fontSize:12, fontWeight:700, marginBottom:8 }}>🛒 নির্বাচিত পণ্য</div>
+              {items.map((it, idx) => (
+                <div key={idx} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8,
+                  paddingBottom:8, borderBottom:`1px solid ${T.border}` }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ color:T.text, fontWeight:700, fontSize:13 }}>{it.name}</div>
+                    <div style={{ display:"flex", gap:6, marginTop:4, alignItems:"center" }}>
+                      <button onClick={() => updateItem(idx, "qty", Math.max(1, it.qty-1))}
+                        style={{ width:26, height:26, borderRadius:8, border:`1px solid ${T.border}`,
+                          background:T.card, color:T.text, fontSize:16, cursor:"pointer", fontFamily:"inherit" }}>−</button>
+                      <span style={{ color:T.text, fontWeight:800, minWidth:24, textAlign:"center" }}>{it.qty}</span>
+                      <button onClick={() => updateItem(idx, "qty", it.qty+1)}
+                        style={{ width:26, height:26, borderRadius:8, border:`1px solid ${T.border}`,
+                          background:T.card, color:T.text, fontSize:16, cursor:"pointer", fontFamily:"inherit" }}>+</button>
+                      <span style={{ color:T.sub, fontSize:11 }}>× ৳</span>
+                      <input type="number" value={it.price}
+                        onChange={e => updateItem(idx, "price", parseFloat(e.target.value)||0)}
+                        style={{ width:70, padding:"4px 8px", borderRadius:8, border:`1px solid ${T.border}`,
+                          background:T.card, color:T.text, fontSize:12, fontFamily:"inherit" }} />
+                    </div>
+                  </div>
+                  <div style={{ textAlign:"right" }}>
+                    <div style={{ color:"#6366f1", fontWeight:900, fontSize:14 }}>৳{fmt(it.qty*it.price)}</div>
+                    <button onClick={() => removeItem(idx)}
+                      style={{ background:"none", border:"none", color:"#ef4444", cursor:"pointer",
+                        fontSize:11, padding:0, fontFamily:"inherit", marginTop:4 }}>মুছুন</button>
+                  </div>
+                </div>
+              ))}
+              {/* Subtotal / Discount / Total */}
+              <div style={{ borderTop:`1px solid ${T.border}`, paddingTop:8 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", color:T.sub, fontSize:12, marginBottom:4 }}>
+                  <span>সর্বমোট</span><span>৳{fmt(subtotal)}</span>
+                </div>
+                <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:8 }}>
+                  <span style={{ color:T.sub, fontSize:12 }}>ডিসকাউন্ট ৳</span>
+                  <input type="number" value={discount}
+                    onChange={e => setDiscount(Math.max(0, parseFloat(e.target.value)||0))}
+                    placeholder="0"
+                    style={{ flex:1, padding:"4px 8px", borderRadius:8, border:`1px solid ${T.border}`,
+                      background:T.card, color:"#22c55e", fontSize:13, fontFamily:"inherit", fontWeight:700 }} />
+                </div>
+                <div style={{ display:"flex", justifyContent:"space-between", color:"#6366f1",
+                  fontWeight:900, fontSize:16, paddingTop:4 }}>
+                  <span>মোট</span><span>৳{fmt(total)}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Validity + Note */}
+          <div className="qc-gradient-card" style={{ ...S.card, marginBottom:12, padding:"12px 14px" }}>
+            <div style={{ color:T.sub, fontSize:12, fontWeight:700, marginBottom:8 }}>⚙️ সেটিং</div>
+            <div style={{ marginBottom:8 }}>
+              <div style={{ color:T.sub, fontSize:11, marginBottom:4 }}>বৈধতার মেয়াদ</div>
+              <div style={{ display:"flex", gap:6 }}>
+                {[3,7,14,30].map(d => (
+                  <button key={d} onClick={() => setValidDays(d)}
+                    style={{ flex:1, padding:"6px 0", borderRadius:10, fontFamily:"inherit",
+                      border:`1.5px solid ${validDays===d?"#6366f1":T.border}`,
+                      background:validDays===d?"#6366f122":T.card,
+                      color:validDays===d?"#6366f1":T.sub, fontSize:11, fontWeight:700, cursor:"pointer" }}>
+                    {d} দিন
+                  </button>
+                ))}
+              </div>
+            </div>
+            <input placeholder="নোট (ঐচ্ছিক)" value={note}
+              onChange={e => setNote(e.target.value)}
+              style={{ ...S.input, marginTop:0 }} />
+          </div>
+
+          {/* Save button */}
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={() => setView("list")}
+              style={{ ...S.cancelBtn, flex:1 }}>বাতিল</button>
+            <button onClick={saveQuotation}
+              style={{ ...S.saveBtn, flex:2, background:"linear-gradient(135deg,#6366f1,#8b5cf6)" }}>
+              📋 কোটেশন সেভ করুন
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ══ DETAIL VIEW ══ */}
+      {view === "detail" && selectedQt && (() => {
+        const qt = quotations.find(q => q.id === selectedQt.id) || selectedQt;
+        const info = QUOT_STATUS_LABELS[qt.status] || QUOT_STATUS_LABELS.pending;
+        const isExpired = qt.status === "pending" && qt.validUntil < todayKey;
+        const canConvert = qt.status === "approved" || qt.status === "pending";
+        const cust = custMap.get(qt.customerId);
+        return (
+          <div style={{ marginTop:14 }}>
+            {/* Header card */}
+            <div className="qc-gradient-card" style={{ ...S.card, padding:"14px 16px", marginBottom:10,
+              border:`1.5px solid ${info.color}44` }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
+                <div>
+                  <div style={{ color:T.text, fontWeight:900, fontSize:16 }}>{qt.quotNo}</div>
+                  <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>{qt.customerName} · {qt.dateKey}</div>
+                  <div style={{ color:T.sub, fontSize:11, marginTop:1 }}>বৈধ: {qt.validUntil} পর্যন্ত</div>
+                </div>
+                <div>
+                  <span style={{ background:info.color+"22", border:`1px solid ${info.color}44`,
+                    borderRadius:10, padding:"4px 10px", fontSize:12, fontWeight:800, color:info.color }}>
+                    {info.icon} {isExpired?"মেয়াদোত্তীর্ণ":info.label}
+                  </span>
+                  <div style={{ color:"#6366f1", fontWeight:900, fontSize:18, marginTop:6, textAlign:"right" }}>৳{fmt(qt.total)}</div>
+                </div>
+              </div>
+
+              {/* Items */}
+              {(qt.items||[]).map((it,i) => (
+                <div key={i} style={{ display:"flex", justifyContent:"space-between",
+                  padding:"5px 0", borderBottom:`1px solid ${T.border}`, fontSize:12 }}>
+                  <span style={{ color:T.text, fontWeight:600 }}>{it.name} ×{it.qty}</span>
+                  <span style={{ color:T.sub }}>৳{fmt(it.qty*it.price)}</span>
+                </div>
+              ))}
+
+              {/* Totals */}
+              <div style={{ marginTop:8 }}>
+                {(qt.discount||0)>0 && (
+                  <div style={{ display:"flex", justifyContent:"space-between", color:"#22c55e", fontSize:12 }}>
+                    <span>ডিসকাউন্ট</span><span>–৳{fmt(qt.discount)}</span>
+                  </div>
+                )}
+                <div style={{ display:"flex", justifyContent:"space-between", fontWeight:900,
+                  color:"#6366f1", fontSize:16, marginTop:4 }}>
+                  <span>মোট</span><span>৳{fmt(qt.total)}</span>
+                </div>
+              </div>
+
+              {qt.note && <div style={{ color:T.sub, fontSize:12, marginTop:8 }}>📝 {qt.note}</div>}
+            </div>
+
+            {/* Action buttons */}
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
+              {qt.status === "pending" && !isExpired && (
+                <button onClick={() => updateStatus(qt.id, "approved")}
+                  style={{ ...S.saveBtn, background:"linear-gradient(135deg,#16a34a,#22c55e)" }}>
+                  ✅ অনুমোদন করুন
+                </button>
+              )}
+              {qt.status === "pending" && !isExpired && (
+                <button onClick={() => updateStatus(qt.id, "rejected")}
+                  style={{ ...S.cancelBtn }}>❌ প্রত্যাখ্যান</button>
+              )}
+              {canConvert && (
+                <button onClick={() => convertToInvoice(qt)}
+                  style={{ ...S.saveBtn, background:"linear-gradient(135deg,#6366f1,#8b5cf6)" }}>
+                  🔄 ইনভয়েসে রূপান্তর
+                </button>
+              )}
+              {qt.customerMobile && (
+                <button onClick={() => shareQuotationWhatsApp(qt)}
+                  style={{ ...S.saveBtn, background:"linear-gradient(135deg,#16a34a,#22c55e)" }}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="#fff" style={{ marginRight:4 }}><path d="M17.6 6.32A8.86 8.86 0 0 0 12.05 4a8.94 8.94 0 0 0-7.93 13.13L3 21l3.95-1.04a8.93 8.93 0 0 0 4.95 1.5h.01a8.92 8.92 0 0 0 8.92-8.91 8.85 8.85 0 0 0-2.63-6.23zm-5.55 13.7h-.01a7.4 7.4 0 0 1-3.78-1.03l-.27-.16-2.81.74.75-2.74-.18-.28a7.43 7.43 0 0 1 6.31-11.4 7.36 7.36 0 0 1 5.24 2.17 7.34 7.34 0 0 1 2.18 5.25 7.43 7.43 0 0 1-7.43 7.45z"/></svg>
+                  WhatsApp
+                </button>
+              )}
+            </div>
+
+            {/* Delete */}
+            <button onClick={() => {
+              if (window.confirm("এই কোটেশন মুছবেন?")) {
+                setQuotations(prev => prev.filter(q => q.id !== qt.id));
+                showToast("কোটেশন মুছে ফেলা হয়েছে", "#ef4444");
+                setView("list");
+              }
+            }} style={{ ...S.cancelBtn, width:"100%", color:"#ef4444", border:"1px solid #ef444422" }}>
+              🗑️ মুছুন
+            </button>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 🔄 ReturnModule — পণ্য ফেরত ও রিফান্ড ব্যবস্থাপনা
+// ══════════════════════════════════════════════════════════════════════════════
+
+function ReturnModule({ T, S, invoices, products, customers, returns = [], setReturns,
+  setProducts, setCustomers, setStockMovements, addTxn, showToast, currentUser, shopName }) {
+
+  const fmt     = n => Math.round(n || 0).toLocaleString("en-US");
+  const todayKey = new Date().toISOString().split("T")[0];
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  const [step,         setStep]         = React.useState(1); // 1=search, 2=select items, 3=confirm
+  const [invSearch,    setInvSearch]    = React.useState("");
+  const [foundInv,     setFoundInv]     = React.useState(null);
+  const [returnItems,  setReturnItems]  = React.useState([]); // { productId, name, maxQty, returnQty, price, batchNo, returnType }
+  const [returnNote,   setReturnNote]   = React.useState("");
+  const [filterRange,  setFilterRange]  = React.useState("month");
+
+  const prodMap = React.useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
+  const custMap = React.useMemo(() => new Map(customers.map(c => [c.id, c])), [customers]);
+
+  // ── Search invoice ─────────────────────────────────────────────────────────
+  const searchInvoice = React.useCallback(() => {
+    const q = invSearch.trim().toUpperCase();
+    if (!q) { showToast("ইনভয়েস নম্বর দিন", "#ef4444"); return; }
+    const inv = invoices.find(i =>
+      (i.invoiceNo || i.id || "").toUpperCase().includes(q) ||
+      (i.id || "").toUpperCase().includes(q)
+    );
+    if (!inv) { showToast("ইনভয়েস পাওয়া যায়নি", "#ef4444"); return; }
+    if (inv.status === "voided") { showToast("এই ইনভয়েস বাতিল করা হয়েছে", "#ef4444"); return; }
+
+    // Check already returned items
+    const alreadyReturned = returns
+      .filter(r => r.originalInvoiceId === inv.id)
+      .flatMap(r => r.items || [])
+      .reduce((map, it) => {
+        map[it.productId] = (map[it.productId] || 0) + (it.returnQty || 0);
+        return map;
+      }, {});
+
+    const items = (inv.items || []).map(it => ({
+      productId:  it.productId,
+      name:       it.name || prodMap.get(it.productId)?.name || "অজানা",
+      maxQty:     (it.qty || 1) - (alreadyReturned[it.productId] || 0),
+      originalQty: it.qty || 1,
+      returnedQty: alreadyReturned[it.productId] || 0,
+      returnQty:  0,
+      price:      it.price || 0,
+      costPrice:  prodMap.get(it.productId)?.costPrice || it.costPrice || 0,
+      batchNo:    it.batchNo || "",
+      returnType: "ভালো", // "ভালো" | "নষ্ট"
+    })).filter(it => it.maxQty > 0);
+
+    if (items.length === 0) {
+      showToast("এই ইনভয়েসের সব পণ্য আগেই ফেরত দেওয়া হয়েছে", "#f59e0b");
+      return;
+    }
+    setFoundInv(inv);
+    setReturnItems(items);
+    setStep(2);
+  }, [invSearch, invoices, returns, prodMap, showToast]);
+
+  // ── Confirm return ─────────────────────────────────────────────────────────
+  const confirmReturn = React.useCallback(() => {
+    const selectedItems = returnItems.filter(it => it.returnQty > 0);
+    if (selectedItems.length === 0) {
+      showToast("অন্তত একটি পণ্য নির্বাচন করুন", "#ef4444"); return;
+    }
+
+    const totalRefund = selectedItems.reduce((s, it) => s + it.price * it.returnQty, 0);
+    const customer    = custMap.get(foundInv.customerId);
+
+    // ── 1. Save return record ────────────────────────────────────────────────
+    const returnRecord = {
+      id:                uid(),
+      originalInvoiceId: foundInv.id,
+      originalInvoiceNo: foundInv.invoiceNo || foundInv.id,
+      customerId:        foundInv.customerId || null,
+      customerName:      foundInv.customerName || "হাঁটা কাস্টমার",
+      items:             selectedItems.map(it => ({
+        productId:  it.productId,
+        name:       it.name,
+        returnQty:  it.returnQty,
+        price:      it.price,
+        returnType: it.returnType,
+        batchNo:    it.batchNo,
+      })),
+      totalRefund,
+      note:      returnNote.trim(),
+      date:      todayKey,
+      dateKey:   todayKey,
+      addedBy:   currentUser?.name || "মালিক",
+      createdAt: new Date().toISOString(),
+    };
+    setReturns(prev => [returnRecord, ...prev]);
+
+    // ── 2. Stock restore (শুধু "ভালো" পণ্যের জন্য) ──────────────────────────
+    const goodItems = selectedItems.filter(it => it.returnType === "ভালো");
+    if (goodItems.length > 0) {
+      setProducts(prev => prev.map(p => {
+        const retItem = goodItems.find(it => it.productId === p.id);
+        if (!retItem) return p;
+        let updatedBatches = p.batches ? [...p.batches] : [];
+        if (retItem.batchNo) {
+          const bIdx = updatedBatches.findIndex(b => b.batchNo === retItem.batchNo);
+          if (bIdx >= 0) {
+            updatedBatches[bIdx] = { ...updatedBatches[bIdx], qty: (updatedBatches[bIdx].qty || 0) + retItem.returnQty };
+          } else {
+            updatedBatches.push({ batchNo: retItem.batchNo, qty: retItem.returnQty, costPrice: retItem.costPrice, expiryDate: "" });
+          }
+        }
+        return { ...p, stock: (p.stock || 0) + retItem.returnQty, batches: updatedBatches, lastUpdated: new Date().toISOString() };
+      }));
+
+      // Stock movement log
+      goodItems.forEach(it => {
+        const mvEntry = {
+          id: uid(), productId: it.productId, productName: it.name,
+          type: "return-in", qty: it.returnQty, note: `ফেরত: ${returnRecord.originalInvoiceNo}`,
+          date: todayKey, dateKey: todayKey, addedBy: currentUser?.name || "মালিক",
+          createdAt: new Date().toISOString(),
+        };
+        setStockMovements(prev => [mvEntry, ...prev]);
+      });
+    }
+
+    // ── 3. Customer balance adjust (বাকি ইনভয়েস হলে কমাও) ──────────────────
+    if (customer && (foundInv.payType === "baki" || foundInv.payType === "partial")) {
+      const currentBal = customer.balance || 0;
+      const newBal     = Math.max(0, currentBal - totalRefund);
+      setCustomers(prev => prev.map(c =>
+        c.id === customer.id ? { ...c, balance: newBal } : c
+      ));
+      if (totalRefund > 0) {
+        addTxn(customer.id, "joma", totalRefund, newBal, foundInv.id,
+          `পণ্য ফেরত: ${returnRecord.originalInvoiceNo}`, null, "return");
+      }
+    }
+
+    showToast(`✅ ফেরত সম্পন্ন! ৳${fmt(totalRefund)} রিফান্ড`, "#22c55e");
+    setStep(1); setFoundInv(null); setReturnItems([]);
+    setInvSearch(""); setReturnNote("");
+  }, [returnItems, foundInv, custMap, returnNote, todayKey, currentUser,
+      setReturns, setProducts, setCustomers, setStockMovements, addTxn, showToast]);
+
+  // ── Returns history filter ─────────────────────────────────────────────────
+  const filteredReturns = React.useMemo(() => {
+    const now = new Date();
+    let from = "";
+    if (filterRange === "today") from = todayKey;
+    else if (filterRange === "week") from = new Date(now - 7*86400000).toISOString().split("T")[0];
+    else if (filterRange === "month") from = now.toISOString().slice(0,7);
+    const list = filterRange === "all" ? [...returns]
+      : filterRange === "month"
+        ? returns.filter(r => (r.dateKey||"").startsWith(from))
+        : returns.filter(r => (r.dateKey||"") >= from);
+    return list.sort((a,b) => (b.createdAt||"").localeCompare(a.createdAt||""));
+  }, [returns, filterRange, todayKey]);
+
+  const totalRefundAmt = React.useMemo(() =>
+    filteredReturns.reduce((s,r) => s + (r.totalRefund||0), 0), [filteredReturns]);
+
+  return (
+    <div style={{ ...S.page, paddingBottom: 100 }}>
+
+      {/* ── Header ── */}
+      <div style={{ ...S.header, marginBottom: 0 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <div style={{ width:4, height:22, borderRadius:2, background:"linear-gradient(180deg,#6366f1,#8b5cf6)" }} />
+          <span style={{ ...S.headerTitle, fontSize:17 }}>🔄 পণ্য ফেরত</span>
+        </div>
+        {step > 1 && (
+          <button onClick={() => { setStep(1); setFoundInv(null); setReturnItems([]); }}
+            style={{ ...S.cancelBtn, padding:"8px 14px", margin:0 }}>← ফিরে যান</button>
+        )}
+      </div>
+
+      {/* ══ STEP 1: Invoice Search ══ */}
+      {step === 1 && (
+        <div style={{ marginTop:14 }}>
+          <div className="qc-gradient-card" style={{ ...S.card, padding:"16px 14px", marginBottom:14 }}>
+            <div style={{ color:T.text, fontWeight:900, fontSize:14, marginBottom:12 }}>🔍 ইনভয়েস খুঁজুন</div>
+            <div style={{ display:"flex", gap:8 }}>
+              <input
+                placeholder="ইনভয়েস নম্বর বা ID লিখুন..."
+                value={invSearch}
+                onChange={e => setInvSearch(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && searchInvoice()}
+                style={{ ...S.input, marginTop:0, flex:1 }}
+              />
+              <button onClick={searchInvoice}
+                style={{ ...S.saveBtn, flex:"none", padding:"0 18px", marginTop:0 }}>
+                খুঁজুন
+              </button>
+            </div>
+            <div style={{ color:T.sub, fontSize:11, marginTop:8 }}>
+              💡 ইনভয়েস নম্বরের শেষ কয়েকটি অক্ষর দিয়েও খুঁজতে পারবেন
+            </div>
+          </div>
+
+          {/* Summary stats */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
+            <div className="qc-gradient-card" style={{ ...S.card, padding:"12px 14px" }}>
+              <div style={{ fontSize:20, marginBottom:4 }}>🔄</div>
+              <div style={{ color:"#6366f1", fontWeight:900, fontSize:15 }}>
+                {filteredReturns.length}টি
+              </div>
+              <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>মোট ফেরত</div>
+            </div>
+            <div className="qc-gradient-card" style={{ ...S.card, padding:"12px 14px" }}>
+              <div style={{ fontSize:20, marginBottom:4 }}>💸</div>
+              <div style={{ color:"#ef4444", fontWeight:900, fontSize:15 }}>৳{fmt(totalRefundAmt)}</div>
+              <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>মোট রিফান্ড</div>
+            </div>
+          </div>
+
+          {/* Filter */}
+          <div style={{ display:"flex", gap:6, marginBottom:10 }}>
+            {[["today","আজ"],["week","৭ দিন"],["month","এই মাস"],["all","সব"]].map(([k,l]) => (
+              <button key={k} onClick={() => setFilterRange(k)}
+                style={{ padding:"5px 12px", borderRadius:16,
+                  border:`1.5px solid ${filterRange===k?"#6366f1":T.border}`,
+                  background: filterRange===k?"#6366f122":T.card,
+                  color: filterRange===k?"#6366f1":T.sub,
+                  fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
+                {l}
+              </button>
+            ))}
+          </div>
+
+          {/* Returns history */}
+          {filteredReturns.length === 0 ? (
+            <div style={S.empty}>
+              <div style={{ fontSize:36, marginBottom:10 }}>🔄</div>
+              <div style={{ color:T.text, fontWeight:700 }}>কোনো ফেরত নেই</div>
+              <div style={{ color:T.sub, fontSize:13, marginTop:4 }}>উপরে ইনভয়েস খুঁজে ফেরত শুরু করুন</div>
+            </div>
+          ) : (
+            <Virtuoso
+              style={{ height:"calc(100dvh - 420px)", minHeight:200 }}
+              data={filteredReturns}
+              itemContent={(_, r) => (
+                <div style={{ paddingBottom:8 }}>
+                  <div className="qc-gradient-card list-item" style={{ ...S.card, padding:"12px 14px",
+                    borderLeft:"3px solid #6366f1", marginBottom:0 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:6 }}>
+                      <div>
+                        <div style={{ color:T.text, fontWeight:800, fontSize:13 }}>
+                          🔄 {r.customerName}
+                        </div>
+                        <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>
+                          ইনভয়েস: {r.originalInvoiceNo} · {r.dateKey}
+                        </div>
+                      </div>
+                      <div style={{ color:"#ef4444", fontWeight:900, fontSize:15 }}>
+                        -৳{fmt(r.totalRefund)}
+                      </div>
+                    </div>
+                    <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
+                      {(r.items||[]).map((it,i) => (
+                        <span key={i} style={{ background: it.returnType==="ভালো"?"#22c55e15":"#ef444415",
+                          border:`1px solid ${it.returnType==="ভালো"?"#22c55e30":"#ef444430"}`,
+                          borderRadius:8, padding:"2px 8px", fontSize:11, fontWeight:700,
+                          color: it.returnType==="ভালো"?"#22c55e":"#ef4444" }}>
+                          {it.name} ×{it.returnQty} ({it.returnType})
+                        </span>
+                      ))}
+                    </div>
+                    {r.note ? <div style={{ color:T.sub, fontSize:11, marginTop:6 }}>📝 {r.note}</div> : null}
+                  </div>
+                </div>
+              )}
+            />
+          )}
+        </div>
+      )}
+
+      {/* ══ STEP 2: Select Items ══ */}
+      {step === 2 && foundInv && (
+        <div style={{ marginTop:14 }}>
+          {/* Invoice summary card */}
+          <div className="qc-gradient-card" style={{ ...S.card, padding:"14px", marginBottom:14,
+            border:"1.5px solid #6366f133" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+              <div>
+                <div style={{ color:T.text, fontWeight:900, fontSize:14 }}>
+                  📄 {foundInv.invoiceNo || foundInv.id.slice(-8).toUpperCase()}
+                </div>
+                <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>
+                  {foundInv.customerName || "হাঁটা কাস্টমার"} · {foundInv.dateKey}
+                </div>
+              </div>
+              <div style={{ textAlign:"right" }}>
+                <div style={{ color:"#22c55e", fontWeight:900, fontSize:16 }}>৳{fmt(foundInv.total)}</div>
+                <div style={{ color:T.sub, fontSize:11 }}>মোট বিক্রয়</div>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ color:T.text, fontWeight:800, fontSize:13, marginBottom:10 }}>
+            ফেরতের পণ্য নির্বাচন করুন:
+          </div>
+
+          {returnItems.map((item, idx) => (
+            <div key={item.productId} className="qc-gradient-card"
+              style={{ ...S.card, padding:"12px 14px", marginBottom:8,
+                border:`1.5px solid ${item.returnQty>0?"#6366f155":T.border}`,
+                opacity: item.maxQty===0?0.5:1 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ color:T.text, fontWeight:800, fontSize:13 }}>{item.name}</div>
+                  <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>
+                    ৳{fmt(item.price)} / টি · মূল: {item.originalQty}টি
+                    {item.returnedQty > 0 && <span style={{ color:"#f59e0b" }}> · আগে ফেরত: {item.returnedQty}টি</span>}
+                  </div>
+                </div>
+                {item.returnQty > 0 && (
+                  <div style={{ color:"#ef4444", fontWeight:900, fontSize:13 }}>
+                    -৳{fmt(item.price * item.returnQty)}
+                  </div>
+                )}
+              </div>
+
+              {/* Qty controls */}
+              <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom: item.returnQty>0?8:0 }}>
+                <div style={{ color:T.sub, fontSize:12, fontWeight:700 }}>ফেরত সংখ্যা:</div>
+                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <button
+                    onClick={() => setReturnItems(prev => prev.map((it,i) => i===idx ? {...it, returnQty: Math.max(0, it.returnQty-1)} : it))}
+                    style={{ width:34, height:34, borderRadius:10, border:`1px solid ${T.border}`,
+                      background:T.card, color:T.text, fontSize:20, cursor:"pointer", fontFamily:"inherit",
+                      display:"flex", alignItems:"center", justifyContent:"center" }}>−</button>
+                  <span style={{ color: item.returnQty>0?"#6366f1":T.text, fontWeight:900, fontSize:18, minWidth:28, textAlign:"center" }}>
+                    {item.returnQty}
+                  </span>
+                  <button
+                    onClick={() => setReturnItems(prev => prev.map((it,i) => i===idx ? {...it, returnQty: Math.min(it.maxQty, it.returnQty+1)} : it))}
+                    disabled={item.returnQty >= item.maxQty}
+                    style={{ width:34, height:34, borderRadius:10, border:`1px solid ${T.border}`,
+                      background: item.returnQty>=item.maxQty?"#1e293b":T.card,
+                      color: item.returnQty>=item.maxQty?"#475569":T.text,
+                      fontSize:20, cursor: item.returnQty>=item.maxQty?"not-allowed":"pointer",
+                      fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center" }}>+</button>
+                  <span style={{ color:T.sub, fontSize:11 }}>সর্বোচ্চ: {item.maxQty}টি</span>
+                </div>
+              </div>
+
+              {/* Return type (ভালো/নষ্ট) */}
+              {item.returnQty > 0 && (
+                <div style={{ display:"flex", gap:6 }}>
+                  {["ভালো", "নষ্ট"].map(type => (
+                    <button key={type}
+                      onClick={() => setReturnItems(prev => prev.map((it,i) => i===idx ? {...it, returnType:type} : it))}
+                      style={{ padding:"5px 14px", borderRadius:16, fontSize:12, fontWeight:800, cursor:"pointer", fontFamily:"inherit",
+                        border:`1.5px solid ${item.returnType===type ? (type==="ভালো"?"#22c55e":"#ef4444") : T.border}`,
+                        background: item.returnType===type ? (type==="ভালো"?"#22c55e22":"#ef444422") : "transparent",
+                        color: item.returnType===type ? (type==="ভালো"?"#22c55e":"#ef4444") : T.sub }}>
+                      {type==="ভালো" ? "✅ ভালো (স্টক বাড়বে)" : "❌ নষ্ট (স্টক বাড়বে না)"}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+
+          {/* Note */}
+          <div style={{ marginBottom:12, marginTop:4 }}>
+            <input
+              placeholder="📝 ফেরতের কারণ লিখুন (ঐচ্ছিক)"
+              value={returnNote}
+              onChange={e => setReturnNote(e.target.value)}
+              style={{ ...S.input, marginTop:0 }}
+            />
+          </div>
+
+          {/* Total & Confirm */}
+          {(() => {
+            const selItems  = returnItems.filter(it => it.returnQty > 0);
+            const totalRef  = selItems.reduce((s,it) => s + it.price * it.returnQty, 0);
+            const customer  = custMap.get(foundInv.customerId);
+            const hasBaki   = foundInv.payType === "baki" || foundInv.payType === "partial";
+            return (
+              <div>
+                {selItems.length > 0 && (
+                  <div style={{ ...S.card, padding:"12px 14px", marginBottom:12,
+                    background:"#6366f110", border:"1px solid #6366f130", borderRadius:12 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+                      <span style={{ color:T.sub, fontSize:13 }}>নির্বাচিত পণ্য:</span>
+                      <span style={{ color:T.text, fontWeight:700, fontSize:13 }}>{selItems.length}টি</span>
+                    </div>
+                    <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+                      <span style={{ color:T.sub, fontSize:13 }}>মোট রিফান্ড:</span>
+                      <span style={{ color:"#ef4444", fontWeight:900, fontSize:16 }}>৳{fmt(totalRef)}</span>
+                    </div>
+                    {customer && hasBaki && totalRef > 0 && (
+                      <div style={{ color:"#f59e0b", fontSize:12, marginTop:6 }}>
+                        ⚠️ {customer.name}-এর বাকি ৳{fmt(customer.balance)} থেকে ৳{fmt(totalRef)} কমবে
+                      </div>
+                    )}
+                    {selItems.filter(it=>it.returnType==="ভালো").length > 0 && (
+                      <div style={{ color:"#22c55e", fontSize:12, marginTop:4 }}>
+                        ✅ {selItems.filter(it=>it.returnType==="ভালো").reduce((s,it)=>s+it.returnQty,0)}টি পণ্য স্টকে ফিরবে
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div style={{ display:"flex", gap:8 }}>
+                  <button onClick={() => { setStep(1); setFoundInv(null); setReturnItems([]); }}
+                    style={{ ...S.cancelBtn, flex:1 }}>বাতিল</button>
+                  <button onClick={confirmReturn}
+                    disabled={selItems.length === 0}
+                    style={{ ...S.saveBtn, flex:2,
+                      background: selItems.length===0?"#1e293b":"linear-gradient(135deg,#6366f1,#8b5cf6)",
+                      opacity: selItems.length===0?0.5:1 }}>
+                    ✅ ফেরত নিশ্চিত করুন
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 🧾 ExpenseTracker — দোকানের খরচ ব্যবস্থাপনা
+// ══════════════════════════════════════════════════════════════════════════════
+
+const EXPENSE_CATEGORIES = [
+  { id: "ভাড়া",       icon: "🏠", color: "#6366f1" },
+  { id: "বিদ্যুৎ",    icon: "💡", color: "#f59e0b" },
+  { id: "বেতন",       icon: "👷", color: "#22c55e" },
+  { id: "পরিবহন",     icon: "🚗", color: "#3b82f6" },
+  { id: "মোবাইল",     icon: "📱", color: "#8b5cf6" },
+  { id: "পানি",       icon: "💧", color: "#06b6d4" },
+  { id: "মেরামত",     icon: "🔧", color: "#f97316" },
+  { id: "বিজ্ঞাপন",   icon: "📢", color: "#ec4899" },
+  { id: "অন্যান্য",   icon: "📦", color: "#94a3b8" },
+];
+
+function ExpenseTracker({ T, S, expenses = [], setExpenses, showToast, currentUser, invoices = [], products = [] }) {
+  const [showForm,    setShowForm]    = React.useState(false);
+  const [editId,      setEditId]      = React.useState(null);
+  const [filterCat,   setFilterCat]   = React.useState("সব");
+  const [filterRange, setFilterRange] = React.useState("month"); // today | week | month | all
+  const [form,        setForm]        = React.useState({
+    category: "অন্যান্য", amount: "", note: "", date: new Date().toISOString().split("T")[0],
+  });
+
+  const fmt = n => Number(n || 0).toLocaleString("en-US");
+  const todayKey = new Date().toISOString().split("T")[0];
+
+  // ── Date range filter ────────────────────────────────────────────────────────
+  const filtered = useMemo(() => {
+    const now = new Date();
+    let from = "";
+    if (filterRange === "today") from = todayKey;
+    else if (filterRange === "week") from = new Date(now - 7 * 86400000).toISOString().split("T")[0];
+    else if (filterRange === "month") from = now.toISOString().slice(0, 7); // "2026-06"
+
+    let list = filterRange === "all" ? [...expenses]
+      : filterRange === "month"
+        ? expenses.filter(e => (e.date || "").startsWith(from))
+        : expenses.filter(e => (e.date || "") >= from);
+
+    if (filterCat !== "সব") list = list.filter(e => e.category === filterCat);
+    return list.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  }, [expenses, filterRange, filterCat, todayKey]);
+
+  // ── Summary stats ───────────────────────────────────────────────────────────
+  const stats = useMemo(() => {
+    const total    = filtered.reduce((s, e) => s + (e.amount || 0), 0);
+    const todayAmt = expenses.filter(e => e.date === todayKey).reduce((s, e) => s + (e.amount || 0), 0);
+    const monthKey = new Date().toISOString().slice(0, 7);
+    const monthAmt = expenses.filter(e => (e.date || "").startsWith(monthKey)).reduce((s, e) => s + (e.amount || 0), 0);
+    const byCat    = {};
+    filtered.forEach(e => { byCat[e.category] = (byCat[e.category] || 0) + (e.amount || 0); });
+
+    // P&L: এই মাসের revenue - COGS - expense
+    const prodMap   = new Map(products.map(p => [p.id, p]));
+    const monthInvs = invoices.filter(i => (i.dateKey || "").startsWith(monthKey));
+    const revenue   = monthInvs.reduce((s, i) => s + (i.total || 0), 0);
+    const cogs      = monthInvs.reduce((s, inv) => s + (inv.items || []).reduce((c, it) => {
+      const p = prodMap.get(it.productId); return c + (p?.costPrice || 0) * (it.qty || 1);
+    }, 0), 0);
+    const netProfit = revenue - cogs - monthAmt;
+
+    return { total, todayAmt, monthAmt, byCat, revenue, cogs, netProfit };
+  }, [filtered, expenses, invoices, products, todayKey]);
+
+  // ── Save expense ─────────────────────────────────────────────────────────────
+  const saveExpense = useCallback(() => {
+    if (!form.amount || isNaN(parseFloat(form.amount)) || parseFloat(form.amount) <= 0) {
+      showToast("সঠিক পরিমাণ দিন", "#ef4444"); return;
+    }
+    const entry = {
+      id:       editId || uid(),
+      category: form.category,
+      amount:   parseFloat(form.amount),
+      note:     form.note.trim(),
+      date:     form.date || todayKey,
+      dateKey:  form.date || todayKey,
+      addedBy:  currentUser?.name || "মালিক",
+      createdAt: editId
+        ? (expenses.find(e => e.id === editId)?.createdAt || new Date().toISOString())
+        : new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    if (editId) {
+      setExpenses(prev => prev.map(e => e.id === editId ? entry : e));
+      showToast("খরচ আপডেট হয়েছে ✓", "#22c55e");
+    } else {
+      setExpenses(prev => [entry, ...prev]);
+      showToast("খরচ যোগ হয়েছে ✓", "#22c55e");
+    }
+    setForm({ category: "অন্যান্য", amount: "", note: "", date: todayKey });
+    setEditId(null); setShowForm(false);
+  }, [form, editId, expenses, setExpenses, showToast, currentUser, todayKey]);
+
+  const deleteExpense = useCallback((id) => {
+    setExpenses(prev => prev.filter(e => e.id !== id));
+    showToast("খরচ মুছে ফেলা হয়েছে", "#f59e0b");
+  }, [setExpenses, showToast]);
+
+  const startEdit = useCallback((e) => {
+    setForm({ category: e.category, amount: String(e.amount), note: e.note || "", date: e.date || todayKey });
+    setEditId(e.id); setShowForm(true);
+  }, [todayKey]);
+
+  const rangeLabels = { today: "আজ", week: "৭ দিন", month: "এই মাস", all: "সব" };
+
+  return (
+    <div style={{ ...S.page, paddingBottom: 100 }}>
+
+      {/* ── Header ── */}
+      <div style={{ ...S.header, marginBottom: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: 4, height: 22, borderRadius: 2, background: "linear-gradient(180deg,#f59e0b,#ef4444)" }} />
+          <span style={{ ...S.headerTitle, fontSize: 17 }}>💸 খরচ ব্যবস্থাপনা</span>
+        </div>
+        <button
+          onClick={() => { setShowForm(v => !v); setEditId(null); setForm({ category: "অন্যান্য", amount: "", note: "", date: todayKey }); }}
+          style={{ ...S.addBtn, width: "auto", padding: "8px 16px", margin: 0, display: "flex", alignItems: "center", gap: 6, background: "linear-gradient(135deg,#f59e0b,#d97706)" }}>
+          <IcPlus /><span style={{ fontSize: 13, fontWeight: 800 }}>নতুন খরচ</span>
+        </button>
+      </div>
+
+      {/* ── Summary cards ── */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, margin: "14px 0 10px" }}>
+        {[
+          { label: "আজকের খরচ", value: `৳${fmt(stats.todayAmt)}`, icon: "📅", color: "#f59e0b" },
+          { label: "এই মাসের খরচ", value: `৳${fmt(stats.monthAmt)}`, icon: "📆", color: "#ef4444" },
+          { label: "এই মাসের রাজস্ব", value: `৳${fmt(stats.revenue)}`, icon: "💰", color: "#22c55e" },
+          { label: "নেট লাভ (মাস)", value: `৳${fmt(stats.netProfit)}`,
+            icon: stats.netProfit >= 0 ? "📈" : "📉",
+            color: stats.netProfit >= 0 ? "#22c55e" : "#ef4444" },
+        ].map(card => (
+          <div key={card.label} className="qc-gradient-card" style={{ ...S.card, padding: "12px 14px" }}>
+            <div style={{ fontSize: 20, marginBottom: 4 }}>{card.icon}</div>
+            <div style={{ color: card.color, fontWeight: 900, fontSize: 15 }}>{card.value}</div>
+            <div style={{ color: T.sub, fontSize: 11, marginTop: 2 }}>{card.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── P&L mini bar ── */}
+      {stats.revenue > 0 && (
+        <div className="qc-gradient-card" style={{ ...S.card, padding: "12px 14px", marginBottom: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+            <span style={{ color: T.sub, fontSize: 12, fontWeight: 700 }}>📊 এই মাসের P&L সারসংক্ষেপ</span>
+            <span style={{ color: stats.netProfit >= 0 ? "#22c55e" : "#ef4444", fontSize: 12, fontWeight: 900 }}>
+              {stats.netProfit >= 0 ? "লাভজনক ✓" : "লোকসান ✗"}
+            </span>
+          </div>
+          {[
+            { label: "মোট রাজস্ব", value: stats.revenue, color: "#22c55e", pct: 100 },
+            { label: "পণ্যের ক্রয়মূল্য (COGS)", value: stats.cogs, color: "#f59e0b", pct: stats.revenue > 0 ? (stats.cogs / stats.revenue) * 100 : 0 },
+            { label: "মোট খরচ", value: stats.monthAmt, color: "#ef4444", pct: stats.revenue > 0 ? (stats.monthAmt / stats.revenue) * 100 : 0 },
+            { label: "নেট লাভ", value: stats.netProfit, color: stats.netProfit >= 0 ? "#22c55e" : "#ef4444", pct: stats.revenue > 0 ? Math.abs(stats.netProfit / stats.revenue) * 100 : 0 },
+          ].map(row => (
+            <div key={row.label} style={{ marginBottom: 6 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                <span style={{ color: T.sub, fontSize: 11 }}>{row.label}</span>
+                <span style={{ color: row.color, fontWeight: 800, fontSize: 12 }}>৳{fmt(Math.abs(row.value))}</span>
+              </div>
+              <div style={{ height: 4, borderRadius: 4, background: T.border, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${Math.min(row.pct, 100)}%`, background: row.color, borderRadius: 4, transition: "width 0.6s ease" }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ── Add/Edit Form ── */}
+      {showForm && (
+        <div className="qc-gradient-card" style={{ ...S.card, marginBottom: 12, border: `1.5px solid #f59e0b44` }}>
+          <div style={{ color: T.text, fontWeight: 900, fontSize: 14, marginBottom: 12 }}>
+            {editId ? "✏️ খরচ সম্পাদনা" : "➕ নতুন খরচ"}
+          </div>
+
+          {/* Category picker */}
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ color: T.sub, fontSize: 12, fontWeight: 700, marginBottom: 6 }}>ক্যাটাগরি</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {EXPENSE_CATEGORIES.map(cat => (
+                <button key={cat.id}
+                  onClick={() => setForm(f => ({ ...f, category: cat.id }))}
+                  style={{ padding: "6px 12px", borderRadius: 20, border: `1.5px solid ${form.category === cat.id ? cat.color : T.border}`,
+                    background: form.category === cat.id ? cat.color + "22" : T.card,
+                    color: form.category === cat.id ? cat.color : T.sub,
+                    fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                    transition: "all 0.2s" }}>
+                  {cat.icon} {cat.id}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Amount + Date row */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+            <div>
+              <div style={{ color: T.sub, fontSize: 12, fontWeight: 700, marginBottom: 4 }}>পরিমাণ (৳)</div>
+              <input
+                type="number" inputMode="numeric" placeholder="০"
+                value={form.amount}
+                onChange={e => setForm(f => ({ ...f, amount: e.target.value }))}
+                style={{ ...S.input, marginTop: 0, fontSize: 18, fontWeight: 800, color: "#f59e0b" }}
+              />
+            </div>
+            <div>
+              <div style={{ color: T.sub, fontSize: 12, fontWeight: 700, marginBottom: 4 }}>তারিখ</div>
+              <input
+                type="date"
+                value={form.date}
+                onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
+                style={{ ...S.input, marginTop: 0, fontSize: 13 }}
+              />
+            </div>
+          </div>
+
+          {/* Note */}
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ color: T.sub, fontSize: 12, fontWeight: 700, marginBottom: 4 }}>বিবরণ (ঐচ্ছিক)</div>
+            <input
+              placeholder="যেমন: মে মাসের ভাড়া"
+              value={form.note}
+              onChange={e => setForm(f => ({ ...f, note: e.target.value }))}
+              style={{ ...S.input, marginTop: 0 }}
+            />
+          </div>
+
+          {/* Buttons */}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => { setShowForm(false); setEditId(null); }}
+              style={{ ...S.cancelBtn, flex: 1 }}>বাতিল</button>
+            <button onClick={saveExpense}
+              style={{ ...S.saveBtn, flex: 2, background: "linear-gradient(135deg,#d97706,#f59e0b)" }}>
+              {editId ? "✓ আপডেট করুন" : "✓ খরচ যোগ করুন"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Category breakdown ── */}
+      {Object.keys(stats.byCat).length > 0 && (
+        <div className="qc-gradient-card" style={{ ...S.card, marginBottom: 10, padding: "12px 14px" }}>
+          <div style={{ color: T.sub, fontSize: 12, fontWeight: 700, marginBottom: 8 }}>ক্যাটাগরি অনুযায়ী</div>
+          {Object.entries(stats.byCat).sort((a, b) => b[1] - a[1]).map(([cat, amt]) => {
+            const catInfo = EXPENSE_CATEGORIES.find(c => c.id === cat) || { icon: "📦", color: "#94a3b8" };
+            const pct = stats.total > 0 ? (amt / stats.total) * 100 : 0;
+            return (
+              <div key={cat} style={{ marginBottom: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3, alignItems: "center" }}>
+                  <span style={{ color: T.text, fontSize: 12, fontWeight: 700 }}>{catInfo.icon} {cat}</span>
+                  <span style={{ color: catInfo.color, fontWeight: 900, fontSize: 12 }}>৳{fmt(amt)} <span style={{ color: T.sub, fontWeight: 400 }}>({Math.round(pct)}%)</span></span>
+                </div>
+                <div style={{ height: 5, borderRadius: 5, background: T.border }}>
+                  <div style={{ height: "100%", width: `${pct}%`, background: catInfo.color, borderRadius: 5, transition: "width 0.5s ease" }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Filter row ── */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+        {/* Date range */}
+        {Object.entries(rangeLabels).map(([key, label]) => (
+          <button key={key} onClick={() => setFilterRange(key)}
+            style={{ padding: "6px 12px", borderRadius: 20, border: `1.5px solid ${filterRange === key ? "#f59e0b" : T.border}`,
+              background: filterRange === key ? "#f59e0b22" : T.card,
+              color: filterRange === key ? "#f59e0b" : T.sub,
+              fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+            {label}
+          </button>
+        ))}
+        <div style={{ width: "100%", height: 0 }} />
+        {/* Category filter */}
+        {["সব", ...EXPENSE_CATEGORIES.map(c => c.id)].map(cat => (
+          <button key={cat} onClick={() => setFilterCat(cat)}
+            style={{ padding: "5px 10px", borderRadius: 16, border: `1px solid ${filterCat === cat ? T.accent : T.border}`,
+              background: filterCat === cat ? T.accent + "22" : "transparent",
+              color: filterCat === cat ? T.accent : T.sub,
+              fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+            {cat === "সব" ? "সব ক্যাটাগরি" : EXPENSE_CATEGORIES.find(c => c.id === cat)?.icon + " " + cat}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Expense List ── */}
+      {filtered.length === 0 ? (
+        <div style={S.empty}>
+          <div style={{ fontSize: 36, marginBottom: 10 }}>💸</div>
+          <div style={{ color: T.text, fontWeight: 700, marginBottom: 4 }}>কোনো খরচ নেই</div>
+          <div style={{ color: T.sub, fontSize: 13 }}>উপরের "নতুন খরচ" বাটন দিয়ে যোগ করুন</div>
+        </div>
+      ) : (
+        <Virtuoso
+          style={{ height: "calc(100dvh - 520px)", minHeight: 200 }}
+          data={filtered}
+          itemContent={(_, e) => {
+            const catInfo = EXPENSE_CATEGORIES.find(c => c.id === e.category) || { icon: "📦", color: "#94a3b8" };
+            const isToday = e.date === todayKey;
+            return (
+              <div style={{ paddingBottom: 8 }}>
+                <div className="qc-gradient-card list-item" style={{ ...S.card, padding: "12px 14px",
+                  borderLeft: `3px solid ${catInfo.color}`, marginBottom: 0 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                        <span style={{ fontSize: 18 }}>{catInfo.icon}</span>
+                        <span style={{ color: catInfo.color, fontWeight: 800, fontSize: 13 }}>{e.category}</span>
+                        {isToday && <span style={{ background: "#22c55e22", color: "#22c55e", fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 8 }}>আজ</span>}
+                      </div>
+                      {e.note ? <div style={{ color: T.sub, fontSize: 12, marginBottom: 3 }}>{e.note}</div> : null}
+                      <div style={{ color: T.sub, fontSize: 11 }}>
+                        {e.date} · {e.addedBy || "মালিক"}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <div style={{ color: "#ef4444", fontWeight: 900, fontSize: 16 }}>৳{fmt(e.amount)}</div>
+                      {(currentUser?.role !== "staff") && (
+                        <div style={{ display: "flex", gap: 4 }}>
+                          <button onClick={() => startEdit(e)}
+                            style={{ background: T.border, border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", color: T.sub, fontFamily: "inherit" }}>✏️</button>
+                          <button onClick={() => deleteExpense(e.id)}
+                            style={{ background: "#ef444415", border: "none", borderRadius: 8, padding: "6px 8px", cursor: "pointer", color: "#ef4444", fontFamily: "inherit" }}>🗑️</button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          }}
+        />
+      )}
+
+      {/* ── Total row ── */}
+      {filtered.length > 0 && (
+        <div style={{ ...S.card, marginTop: 8, padding: "12px 16px", display: "flex", justifyContent: "space-between", background: "#ef444415", border: "1px solid #ef444430", borderRadius: 12 }}>
+          <span style={{ color: T.sub, fontWeight: 700, fontSize: 13 }}>মোট ({filtered.length}টি খরচ)</span>
+          <span style={{ color: "#ef4444", fontWeight: 900, fontSize: 16 }}>৳{fmt(stats.total)}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -17572,7 +20430,7 @@ function StaffCustomTimePicker({ T, staffName, onGrant }) {
 }
 
 function Settings_({ T, S, shopName,
- setShopName, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, driveStatus, backupNeeded, performDriveBackup, buildBackupData, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, hasPerm, fssReady = false }) {
+ setShopName, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, driveStatus, backupNeeded, performDriveBackup, buildBackupData, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, sessionTimeoutMin, setSessionTimeoutMin, auditLogs = [], hasPerm, fssReady = false }) {
   const [editName,    setEditName]    = useState(false);
   const [nameInput,   setNameInput]   = useState(shopName);
   const [showNewUser, setShowNewUser] = useState(false);
@@ -18979,8 +21837,8 @@ function Settings_({ T, S, shopName,
             <span style={{ color:"#a78bfa", fontSize:11, fontWeight:700 }}>Master Key Verified — Google Drive Configuration</span>
           </div>
           <GoogleDriveSection
-            data={{ customers, products, invoices, txns, paymentInvoices, smsLog, purchaseOrders, stockMovements, users, cashLogs, suppliers }}
-            setters={{ setCustomers, setProducts, setInvoices, setTxns, setPaymentInvoices, setSmsLog, setPurchaseOrders, setStockMovements, setUsers, setCashLogs, setSuppliers }}
+            data={{ customers, products, invoices, txns, paymentInvoices, smsLog, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs }}
+            setters={{ setCustomers, setProducts, setInvoices, setTxns, setPaymentInvoices, setSmsLog, setPurchaseOrders, setStockMovements, setUsers, setCashLogs, setSuppliers, setExpenses, setReturns, setAuditLogs }}
             showToast={showToast} T={T} S={S}
           />
           <button style={{ ...S.cancelBtn, width:"100%", marginTop:10, color:"#4285F4", border:"1px solid #4285F433" }}
@@ -19002,8 +21860,8 @@ function Settings_({ T, S, shopName,
             <span style={{ color:"#a78bfa", fontSize:11, fontWeight:700 }}>Master Key Verified — Local Storage Configuration</span>
           </div>
           <LocalStorageSection
-            data={{ customers, products, invoices, txns, paymentInvoices, smsLog, purchaseOrders, stockMovements, users, cashLogs, suppliers }}
-            setters={{ setCustomers, setProducts, setInvoices, setTxns, setPaymentInvoices, setSmsLog, setPurchaseOrders, setStockMovements, setUsers, setCashLogs, setSuppliers }}
+            data={{ customers, products, invoices, txns, paymentInvoices, smsLog, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs }}
+            setters={{ setCustomers, setProducts, setInvoices, setTxns, setPaymentInvoices, setSmsLog, setPurchaseOrders, setStockMovements, setUsers, setCashLogs, setSuppliers, setExpenses, setReturns, setAuditLogs }}
             showToast={showToast} T={T} S={S}
           />
           <button style={{ ...S.cancelBtn, width:"100%", marginTop:10, color:"#22c55e", border:"1px solid #22c55e33" }}
@@ -19619,6 +22477,144 @@ onChange={()=>{}} />
           </div>
         </div>
       </div>
+
+      {/* ══ 📋 Audit Log Viewer (শুধু Owner/Admin) ══ */}
+      {currentUser?.role !== "staff" && (() => {
+        const [showAudit, setShowAudit] = React.useState(false);
+        const [auditFilter, setAuditFilter] = React.useState("all");
+
+        const ACTION_LABELS = {
+          INVOICE_VOID:          { icon: "🗑️", label: "ইনভয়েস ভয়েড", color: "#ef4444" },
+          PRODUCT_PRICE_CHANGE:  { icon: "💰", label: "দাম পরিবর্তন", color: "#f59e0b" },
+          STOCK_ADJUST:          { icon: "📦", label: "স্টক সংশোধন", color: "#6366f1" },
+          PRODUCT_DELETE:        { icon: "❌", label: "পণ্য মুছে ফেলা", color: "#ef4444" },
+          CUSTOMER_DELETE:       { icon: "👤", label: "কাস্টমার মুছে ফেলা", color: "#ef4444" },
+          LARGE_BAKI_ADD:        { icon: "📈", label: "বড় বাকি যোগ", color: "#f59e0b" },
+          LARGE_JOMA_COLLECT:    { icon: "💵", label: "বড় জমা আদায়", color: "#22c55e" },
+        };
+
+        const filtered = auditFilter === "all"
+          ? auditLogs
+          : auditLogs.filter(a => a.action === auditFilter);
+
+        return (
+          <div className="qc-gradient-card" style={{ ...S.card, padding: "14px 16px" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: showAudit?12:0 }}
+              onClick={() => setShowAudit(v => !v)}>
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                <span style={{ fontSize:18 }}>📋</span>
+                <div>
+                  <div style={{ color:T.text, fontWeight:900, fontSize:14 }}>অডিট ট্রেইল</div>
+                  <div style={{ color:T.sub, fontSize:11, marginTop:1 }}>কে কখন কী করলো — {auditLogs.length}টি লগ</div>
+                </div>
+              </div>
+              <span style={{ color:T.sub, fontSize:14 }}>{showAudit ? "▲" : "▼"}</span>
+            </div>
+
+            {showAudit && (
+              <div>
+                {/* Filter chips */}
+                <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:10 }}>
+                  <button onClick={() => setAuditFilter("all")}
+                    style={{ padding:"4px 10px", borderRadius:14,
+                      border:`1px solid ${auditFilter==="all"?T.accent:T.border}`,
+                      background: auditFilter==="all"?T.accent+"22":"transparent",
+                      color: auditFilter==="all"?T.accent:T.sub, fontSize:11, fontWeight:700,
+                      cursor:"pointer", fontFamily:"inherit" }}>
+                    সব
+                  </button>
+                  {Object.entries(ACTION_LABELS).map(([key, info]) => (
+                    <button key={key} onClick={() => setAuditFilter(key)}
+                      style={{ padding:"4px 10px", borderRadius:14,
+                        border:`1px solid ${auditFilter===key?info.color:T.border}`,
+                        background: auditFilter===key?info.color+"22":"transparent",
+                        color: auditFilter===key?info.color:T.sub, fontSize:11, fontWeight:700,
+                        cursor:"pointer", fontFamily:"inherit" }}>
+                      {info.icon} {info.label}
+                    </button>
+                  ))}
+                </div>
+
+                {filtered.length === 0 ? (
+                  <div style={{ textAlign:"center", padding:"20px 0", color:T.sub, fontSize:12 }}>
+                    কোনো লগ নেই
+                  </div>
+                ) : (
+                  <Virtuoso
+                    style={{ height: Math.min(filtered.length * 70, 360) }}
+                    data={filtered}
+                    itemContent={(_, log) => {
+                      const info = ACTION_LABELS[log.action] || { icon:"📝", label:log.action, color:"#94a3b8" };
+                      return (
+                        <div style={{ padding:"8px 0", borderBottom:`1px solid ${T.border}` }}>
+                          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                            <div style={{ flex:1 }}>
+                              <div style={{ color:info.color, fontWeight:800, fontSize:12 }}>
+                                {info.icon} {info.label}
+                              </div>
+                              <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>
+                                {log.userName} ({log.role}) · {log.date} {log.time}
+                              </div>
+                              {/* details সংক্ষেপে দেখাই */}
+                              {log.details && (
+                                <div style={{ color:T.sub, fontSize:10, marginTop:3 }}>
+                                  {log.details.productName && <span>{log.details.productName} · </span>}
+                                  {log.details.customerName && <span>{log.details.customerName} · </span>}
+                                  {log.details.oldPrice !== undefined && <span>৳{log.details.oldPrice} → ৳{log.details.newPrice} · </span>}
+                                  {log.details.oldStock !== undefined && <span>স্টক {log.details.oldStock} → {log.details.newStock} · </span>}
+                                  {log.details.amount !== undefined && <span>৳{Number(log.details.amount).toLocaleString("en-US")} · </span>}
+                                  {log.details.invoiceNo && <span>#{log.details.invoiceNo} · </span>}
+                                  {log.details.reason && <span>কারণ: {log.details.reason}</span>}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    }}
+                  />
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ══ Session Timeout (শুধু Owner/Admin) ══ */}
+      {currentUser?.role !== "staff" && (
+        <div className="qc-gradient-card" style={{ ...S.card, padding: "14px 16px" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+            <span style={{ fontSize:18 }}>🔒</span>
+            <div>
+              <div style={{ color:T.text, fontWeight:900, fontSize:14 }}>নিষ্ক্রিয়তায় Auto-Logout</div>
+              <div style={{ color:T.sub, fontSize:11, marginTop:1 }}>
+                ডিফল্ট: Staff ৩০ মিনিট · Owner/Admin ২ ঘণ্টা
+              </div>
+            </div>
+          </div>
+          <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+            {[
+              { label:"১৫ মিনিট", val:15 },
+              { label:"৩০ মিনিট", val:30 },
+              { label:"১ ঘণ্টা", val:60 },
+              { label:"২ ঘণ্টা", val:120 },
+              { label:"ডিফল্ট", val:null },
+            ].map(opt => (
+              <button key={opt.label}
+                onClick={() => setSessionTimeoutMin?.(opt.val)}
+                style={{
+                  padding:"7px 12px", borderRadius:16,
+                  border: `1.5px solid ${sessionTimeoutMin === opt.val ? "#22c55e" : T.border}`,
+                  background: sessionTimeoutMin === opt.val ? "#22c55e22" : T.card,
+                  color: sessionTimeoutMin === opt.val ? "#22c55e" : T.sub,
+                  fontSize:12, fontWeight:700, cursor:"pointer", fontFamily:"inherit",
+                }}>
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <button style={{ ...S.cancelBtn, width: "100%", padding: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
         onClick={() => { setCurrentUser(null); }}>
@@ -20293,6 +23289,16 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
   const fileRef = useRef(null);
   const autoTimer = useRef(null);
 
+  // ── 🔐 E2E Encryption state ──────────────────────────────────────────────
+  const [encryptEnabled, setEncryptEnabled] = useState(() => {
+    try { return localStorage.getItem("sbm-enc-backup") === "1"; } catch { return false; }
+  });
+  const [showPinModal, setShowPinModal] = useState(null); // null | "encrypt" | "decrypt"
+  const [pinInput, setPinInput] = useState("");
+  const [pinConfirm, setPinConfirm] = useState("");
+  const [pendingRestoreData, setPendingRestoreData] = useState(null); // encrypted wrapper waiting for PIN
+  const [pendingRestoreFilename, setPendingRestoreFilename] = useState("");
+
   const GREEN = "#22c55e";
   const [allSnapshots, setAllSnapshots] = useState([]);
 
@@ -20398,8 +23404,16 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
       paymentInvoices: data.paymentInvoices, smsLog: data.smsLog,
       purchaseOrders: data.purchaseOrders, stockMovements: data.stockMovements,
       users: data.users, cashLogs: data.cashLogs, suppliers: data.suppliers,
+      expenses: data.expenses, returns: data.returns,
       _exportedAt: new Date().toISOString(), _version: "4.0",
     };
+    if (encryptEnabled) {
+      // PIN চাইতে হবে — modal খুলে রাখি, actual download confirmPinAndEncrypt-এ হবে
+      setPendingRestoreData(backupData); // re-use করছি "data waiting for pin" হিসেবে
+      setPendingRestoreFilename(`sbm-backup-${new Date().toISOString().split("T")[0]}.json`);
+      setShowPinModal("encrypt");
+      return;
+    }
     const filename = `sbm-backup-${new Date().toISOString().split("T")[0]}.json`;
     const result = await FS.saveBackup(backupData, filename);
     if (result?.ok) {
@@ -20407,6 +23421,25 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
     } else {
       showToast("❌ সেভ ব্যর্থ: " + (result?.msg || "অজানা সমস্যা"));
     }
+  };
+
+  // PIN modal-এ confirm চাপলে — encrypt করে file সেভ করে
+  const confirmEncryptAndDownload = async () => {
+    if (pinInput.length < 4) { showToast("PIN অন্তত ৪ সংখ্যার হতে হবে", "#ef4444"); return; }
+    if (pinInput !== pinConfirm) { showToast("PIN দুটি মিলছে না", "#ef4444"); return; }
+    try {
+      const encrypted = await encryptBackupData(pendingRestoreData, pinInput);
+      const result = await FS.saveBackup(encrypted, pendingRestoreFilename);
+      if (result?.ok) {
+        showToast("🔐 এনক্রিপ্টেড ব্যাকআপ সেভ হয়েছে — PIN মনে রাখুন!");
+      } else {
+        showToast("❌ সেভ ব্যর্থ: " + (result?.msg || "অজানা সমস্যা"), "#ef4444");
+      }
+    } catch (e) {
+      showToast("এনক্রিপশন ব্যর্থ: " + e.message, "#ef4444");
+    }
+    setShowPinModal(null); setPinInput(""); setPinConfirm("");
+    setPendingRestoreData(null); setPendingRestoreFilename("");
   };
 
   const handleRestoreSnapshot = async () => {
@@ -20426,6 +23459,9 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
     if (snap.users) setters.setUsers?.(snap.users);
     if (snap.cashLogs) setters.setCashLogs?.(snap.cashLogs);
     if (snap.suppliers) setters.setSuppliers?.(snap.suppliers);
+    if (snap.expenses) setters.setExpenses?.(snap.expenses);
+    if (snap.returns) setters.setReturns?.(snap.returns);
+    if (snap.auditLogs) setters.setAuditLogs?.(snap.auditLogs);
     setStatus("success"); setStatusMsg(`স্ন্যাপশট রিস্টোর সম্পন্ন ✓ (${valid.counts.customers} কাস্টমার)`);
     setConfirmRestore(false);
     showToast("♻️ লোকাল স্ন্যাপশট রিস্টোর সম্পন্ন!");
@@ -20445,27 +23481,61 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
       const text = await file.text();
       let d;
       try { d = JSON.parse(text); } catch { throw new Error("JSON parse ব্যর্থ — ফাইলটি ক্ষতিগ্রস্ত"); }
+
+      // 🔐 এনক্রিপ্টেড ফাইল চিনে PIN মডাল খুলে দাও
+      if (isEncryptedBackup(d)) {
+        setPendingRestoreData(d);
+        setShowPinModal("decrypt");
+        setRestoring(false);
+        e.target.value = "";
+        return;
+      }
+
       // Validation
       const valid = validateBackup(d);
       if (!valid.ok) throw new Error(valid.msg);
-      if (d.customers) setters.setCustomers(d.customers);
-      if (d.products) setters.setProducts(d.products);
-      if (d.invoices) setters.setInvoices(d.invoices);
-      if (d.txns) setters.setTxns(d.txns);
-      if (d.paymentInvoices) setters.setPaymentInvoices(d.paymentInvoices);
-      if (d.smsLog) setters.setSmsLog(d.smsLog);
-      if (d.purchaseOrders) setters.setPurchaseOrders(d.purchaseOrders);
-      if (d.stockMovements) setters.setStockMovements(d.stockMovements);
-      if (d.users) setters.setUsers?.(d.users);
-      if (d.cashLogs) setters.setCashLogs?.(d.cashLogs);
-      if (d.suppliers) setters.setSuppliers?.(d.suppliers);
-      setStatus("success"); setStatusMsg(`ফাইল রিস্টোর সম্পন্ন ✓ (${valid.counts.customers} কাস্টমার, ${valid.counts.invoices} ইনভয়েস)`);
+      applyRestoredData(d, valid);
       showToast("📁 ফাইল থেকে রিস্টোর সম্পন্ন!");
     } catch (err) {
       setStatus("error"); setStatusMsg("ত্রুটি: " + err.message);
     }
     setRestoring(false);
     e.target.value = "";
+  };
+
+  // রিস্টোর করা data সব setter-এ বসানো — plain ও decrypted দুটোতেই reuse হয়
+  const applyRestoredData = (d, valid) => {
+    if (d.customers) setters.setCustomers(d.customers);
+    if (d.products) setters.setProducts(d.products);
+    if (d.invoices) setters.setInvoices(d.invoices);
+    if (d.txns) setters.setTxns(d.txns);
+    if (d.paymentInvoices) setters.setPaymentInvoices(d.paymentInvoices);
+    if (d.smsLog) setters.setSmsLog(d.smsLog);
+    if (d.purchaseOrders) setters.setPurchaseOrders(d.purchaseOrders);
+    if (d.stockMovements) setters.setStockMovements(d.stockMovements);
+    if (d.users) setters.setUsers?.(d.users);
+    if (d.cashLogs) setters.setCashLogs?.(d.cashLogs);
+    if (d.suppliers) setters.setSuppliers?.(d.suppliers);
+    if (d.expenses) setters.setExpenses?.(d.expenses);
+    if (d.returns) setters.setReturns?.(d.returns);
+    if (d.auditLogs) setters.setAuditLogs?.(d.auditLogs);
+    setStatus("success");
+    setStatusMsg(`ফাইল রিস্টোর সম্পন্ন ✓ (${valid?.counts?.customers ?? (d.customers||[]).length} কাস্টমার, ${valid?.counts?.invoices ?? (d.invoices||[]).length} ইনভয়েস)`);
+  };
+
+  // PIN দিয়ে decrypt করে restore সম্পন্ন করা
+  const confirmDecryptAndRestore = async () => {
+    if (!pinInput) { showToast("PIN দিন", "#ef4444"); return; }
+    try {
+      const decrypted = await decryptBackupData(pendingRestoreData, pinInput);
+      const valid = validateBackup(decrypted);
+      if (!valid.ok) throw new Error(valid.msg);
+      applyRestoredData(decrypted, valid);
+      showToast("🔓 এনক্রিপ্টেড ব্যাকআপ রিস্টোর সম্পন্ন!");
+    } catch (e) {
+      showToast(e.message || "ডিক্রিপ্ট ব্যর্থ", "#ef4444");
+    }
+    setShowPinModal(null); setPinInput(""); setPendingRestoreData(null);
   };
 
   const isWorking = saving || restoring;
@@ -20635,16 +23705,49 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
               onClick={handleDownloadFile}
               style={{
                 padding: "14px 10px", borderRadius: 14,
-                border: `1.5px solid ${GREEN}44`,
-                background: `${GREEN}15`,
-                color: GREEN, fontWeight: 800, fontSize: 13,
+                border: `1.5px solid ${encryptEnabled ? "#a855f744" : GREEN+"44"}`,
+                background: encryptEnabled ? "#a855f715" : `${GREEN}15`,
+                color: encryptEnabled ? "#a855f7" : GREEN, fontWeight: 800, fontSize: 13,
                 cursor: "pointer", fontFamily: "inherit",
                 display: "flex", flexDirection: "column",
                 alignItems: "center", justifyContent: "center", gap: 6,
               }}
             >
-              <span style={{ fontSize: 22 }}>📥</span>
-              <span>JSON ডাউনলোড</span>
+              <span style={{ fontSize: 22 }}>{encryptEnabled ? "🔐" : "📥"}</span>
+              <span>{encryptEnabled ? "এনক্রিপ্টেড ডাউনলোড" : "JSON ডাউনলোড"}</span>
+            </button>
+          </div>
+
+          {/* 🔐 E2E Encryption Toggle */}
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            background: "#a855f710", border: "1px solid #a855f730",
+            borderRadius: 12, padding: "10px 14px", marginBottom: 14,
+          }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ color: "#c4b5fd", fontWeight: 800, fontSize: 12 }}>🔐 এনক্রিপ্টেড ব্যাকআপ</div>
+              <div style={{ color: "#64748b", fontSize: 10, marginTop: 2 }}>
+                AES-256 — PIN ছাড়া কেউ ফাইল খুলতে পারবে না। PIN ভুলে গেলে ব্যাকআপ উদ্ধার অসম্ভব!
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                const next = !encryptEnabled;
+                setEncryptEnabled(next);
+                try { localStorage.setItem("sbm-enc-backup", next ? "1" : "0"); } catch {}
+              }}
+              style={{
+                width: 44, height: 26, borderRadius: 13, flexShrink: 0,
+                border: "none", cursor: "pointer", position: "relative",
+                background: encryptEnabled ? "#a855f7" : "#334155",
+                transition: "background 0.2s",
+              }}
+            >
+              <div style={{
+                width: 20, height: 20, borderRadius: "50%", background: "#fff",
+                position: "absolute", top: 3, left: encryptEnabled ? 21 : 3,
+                transition: "left 0.2s", boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
+              }} />
             </button>
           </div>
 
@@ -20823,6 +23926,93 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
           </div>
         </div>
       )}
+
+      {/* 🔐 PIN Modal — Encrypt or Decrypt */}
+      {showPinModal && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          zIndex: 9999, padding: 20,
+        }} onClick={(e) => { if (e.target === e.currentTarget) { setShowPinModal(null); setPinInput(""); setPinConfirm(""); } }}>
+          <div style={{
+            background: "#0f172a", border: "1.5px solid #a855f744",
+            borderRadius: 18, padding: "20px", maxWidth: 360, width: "100%",
+            boxShadow: "0 10px 40px rgba(168,85,247,0.3)",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+              <span style={{ fontSize: 24 }}>{showPinModal === "encrypt" ? "🔐" : "🔓"}</span>
+              <div>
+                <div style={{ color: "#fff", fontWeight: 900, fontSize: 15 }}>
+                  {showPinModal === "encrypt" ? "ব্যাকআপ এনক্রিপ্ট করুন" : "PIN দিয়ে আনলক করুন"}
+                </div>
+                <div style={{ color: "#94a3b8", fontSize: 11, marginTop:2 }}>
+                  {showPinModal === "encrypt" ? "এই PIN ছাড়া ফাইল কেউ খুলতে পারবে না" : "যে PIN দিয়ে এনক্রিপ্ট করেছিলেন তা দিন"}
+                </div>
+              </div>
+            </div>
+
+            {showPinModal === "encrypt" && (
+              <div style={{ background:"#ef444412", border:"1px solid #ef444430", borderRadius:10, padding:"8px 12px", marginBottom:14 }}>
+                <div style={{ color:"#fca5a5", fontSize:11, fontWeight:700 }}>
+                  ⚠️ PIN ভুলে গেলে এই ব্যাকআপ ফাইল কখনোই খোলা যাবে না। নিরাপদ জায়গায় লিখে রাখুন।
+                </div>
+              </div>
+            )}
+
+            <input
+              type="password" inputMode="numeric" placeholder="PIN দিন (অন্তত ৪ সংখ্যা)"
+              value={pinInput}
+              onChange={e => setPinInput(e.target.value)}
+              autoFocus
+              style={{
+                width: "100%", padding: "12px 14px", borderRadius: 12,
+                border: "1.5px solid #a855f744", background: "#1e1b3a",
+                color: "#fff", fontSize: 16, fontWeight: 700, letterSpacing: 2,
+                marginBottom: showPinModal === "encrypt" ? 10 : 16, fontFamily: "inherit",
+                outline: "none", boxSizing: "border-box",
+              }}
+            />
+
+            {showPinModal === "encrypt" && (
+              <input
+                type="password" inputMode="numeric" placeholder="PIN আবার লিখুন"
+                value={pinConfirm}
+                onChange={e => setPinConfirm(e.target.value)}
+                style={{
+                  width: "100%", padding: "12px 14px", borderRadius: 12,
+                  border: "1.5px solid #a855f744", background: "#1e1b3a",
+                  color: "#fff", fontSize: 16, fontWeight: 700, letterSpacing: 2,
+                  marginBottom: 16, fontFamily: "inherit",
+                  outline: "none", boxSizing: "border-box",
+                }}
+              />
+            )}
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => { setShowPinModal(null); setPinInput(""); setPinConfirm(""); setPendingRestoreData(null); }}
+                style={{
+                  flex: 1, padding: "12px", borderRadius: 12,
+                  border: "1px solid #334155", background: "none",
+                  color: "#94a3b8", fontWeight: 700, fontSize: 13,
+                  cursor: "pointer", fontFamily: "inherit",
+                }}
+              >বাতিল</button>
+              <button
+                onClick={showPinModal === "encrypt" ? confirmEncryptAndDownload : confirmDecryptAndRestore}
+                style={{
+                  flex: 2, padding: "12px", borderRadius: 12,
+                  border: "none", background: "linear-gradient(135deg,#a855f7,#7c3aed)",
+                  color: "#fff", fontWeight: 800, fontSize: 13,
+                  cursor: "pointer", fontFamily: "inherit",
+                }}
+              >
+                {showPinModal === "encrypt" ? "🔐 এনক্রিপ্ট করে সেভ" : "🔓 আনলক করুন"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -20830,6 +24020,10 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
 // ─── Backup Validation Helper ────────────────────────────────────────────────
 function validateBackup(data) {
   if (!data || typeof data !== "object") return { ok: false, msg: "ব্যাকআপ ডেটা পাওয়া যায়নি" };
+  // এনক্রিপ্টেড ফাইল হলে আলাদাভাবে জানাও — এটা PIN দিয়ে আগে decrypt করতে হবে
+  if (isEncryptedBackup(data)) {
+    return { ok: false, msg: "এনক্রিপ্টেড ব্যাকআপ — PIN দিয়ে আনলক করুন", isEncrypted: true };
+  }
   // অন্তত একটা collection থাকতে হবে
   const hasData = data.customers || data.products || data.invoices || data.txns;
   if (!hasData) return { ok: false, msg: "ব্যাকআপে কোনো ডেটা নেই" };
@@ -20840,8 +24034,20 @@ function validateBackup(data) {
   if (data.txns         && !Array.isArray(data.txns))         return { ok: false, msg: "txns ডেটা corrupt" };
   if (data.paymentInvoices && !Array.isArray(data.paymentInvoices)) return { ok: false, msg: "paymentInvoices ডেটা corrupt" };
   if (data.smsLog       && !Array.isArray(data.smsLog))       return { ok: false, msg: "smsLog ডেটা corrupt" };
+  if (data.expenses     && !Array.isArray(data.expenses))     return { ok: false, msg: "expenses ডেটা corrupt" };
+  if (data.returns      && !Array.isArray(data.returns))      return { ok: false, msg: "returns ডেটা corrupt" };
   // Checksum verify (যদি থাকে)
   if (data._meta?.checksum) {
+    // v4 checksum: expenses + returns সহ ১৩টি collection
+    const expectedV4 = [
+      (data.customers?.length || 0),     (data.products?.length || 0),
+      (data.invoices?.length || 0),       (data.txns?.length || 0),
+      (data.smsLog?.length || 0),         (data.paymentInvoices?.length || 0),
+      (data.purchaseOrders?.length || 0), (data.stockMovements?.length || 0),
+      (data.users?.length || 0),          (data.cashLogs?.length || 0),
+      (data.suppliers?.length || 0),      (data.expenses?.length || 0),
+      (data.returns?.length || 0),
+    ].join("-");
     // v3 checksum: buildBackupData-এর মতো ১১টি collection (সঠিক)
     const expectedV3 = [
       (data.customers?.length || 0),     (data.products?.length || 0),
@@ -20857,10 +24063,10 @@ function validateBackup(data) {
       (data.invoices?.length || 0),  (data.txns?.length || 0),
       (data.smsLog?.length || 0),    (data.paymentInvoices?.length || 0),
     ].join("-");
-    const checksumOk = expectedV3 === data._meta.checksum || expectedV2 === data._meta.checksum;
+    const checksumOk = expectedV4 === data._meta.checksum || expectedV3 === data._meta.checksum || expectedV2 === data._meta.checksum;
     if (!checksumOk) {
       // Warning only — strict reject করব না, partial backup-ও কাজে লাগতে পারে
-      console.warn("[validateBackup] Checksum mismatch", { v3: expectedV3, v2: expectedV2, got: data._meta.checksum });
+      console.warn("[validateBackup] Checksum mismatch", { v4: expectedV4, v3: expectedV3, v2: expectedV2, got: data._meta.checksum });
     }
   }
   return {
@@ -20875,15 +24081,8 @@ function validateBackup(data) {
 
 // ─── Google Drive API Helper ──────────────────────────────────────────────────
 const GDrive = {
-  BACKUP_FILENAME: "sbm-backup.json", // downloadBackup/deleteBackup legacy fallback
+  BACKUP_FILENAME: "sbm-backup.json",
   FOLDER_NAME: "SBM Backups",
-  MAX_BACKUPS: 7, // Drive-এ সর্বোচ্চ ৭টা date-based backup রাখা হবে
-
-  // আজকের date-based filename: sbm-backup-2026-06-26.json(.gz)
-  _todayFilename(compressed = false) {
-    const d = new Date().toISOString().split("T")[0];
-    return compressed ? `sbm-backup-${d}.json.gz` : `sbm-backup-${d}.json`;
-  },
 
   async getToken() {
     return localStorage.getItem("sbm_gd_token") || null;
@@ -21112,20 +24311,19 @@ const GDrive = {
     // ── "SBM Backups" folder খুঁজো বা তৈরি করো (visible, Drive অ্যাপে দেখা যাবে)
     const folderId = await this._ensureFolder(token);
 
-    // Fix: date-based filename — প্রতিদিন আলাদা ফাইল, পুরনোটা overwrite হয় না
-    const todayName = this._todayFilename(compressed);
     const meta = JSON.stringify({
-      name: todayName,
+      name: compressed ? this.BACKUP_FILENAME + ".gz" : this.BACKUP_FILENAME,
       parents: [folderId],
       description: `SBM Backup — ${new Date().toLocaleString("en-US")} | ${compressed ? `gzip ${(compressedBytes/1024).toFixed(0)}KB←${(originalBytes/1024).toFixed(0)}KB` : `json ${(originalBytes/1024).toFixed(0)}KB`}`,
-      appProperties: { hg_compressed: compressed ? "gzip" : "none", hg_version: "4.2" },
+      appProperties: { hg_compressed: compressed ? "gzip" : "none", hg_version: "4.1" },
     });
 
-    // আজকের ফাইল Drive-এ আছে কিনা দেখো — থাকলে update, না থাকলে নতুন তৈরি করো
-    const existingToday = await this._findFileByName(token, folderId, todayName);
+    // Search for EITHER filename (gz or plain) so we update the right file
+    const existing = await this.findBackupFile(token);
+
     let url, method;
-    if (existingToday) {
-      url = `https://www.googleapis.com/upload/drive/v3/files/${existingToday}?uploadType=multipart`;
+    if (existing) {
+      url = `https://www.googleapis.com/upload/drive/v3/files/${existing}?uploadType=multipart`;
       method = "PATCH";
     } else {
       url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart";
@@ -21147,64 +24345,14 @@ const GDrive = {
       throw new Error(err.error?.message || `HTTP ${r.status}`);
     }
     const result = await r.json();
-
-    // Fix: পুরনো backup ছাঁটো — MAX_BACKUPS (৭টা) এর বেশি হলে সবচেয়ে পুরনোটা delete করো
-    try { await this._pruneOldBackups(token, folderId); } catch { /* prune failure upload block করবে না */ }
-
     return { ...result, _compressed: compressed, _originalBytes: originalBytes, _compressedBytes: compressedBytes };
   },
 
-  // ── নির্দিষ্ট নামের ফাইল folder-এ খুঁজো ──────────────────────────────────
-  async _findFileByName(token, folderId, filename) {
-    const q = encodeURIComponent(`name="${filename}" and "${folderId}" in parents and trashed=false`);
-    const r = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    ).catch(() => null);
-    if (!r?.ok) return null;
-    const data = await r.json().catch(() => ({}));
-    return data.files?.[0]?.id || null;
-  },
-
-  // ── পুরনো backup ছাঁটো — MAX_BACKUPS-এর বেশি হলে সবচেয়ে পুরনোটা delete ──
-  async _pruneOldBackups(token, folderId) {
-    // sbm-backup-YYYY-MM-DD.json(.gz) pattern-এর সব ফাইল খুঁজো
-    const q = encodeURIComponent(`name contains "sbm-backup-" and "${folderId}" in parents and trashed=false`);
-    const r = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime)&orderBy=modifiedTime desc&pageSize=20`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    if (!r.ok) return;
-    const data = await r.json();
-    const files = data.files || [];
-    if (files.length <= this.MAX_BACKUPS) return; // ৭টা বা কম — delete দরকার নেই
-    // সবচেয়ে পুরনোগুলো (MAX_BACKUPS এর পর যা আছে) delete করো
-    const toDelete = files.slice(this.MAX_BACKUPS);
-    await Promise.allSettled(toDelete.map(f =>
-      fetch(`https://www.googleapis.com/drive/v3/files/${f.id}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      })
-    ));
-  },
-
   // ── "SBM Backups" folder খুঁজো — না থাকলে তৈরি করো
-  // Fix: cached folder ID যদি Drive-এ আর না থাকে (deleted/account change) → cache clear করে retry
   async _ensureFolder(token) {
+    // Cache করা folder ID আছে?
     const cached = localStorage.getItem("sbm_gd_folder_id");
-    if (cached) {
-      // cached ID valid কিনা verify করো
-      const check = await fetch(
-        `https://www.googleapis.com/drive/v3/files/${cached}?fields=id,trashed`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      ).catch(() => null);
-      if (check?.ok) {
-        const info = await check.json().catch(() => ({}));
-        if (info.id && !info.trashed) return cached; // valid — ব্যবহার করো
-      }
-      // stale cache — clear করে নতুন করে খোঁজো
-      localStorage.removeItem("sbm_gd_folder_id");
-    }
+    if (cached) return cached;
 
     // Drive-এ "SBM Backups" folder আছে কিনা খোঁজো
     const q = encodeURIComponent(`name="${this.FOLDER_NAME}" and mimeType="application/vnd.google-apps.folder" and trashed=false`);
@@ -21239,29 +24387,17 @@ const GDrive = {
 
   async findBackupFile(token) {
     const folderId = await this._ensureFolder(token);
-    // Fix: date-based file খুঁজো (sbm-backup-YYYY-MM-DD.*) — সবচেয়ে নতুনটা আগে
-    const q = encodeURIComponent(`name contains "sbm-backup-" and "${folderId}" in parents and trashed=false`);
-    const r = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime)&orderBy=modifiedTime desc&pageSize=1`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    if (r.ok) {
+    const names = [this.BACKUP_FILENAME + ".gz", this.BACKUP_FILENAME];
+    for (const name of names) {
+      const q = encodeURIComponent(`name="${name}" and "${folderId}" in parents and trashed=false`);
+      const r = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime)&orderBy=modifiedTime desc`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!r.ok) continue;
       const data = await r.json();
       const id = data.files?.[0]?.id;
       if (id) return id;
-    }
-    // Legacy fallback: পুরনো fixed-name backup (migration compatibility)
-    const legacyNames = [this.BACKUP_FILENAME + ".gz", this.BACKUP_FILENAME];
-    for (const name of legacyNames) {
-      const q2 = encodeURIComponent(`name="${name}" and "${folderId}" in parents and trashed=false`);
-      const r2 = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=${q2}&fields=files(id,name,modifiedTime)&orderBy=modifiedTime desc`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      if (!r2.ok) continue;
-      const data2 = await r2.json();
-      const id2 = data2.files?.[0]?.id;
-      if (id2) return id2;
     }
     return null;
   },
@@ -21359,7 +24495,7 @@ const GDrive = {
 const SnapshotDB = {
   DB_NAME: "hg_snapshots",
   STORE:   "snapshots",
-  MAX:     7, // rotating: snapshot_1 … snapshot_7 — ৭ ঘণ্টার ইতিহাস
+  MAX:     3, // rotating: snapshot_1, snapshot_2, snapshot_3
 
   _db: null,
 
