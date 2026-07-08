@@ -152,6 +152,26 @@
           setTimeout(function(){ s.style.display = 'none'; }, 500);
         }
       };
+      window.__showSplashError = function(msg) {
+        var p = document.querySelector('#splash p');
+        if (p) {
+          p.style.color = '#ff6b6b';
+          p.style.fontFamily = 'monospace';
+          p.style.fontSize = '11px';
+          p.style.padding = '0 16px';
+          p.style.wordBreak = 'break-word';
+          p.style.animation = 'none';
+          p.style.opacity = '1';
+          p.textContent = '⚠️ ' + msg;
+        }
+      };
+      window.addEventListener('error', function(e) {
+        window.__showSplashError((e.message || 'Unknown error') + ' @ ' + (e.filename || '') + ':' + (e.lineno || ''));
+      });
+      window.addEventListener('unhandledrejection', function(e) {
+        var r = e.reason;
+        window.__showSplashError('Promise rejected: ' + (r && r.message ? r.message : String(r)));
+      });
     </script>
     <!-- GSI client locally bundled — Capacitor WebView blocks accounts.google.com -->
     <script src="/gsi-client.js" async defer></script>
