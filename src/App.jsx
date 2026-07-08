@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef, useCallback, useMemo, useTransition
 import ReactDOM from "react-dom";
 import { initializeApp, getApps, deleteApp } from "firebase/app";
 import { initializeAppCheck, ReCaptchaV3Provider } from "firebase/app-check";
-import { BackgroundRunner } from "@capacitor/background-runner";
 import {
   getFirestore, doc, getDoc, updateDoc, setDoc, deleteDoc,
   collection, onSnapshot, getDocs, enableIndexedDbPersistence,
@@ -8592,19 +8591,6 @@ function SmartBusinessMgmt() {
     const cycle = () => {
       runLocalBackup();
       runDriveBackup();
-      // 🔴 Background Runner — অ্যাপ খোলা থাকা অবস্থায় native background task-কে
-      // সর্বশেষ apiKey/projectId পাঠিয়ে রাখি (dispatchEvent-এর args দিয়ে), যাতে
-      // OS নিজে থেকে ব্যাকগ্রাউন্ডে (app সম্পূর্ণ বন্ধ থাকলেও) এই টাস্ক চালালে
-      // সঠিক config দিয়ে কাজ করতে পারে। ব্যর্থ হলে silently ignore — এটা একটা
-      // best-effort বাড়তি safety net, মূল backup flow-এর উপর নির্ভরশীল না।
-      // ⚠️ নোট: এই native plugin real device ছাড়া টেস্ট করা যায়নি এই সেশনে।
-      if (firebaseEnabled && firebaseConfig?.apiKey && firebaseConfig?.projectId) {
-        BackgroundRunner.dispatchEvent({
-          label: "com.protik.sbm.backup",
-          event: "shopBackupCheck",
-          details: { apiKey: firebaseConfig.apiKey, projectId: firebaseConfig.projectId },
-        }).catch(() => {});
-      }
     };
     // Admin token ৬০ মিনিটে expire — প্রতি ৪৫ মিনিটে refresh করলে staff সবসময় fresh token পাবে
     const tokenRefreshInterval = !isStaffDevice ? 45 * 60 * 1000 : 5 * 60 * 1000;
