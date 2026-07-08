@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, useTransition, useDeferredValue } from "react";
 import ReactDOM from "react-dom";
 import { initializeApp, getApps, deleteApp } from "firebase/app";
+import { initializeAppCheck, ReCaptchaV3Provider } from "firebase/app-check";
+import { BackgroundRunner } from "@capacitor/background-runner";
 import {
   getFirestore, doc, getDoc, updateDoc, setDoc, deleteDoc,
   collection, onSnapshot, getDocs, enableIndexedDbPersistence,
-  query, where, orderBy, limit, startAfter, increment,
+  query, where, orderBy, limit, startAfter, increment, runTransaction,
 } from "firebase/firestore";
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
@@ -110,6 +112,7 @@ class ErrorBoundary extends React.Component {
   componentDidCatch(error, info) {
     console.error("[ErrorBoundary] Tab crash caught:", error, info?.componentStack || "");
     this.setState({ info });
+    logErrorToCentral("app:crash", error, { componentStack: (info?.componentStack || "").slice(0, 500) });
   }
   render() {
     if (this.state.hasError) {
@@ -580,6 +583,35 @@ async function centralRecoveryPull(phone) {
   } catch {
     return null;
   }
+}
+
+// ─── Central Error Logging (protik-aa991 → app_errors/{autoId}) ──────────────
+// প্রতিটা দোকানের sync error বা app crash এখানে জমা হয় — Protik নিজের Admin
+// Panel-এ একজায়গা থেকে দেখতে পারবেন কোন দোকানে কী সমস্যা হচ্ছে, গ্রাহক
+// অভিযোগ করার আগেই। শুধু error metadata যায় (কোনো customer/invoice/টাকার
+// ডেটা না) — গোপনীয়তার ঝুঁকি নেই। ১০ সেকেন্ড cooldown আছে যাতে একই error বারবার
+// (যেমন retry loop-এ) spam না করে।
+let _lastErrorLogAt = 0;
+async function logErrorToCentral(context, error, extra = {}) {
+  try {
+    const now = Date.now();
+    if (now - _lastErrorLogAt < 10000) return;
+    _lastErrorLogAt = now;
+    const phone    = await load(SK.recoveryPhone).catch(() => null);
+    const shopName = await load(SK.shopName).catch(() => null);
+    const ref = doc(collection(_db, "app_errors"));
+    await setDoc(ref, {
+      phone: phone || "unknown",
+      shopName: shopName || "unknown",
+      deviceId: DeviceID.get(),
+      context,
+      message: String(error?.message || error || "unknown error").slice(0, 500),
+      stack: String(error?.stack || "").slice(0, 2000),
+      extra: JSON.stringify(extra).slice(0, 500),
+      createdAt: new Date().toISOString(),
+      resolved: false,
+    });
+  } catch { /* central log নিজেই fail করলে চুপচাপ ignore — এটা secondary concern, মূল অ্যাপ কাজ চালিয়ে যাবে */ }
 }
 
 // ─── Storage Helper ───────────────────────────────────────────────────────────
@@ -3531,6 +3563,23 @@ const FSS = {
       const existing = getApps().find(a => a.name === appName);
       this._app = existing || initializeApp(cfg, appName);
       this._db = getFirestore(this._app);
+      // 🔴 App Check — নিশ্চিত করে শুধু আসল অ্যাপ (আপনার signed build) Firestore-এ
+      // read/write করতে পারবে, কেউ config কপি করে ভুয়া client বানালেও block হবে।
+      // `cfg.appCheckSiteKey` না থাকলে এটা সম্পূর্ণ no-op (backward compatible) —
+      // প্রতিটা শপ প্রজেক্টে Firebase Console → App Check-এ reCAPTCHA v3 site key
+      // রেজিস্টার করে cfg-তে যোগ করতে হবে (per-project ম্যানুয়াল ধাপ, automate
+      // করা সম্ভব Firebase Management API দিয়ে, এই সেশনের বাইরে)। প্রথমে "Monitor"
+      // mode-এ রেখে যাচাই করে তারপর "Enforce" করা নিরাপদ — নাহলে ভুল কনফিগারেশনে
+      // পুরো দোকান lockout হতে পারে।
+      if (cfg.appCheckSiteKey && !this._appCheckInit) {
+        try {
+          initializeAppCheck(this._app, {
+            provider: new ReCaptchaV3Provider(cfg.appCheckSiteKey),
+            isTokenAutoRefreshEnabled: true,
+          });
+          this._appCheckInit = true;
+        } catch (e) { /* App Check ব্যর্থ হলেও অ্যাপ যেন বন্ধ না হয়ে যায় */ }
+      }
       if (!this._persistTried) {
         this._persistTried = true;
         try { enableIndexedDbPersistence(this._db).catch(() => {}); } catch {}
@@ -3584,7 +3633,34 @@ const FSS = {
   unsubscribe(name) { if (this._unsubs[name]) { this._unsubs[name](); delete this._unsubs[name]; } },
   unsubscribeAll() { Object.keys(this._unsubs).forEach(k => this.unsubscribe(k)); },
 
-  // একটা রেকর্ড লেখো/আপডেট করো (write পরিবর্তন: setDoc = add/update)
+  // 🔴 Transactions — customer.balance-এর মতো money-critical field-এ দুই ডিভাইস
+  // একসাথে লিখলে (race) একটা আরেকটাকে overwrite করে ফেলতে পারত (LWW merge শুধু
+  // পুরো রেকর্ড বনাম রেকর্ড তুলনা করে, balance-এর "delta" আলাদাভাবে বোঝে না)।
+  // runTransaction() Firestore-এর নিজস্ব read-modify-write atomic guarantee দেয়
+  // — সার্ভারে conflict ধরা পড়লে নিজে থেকেই retry করে সঠিক ক্রমে delta apply
+  // করে, তাই দুই ডিভাইসের কোনো delta-ই হারায় না। deltaFn পায় সার্ভারের বর্তমান
+  // (সবচেয়ে up-to-date) balance, আর রিটার্ন করে চূড়ান্ত balance — caller সেটা
+  // local state ও receipt/SMS-এর জন্য ব্যবহার করবে (client-এর নিজের stale
+  // guess না)। Firebase বন্ধ থাকলে (local-only mode) null রিটার্ন করে — caller
+  // তখন আগের মতো synchronous local calculation-এ fallback করবে।
+  async transactionUpdateBalance(customerId, deltaFn) {
+    if (!this._db || !customerId) return null;
+    try {
+      const ref = doc(this._db, "customers", String(customerId));
+      const finalBalance = await runTransaction(this._db, async (tx) => {
+        const snap = await tx.get(ref);
+        const current = snap.exists() ? (snap.data().balance || 0) : 0;
+        const next = deltaFn(current);
+        tx.update(ref, { balance: next, _updatedAt: Date.now() });
+        return next;
+      });
+      return finalBalance;
+    } catch (e) {
+      logErrorToCentral?.("transaction:balance", e, { customerId });
+      return null; // ব্যর্থ হলে caller local fallback ব্যবহার করবে
+    }
+  },
+
   async setRecord(coll, id, data) {
     if (!this._db || id === undefined || id === null || id === "") return { ok: false, msg: "Firestore সংযুক্ত নেই" };
     try {
@@ -3773,7 +3849,7 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
       lastSynced.current = merged;
       setValue(merged);
       if (onSync) { onSync("syncing"); setTimeout(() => onSync("synced"), 0); setTimeout(() => onSync(null), 1500); }
-    }, (err) => { onSync?.("error"); });
+    }, (err) => { onSync?.("error"); logErrorToCentral("sync:" + name, err); });
     return () => { FSS.unsubscribe(name); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
@@ -8285,10 +8361,26 @@ function SmartBusinessMgmt() {
   // থেকে পূর্ণ invoices collection টেনে আনা হয় (source of truth) — Firebase
   // বন্ধ থাকা দোকানে (local-only mode) আগের মতোই local windowed state ব্যবহার
   // হবে, কারণ সেখানে Firestore-ই নেই।
+  // 🔴 Read-quota fix — প্রথমে এই ফাংশন প্রতিবার (প্রতি ৫/৪৫ মিনিট backup cycle-এ)
+  // পুরো invoices collection Firestore থেকে read করত — বড় দোকানে দিনে লক্ষ
+  // লক্ষ extra read হয়ে যেত, quota/বিল দুটোই বাড়িয়ে দিত। এখন full pull
+  // সর্বোচ্চ ১২ ঘণ্টায় একবার হয় (localStorage-এ timestamp cache করা), বাকি
+  // সময় হালকা local windowed state ব্যবহার হয় — যেহেতু সাম্প্রতিক (৩০ দিনের)
+  // ইনভয়েস তো live listener দিয়েই সবসময় up-to-date থাকে, শুধু পুরনো ইতিহাস
+  // (৩০ দিনের বেশি) দিনে একবার পূর্ণাঙ্গভাবে backup-এ যোগ হলেই যথেষ্ট।
+  const FULL_PULL_KEY = "hg_last_full_invoice_pull";
+  const FULL_PULL_INTERVAL = 12 * 60 * 60 * 1000; // ১২ ঘণ্টা
   const buildBackupData = useCallback(async () => {
-    const fullInvoices = (firebaseEnabled && FSS.isReady())
-      ? await FSS.getCollectionOnce("invoices").catch(() => invoices)
-      : invoices;
+    let fullInvoices = invoices;
+    if (firebaseEnabled && FSS.isReady()) {
+      const lastPull = Number(localStorage.getItem(FULL_PULL_KEY) || 0);
+      if (Date.now() - lastPull >= FULL_PULL_INTERVAL) {
+        try {
+          fullInvoices = await FSS.getCollectionOnce("invoices");
+          localStorage.setItem(FULL_PULL_KEY, String(Date.now()));
+        } catch { fullInvoices = invoices; }
+      }
+    }
     const invoicesForBackup = (fullInvoices && fullInvoices.length >= invoices.length) ? fullInvoices : invoices;
     const payload = { customers, products, invoices: invoicesForBackup, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs };
     // Simple checksum: total record count hash (v4: expenses + returns সহ — auditLogs checksum-এ নেই, optional field)
@@ -8497,7 +8589,23 @@ function SmartBusinessMgmt() {
       } catch {}
     };
 
-    const cycle = () => { runLocalBackup(); runDriveBackup(); };
+    const cycle = () => {
+      runLocalBackup();
+      runDriveBackup();
+      // 🔴 Background Runner — অ্যাপ খোলা থাকা অবস্থায় native background task-কে
+      // সর্বশেষ apiKey/projectId পাঠিয়ে রাখি (dispatchEvent-এর args দিয়ে), যাতে
+      // OS নিজে থেকে ব্যাকগ্রাউন্ডে (app সম্পূর্ণ বন্ধ থাকলেও) এই টাস্ক চালালে
+      // সঠিক config দিয়ে কাজ করতে পারে। ব্যর্থ হলে silently ignore — এটা একটা
+      // best-effort বাড়তি safety net, মূল backup flow-এর উপর নির্ভরশীল না।
+      // ⚠️ নোট: এই native plugin real device ছাড়া টেস্ট করা যায়নি এই সেশনে।
+      if (firebaseEnabled && firebaseConfig?.apiKey && firebaseConfig?.projectId) {
+        BackgroundRunner.dispatchEvent({
+          label: "com.protik.sbm.backup",
+          event: "shopBackupCheck",
+          details: { apiKey: firebaseConfig.apiKey, projectId: firebaseConfig.projectId },
+        }).catch(() => {});
+      }
+    };
     // Admin token ৬০ মিনিটে expire — প্রতি ৪৫ মিনিটে refresh করলে staff সবসময় fresh token পাবে
     const tokenRefreshInterval = !isStaffDevice ? 45 * 60 * 1000 : 5 * 60 * 1000;
     const timer = setInterval(cycle, tokenRefreshInterval);
@@ -8610,7 +8718,7 @@ function SmartBusinessMgmt() {
   }, [shopName]);
 
   // ── Fix 4 (v2): Invoice Void — stock restore + correct balanceAfter + owner-only ─
-  const voidInvoice = useCallback((inv, voidReason = "") => {
+  const voidInvoice = useCallback(async (inv, voidReason = "") => {
     // ── 1. Mark invoice as voided ────────────────────────────────────────────
     const voidedInv = { ...inv, status: "voided", voidedAt: new Date().toISOString(), voidReason };
     setInvoices(prev => prev.map(i => i.id === inv.id ? voidedInv : i));
@@ -8655,12 +8763,15 @@ function SmartBusinessMgmt() {
     if ((inv.payType === "baki" || inv.payType === "partial") && inv.customerId) {
       const netChange = (inv.payType === "baki" ? inv.total : (inv.bakiAmount || 0)) - (inv.overpayAmount || 0);
       if (netChange !== 0) {
-        // read current customers state to get real balance
+        // 🔴 Transaction fix — Firebase enabled থাকলে সার্ভারের বর্তমান balance
+        // থেকে atomic transaction-এ বিয়োগ করা হয় (অন্য ডিভাইসের concurrent এডিট
+        // থাকলেও কোনো delta হারাবে না)। ব্যর্থ/local-only mode হলে local state
+        // থেকে fallback হিসাব হয় (single-device-এ এটা এমনিতেই নিরাপদ)।
+        const txBal = await FSS.transactionUpdateBalance(inv.customerId, (serverBal) => Math.max(0, serverBal - netChange));
         setCustomers(prev => {
           const updated = prev.map(c => {
             if (c.id !== inv.customerId) return c;
-            const currentBal = c.balance || 0;
-            const newBal = Math.max(0, currentBal - netChange);
+            const newBal = txBal !== null ? txBal : Math.max(0, (c.balance || 0) - netChange);
             // addTxn inside setCustomers updater won't work — use setTimeout to fire after state commits
             setTimeout(() => {
               addTxn(
@@ -11058,24 +11169,28 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
 
     if (!isWalkIn && !isSelfUse && (effectivePayType === "baki" || effectivePayType === "partial")) {
       // Overpayment: paid > total → অতিরিক্ত অংশ কাস্টমারের আগের বাকি থেকে বাদ যাবে (জমা)
-      const _prevBal = selCust.balance || 0;
       const _isOverpay = effectivePayType === "partial" && paidAmt > total;
       const _overpayAmt = _isOverpay ? (paidAmt - total) : 0;
       inv.overpayAmount = _overpayAmt; // রিসিট/হিস্টোরিতে "বর্তমান বাকি" ঠিকভাবে দেখানোর জন্য সংরক্ষণ
-      const newBal = _prevBal + bakiAmt - _overpayAmt;
-      setCustomers(prev => prev.map(c => c.id === selCust.id ? { ...c, balance: Math.max(0, newBal) } : c));
-      if (bakiAmt > 0) addTxn(selCust.id, "baki", bakiAmt, Math.max(0, newBal), inv.id, note);
+      const delta = bakiAmt - _overpayAmt;
+      // 🔴 Transaction fix — সার্ভারের বর্তমান (সবচেয়ে up-to-date) balance থেকে
+      // atomically delta apply করা হয় — অন্য ডিভাইস ঠিক এই মুহূর্তে balance
+      // বদলালেও কোনো delta হারায় না। ব্যর্থ/local-only হলে local snapshot থেকে fallback।
+      const txBal = await FSS.transactionUpdateBalance(selCust.id, (serverBal) => Math.max(0, serverBal + delta));
+      const newBal = txBal !== null ? txBal : Math.max(0, (selCust.balance || 0) + delta);
+      setCustomers(prev => prev.map(c => c.id === selCust.id ? { ...c, balance: newBal } : c));
+      if (bakiAmt > 0) addTxn(selCust.id, "baki", bakiAmt, newBal, inv.id, note);
       // partial payment: নগদ অংশ joma txn
       if (effectivePayType === "partial" && paidAmt > 0) {
         const cashPortion = Math.min(paidAmt, total); // শুধু invoice পর্যন্ত নগদ
         // Fix 3: joma txn-এর balanceAfter = newBal (বাকি যোগের পর যা আছে)
         // baki txn আগে হয় তাই balanceAfter একই — history-তে ঠিকমতো দেখাবে
-        const balAfterJoma = Math.max(0, newBal);
+        const balAfterJoma = newBal;
         addTxn(selCust.id, "joma", cashPortion, balAfterJoma, inv.id, `আংশিক নগদ — ইনভয়েস #${inv.id.slice(-6).toUpperCase()}`, null, "partial-sale");
         createPaymentInvoice({ ...selCust, balance: balAfterJoma }, cashPortion, `আংশিক জমা — ইনভয়েস #${inv.id.slice(-6).toUpperCase()}`, "partial-sale");
         // Overpayment অংশ আগের বাকি আদায় হিসেবে joma
         if (_overpayAmt > 0) {
-          const balAfterOverpay = Math.max(0, newBal);
+          const balAfterOverpay = newBal;
           addTxn(selCust.id, "joma", _overpayAmt, balAfterOverpay, inv.id, `অতিরিক্ত জমা (আগের বাকি আদায়) — ইনভয়েস #${inv.id.slice(-6).toUpperCase()}`, null, "overpay");
           createPaymentInvoice({ ...selCust, balance: balAfterOverpay }, _overpayAmt, `বাকি আদায় — ইনভয়েস #${inv.id.slice(-6).toUpperCase()}`, "overpay");
         }
@@ -11873,6 +11988,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       {/* ── STEP 3: Payment ── */}
       {step === 3 && (() => {
         const isSelfUse = selCust?.id === "__selfuse__";
+        const isWalkIn  = selCust?.id === "__walkin__"; // 🔴 আগে এখানে define করা ছিল না, নিচে (Loyalty card) ব্যবহার হতো — ReferenceError দিত
         return (
         <div style={{ animation: "slideUp 0.25s ease", overflow: "hidden", display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto", paddingBottom: 8 }}>
@@ -16352,18 +16468,32 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
     const amt = parseFloat(amount);
     if (!amt || amt <= 0) return;
     setSending(true);
-    // Bug fix: read current balance from state (not stale prop) to handle concurrent edits
-    let computedNewBalance = null;
-    setCustomers(prev => {
-      const current = prev.find(c => c.id === customer.id);
-      const currentBalance = current ? current.balance : customer.balance;
-      const newBal = mode === "baki" ? currentBalance + amt : Math.max(0, currentBalance - amt);
-      computedNewBalance = newBal;
-      return prev.map(c => c.id === customer.id ? { ...c, balance: newBal } : c);
-    });
-    // Wait one microtask for state to settle
-    await new Promise(r => setTimeout(r, 0));
-    const newBalance = computedNewBalance ?? (mode === "baki" ? customer.balance + amt : Math.max(0, customer.balance - amt));
+    // 🔴 Transaction fix — সার্ভারের বর্তমান balance থেকে atomically apply করা
+    // হয় — staff ও admin একই মুহূর্তে একই কাস্টমারের payment collect করলেও
+    // কোনো delta হারাবে না (আগে LWW merge-এ একটা delta silently হারিয়ে যেত)।
+    // ব্যর্থ/local-only mode হলে local state থেকে fallback (single-device-এ নিরাপদ)।
+    const txBal = await FSS.transactionUpdateBalance(
+      customer.id,
+      (serverBal) => mode === "baki" ? (serverBal + amt) : Math.max(0, serverBal - amt)
+    );
+    let newBalance;
+    if (txBal !== null) {
+      newBalance = txBal;
+      setCustomers(prev => prev.map(c => c.id === customer.id ? { ...c, balance: newBalance } : c));
+    } else {
+      // Bug fix: read current balance from state (not stale prop) to handle concurrent edits
+      let computedNewBalance = null;
+      setCustomers(prev => {
+        const current = prev.find(c => c.id === customer.id);
+        const currentBalance = current ? current.balance : customer.balance;
+        const newBal = mode === "baki" ? currentBalance + amt : Math.max(0, currentBalance - amt);
+        computedNewBalance = newBal;
+        return prev.map(c => c.id === customer.id ? { ...c, balance: newBal } : c);
+      });
+      // Wait one microtask for state to settle
+      await new Promise(r => setTimeout(r, 0));
+      newBalance = computedNewBalance ?? (mode === "baki" ? customer.balance + amt : Math.max(0, customer.balance - amt));
+    }
     let payInvId = null;
     if (mode === "joma") {
       const payInv = createPaymentInvoice({ ...customer, balance: newBalance }, amt, note);
@@ -19117,7 +19247,7 @@ function ReturnModule({ T, S, invoices, products, customers, returns = [], setRe
   }, [invSearch, invoices, returns, prodMap, showToast]);
 
   // ── Confirm return ─────────────────────────────────────────────────────────
-  const confirmReturn = React.useCallback(() => {
+  const confirmReturn = React.useCallback(async () => {
     const selectedItems = returnItems.filter(it => it.returnQty > 0);
     if (selectedItems.length === 0) {
       showToast("অন্তত একটি পণ্য নির্বাচন করুন", "#ef4444"); return;
@@ -19182,8 +19312,10 @@ function ReturnModule({ T, S, invoices, products, customers, returns = [], setRe
 
     // ── 3. Customer balance adjust (বাকি ইনভয়েস হলে কমাও) ──────────────────
     if (customer && (foundInv.payType === "baki" || foundInv.payType === "partial")) {
-      const currentBal = customer.balance || 0;
-      const newBal     = Math.max(0, currentBal - totalRefund);
+      // 🔴 Transaction fix — সার্ভারের বর্তমান balance থেকে atomically বিয়োগ,
+      // অন্য ডিভাইসের concurrent এডিট থাকলেও delta হারাবে না
+      const txBal = await FSS.transactionUpdateBalance(customer.id, (serverBal) => Math.max(0, serverBal - totalRefund));
+      const newBal = txBal !== null ? txBal : Math.max(0, (customer.balance || 0) - totalRefund);
       setCustomers(prev => prev.map(c =>
         c.id === customer.id ? { ...c, balance: newBal } : c
       ));
@@ -21778,6 +21910,19 @@ function Settings_({ T, S, shopName,
             value={fbForm.projectId || ""}
             autoCapitalize="none" autoCorrect="off" spellCheck={false} autoComplete="off"
             onChange={e => setFbForm(f => ({ ...f, projectId: e.target.value.trim().toLowerCase() }))} />
+
+          {/* 🔴 App Check (ঐচ্ছিক) — শুধু আসল অ্যাপ Firestore-এ read/write করতে
+              পারবে, কেউ config কপি করে ভুয়া client বানালেও block হবে। খালি
+              রাখলে App Check চালু হবে না (backward compatible, ভাঙবে না)। */}
+          <label style={S.label}>App Check Site Key (ঐচ্ছিক — নিরাপত্তা বাড়ায়)</label>
+          <input style={{ ...S.input, fontFamily:"monospace", fontSize:12 }}
+            placeholder="Firebase Console → App Check → reCAPTCHA v3 site key"
+            value={fbForm.appCheckSiteKey || ""}
+            autoCapitalize="none" autoCorrect="off" spellCheck={false} autoComplete="off"
+            onChange={e => setFbForm(f => ({ ...f, appCheckSiteKey: e.target.value.trim() }))} />
+          <div style={{ color:"#64748b", fontSize:10.5, marginTop:-6, marginBottom:10, lineHeight:1.5 }}>
+            Firebase Console → App Check → Register app → reCAPTCHA v3 provider থেকে Site Key নিন। প্রথমে "Monitor" mode-এ রেখে কয়েকদিন পর্যবেক্ষণ করুন, তারপর "Enforce" করুন।
+          </div>
 
           {fbTestMsg && (
             <div style={{ background: fbTestMsg.ok ? "#22c55e18" : "#ef444418", color: fbTestMsg.ok ? "#22c55e" : "#ef4444", borderRadius:8, padding:"8px 12px", fontSize:12, marginBottom:8, fontWeight:600 }}>
