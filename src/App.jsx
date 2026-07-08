@@ -3535,8 +3535,10 @@ const DeviceID = (() => {
 // purchaseOrders, stockMovements, cashLogs, paymentInvoices + settings/main
 // (shopName, smsTemplates, smsGateway)
 const FSS_COLLECTIONS = [
-  "customers", "products", "invoices", "txns", "smsLog", "users", "suppliers",
+  "customers", "products", "invoices", "txns", "smsLog", "suppliers",
   "purchaseOrders", "stockMovements", "cashLogs", "paymentInvoices",
+  "expenses", "returns", "auditLogs", "quotations", "supplierPayments",
+  "deletedProducts", "deletedCustomers",
 ];
 
 const FSS = {
@@ -8049,6 +8051,9 @@ function SmartBusinessMgmt() {
   useFSSCollection("quotations", quotations, setQuotations, fssReady, { onSync: setSyncToast });
   useFSSCollection("supplierPayments", supplierPayments, setSupplierPayments, fssReady, { onSync: setSyncToast });
   useFSSCollection("paymentInvoices", paymentInvoices, setPaymentInvoices, fssReady, { onSync: setSyncToast });
+  // 🗑️ Recycle Bin — এখন সব ডিভাইসে সিঙ্ক হয় (আগে শুধু লোকাল ছিল)
+  useFSSCollection("deletedProducts", deletedProducts, setDeletedProducts, fssReady, { onSync: setSyncToast });
+  useFSSCollection("deletedCustomers", deletedCustomers, setDeletedCustomers, fssReady, { onSync: setSyncToast });
   // 🔑 users (permissions) — instant push/apply, debounce ছাড়া
   useFSSCollection("users", users, setUsers, fssReady, { instant: true, onSync: setSyncToast });
   useFSSSettings(fssReady, shopName, setShopName, smsTemplates, setSmsTemplates, smsGateway, setSmsGateway, googleDriveToken, setGoogleDriveToken);
@@ -8127,6 +8132,22 @@ function SmartBusinessMgmt() {
   useEffect(() => { if (loaded) save(SK.fontSize, fontSize); }, [fontSize, loaded]);
   useEffect(() => { if (loaded) save(SK.deletedCustomers, deletedCustomers); }, [deletedCustomers, loaded]);
   useEffect(() => { if (loaded) save(SK.deletedProducts,  deletedProducts);  }, [deletedProducts,  loaded]);
+  // 🗑️ Recycle Bin auto-cleanup — ৩০ দিনের বেশি পুরনো এন্ট্রি স্থায়ীভাবে সরিয়ে দেয়
+  // (_deletedAt না থাকা পুরনো এন্ট্রি স্পর্শ করে না — শুধু নতুন টাইমস্ট্যাম্প-যুক্ত এন্ট্রি চেক করে)
+  useEffect(() => {
+    if (!loaded) return;
+    const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - THIRTY_DAYS;
+    setDeletedProducts(prev => {
+      const kept = prev.filter(p => !p._deletedAt || p._deletedAt > cutoff);
+      return kept.length === prev.length ? prev : kept;
+    });
+    setDeletedCustomers(prev => {
+      const kept = prev.filter(c => !c._deletedAt || c._deletedAt > cutoff);
+      return kept.length === prev.length ? prev : kept;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded]);
   useEffect(() => { if (loaded) debouncedSave(SK.paymentInvoices, paymentInvoices, 1500); }, [paymentInvoices, loaded]);
   useEffect(() => { if (loaded) save(SK.smsGateway, smsGateway); }, [smsGateway, loaded]);
   useEffect(() => { if (loaded) save(SK.anthropicKey, anthropicKey); }, [anthropicKey, loaded]);
@@ -9519,6 +9540,8 @@ function SmartBusinessMgmt() {
               suppliers={suppliers} setSuppliers={setSuppliers}
               expenses={expenses} setExpenses={setExpenses}
               returns={returns} setReturns={setReturns}
+              quotations={quotations} setQuotations={setQuotations}
+              supplierPayments={supplierPayments} setSupplierPayments={setSupplierPayments}
               sessionTimeoutMin={sessionTimeoutMin} setSessionTimeoutMin={setSessionTimeoutMin}
               auditLogs={auditLogs}
               hasPerm={hasPerm} fssReady={fssReady}
@@ -15451,85 +15474,6 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
           })}
         </div>
 
-        {/* ══ Worker AI: স্টক সতর্কতা ══ */}
-        {reorderAlerts.length > 0 && (
-          <div style={{ marginBottom: 12, background: reorderAlerts.some(a=>a.status==="red") ? "#ef444410" : "#f59e0b10", border: `1px solid ${reorderAlerts.some(a=>a.status==="red") ? "#ef444430" : "#f59e0b30"}`, borderRadius: 14, padding: "12px 14px" }}>
-            <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
-              <div style={{ width:4, height:20, borderRadius:2, background: reorderAlerts.some(a=>a.status==="red") ? "linear-gradient(180deg,#ef4444,#b91c1c)" : "linear-gradient(180deg,#f59e0b,#d97706)", flexShrink:0 }} />
-              <span style={{ color: reorderAlerts.some(a=>a.status==="red") ? "#fca5a5" : "#fcd34d", fontWeight:900, fontSize:13, letterSpacing:0.5 }}>
-                🔮 AI স্টক পূর্বাভাস
-              </span>
-              <div style={{ marginLeft:"auto", background:"#ef444415", border:"1px solid #ef444430", borderRadius:8, padding:"3px 10px" }}>
-                <span style={{ color:"#fca5a5", fontSize:11, fontWeight:900 }}>{reorderAlerts.length}টি পণ্য</span>
-              </div>
-            </div>
-            {reorderAlerts.filter(a=>a.status==="red").slice(0,3).map(a => (
-              <div key={a.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 0", borderBottom:"1px solid #ef444415" }}>
-                <div>
-                  <div style={{ color:"#fca5a5", fontSize:12, fontWeight:700 }}>🔴 {a.name}</div>
-                  <div style={{ color:"#94a3b8", fontSize:10 }}>দৈনিক বিক্রয়: {a.avgDaily}টি · স্টক: {a.stock}টি</div>
-                </div>
-                <div style={{ background:"#ef444422", border:"1px solid #ef444440", borderRadius:8, padding:"4px 10px", textAlign:"center" }}>
-                  <div style={{ color:"#ef4444", fontSize:16, fontWeight:900, lineHeight:1 }}>{a.daysLeft}</div>
-                  <div style={{ color:"#fca5a5", fontSize:9, fontWeight:700 }}>দিন বাকি</div>
-                </div>
-              </div>
-            ))}
-            {reorderAlerts.filter(a=>a.status==="yellow").length > 0 && (
-              <div style={{ marginTop:8, color:"#fcd34d", fontSize:11, fontWeight:700 }}>
-                🟡 আরও {reorderAlerts.filter(a=>a.status==="yellow").length}টি পণ্য ১৪ দিনের মধ্যে শেষ হবে
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ══ এই মাসের P&L Quick View ══ */}
-        {(() => {
-          const monthKey = new Date().toISOString().slice(0,7);
-          const prodMap  = new Map((products||[]).map(p => [p.id, p]));
-          const mInvs    = (invoices||[]).filter(i => (i.dateKey||"").startsWith(monthKey));
-          const mExps    = (expenses||[]).filter(e => (e.dateKey||e.date||"").startsWith(monthKey));
-          const revenue  = mInvs.reduce((s,i) => s+(i.total||0), 0);
-          const cogs     = mInvs.reduce((s,inv) => s+(inv.items||[]).reduce((c,it) => {
-            const p = prodMap.get(it.productId); return c+(p?.costPrice||0)*(it.qty||1);
-          }, 0), 0);
-          const expense  = mExps.reduce((s,e) => s+(e.amount||0), 0);
-          const net      = revenue - cogs - expense;
-          const margin   = revenue > 0 ? (net/revenue*100).toFixed(1) : "0.0";
-          if (revenue === 0) return null;
-          return (
-            <div style={{ marginBottom:12, background: net>=0?"rgba(34,197,94,0.08)":"rgba(239,68,68,0.08)",
-              border:`1px solid ${net>=0?"#22c55e30":"#ef444430"}`, borderRadius:14, padding:"12px 14px" }}
-              onClick={() => setTab("ai")}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                  <div style={{ width:4, height:20, borderRadius:2, background:`linear-gradient(180deg,${net>=0?"#22c55e":"#ef4444"},${net>=0?"#16a34a":"#dc2626"})` }} />
-                  <span style={{ color: net>=0?"#86efac":"#fca5a5", fontWeight:900, fontSize:13 }}>
-                    📊 এই মাসের P&L
-                  </span>
-                </div>
-                <span style={{ color: net>=0?"#22c55e":"#ef4444", fontWeight:900, fontSize:16 }}>
-                  {net>=0?"":"-"}৳{Math.abs(Math.round(net)).toLocaleString("en-US")}
-                </span>
-              </div>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
-                {[
-                  { label:"রাজস্ব", value:revenue, color:"#22c55e" },
-                  { label:"খরচ+COGS", value:cogs+expense, color:"#f59e0b" },
-                  { label:"মার্জিন", value:margin+"%", color: net>=0?"#6366f1":"#ef4444", isStr:true },
-                ].map(c => (
-                  <div key={c.label} style={{ background:"rgba(255,255,255,0.04)", borderRadius:8, padding:"6px 8px", textAlign:"center" }}>
-                    <div style={{ color:c.color, fontWeight:900, fontSize:12 }}>
-                      {c.isStr ? c.value : "৳"+Math.round(c.value).toLocaleString("en-US")}
-                    </div>
-                    <div style={{ color:"#64748b", fontSize:10 }}>{c.label}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })()}
-
         {/* ══ আজকের খরচ সারসংক্ষেপ ══ */}
         {(() => {
           const todayK = new Date().toISOString().split("T")[0];
@@ -15773,7 +15717,7 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
       setConfirmId(null);
       return;
     }
-    setDeletedCustomers(prev => [c, ...prev]);
+    setDeletedCustomers(prev => [{ ...c, _deletedAt: Date.now() }, ...prev]);
     setCustomers(prev => prev.filter(x => x.id !== id));
     showToast("কাস্টমার সরানো হয়েছে", "#f59e0b");
     auditLog?.("CUSTOMER_DELETE", { customerId: id, customerName: c?.name || "অজানা", mobile: c?.mobile || "" });
@@ -16951,6 +16895,24 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       .filter(p => p._score > 0)
       .sort((a, b) => b._score - a._score);
   }, [productsWithSerialAll, deferredSearch]);
+
+  // ── FIFO active-batch map — প্রোডাক্ট লিস্টের ব্যাচ ব্যাজ দেখানোর জন্য (prodBatchMap fix) ──
+  const prodBatchMap = useMemo(() => {
+    const map = {};
+    products.forEach(p => {
+      const fifo = getActiveBatch(p);
+      if (fifo) {
+        const daysLeft = fifo.expiryDate ? Math.ceil((new Date(fifo.expiryDate) - new Date()) / 86400000) : null;
+        map[p.id] = {
+          batch: fifo.batchNo || "",
+          expiryDate: fifo.expiryDate || "",
+          daysLeft,
+          expWarn: daysLeft !== null && daysLeft <= 30,
+        };
+      }
+    });
+    return map;
+  }, [products]);
 
   const [activeTab,    setActiveTab]    = useState(initialTab || "retail"); // "retail" | "purchase"
 
@@ -18211,7 +18173,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                   <button style={{ background:"#ef444418", border:"1px solid #ef444444", color:"#ef4444", borderRadius:8, padding:"3px 8px", fontSize:10, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}
                     onClick={() => {
                       if(window.confirm(`${p.name} রিসাইকেল বিনে পাঠাবেন?`)) {
-                        if (setDeletedProducts) setDeletedProducts(prev => [p, ...prev]);
+                        if (setDeletedProducts) setDeletedProducts(prev => [{ ...p, _deletedAt: Date.now() }, ...prev]);
                         setProducts(prev => prev.filter(x => x.id !== p.id));
                         setEditId(null);
                         showToast(`${p.name} Recycle Bin-এ গেছে`, "#ef4444");
@@ -20676,7 +20638,7 @@ function StaffCustomTimePicker({ T, staffName, onGrant }) {
 }
 
 function Settings_({ T, S, shopName,
- setShopName, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, driveStatus, backupNeeded, performDriveBackup, buildBackupData, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, sessionTimeoutMin, setSessionTimeoutMin, auditLogs = [], hasPerm, fssReady = false }) {
+ setShopName, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, driveStatus, backupNeeded, performDriveBackup, buildBackupData, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, sessionTimeoutMin, setSessionTimeoutMin, auditLogs = [], hasPerm, fssReady = false }) {
   const [editName,    setEditName]    = useState(false);
   const [nameInput,   setNameInput]   = useState(shopName);
   const [showNewUser, setShowNewUser] = useState(false);
@@ -20786,6 +20748,11 @@ function Settings_({ T, S, shopName,
       setSmsLog([]); setPaymentInvoices([]); setPurchaseOrders([]);
       setStockMovements([]); setDeletedProducts([]); setDeletedCustomers([]);
       if (typeof setCashLogs === "function") setCashLogs([]);
+      if (typeof setSuppliers === "function") setSuppliers([]);
+      if (typeof setExpenses === "function") setExpenses([]);
+      if (typeof setReturns === "function") setReturns([]);
+      if (typeof setQuotations === "function") setQuotations([]);
+      if (typeof setSupplierPayments === "function") setSupplierPayments([]);
 
       // 2️⃣ Firestore — লাইভ রিয়েল-টাইম ডেটা (সব collection + settings) মুছো
       //    Google Drive সেটিং বাঁচিয়ে রাখা হয় — রিসেটের পরও Drive connection অক্ষুণ্ণ থাকবে
