@@ -3553,14 +3553,21 @@ const FSS = {
 
   // একটা collection-এর সব ডকুমেন্ট রিয়েল-টাইমে শোনে — যেকোনো ফোনে কোনো রেকর্ড
   // change হলেই (millisecond-এ) callback(array) ফায়ার করে।
-  subscribeCollection(name, callback) {
+  subscribeCollection(name, callback, onError = null) {
     if (!this._db) return () => {};
     this.unsubscribe(name);
     const colRef = collection(this._db, name);
     const unsub = onSnapshot(colRef, (snap) => {
       const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       callback(arr);
-    }, () => { /* offline/error — Firestore নিজেই retry করবে, cache থেকে কাজ চলবে */ });
+    }, (err) => {
+      // আগে silent ছিল ( () => {} ) — এখন caller কে জানানো হয়, বিশেষ করে
+      // "users" (staff permission) collection-এ এটা জরুরি: কানেকশন সমস্যা
+      // হলে UI-তে দেখানো দরকার, নিঃশব্দে sync বন্ধ হয়ে যাওয়া উচিত না।
+      // (Firestore নিজেই retry করে, cache থেকে local কাজ চলতে থাকে — শুধু
+      // ইউজারকে জানানো দরকার যে remote sync স্থগিত আছে।)
+      onError ? onError(err) : null;
+    });
     this._unsubs[name] = unsub;
     return unsub;
   },
@@ -3697,12 +3704,27 @@ const FSS = {
 
 
 // ─── useFSSCollection — local array state ↔ Firestore collection (record-level) ─
-// লোকাল array বদলালে শুধু বদলানো রেকর্ড(গুলো) Firestore-এ লেখে (debounce 300ms;
-// users-এর জন্য instant/0ms — permission যেন দেরি না হয়)। Firestore থেকে
-// remote change এলে লোকাল array পুরো রিবিল্ড করে বসায়, কিন্তু নিজের সদ্য-করা
-// পরিবর্তন push effect আবার re-push করে না (lastSynced ref দিয়ে echo-guard) —
-// তাই কখনো conflict/mismatch হয় না, আর নেট না থাকলে Firestore-এর built-in
-// cache দিয়ে local-এ কাজ করে, নেট ফিরলে নিজেই sync হয়।
+// লোকাল array-ই primary source of truth থাকে (Firebase বন্ধ থাকা দোকানেও অ্যাপ
+// পুরোপুরি চলে) — কিন্তু Firebase চালু থাকলে এখন নিচের ৩টা জিনিস আলাদা:
+//
+// ১. Debounce 300ms থেকে কমিয়ে 50ms — local edit আর remote push-এর মধ্যে race
+//    window অনেক ছোট হয়ে গেছে (users-এর জন্য এখনও instant/0ms)।
+// ২. Pending-write protection — কোনো রেকর্ড push করার পর Firestore থেকে echo
+//    ফেরত না আসা পর্যন্ত সেটাকে "pending" ধরে রাখা হয়; ওই সময়ের মধ্যে অন্য
+//    কোনো remote snapshot এলে ওই pending রেকর্ডটা overwrite করা হয় না। এটাই
+//    "আমি টাইপ করছি, ঠিক তখনই অন্য ডিভাইসের ডেটা এসে আমার এডিট মুছে দিলো" —
+//    এই bug-টা বন্ধ করে। ৫ সেকেন্ড safety-timeout আছে, যাতে কোনো কারণে echo
+//    না এলেও রেকর্ড চিরস্থায়ীভাবে আটকে না থাকে।
+// ৩. Diff-এ পুরো JSON.stringify()-এর বদলে reference equality (old !== rec)।
+//    এই কোডবেসে সব জায়গায় edit করার সময় immutable update pattern ব্যবহার হয়
+//    ({...c, field:val}) — মানে বদলানো রেকর্ড নতুন object reference পায়, না
+//    বদলানো রেকর্ড পুরনো reference-ই রাখে। তাই reference compare করলেই
+//    বদলানো রেকর্ড নির্ভুলভাবে ধরা পড়ে, হাজার হাজার রেকর্ডে stringify করার
+//    ভারী CPU কাজ লাগে না — এটাই "ল্যাগ" কমানোর মূল ফিক্স।
+//
+// remote → local: Firestore listener error আগে silent ছিল, এখন onSync("error")
+// দিয়ে UI-কে জানানো হয় — বিশেষ করে users (staff permission) collection-এ এটা
+// জরুরি, কানেকশন সমস্যা নিঃশব্দে sync বন্ধ করে দেওয়া উচিত না।
 
 // ── withTs: record-এ _updatedAt timestamp যোগ করে (Master Sync merge-এর জন্য) ──
 const withTs = (rec) => ({ ...rec, _updatedAt: Date.now() });
@@ -3712,12 +3734,14 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
   const lastSynced  = useRef(null);
   const firstRemote = useRef(false);
   const valueRef    = useRef(value);
+  const pending     = useRef(new Map()); // id(string) -> { rec, ts } — push হয়েছে, echo বাকি
   useEffect(() => { valueRef.current = value; }, [value]);
 
   // remote → local
   useEffect(() => {
     if (!ready) { firstRemote.current = false; return; }
     firstRemote.current = false;
+    pending.current = new Map();
     const unsub = FSS.subscribeCollection(name, (arr) => {
       const incoming = filterIncoming ? filterIncoming(arr) : arr;
       if (!firstRemote.current) {
@@ -3729,15 +3753,32 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
           return;
         }
       }
-      lastSynced.current = incoming;
-      setValue(incoming);
+      // pending local write protection
+      const now = Date.now();
+      let merged = incoming;
+      if (pending.current.size) {
+        merged = incoming.map(rec => {
+          const key = String(rec.id);
+          const p = pending.current.get(key);
+          if (!p) return rec;
+          if (now - p.ts > 5000) { pending.current.delete(key); return rec; } // safety timeout
+          if (JSON.stringify(p.rec) === JSON.stringify(rec)) { pending.current.delete(key); return rec; } // echo confirmed
+          return p.rec; // এখনো echo আসেনি — local pending ভার্সন রাখো
+        });
+        const seenIds = new Set(merged.map(r => String(r.id)));
+        pending.current.forEach((p, key) => {
+          if (!seenIds.has(key) && now - p.ts <= 5000) merged.push(p.rec); // নতুন রেকর্ড, এখনো remote-এ নেই
+        });
+      }
+      lastSynced.current = merged;
+      setValue(merged);
       if (onSync) { onSync("syncing"); setTimeout(() => onSync("synced"), 0); setTimeout(() => onSync(null), 1500); }
-    });
+    }, (err) => { onSync?.("error"); });
     return () => { FSS.unsubscribe(name); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
-  // local → remote (diff by id, push শুধু বদলানো/নতুন/মুছা রেকর্ড)
+  // local → remote (diff by id — reference equality দিয়ে সস্তা, push শুধু বদলানো/নতুন/মুছা রেকর্ড)
   useEffect(() => {
     if (!ready || !firstRemote.current) return;
     const prevArr = lastSynced.current || [];
@@ -3746,17 +3787,18 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
     const run = () => {
       nextMap.forEach((rec, id) => {
         const old = prevMap.get(id);
-        if (!old || JSON.stringify(old) !== JSON.stringify(rec)) {
+        if (!old || old !== rec) {
           // _updatedAt inject করো (নতুন বা পরিবর্তিত record-এ) — Master Sync merge-এর জন্য
           const recWithTs = rec._updatedAt ? rec : withTs(rec);
+          pending.current.set(id, { rec: recWithTs, ts: Date.now() });
           FSS.setRecord(name, id, recWithTs);
         }
       });
-      prevMap.forEach((rec, id) => { if (!nextMap.has(id)) FSS.deleteRecord(name, id); });
+      prevMap.forEach((rec, id) => { if (!nextMap.has(id)) { pending.current.delete(id); FSS.deleteRecord(name, id); } });
       lastSynced.current = value;
     };
     if (instant) { run(); return; }
-    const t = setTimeout(run, 300);
+    const t = setTimeout(run, 50); // আগে 300ms ছিল — race window কমাতে
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, ready]);
@@ -5114,7 +5156,7 @@ function PdfActionBar({ htmlContent, title, T, S }) {
 // শুধু device-এই থাকে। PIN ভুলে গেলে backup আর decrypt করা যাবে না — তাই
 // encrypt করার সময় ব্যবহারকারীকে এই সতর্কতা স্পষ্টভাবে দেখানো জরুরি।
 const CRYPTO_MAGIC = "SBM-ENC-V1"; // ফাইল চিনতে — plain backup vs encrypted backup
-const PBKDF2_ITERATIONS = 100000;
+const PBKDF2_ITERATIONS = 600000; // 🔒 আগে ১ লাখ (2017 OWASP) ছিল — বর্তমান standard (SHA-256) অনুযায়ী বাড়ানো হয়েছে
 
 async function deriveKeyFromPin(pin, saltBytes) {
   const enc = new TextEncoder();
@@ -8198,28 +8240,12 @@ function SmartBusinessMgmt() {
   }, [loaded, invoices, txns, customers, shopName, currentUser?.role]);
 
   // 🔥 Firebase Auto-Backup সরানো হয়েছে — শুধু sync থাকবে, full DB upload নয়
-
-  const _autoBackupRunning = useRef(false); // race-condition guard
-  useEffect(() => {
-    if (!loaded) return;
-    const TWELVE_H = 1 * 60 * 60 * 1000; // ১ ঘণ্টা
-    const check = async () => {
-      const now  = Date.now();
-      const last = lastAutoBackup ? new Date(lastAutoBackup).getTime() : 0;
-      const needed = now - last >= TWELVE_H;
-      setBackupNeeded(needed);
-      // AUTO-TRIGGER: if enabled and 12h passed — guard prevents concurrent runs
-      if (needed && autoBackupEnabled && !_autoBackupRunning.current) {
-        _autoBackupRunning.current = true;
-        try { await performDriveBackup(); }
-        finally { _autoBackupRunning.current = false; }
-      }
-    };
-    check();
-    const iv = setInterval(check, 60 * 60 * 1000); // recheck every hour
-    return () => clearInterval(iv);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded, lastAutoBackup, autoBackupEnabled]);
+  // 🔴 Timer consolidation — আগে এখানে একটা আলাদা hourly-check timer ছিল
+  // (autoBackupEnabled toggle-এর উপর নির্ভরশীল) যেটা নিচের consolidated
+  // backup timer-এর সাথে redundant ছিল — দুটোই কার্যত একই কাজ (local + Drive
+  // backup) করত, ভিন্ন শর্তে, ভিন্ন সময়ে। এখন শুধু একটাই timer আছে (নিচে),
+  // যেটা বেশি ঘনঘন চলে (৫-৪৫ মিনিট, আগেরটার ১ ঘণ্টার চেয়ে বেশি frequent) —
+  // তাই backup frequency কমেনি, শুধু duplicate logic সরানো হয়েছে।
 
   const showToast = useCallback((msg, color = "#22c55e") => {
     setToast({ msg, color }); safeTimeout(() => setToast(null), 3200);
@@ -8253,10 +8279,20 @@ function SmartBusinessMgmt() {
     };
   }, [currentUser, sessionTimeoutMin, showToast, setCurrentUser]);
 
-  const buildBackupData = useCallback(() => {
-    const payload = { customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs };
+  // 🔴 Backup source fix — আগে এই ফাংশন windowed local `invoices` state (শুধু
+  // শেষ ৩০ দিন) থেকে backup বানাত, তাই ৩০ দিনের বেশি পুরনো সব invoice নিঃশব্দে
+  // backup থেকে বাদ পড়ে যেত। এখন Firebase চালু ও ready থাকলে সরাসরি Firestore
+  // থেকে পূর্ণ invoices collection টেনে আনা হয় (source of truth) — Firebase
+  // বন্ধ থাকা দোকানে (local-only mode) আগের মতোই local windowed state ব্যবহার
+  // হবে, কারণ সেখানে Firestore-ই নেই।
+  const buildBackupData = useCallback(async () => {
+    const fullInvoices = (firebaseEnabled && FSS.isReady())
+      ? await FSS.getCollectionOnce("invoices").catch(() => invoices)
+      : invoices;
+    const invoicesForBackup = (fullInvoices && fullInvoices.length >= invoices.length) ? fullInvoices : invoices;
+    const payload = { customers, products, invoices: invoicesForBackup, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs };
     // Simple checksum: total record count hash (v4: expenses + returns সহ — auditLogs checksum-এ নেই, optional field)
-    const checksum = [customers.length, products.length, invoices.length, txns.length, smsLog.length, paymentInvoices.length, purchaseOrders.length, stockMovements.length, (users||[]).length, (cashLogs||[]).length, (suppliers||[]).length, (expenses||[]).length, (returns||[]).length].join("-");
+    const checksum = [customers.length, products.length, invoicesForBackup.length, txns.length, smsLog.length, paymentInvoices.length, purchaseOrders.length, stockMovements.length, (users||[]).length, (cashLogs||[]).length, (suppliers||[]).length, (expenses||[]).length, (returns||[]).length].join("-");
     return {
       ...payload,
       _meta: {
@@ -8268,7 +8304,7 @@ function SmartBusinessMgmt() {
         checksum,
         counts: {
           customers: customers.length, products: products.length,
-          invoices: invoices.length, txns: txns.length,
+          invoices: invoicesForBackup.length, txns: txns.length,
           smsLog: smsLog.length, paymentInvoices: paymentInvoices.length,
           purchaseOrders: purchaseOrders.length, stockMovements: stockMovements.length,
           users: (users||[]).length, cashLogs: (cashLogs||[]).length, suppliers: (suppliers||[]).length,
@@ -8276,13 +8312,13 @@ function SmartBusinessMgmt() {
         },
       },
     };
-  }, [customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs]);
+  }, [customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, firebaseEnabled]);
 
   const performDriveBackup = useCallback(async () => {
     setDriveStatus("uploading");
     const now = new Date();
     const filename = `dukan-backup-${now.toISOString().split("T")[0]}.json`;
-    const data = buildBackupData();
+    const data = await buildBackupData();
     try {
       // 1️⃣ Save file locally (Downloads on APK, browser download on web)
       await FS.saveBackup(data, filename);
@@ -8426,7 +8462,7 @@ function SmartBusinessMgmt() {
 
     const runLocalBackup = async () => {
       try {
-        const data = buildBackupData();
+        const data = await buildBackupData();
         const dateStr = new Date().toISOString().split("T")[0];
         await FS.saveBackup(data, `sbm-auto-${dateStr}.json`);
         const ts = new Date().toISOString();
@@ -8456,7 +8492,7 @@ function SmartBusinessMgmt() {
           token = fresh ? tk.token : null;
         }
         if (!token) return; // token নেই/expired — এই cycle skip, পরের cycle-এ আবার চেষ্টা
-        const data = buildBackupData();
+        const data = await buildBackupData();
         await GDrive.uploadBackup(token, { ...data, _autoBackup: true, _savedAt: new Date().toISOString() });
       } catch {}
     };
@@ -8466,6 +8502,16 @@ function SmartBusinessMgmt() {
     const tokenRefreshInterval = !isStaffDevice ? 45 * 60 * 1000 : 5 * 60 * 1000;
     const timer = setInterval(cycle, tokenRefreshInterval);
     const firstRun = setTimeout(cycle, 30000); // অ্যাপ ওপেন হওয়ার ৩০ সেকেন্ড পর প্রথমবার
+
+    // 🔴 Event-driven trigger — Android Doze/App Standby-তে background setInterval
+    // suspend হয়ে যেতে পারে, তাই শুধু interval-এর উপর ভরসা না করে অ্যাপ
+    // foreground-এ ফিরলেও (visibilitychange/resume) backup cycle চালানো হয়,
+    // যদি শেষ backup-এর পর যথেষ্ট সময় (১৫ মিনিট) পার হয়ে থাকে (spam এড়াতে)।
+    let lastCycleAt = Date.now();
+    const cycleGuarded = () => { const now = Date.now(); if (now - lastCycleAt >= 15 * 60 * 1000) { lastCycleAt = now; cycle(); } };
+    const onVisible = () => { if (document.visibilityState === "visible") cycleGuarded(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", cycleGuarded);
 
     // 🔄 Auto-reconnect: token expired হলে প্রতি ১০ মিনিটে silent re-auth চেষ্টা (Admin only)
     // APK-তে silentReauth সরাসরি null দেয় (Browser Tab খোলে না) → banner দেখায়
@@ -8492,6 +8538,8 @@ function SmartBusinessMgmt() {
       clearInterval(timer);
       clearTimeout(firstRun);
       if (autoReconnectTimer) clearInterval(autoReconnectTimer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", cycleGuarded);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, firebaseEnabled, firebaseConfig, currentUser?.role]);
@@ -8564,11 +8612,15 @@ function SmartBusinessMgmt() {
   // ── Fix 4 (v2): Invoice Void — stock restore + correct balanceAfter + owner-only ─
   const voidInvoice = useCallback((inv, voidReason = "") => {
     // ── 1. Mark invoice as voided ────────────────────────────────────────────
-    setInvoices(prev => prev.map(i =>
-      i.id === inv.id
-        ? { ...i, status: "voided", voidedAt: new Date().toISOString(), voidReason }
-        : i
-    ));
+    const voidedInv = { ...inv, status: "voided", voidedAt: new Date().toISOString(), voidReason };
+    setInvoices(prev => prev.map(i => i.id === inv.id ? voidedInv : i));
+
+    // ── 🔴 Void push fix — আগে void শুধু local array-তে "voided" status বসাত,
+    // Firestore-এ কখনো push হতো না। ফলে windowed listener পরে আবার fetch
+    // করলে Firestore-এর পুরনো (non-voided) কপি দিয়ে local অবস্থা প্রতিস্থাপিত
+    // হতো — ভয়েড করা invoice আবার "active" হয়ে ফিরে আসত, অথচ Dashboard-এর
+    // total-এ সেটা বাদ হয়েই থাকত (আরেকটা গরমিল, উল্টো দিক থেকে)।
+    if (FSS.isReady()) FSS.setRecord("invoices", voidedInv.id, withTs(voidedInv));
 
     // ── 2. Restore stock + batches for every item in the invoice ─────────────
     if (inv.items && inv.items.length > 0) {
@@ -10921,6 +10973,16 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       }
       if (earnedPoints > 0) inv.earnedPoints = earnedPoints;
     }
+
+    // ── 🔴 Invoice push fix — আগে invoice শুধু local array-তে থাকত, Firestore-এ
+    // কখনো সরাসরি push হতো না (শুধু windowed listener ছিল, যেটা read-only)।
+    // ফলে অফলাইনে/staff-এ তৈরি invoice কখনো cloud-এ পৌঁছাতো না, অথচ
+    // FSS.updateStats() (নিচে) ঠিকই sync হতো — Dashboard total আর invoice list
+    // মিলত না ("হিসাবে গরমিল")। এখন invoice (loyalty fields সহ, পূর্ণাঙ্গ অবস্থায়)
+    // তৈরি হওয়ার সাথে সাথেই সরাসরি Firestore-এ লেখা হচ্ছে (offline হলে Firestore
+    // নিজের persistent write queue-তে রাখবে, নেট ফিরলে নিজে থেকেই sync হবে) —
+    // Master Sync/Settings-এ যাওয়ার দরকার নেই, staff device-এও এখন কাজ করবে।
+    if (FSS.isReady()) FSS.setRecord("invoices", inv.id, withTs(inv));
 
     // ── Phase 1.3: Stats doc update — invoice save-এ running total বাড়াও ──────
     // Dashboard totals (todayTotal, todayProfit) এখন এই doc থেকে পড়তে পারবে।
@@ -18798,7 +18860,7 @@ function QuotationModule({ T, S, quotations = [], setQuotations, customers = [],
               <div key={p.id} onClick={() => addItem(p)}
                 style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
                   padding:"8px 10px", borderRadius:8, cursor:"pointer",
-                  background:T.border+"44", marginBottom:4, borderRadius:8 }}>
+                  background:T.border+"44", marginBottom:4 }}>
                 <div>
                   <div style={{ color:T.text, fontSize:13, fontWeight:700 }}>{p.name}</div>
                   <div style={{ color:T.sub, fontSize:11 }}>৳{p.price} · স্টক: {p.stock||0}</div>
