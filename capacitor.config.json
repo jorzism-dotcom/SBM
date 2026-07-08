@@ -36,6 +36,15 @@
             ],
             "serverClientId": "822824220691-tk3bhouplkmuur7o4l1jhlqabdtkqs57.apps.googleusercontent.com",
             "forceCodeForRefreshToken": false
+        },
+        "BackgroundRunner": {
+            "label": "com.protik.sbm.backup",
+            "src": "background-task/backup-task.js",
+            "event": "shopBackupCheck",
+            "repeat": true,
+            "interval": 60,
+            "autoStart": true,
+            "requiresNetwork": true
         }
     }
 }
