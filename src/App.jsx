@@ -3804,10 +3804,13 @@ const FSS = {
 
   // 🗑️ Firestore-এর সব ব্যবসায়িক ডেটা (সব collection + settings) মুছে শূন্য থেকে শুরু
   // 🔴 ফিক্স: একটা কালেকশন সম্পূর্ণ খালি না হওয়া পর্যন্ত (delete + verify), সর্বোচ্চ
-  // ৩ বার চেষ্টা করে, প্রতি চেষ্টার মাঝে ছোট backoff দিয়ে — স্লো/অস্থির নেটওয়ার্কে
-  // একটা চেষ্টা মাঝপথে ব্যর্থ (partial batch commit) হলেও এখন এটা নিজে থেকে সামলে
-  // নেয়, caller-কে "আবার Master Reset চালান" বলার আগে অ্যাপ নিজেই retry করে।
-  async _clearCollectionWithRetry(coll, maxAttempts = 3) {
+  // ৪ বার চেষ্টা করে, প্রতি চেষ্টার মাঝে বাড়তে থাকা backoff দিয়ে। দুটো অপটিমাইজেশন:
+  // (১) প্রতিটা ৫০০-ডকুমেন্ট chunk নিজে থেকে আলাদাভাবে retry করে — invoices-এর
+  //     মতো বড় কালেকশনে মাঝপথের একটা chunk ব্যর্থ হলে পুরো কালেকশন আবার প্রথম
+  //     থেকে fetch করা লাগে না। (২) ভেরিফিকেশন এখন পুরো কালেকশন আবার ডাউনলোড
+  //     করে না, শুধু limit(1) দিয়ে "কোনো ডকুমেন্ট বাকি আছে কিনা" চেক করে — বড়
+  //     কালেকশনে পুরো re-fetch verify-ই স্লো নেটওয়ার্কে টাইমআউটের মূল কারণ ছিল।
+  async _clearCollectionWithRetry(coll, maxAttempts = 4) {
     let lastLeft = -1;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -3815,18 +3818,25 @@ const FSS = {
         const docs = snap.docs;
         for (let i = 0; i < docs.length; i += 500) {
           const chunk = docs.slice(i, i + 500);
-          const batch = writeBatch(this._db);
-          chunk.forEach(d => batch.delete(d.ref));
-          await batch.commit();
+          let chunkOk = false;
+          for (let cAttempt = 1; cAttempt <= 3 && !chunkOk; cAttempt++) {
+            try {
+              const batch = writeBatch(this._db);
+              chunk.forEach(d => batch.delete(d.ref));
+              await batch.commit();
+              chunkOk = true;
+            } catch {
+              if (cAttempt < 3) await new Promise(r => setTimeout(r, 500 * cAttempt));
+            }
+          }
         }
-        // ✅ ডিলিট শেষে সত্যিই খালি হয়েছে কিনা যাচাই — এখানেই আগে ধরা পড়ত না
-        const verify = await getDocs(collection(this._db, coll));
-        lastLeft = verify.size;
-        if (lastLeft === 0) return { ok: true };
+        const verify = await getDocs(query(collection(this._db, coll), limit(1)));
+        if (verify.empty) return { ok: true };
+        lastLeft = -2; // কিছু রেকর্ড বাকি আছে, ঠিক সংখ্যা জানা নেই (হালকা চেক)
       } catch (e) {
-        lastLeft = -1; // ব্যর্থ — পরের attempt-এ আবার চেষ্টা
+        lastLeft = -1; // সম্পূর্ণ ব্যর্থ (exception) — পরের attempt-এ আবার চেষ্টা
       }
-      if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 800 * attempt));
+      if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 1000 * attempt));
     }
     return { ok: false, left: lastLeft };
   },
@@ -3843,7 +3853,7 @@ const FSS = {
     // হলে বাকিগুলোর জন্য অপেক্ষা না করেই নিজে থেকে আবার চেষ্টা করে।
     await Promise.all([...FSS_COLLECTIONS, "stats"].map(async (coll) => {
       const res = await this._clearCollectionWithRetry(coll);
-      if (!res.ok) errors.push(`${coll}: ${res.left >= 0 ? res.left + "টি রেকর্ড এখনো আছে (৩ বার চেষ্টার পরও)" : "ব্যর্থ"}`);
+      if (!res.ok) errors.push(`${coll}: ${res.left === -2 ? "কিছু রেকর্ড এখনো আছে" : "ব্যর্থ"} (৪ বার চেষ্টার পরও)`);
       done++;
       try { onProgress?.(done, total); } catch {}
     }));
