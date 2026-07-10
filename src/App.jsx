@@ -3613,7 +3613,7 @@ const Haptic = {
 
 // ─── App Version ─────────────────────────────────────────────────────────────
 const APP_VERSION = "v1";
-const APP_BUILD   = "2026-06-17";
+const APP_BUILD   = "2026-07-11";
 
 // ─── Developer Config (Hardcoded) ─────────────────────────────────────────────
 // PIN ভুলে গেলে ব্যবহারকারী এই তথ্য দেখবে এবং যোগাযোগ করবে
@@ -12576,8 +12576,20 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
   };
 
   // 🆕 প্রতিটি পণ্যে পৃথক ডিসকাউন্ট — বিদ্যমান সামগ্রিক ডিসকাউন্টের পাশাপাশি
+  // ডেটা সবসময় টাকায় (itemDiscount) সেভ হয় — backup/invoice স্কিমা অপরিবর্তিত।
+  // itemDiscMode শুধু UI-এর জন্য (৳/% টগল), সেভ হয় না।
+  const [itemDiscMode, setItemDiscMode] = useState({}); // productId -> 'amt' | 'pct'
   const setItemDiscount = (pid, val) => {
     setItems(prev => prev.map(i => i.productId === pid ? { ...i, itemDiscount: Math.max(0, parseFloat(val) || 0) } : i));
+  };
+  // % হিসেবে ইনপুট দিলে লাইন-সাবটোটালের ওপর ভিত্তি করে টাকায় কনভার্ট করে সেভ হয়
+  const setItemDiscountPct = (pid, pctVal, lineSubtotal) => {
+    const pct = Math.min(100, Math.max(0, parseFloat(pctVal) || 0));
+    const amt = Math.round((lineSubtotal * pct / 100) * 100) / 100;
+    setItems(prev => prev.map(i => i.productId === pid ? { ...i, itemDiscount: Math.min(amt, lineSubtotal) } : i));
+  };
+  const toggleItemDiscMode = (pid) => {
+    setItemDiscMode(prev => ({ ...prev, [pid]: (prev[pid] === "pct" ? "amt" : "pct") }));
   };
 
   const subtotal      = items.reduce((s, i) => s + i.qty * i.price, 0);
@@ -13643,11 +13655,16 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                         const batchLabel = batch?.batch ? String(batch.batch).replace(/^ব্যাচ-/i, "") : "";
                         const lineSubtotal = item.price * item.qty;
                         const lineDisc = Math.min(Math.max(parseFloat(item.itemDiscount) || 0, 0), lineSubtotal);
+                        const mode = itemDiscMode[item.productId] || "amt";
+                        const pctDisplay = lineSubtotal > 0 ? Math.round((lineDisc / lineSubtotal) * 10000) / 100 : 0;
                         return (
                           <div key={item.productId} style={{
                             display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8,
-                            padding: "8px 0",
-                            borderBottom: _idx < visibleItems.length - 1 ? `1px solid ${T.border}` : "none",
+                            padding: "10px 8px",
+                            margin: "0 -8px",
+                            borderRadius: 8,
+                            background: _idx % 2 === 1 ? T.cardAlt : "transparent",
+                            borderBottom: _idx < visibleItems.length - 1 ? `2px solid ${T.border}` : "none",
                           }}>
                             <div style={{ minWidth: 0, flex: 1 }}>
                               <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
@@ -13664,22 +13681,35 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                                   )}
                                 </div>
                               )}
-                              {/* 🆕 এই পণ্যের নিজস্ব ডিসকাউন্ট */}
+                              {/* 🆕 এই পণ্যের নিজস্ব ডিসকাউন্ট — ৳/% টগল করা যায় */}
                               <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4 }} onClick={e => e.stopPropagation()}>
                                 <span style={{ color: "#22c55e", fontSize: 9.5, fontWeight: 700 }}>এই পণ্যে ছাড়:</span>
-                                <span style={{ color: "#22c55e", fontSize: 10 }}>৳</span>
-                                <input
-                                  type="number" inputMode="numeric" placeholder="0"
-                                  value={item.itemDiscount || ""}
-                                  onChange={e => setItemDiscount(item.productId, e.target.value)}
-                                  style={{ width: 54, background: T.card, border: `1px solid #22c55e44`, borderRadius: 6, padding: "2px 5px", fontSize: 10.5, color: "#22c55e", fontFamily: "inherit" }} />
+                                <button
+                                  type="button"
+                                  onClick={() => toggleItemDiscMode(item.productId)}
+                                  style={{ background: "#22c55e22", border: `1px solid #22c55e66`, borderRadius: 5, padding: "1px 7px", fontSize: 9.5, fontWeight: 800, color: "#22c55e", cursor: "pointer", fontFamily: "inherit" }}>
+                                  {mode === "pct" ? "%" : "৳"}
+                                </button>
+                                {mode === "pct" ? (
+                                  <input
+                                    type="number" inputMode="decimal" placeholder="0"
+                                    value={item.itemDiscount ? pctDisplay : ""}
+                                    onChange={e => setItemDiscountPct(item.productId, e.target.value, lineSubtotal)}
+                                    style={{ width: 54, background: T.card, border: `1px solid #22c55e44`, borderRadius: 6, padding: "2px 5px", fontSize: 10.5, color: "#22c55e", fontFamily: "inherit" }} />
+                                ) : (
+                                  <input
+                                    type="number" inputMode="numeric" placeholder="0"
+                                    value={item.itemDiscount || ""}
+                                    onChange={e => setItemDiscount(item.productId, e.target.value)}
+                                    style={{ width: 54, background: T.card, border: `1px solid #22c55e44`, borderRadius: 6, padding: "2px 5px", fontSize: 10.5, color: "#22c55e", fontFamily: "inherit" }} />
+                                )}
                               </div>
                             </div>
                             <div style={{ textAlign: "right", flexShrink: 0 }}>
                               <div style={{ color: T.text, fontSize: 12, fontWeight: 700 }}>৳{fmt(lineSubtotal)}</div>
                               <div style={{ color: T.sub, fontSize: 9.5 }}>@৳{fmt(item.price)}</div>
                               {lineDisc > 0 && (
-                                <div style={{ color: "#22c55e", fontSize: 9.5, fontWeight: 700 }}>− ৳{fmt(lineDisc)}</div>
+                                <div style={{ color: "#22c55e", fontSize: 9.5, fontWeight: 700 }}>− ৳{fmt(lineDisc)}{pctDisplay > 0 ? ` (${pctDisplay}%)` : ""}</div>
                               )}
                             </div>
                           </div>
