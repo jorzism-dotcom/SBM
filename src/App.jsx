@@ -3617,7 +3617,14 @@ function beginRestoreGuard(ms = 5000) {
 // আলাদা করে প্রতিটা restore ফাংশনে বসাতে হয়নি।
 function applyBackupFields(d, setters) {
   if (!d || !setters) return;
-  beginRestoreGuard();
+  // 🆕 ফিক্স: আগে fixed ৫ সেকেন্ড গার্ড থাকত — অনেক রেকর্ডের বড় ব্যাকআপে Firestore
+  // push শেষ হতে ৫ সেকেন্ডের বেশি সময় লাগলে গার্ড উঠে যাওয়ার পর বাকি রেকর্ড push
+  // চলাকালীন সময়ে race condition-এর ঝুঁকি ছিল (ব্যাকআপে-না-থাকা রেকর্ড ভুলবশত
+  // ডিলিট হয়ে যাওয়া)। এখন রেকর্ড-সংখ্যা অনুযায়ী adaptive — ছোট দোকানে কার্যত
+  // আগের মতোই ৫ সেকেন্ড থাকে, বড় ডেটাসেটে বেশি সময় (সর্বোচ্চ ৩০ সেকেন্ড) দেয়।
+  const totalRecords = BACKUP_FIELDS.reduce((s, f) => s + (Array.isArray(d[f]) ? d[f].length : 0), 0);
+  const guardMs = Math.min(30000, 5000 + totalRecords * 10);
+  beginRestoreGuard(guardMs);
   BACKUP_FIELDS.forEach(f => {
     if (d[f]) {
       const setterName = "set" + f[0].toUpperCase() + f.slice(1);
@@ -3895,6 +3902,22 @@ const ArchiveDB = {
         tx.onerror    = () => reject(tx.error);
       });
     } catch {}
+  },
+  // ⚠️ ইচ্ছাকৃতভাবে আলাদা, explicit-opt-in মেথড — WORM/retention archive সাধারণ
+  // Master Reset flow-এ ছোঁয়া হয় না (ransomware/ভুল mass-delete থেকে সুরক্ষার
+  // জন্যই এই আর্কাইভের অস্তিত্ব)। শুধুমাত্র ইউজার স্পষ্টভাবে "আর্কাইভও মুছে দিন"
+  // অপশনে টিক দিলে (Master Reset মোডালের ঐচ্ছিক চেকবক্স) এই মেথড কল হয়।
+  async clearAllArchives() {
+    try {
+      const db = await this.open();
+      await Promise.all(["dated_snapshots", "worm_archive", "field_change_log"].map(store => new Promise((resolve, reject) => {
+        const tx = db.transaction(store, "readwrite");
+        tx.objectStore(store).clear();
+        tx.oncomplete = resolve;
+        tx.onerror    = () => reject(tx.error);
+      })));
+      return true;
+    } catch { return false; }
   },
 };
 
@@ -4336,7 +4359,7 @@ const HealthMonitor = {
     if (restoreTestOk === false) {
       alerts.push({
         level: restoreTestFailStreak >= 2 ? "critical" : "warning",
-        key: "restore", msg: `রিস্টোর সেলফ-টেস্ট ব্যর্থ${restoreTestFailStreak > 1 ? ` (পরপর ${restoreTestFailStreak} বার)` : ""}`,
+        key: "restore", msg: `ব্যাকআপ ইন্টেগ্রিটি চেক ব্যর্থ${restoreTestFailStreak > 1 ? ` (পরপর ${restoreTestFailStreak} বার)` : ""}`,
       });
     }
     if (firebaseEnabled && !fsConnected) {
@@ -10669,11 +10692,11 @@ function SmartBusinessMgmt() {
                 setRestoreTestAt(new Date().toISOString());
                 setRestoreTestOk(result.ok);
                 setRestoreTestDetail(result.detail);
-                if (result.ok) { setRestoreTestFailStreak(0); showToast("✅ রিস্টোর সেলফ-টেস্ট পাস"); }
+                if (result.ok) { setRestoreTestFailStreak(0); showToast("✅ ব্যাকআপ ইন্টেগ্রিটি চেক পাস"); }
                 else {
                   setRestoreTestFailStreak((prev) => (typeof prev === "number" ? prev + 1 : 1));
                   logErrorToCentral("selfTest:restore:manual", new Error(result.detail || "manual restore self-test failed"), { savedAt: snapshot?._savedAt || null });
-                  showToast("❌ সেলফ-টেস্ট ব্যর্থ: " + (result.detail || ""), "#ef4444");
+                  showToast("❌ ইন্টেগ্রিটি চেক ব্যর্থ: " + (result.detail || ""), "#ef4444");
                 }
               }}
               buildBackupData={buildBackupData} setBackupNeeded={setBackupNeeded}
@@ -19494,6 +19517,9 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
 
   // ── Delete payment ─────────────────────────────────────────────────────────
   const deletePayment = React.useCallback((id) => {
+    // 🆕 ফিক্স: আগে কোনো কনফার্মেশন ছাড়াই সরাসরি স্থায়ীভাবে মুছে যেত — এটা সাপ্লায়ারের
+    // বাকি/পাওনার হিসাবকেও প্রভাবিত করে, তাই ভুল ক্লিক ঠেকাতে confirm যোগ করা হলো।
+    if (!window.confirm("এই পেমেন্ট এন্ট্রি মুছবেন? এটা ফেরত আনা যাবে না এবং সাপ্লায়ারের বাকির হিসাব বদলে যাবে।")) return;
     setSupplierPayments(prev => prev.filter(p => p.id !== id));
     showToast("পেমেন্ট মুছে ফেলা হয়েছে", "#f59e0b");
   }, [setSupplierPayments, showToast]);
@@ -20823,6 +20849,9 @@ function ExpenseTracker({ T, S, expenses = [], setExpenses, showToast, currentUs
   }, [form, editId, expenses, setExpenses, showToast, currentUser, todayKey]);
 
   const deleteExpense = useCallback((id) => {
+    // 🆕 ফিক্স: আগে কোনো কনফার্মেশন ছাড়াই সরাসরি স্থায়ীভাবে মুছে যেত, recycle bin-ও
+    // নেই — ভুল ক্লিকে ডেটা হারানোর ঝুঁকি ছিল। কোটেশন ডিলিটের মতোই একটা confirm যোগ করা হলো।
+    if (!window.confirm("এই খরচের এন্ট্রি মুছবেন? এটা ফেরত আনা যাবে না।")) return;
     setExpenses(prev => prev.filter(e => e.id !== id));
     showToast("খরচ মুছে ফেলা হয়েছে", "#f59e0b");
   }, [setExpenses, showToast]);
@@ -21912,6 +21941,10 @@ function Settings_({ T, S, shopName,
   const [delBkConfirmTxt,setDelBkConfirmTxt]= useState("");
   const [delBkRunning,   setDelBkRunning]   = useState(false);
   const [delBkMsg,       setDelBkMsg]       = useState(""); // প্রগ্রেস মেসেজ (স্লো নেটওয়ার্কে ইউজারকে জানানোর জন্য)
+  // 🆕 ডিফল্টে দীর্ঘমেয়াদী আর্কাইভ (retention + WORM) সংরক্ষিত থাকে — ransomware/
+  // ভুল mass-delete থেকে সুরক্ষার জন্য। ইউজার স্পষ্টভাবে চাইলেই (যেমন: ডিভাইস
+  // বিক্রি/হস্তান্তর, বা দোকান বন্ধ করে দেওয়ার সময়) আর্কাইভসহ পুরোপুরি মুছে দেওয়া যায়।
+  const [delBkWipeArchive, setDelBkWipeArchive] = useState(false);
   const DEL_BK_PHRASE = "DELETE ALL BACKUPS";
 
   const verifyMasterKey = async () => {
@@ -22037,8 +22070,22 @@ function Settings_({ T, S, shopName,
       setDelBkMsg("লোকাল ব্যাকআপ (IndexedDB) মোছা হচ্ছে...");
       try { await LocalBackup.deleteAll(); } catch {}
 
+      // 5️⃣ (ঐচ্ছিক) দীর্ঘমেয়াদী আর্কাইভ (retention + WORM) — ডিফল্টে সংরক্ষিত
+      // থাকে (ransomware protection), ইউজার চেকবক্সে টিক দিলে তবেই মুছে যায়
+      let archiveWiped = false;
+      if (delBkWipeArchive) {
+        setDelBkMsg("দীর্ঘমেয়াদী আর্কাইভ (retention + WORM) মুছে ফেলা হচ্ছে...");
+        try { archiveWiped = await ArchiveDB.clearAllArchives(); } catch {}
+      }
+
       if (firestoreOk) {
-        showToast("✅ সব ব্যাকআপ + লাইভ ডেটা মুছে দেওয়া হয়েছে — অ্যাপ সম্পূর্ণ ফ্রেশ", "#ef4444");
+        if (delBkWipeArchive) {
+          showToast(archiveWiped
+            ? "✅ সব ব্যাকআপ + লাইভ ডেটা + দীর্ঘমেয়াদী আর্কাইভ মুছে দেওয়া হয়েছে — অ্যাপ সম্পূর্ণ ফ্রেশ"
+            : "⚠️ সব ব্যাকআপ + লাইভ ডেটা মুছে দেওয়া হয়েছে, কিন্তু আর্কাইভ মুছতে সমস্যা হয়েছে — সেটিংস থেকে আবার চেষ্টা করুন", "#ef4444");
+        } else {
+          showToast("✅ সব ব্যাকআপ + লাইভ ডেটা মুছে দেওয়া হয়েছে (দীর্ঘমেয়াদী আর্কাইভ নিরাপত্তার জন্য সংরক্ষিত আছে) — অ্যাপ সম্পূর্ণ ফ্রেশ", "#ef4444");
+        }
       } else {
         // 🔴 ফিক্স: আসল ব্যর্থতা এখন লুকানো হয় না — ইউজারকে জানানো হচ্ছে যে
         // Firestore-এর কিছু ডেটা হয়তো এখনো রয়ে গেছে, আবার চেষ্টা করতে বলা হচ্ছে
@@ -22049,6 +22096,7 @@ function Settings_({ T, S, shopName,
       setDelBkStep(0);
       setDelBkConfirmTxt("");
       setDelBkMsg("");
+      setDelBkWipeArchive(false);
     }
   };
 
@@ -22789,7 +22837,7 @@ function Settings_({ T, S, shopName,
                   { label: "Master Sync", ts: lastMasterSync },
                   // #১৯ — pass/fail স্ট্যাটাসকে staleness-এর ওপরেও অগ্রাধিকার দেয়:
                   // সাম্প্রতিক হলেও ফেইল করলে লাল, কখনো না চললে ধূসর।
-                  { label: "রিস্টোর সেলফ-টেস্ট", ts: restoreTestAt, ok: restoreTestOk },
+                  { label: "ব্যাকআপ ইন্টেগ্রিটি চেক", ts: restoreTestAt, ok: restoreTestOk },
                 ];
                 return (
                   <div style={{ marginBottom:10, borderRadius:9, border:`1px solid ${MS_COLOR}22`, background:`${MS_COLOR}08`, padding:"8px 10px", display:"flex", flexDirection:"column", gap:5 }}>
@@ -22819,7 +22867,7 @@ function Settings_({ T, S, shopName,
                           color:MS_COLOR, fontSize:8.5, fontWeight:800, cursor:"pointer", fontFamily:"inherit",
                         }}
                       >
-                        🧪 এখনই সেলফ-টেস্ট করুন
+                        🧪 এখনই ইন্টেগ্রিটি চেক করুন
                       </button>
                     )}
                   </div>
@@ -23838,7 +23886,7 @@ onChange={()=>{}} />
           </div>
           <div style={{ color:T.sub, fontSize:11, marginBottom:12, lineHeight:1.6 }}>
             পণ্য, কাস্টমার, ইনভয়েস, লাভ/লস, বাকি, নগদ বিক্রি — দোকানের <b style={{ color:"#ef4444" }}>সব লাইভ ডেটা</b> এবং Firebase + Google Drive + Local-এর <b style={{ color:"#ef4444" }}>সব ব্যাকআপ</b> — একসাথে স্থায়ীভাবে মুছে দেয়।
-            নতুন অ্যাপ ইনস্টলের মতো একদম ফ্রেশ হয়ে যাবে — শুধু অ্যাপ সেটিং (থিম, ফন্ট, Firebase কানেকশন, SMS গেটওয়ে, ইউজার লগইন) অপরিবর্তিত থাকবে।
+            নতুন অ্যাপ ইনস্টলের মতো একদম ফ্রেশ হয়ে যাবে — শুধু অ্যাপ সেটিং (থিম, ফন্ট, Firebase কানেকশন, SMS গেটওয়ে, ইউজার লগইন) অপরিবর্তিত থাকবে। দীর্ঘমেয়াদী আর্কাইভ (ransomware-সুরক্ষা) ডিফল্টে থেকে যায়, চাইলে ঐচ্ছিকভাবে সেটাও মোছা যাবে।
             অত্যন্ত স্পর্শকাতর — Master Key + ৩-স্তরের নিশ্চিতকরণ প্রয়োজন।
           </div>
           <button
@@ -23860,11 +23908,19 @@ onChange={()=>{}} />
                 <div style={{ color:T.text, fontSize:13, lineHeight:1.7 }}>
                   আপনি দোকানের <b>সব পণ্য, কাস্টমার, ইনভয়েস, লেনদেন, লাভ-লস, বাকি ও নগদ বিক্রির হিসাব</b> এবং <b>সব ব্যাকআপ</b> (Firebase + Google Drive + Local) — সবকিছু একসাথে স্থায়ীভাবে মুছে দিতে চলেছেন।
                   <br/><br/>
-                  মুছে গেলে অ্যাপ একদম নতুন ইনস্টলের মতো খালি হয়ে যাবে এবং কোনো ব্যাকআপ থেকেও আর রিস্টোর করা যাবে না — এই কাজ <b>ফিরিয়ে আনা সম্ভব নয়</b>।
+                  মুছে গেলে অ্যাপ একদম নতুন ইনস্টলের মতো খালি হয়ে যাবে — এই কাজ <b>ফিরিয়ে আনা সম্ভব নয়</b>।
+                  <br/><br/>
+                  <span style={{ color:T.sub, fontSize:12 }}>
+                    ℹ️ নিরাপত্তার জন্য দীর্ঘমেয়াদী আর্কাইভ (দৈনিক/সাপ্তাহিক/মাসিক ভার্সন হিস্ট্রি) ডিফল্টে সংরক্ষিত থাকে, যাতে ভুলবশত/ransomware-জনিত ডিলিটের পরও পুরনো অবস্থা ফিরিয়ে আনা যায়। এই ডিভাইস অন্য কাউকে দেওয়ার আগে সেটাও মুছতে চাইলে নিচে টিক দিন।
+                  </span>
                 </div>
+                <label style={{ display:"flex", alignItems:"center", gap:8, marginTop:14, background:"#ef444412", border:"1px solid #ef444433", borderRadius:10, padding:"10px 12px", textAlign:"left", cursor:"pointer" }}>
+                  <input type="checkbox" checked={delBkWipeArchive} onChange={e => setDelBkWipeArchive(e.target.checked)} style={{ width:18, height:18, flexShrink:0 }} />
+                  <span style={{ fontSize:12, color:T.text, lineHeight:1.5 }}>দীর্ঘমেয়াদী আর্কাইভ (retention + WORM) <b>স্থায়ীভাবে</b> মুছে দিন</span>
+                </label>
               </div>
               <div style={{ display:"flex", gap:10 }}>
-                <button style={{ ...S.cancelBtn, flex:1 }} onClick={() => { setDelBkStep(0); setDelBkConfirmTxt(""); }}>বাতিল করুন</button>
+                <button style={{ ...S.cancelBtn, flex:1 }} onClick={() => { setDelBkStep(0); setDelBkConfirmTxt(""); setDelBkWipeArchive(false); }}>বাতিল করুন</button>
                 <button style={{ ...S.saveBtn, flex:1, background:"#ef4444" }} onClick={() => setDelBkStep(2)}>আমি বুঝেছি, এগিয়ে যান</button>
               </div>
             </>)}
@@ -23886,7 +23942,7 @@ onChange={()=>{}} />
                 />
               </div>
               <div style={{ display:"flex", gap:10 }}>
-                <button style={{ ...S.cancelBtn, flex:1 }} onClick={() => { setDelBkStep(0); setDelBkConfirmTxt(""); }}>বাতিল করুন</button>
+                <button style={{ ...S.cancelBtn, flex:1 }} onClick={() => { setDelBkStep(0); setDelBkConfirmTxt(""); setDelBkWipeArchive(false); }}>বাতিল করুন</button>
                 <button
                   style={{ ...S.saveBtn, flex:1, background:"#ef4444", opacity: delBkConfirmTxt.trim() === DEL_BK_PHRASE ? 1 : 0.5 }}
                   disabled={delBkConfirmTxt.trim() !== DEL_BK_PHRASE}
@@ -23900,11 +23956,12 @@ onChange={()=>{}} />
                 <div style={{ fontSize:40, marginBottom:8 }}>🗑️</div>
                 <div style={{ color:"#ef4444", fontWeight:900, fontSize:16, marginBottom:8 }}>স্তর ৩/৩ — শেষ নিশ্চিতকরণ</div>
                 <div style={{ color:T.text, fontSize:13, lineHeight:1.7 }}>
-                  এটি শেষ সুযোগ। নিচের বাটনে চাপলে <b>সব লাইভ ডেটা + সব ব্যাকআপ (Firebase + Drive + Local)</b> এখনই স্থায়ীভাবে মুছে যাবে — অ্যাপ একদম ফ্রেশ হয়ে যাবে।
+                  এটি শেষ সুযোগ। নিচের বাটনে চাপলে <b>সব লাইভ ডেটা + সব ব্যাকআপ (Firebase + Drive + Local)</b>{delBkWipeArchive ? <> + <b style={{ color:"#ef4444" }}>দীর্ঘমেয়াদী আর্কাইভ</b></> : ""} এখনই স্থায়ীভাবে মুছে যাবে — অ্যাপ একদম ফ্রেশ হয়ে যাবে।
+                  {!delBkWipeArchive && <><br/><br/><span style={{ color:T.sub, fontSize:12 }}>দীর্ঘমেয়াদী আর্কাইভ সংরক্ষিত থাকবে।</span></>}
                 </div>
               </div>
               <div style={{ display:"flex", gap:10 }}>
-                <button disabled={delBkRunning} style={{ ...S.cancelBtn, flex:1, opacity: delBkRunning ? 0.6 : 1 }} onClick={() => { setDelBkStep(0); setDelBkConfirmTxt(""); }}>বাতিল করুন</button>
+                <button disabled={delBkRunning} style={{ ...S.cancelBtn, flex:1, opacity: delBkRunning ? 0.6 : 1 }} onClick={() => { setDelBkStep(0); setDelBkConfirmTxt(""); setDelBkWipeArchive(false); }}>বাতিল করুন</button>
                 <button disabled={delBkRunning} style={{ ...S.saveBtn, flex:1, background:"#ef4444", opacity: delBkRunning ? 0.6 : 1 }} onClick={runDeleteAllBackups}>
                   {delBkRunning ? "মুছা হচ্ছে..." : "হ্যাঁ, সব ডেটা ও ব্যাকআপ মুছে দিন"}
                 </button>
@@ -25127,30 +25184,30 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
   const _latestData = useRef(data);
   useEffect(() => { _latestData.current = data; }, [data]);
 
-  // Auto-backup timer — async
+  // পুরো ব্যাকআপ প্রসেস — interval ও change-triggered (realtime) দুই মোডেই শেয়ার করা হয়
+  const doSave = useCallback(async () => {
+    const d = _latestData.current; // always use latest data
+    const picked = pickBackupFields(d);
+    // #৯/#১৬ — Firebase বন্ধ থাকা দোকানেও (main App-এর অটো cycle firebaseEnabled
+    // ছাড়া চলে না) এই টাইমারই একমাত্র নিয়মিত auto-backup, তাই retention/WORM
+    // এখানেও হুক করা হলো — নিজেরাই দিনে/মাসে একবার idempotent সেভ করে।
+    try { await RetentionDB.saveIfNewDay(picked); } catch {}
+    try { await WormArchive.archiveIfNewMonth(picked); } catch {}
+
+    // #৪ ডেল্টা সিঙ্ক — শুধু ডেটা আসলেই বদলালে write হয় (হ্যাশ মিলে গেলে স্কিপ)
+    const newHashes = buildContentHashes(picked);
+    if (await DeltaSync.shouldSkip("snapshot", newHashes)) return;
+    const result = await LocalBackup.save(picked);
+    if (result.ok) { setLastSync(new Date().toISOString()); await DeltaSync.markSynced("snapshot", newHashes); }
+  }, []);
+
+  // Auto-backup timer — শুধু hourly/daily এর জন্য (realtime এখন নিচের change-triggered effect-এ)
   useEffect(() => {
     if (autoTimer.current) clearInterval(autoTimer.current);
-    if (!autoEnabled) return;
+    if (!autoEnabled || schedule === "realtime") return;
 
-    const intervals = { realtime: 60000, hourly: 3600000, daily: 86400000 };
+    const intervals = { hourly: 3600000, daily: 86400000 };
     const ms = intervals[schedule] || 86400000;
-
-    const doSave = async () => {
-      const d = _latestData.current; // always use latest data
-      const picked = pickBackupFields(d);
-      // #৯/#১৬ — Firebase বন্ধ থাকা দোকানেও (main App-এর অটো cycle firebaseEnabled
-      // ছাড়া চলে না) এই টাইমারই একমাত্র নিয়মিত auto-backup, তাই retention/WORM
-      // এখানেও হুক করা হলো — নিজেরাই দিনে/মাসে একবার idempotent সেভ করে।
-      try { await RetentionDB.saveIfNewDay(picked); } catch {}
-      try { await WormArchive.archiveIfNewMonth(picked); } catch {}
-
-      // #৪ ডেল্টা সিঙ্ক — "snapshot" checkpoint, realtime (৬০ সেকেন্ড) শিডিউলে
-      // সবচেয়ে বেশি সাশ্রয় দেয় (দোকান নিষ্ক্রিয় থাকলে IndexedDB write স্কিপ)
-      const newHashes = buildContentHashes(picked);
-      if (await DeltaSync.shouldSkip("snapshot", newHashes)) return;
-      const result = await LocalBackup.save(picked);
-      if (result.ok) { setLastSync(new Date().toISOString()); await DeltaSync.markSynced("snapshot", newHashes); }
-    };
 
     autoTimer.current = setInterval(doSave, ms);
     // Immediate save when first enabled
@@ -25159,6 +25216,30 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
     return () => clearInterval(autoTimer.current);
     // eslint-disable-next-line
   }, [autoEnabled, schedule]);
+
+  // 🆕 "রিয়েলটাইম" মোড — আর পোলিং না, ডেটা চেঞ্জ হলেই ট্রিগার হয়, ২.৫ সেকেন্ড debounce দিয়ে
+  // (টাইপ করার সময় বারবার IndexedDB write এড়াতে; মোড চালু হওয়ার সাথে সাথে একবার immediate সেভ হয়)
+  const realtimeDebounceRef = useRef(null);
+  const realtimeFirstRun = useRef(true);
+  useEffect(() => {
+    if (!autoEnabled || schedule !== "realtime") {
+      realtimeFirstRun.current = true;
+      if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
+      return;
+    }
+
+    if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current);
+
+    if (realtimeFirstRun.current) {
+      realtimeFirstRun.current = false;
+      doSave(); // মোড চালু হওয়ামাত্র একবার সেভ
+    } else {
+      realtimeDebounceRef.current = setTimeout(doSave, 2500);
+    }
+
+    return () => { if (realtimeDebounceRef.current) clearTimeout(realtimeDebounceRef.current); };
+    // eslint-disable-next-line
+    }, [autoEnabled, schedule, data]);
 
   const handleSaveSnapshot = async () => {
     setSaving(true);
