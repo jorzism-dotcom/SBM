@@ -12637,7 +12637,10 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     setItems(prev => prev.map(i => i.productId === pid ? { ...i, itemDiscount: Math.min(amt, lineSubtotal) } : i));
   };
   const toggleItemDiscMode = (pid) => {
-    setItemDiscMode(prev => ({ ...prev, [pid]: (prev[pid] === "pct" ? "amt" : "pct") }));
+    setItemDiscMode(prev => {
+      const current = prev[pid] || "pct"; // ডিফল্ট এখন % — নতুন পণ্যে সরাসরি পার্সেন্টে ছাড় দেওয়া যায়
+      return { ...prev, [pid]: (current === "pct" ? "amt" : "pct") };
+    });
   };
 
   const subtotal      = items.reduce((s, i) => s + i.qty * i.price, 0);
@@ -13703,7 +13706,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                         const batchLabel = batch?.batch ? String(batch.batch).replace(/^ব্যাচ-/i, "") : "";
                         const lineSubtotal = item.price * item.qty;
                         const lineDisc = Math.min(Math.max(parseFloat(item.itemDiscount) || 0, 0), lineSubtotal);
-                        const mode = itemDiscMode[item.productId] || "amt";
+                        const mode = itemDiscMode[item.productId] || "pct";
                         const pctDisplay = lineSubtotal > 0 ? Math.round((lineDisc / lineSubtotal) * 10000) / 100 : 0;
                         return (
                           <div key={item.productId} style={{
@@ -14111,6 +14114,13 @@ function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [],
 
   const { start, end } = getRange();
 
+  // ── পেমেন্ট-টাইপ পাই চার্টের জন্য টোটাল — memo করা, প্রতি render-এ ৩বার invoices.filter() এড়াতে ──
+  const paymentTypeTotals = useMemo(() => ({
+    cash: invoices.filter(i => i.payType==="cash").reduce((s,i)=>s+(i.total||0),0),
+    baki: invoices.filter(i => i.payType==="baki").reduce((s,i)=>s+(i.total||0),0),
+    part: invoices.filter(i => i.payType==="partial").reduce((s,i)=>s+(i.total||0),0),
+  }), [invoices]);
+
   // ── Revenue + Profit chart data ───────────────────────────────────────────
   const chartData = useMemo(() => {
     const map = {};
@@ -14362,9 +14372,7 @@ function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [],
 
       {/* ── Payment Type PieChart ── */}
       {(() => {
-        const cash  = invoices.filter(i => i.payType==="cash").reduce((s,i)=>s+(i.total||0),0);
-        const baki  = invoices.filter(i => i.payType==="baki").reduce((s,i)=>s+(i.total||0),0);
-        const part  = invoices.filter(i => i.payType==="partial").reduce((s,i)=>s+(i.total||0),0);
+        const { cash, baki, part } = paymentTypeTotals;
         const total = cash + baki + part;
         if (total === 0) return null;
         const pieData = [
@@ -14424,14 +14432,27 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
   const openPage = setInvModal || (() => {});
   const DT = getDashTokens(T);
 
-  const allStock      = products.filter(p => (p.stock || 0) > 0).sort((a,b) => b.stock - a.stock);
-  const criticalStock = products.filter(p => { const m = p.minStockAlert || 5; return (p.stock||0) > 0 && (p.stock||0) <= m; });
-  const stockOut      = products.filter(p => (p.stock||0) === 0);
+  const allStock      = useMemo(() => products.filter(p => (p.stock || 0) > 0).sort((a,b) => b.stock - a.stock), [products]);
+  const criticalStock = useMemo(() => products.filter(p => { const m = p.minStockAlert || 5; return (p.stock||0) > 0 && (p.stock||0) <= m; }), [products]);
+  const stockOut      = useMemo(() => products.filter(p => (p.stock||0) === 0), [products]);
 
   // আজকের ক্রয় — purchase entry থেকে (_type === "pe")
   const todayKey = todayEn();
-  const todayPurchases = purchaseOrders.filter(p => p._type === "pe" && (p.dateKey === todayKey || (p.createdAt && p.createdAt.startsWith(todayKey))));
-  const todayPurchaseTotal = todayPurchases.reduce((s, p) => s + (p.totalCost || 0), 0);
+  const todayPurchases = useMemo(() => purchaseOrders.filter(p => p._type === "pe" && (p.dateKey === todayKey || (p.createdAt && p.createdAt.startsWith(todayKey)))), [purchaseOrders, todayKey]);
+  const todayPurchaseTotal = useMemo(() => todayPurchases.reduce((s, p) => s + (p.totalCost || 0), 0), [todayPurchases]);
+
+  const { expiredProds, nearExpiryProds } = useMemo(() => {
+    const now = new Date();
+    const threeMonthsLater = new Date(); threeMonthsLater.setMonth(now.getMonth() + 3);
+    return {
+      expiredProds: products.filter(p => p.expiryDate && new Date(p.expiryDate) < now),
+      nearExpiryProds: products.filter(p => {
+        if (!p.expiryDate) return false;
+        const exp = new Date(p.expiryDate);
+        return exp >= now && exp <= threeMonthsLater;
+      }),
+    };
+  }, [products]);
 
   const fmt = n => Math.round(n || 0).toLocaleString("en-US");
 
@@ -14480,8 +14501,8 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
           // Determine if this card should show a notification badge
           const isStockOutCard = c.label === "স্টক আউট";
           const isCriticalCard = c.label === "ক্রিটিক্যাল স্টক";
-          const critCount = products ? products.filter(p => { const m = p.minStockAlert||5; return (p.stock||0)>0 && (p.stock||0)<=m; }).length : 0;
-          const outCount  = products ? products.filter(p => (p.stock||0)===0).length : 0;
+          const critCount = criticalStock.length;
+          const outCount  = stockOut.length;
           const showOutBadge = isStockOutCard && outCount > 0;
           const showCritBadge = isCriticalCard && critCount > 0;
           const tint = DT.tint(c.idx);
@@ -14543,13 +14564,6 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
       {/* ── মেয়াদোত্তীর্ণ ও মেয়াদ শেষের কাছাকাছি পণ্য — ২টি কার্ড পাশাপাশি ── */}
       {(() => {
         const now = new Date();
-        const threeMonthsLater = new Date(); threeMonthsLater.setMonth(now.getMonth() + 3);
-        const expiredProds = products.filter(p => p.expiryDate && new Date(p.expiryDate) < now);
-        const nearExpiryProds = products.filter(p => {
-          if (!p.expiryDate) return false;
-          const exp = new Date(p.expiryDate);
-          return exp >= now && exp <= threeMonthsLater;
-        });
 
         const buildExpHtml = (items, title, shopName_) => {
           const rows = items.map((p, i) => {
@@ -14922,25 +14936,27 @@ function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements
     setTimeout(() => setToast(null), 2500);
   };
 
-  const allEntries = purchaseOrders.filter(p => p._type === "pe");
+  const allEntries = useMemo(() => purchaseOrders.filter(p => p._type === "pe"), [purchaseOrders]);
   const todayKey   = new Date().toISOString().split("T")[0];
 
   const getNextBatch = (productId) => calcNextBatch(productId, products, purchaseOrders);
   const nextBatchLabel = peForm.productId ? getNextBatch(peForm.productId) : "—";
-  const selProd = products.find(p => p.id === peForm.productId);
+  const selProd = useMemo(() => products.find(p => p.id === peForm.productId), [products, peForm.productId]);
   // সর্বশেষ ব্যাচ যা বর্তমানে স্টকে আছে (তথ্যমূলক ব্যাজের জন্য) — nextBatchLabel থেকে আলাদা
-  const latestBatchLabel = (() => {
+  const latestBatchLabel = useMemo(() => {
     if (!selProd?.batches?.length) return null;
     const inStock = selProd.batches.filter(b => (b.qty || 0) > 0);
     const pool = inStock.length ? inStock : selProd.batches;
     const latest = [...pool].sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0))[0];
     return latest?.batchNo || null;
-  })();
+  }, [selProd]);
 
   // Filtered product search list
-  const filteredProds = peForm.productSearch
-    ? products.filter(p => p.name.toLowerCase().includes(peForm.productSearch.toLowerCase()) || (p.unit||"").includes(peForm.productSearch))
-    : products;
+  const filteredProds = useMemo(() => (
+    peForm.productSearch
+      ? products.filter(p => p.name.toLowerCase().includes(peForm.productSearch.toLowerCase()) || (p.unit||"").includes(peForm.productSearch))
+      : products
+  ), [products, peForm.productSearch]);
 
   const savePE = () => {
     if (!peForm.productId) { showToast("পণ্য নির্বাচন করুন", "#ef4444"); return; }
@@ -15246,7 +15262,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
 
   const todayKeyStr = todayEn();
   // ── bakiCustomers: বাকি আছে এমন কাস্টমার (Dashboard-wide) ──────────────────
-  const bakiCustomers = customers.filter(c => (c.balance || 0) > 0);
+  const bakiCustomers = useMemo(() => customers.filter(c => (c.balance || 0) > 0), [customers]);
   // 🔴 পারফরম্যান্স ফিক্স: নিচে "বাকি আছে এমন কাস্টমার" ব্রেকডাউন মোডালে আগে প্রতি
   // কাস্টমারে txns.filter() করা হতো (O(কাস্টমার×txns)) — এখন একবারে Map-এ গ্রুপ করে O(1) lookup।
   const txnsByCustForBaki = React.useMemo(() => {
@@ -15310,6 +15326,24 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   const allStock      = React.useMemo(() => products.filter(p => (p.stock||0) > 0).sort((a,b) => b.stock-a.stock), [products]);
   const criticalStock = React.useMemo(() => products.filter(p => { const m=p.minStockAlert||5; return (p.stock||0)>0 && (p.stock||0)<=m; }), [products]);
   const stockOut      = React.useMemo(() => products.filter(p => (p.stock||0)===0), [products]);
+  const { expiredList, nearExpiryList } = React.useMemo(() => {
+    const now = new Date();
+    const threeMonthsLater = new Date(); threeMonthsLater.setMonth(now.getMonth() + 3);
+    return {
+      expiredList: products.filter(p => p.expiryDate && new Date(p.expiryDate) < now),
+      nearExpiryList: products.filter(p => { if (!p.expiryDate) return false; const exp = new Date(p.expiryDate); return exp >= now && exp <= threeMonthsLater; }),
+    };
+  }, [products]);
+  // সাপ্লায়ার/কোম্পানি অনুযায়ী পণ্য গ্রুপ — supplier-detail পেজে প্রতিবার products.filter() না করে O(1) lookup
+  const productsBySupplier = React.useMemo(() => {
+    const m = new Map();
+    products.forEach(p => {
+      const key = p.company || p.category || "অজ্ঞাত";
+      const arr = m.get(key);
+      if (arr) arr.push(p); else m.set(key, [p]);
+    });
+    return m;
+  }, [products]);
 
   const BAR_GRADIENTS = [
     "linear-gradient(90deg,#22d3ee,#3b82f6,#6366f1)","linear-gradient(90deg,#6366f1,#8b5cf6,#a78bfa,#f59e0b)",
@@ -15762,7 +15796,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   // ── সাপ্লায়ার ডিটেইলস পেজ ──
   if (invModal && invModal.startsWith('supplier-detail:')) {
     const supplierName = invModal.replace('supplier-detail:', '');
-    const supProducts = products.filter(p => (p.company || p.category || "অজ্ঞাত") === supplierName);
+    const supProducts = productsBySupplier.get(supplierName) || [];
     const maxStock = supProducts.length > 0 ? Math.max(...supProducts.map(p => p.stock||0), 1) : 1;
     const BAR_GRADIENTS = ["linear-gradient(90deg,#1fd15e,#4ade80)","linear-gradient(90deg,#0ea5e9,#38bdf8)","linear-gradient(90deg,#a855f7,#c084fc)","linear-gradient(90deg,#f59e0b,#fcd34d)","linear-gradient(90deg,#ef4444,#f87171)","linear-gradient(90deg,#10b981,#34d399)"];
     return (
@@ -15811,9 +15845,6 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   // ── ইনভেন্টরি ফুলপেজ মডাল ──
   if (invModal === 'all' || invModal === 'critical' || invModal === 'out' || invModal === 'expired' || invModal === 'near-expiry' || (invModal && ['all','critical','out','expired','near-expiry'].some(k => invModal.startsWith(k+':supplier:')))) {
     const now = new Date();
-    const threeMonthsLater = new Date(); threeMonthsLater.setMonth(now.getMonth() + 3);
-    const expiredList = products.filter(p => p.expiryDate && new Date(p.expiryDate) < now);
-    const nearExpiryList = products.filter(p => { if (!p.expiryDate) return false; const exp = new Date(p.expiryDate); return exp >= now && exp <= threeMonthsLater; });
 
     const baseInvKey = invModal.includes(":supplier:") ? invModal.split(":supplier:")[0] : invModal;
     const items   = baseInvKey==='all' ? allStock : baseInvKey==='critical' ? criticalStock : baseInvKey==='out' ? stockOut : baseInvKey==='expired' ? expiredList : nearExpiryList;
@@ -16909,24 +16940,45 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   }
 
 
-  const todayPayInvs  = (paymentInvoices || []).filter(p => p.dateKey === todayEn() && p.source !== "partial-sale");
-  const todaySelfUseInvs = invoices.filter(inv => inv.dateKey === todayEn() && inv.isSelfUse && inv.status !== "voided");
+  // 🔴 পারফরম্যান্স ফিক্স: আগে এই ব্লকটা প্রতি render-এ (Dashboard-এর যেকোনো state
+  // পরিবর্তনেও) invoices/paymentInvoices পুরো array filter করত, আর todayBakiInvs-এর
+  // ভিতরে প্রতিটা invoice-এর জন্য txns.find() চালাতো — O(invoices × txns)।
+  // ১,০০,০০০ ইনভয়েস + ১,০০,০০০ txn-এ এটাই সবচেয়ে বড় ল্যাগের কারণ ছিল।
+  // এখন useMemo + Set-ভিত্তিক O(1) lookup দিয়ে O(invoices+txns) করা হলো।
+  const todayBakiTxnInvoiceIds = useMemo(() => {
+    const s = new Set();
+    (txns || []).forEach(t => {
+      if (t.dateKey === todayKeyStr && t.type === "baki" && t.invoiceId != null) s.add(t.invoiceId);
+    });
+    return s;
+  }, [txns, todayKeyStr]);
+
+  const todayPayInvs  = useMemo(() =>
+    (paymentInvoices || []).filter(p => p.dateKey === todayKeyStr && p.source !== "partial-sale"),
+    [paymentInvoices, todayKeyStr]
+  );
+  const todaySelfUseInvs = useMemo(() =>
+    invoices.filter(inv => inv.dateKey === todayKeyStr && inv.isSelfUse && inv.status !== "voided"),
+    [invoices, todayKeyStr]
+  );
   // 🏠 আজকের নিজের ব্যবহারের পণ্যের মোট ক্রয়মূল্য (খরচমূল্য)
-  const _selfUseProdMap = new Map(products.map(p => [p.id, p]));
-  const todaySelfUseCost = todaySelfUseInvs.reduce((s, inv) => {
+  const _selfUseProdMap = useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
+  const todaySelfUseCost = useMemo(() => todaySelfUseInvs.reduce((s, inv) => {
     if (inv.selfUseCost != null) return s + inv.selfUseCost;
     return s + (inv.items || []).reduce((cs, item) => cs + _itemCostPrice(item, _selfUseProdMap) * (item.qty || 1), 0);
-  }, 0);
+  }, 0), [todaySelfUseInvs, _selfUseProdMap]);
   // 🚫 আজকের বাতিলকৃত ইনভয়েস
-  const todayVoidedInvs = invoices.filter(inv => inv.dateKey === todayEn() && inv.status === "voided");
-  const todayBakiInvs = invoices.filter(inv => {
+  const todayVoidedInvs = useMemo(() =>
+    invoices.filter(inv => inv.dateKey === todayKeyStr && inv.status === "voided"),
+    [invoices, todayKeyStr]
+  );
+  const todayBakiInvs = useMemo(() => invoices.filter(inv => {
     if (inv.status === "voided") return false;
     // Bug fix: include baki/partial invoices created today directly (no txn lookup needed)
-    if (inv.dateKey === todayEn() && (inv.payType === "baki" || (inv.payType === "partial" && inv.bakiAmount > 0))) return true;
-    // Also check via txn for edge cases
-    const relTxn = txns.find(t => t.invoiceId === inv.id && t.dateKey === todayEn() && t.type === "baki");
-    return !!relTxn;
-  });
+    if (inv.dateKey === todayKeyStr && (inv.payType === "baki" || (inv.payType === "partial" && inv.bakiAmount > 0))) return true;
+    // Also check via txn for edge cases — O(1) Set lookup instead of txns.find()
+    return todayBakiTxnInvoiceIds.has(inv.id);
+  }), [invoices, todayKeyStr, todayBakiTxnInvoiceIds]);
   // কাস্টমার-ডিটেইলস পেজ থেকে করা ম্যানুয়াল বাকি/জমা এন্ট্রি (invoiceId: null) ইচ্ছাকৃতভাবেই
   // "আজকের বাকি" থেকে বাদ — শুধু মোট বাকিতে (customer.balance এর মাধ্যমে) থাকবে।
   const todayBakiInvsFull = todayBakiInvs;
@@ -16965,8 +17017,11 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   }
   const inRepRange = (dk) => dk >= repStart && dk <= repEnd;
 
-  // "আজ" সিলেক্ট করা থাকলে parent থেকে আগে থেকেই হিসাব করা today* মান পুনঃব্যবহার করা হবে
-  const repData = isToday
+  // 🔴 পারফরম্যান্স ফিক্স: এই ব্লকটা (কাস্টম তারিখ-রেঞ্জ রিপোর্ট) আগে useMemo ছাড়া
+  // প্রতি render-এ চলত, আর bakiInvs বের করতে প্রতিটা invoice-এর জন্য txns.find() —
+  // অর্থাৎ .filter()-এর ভিতরে .find() = O(invoices × txns), সবচেয়ে খারাপ প্যাটার্ন।
+  // এখন useMemo + Set-ভিত্তিক O(1) lookup ব্যবহার করা হলো।
+  const repData = useMemo(() => (isToday
     ? {
         invs: todayInvs, total: todayTotal, cashSale: todayCashSale, baki: todayBaki,
         profit: todayProfit, bakiInvs: todayBakiInvsFull,
@@ -16985,11 +17040,13 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
         const baki = txns.filter(t => inRepRange(t.dateKey) && t.type === "baki" && !voidedInvIds.has(t.invoiceId)).reduce((s, t) => s + t.amount, 0);
         const prodMap = new Map(products.map(p => [p.id, p]));
         const profit = calcProfitTotal(invs, prodMap);
+        // range-ভুক্ত baki-txn আছে এমন invoiceId-গুলোর Set — O(1) lookup, .find() এড়ানো হলো
+        const bakiTxnInvIds = new Set();
+        txns.forEach(t => { if (inRepRange(t.dateKey) && t.type === "baki" && t.invoiceId != null) bakiTxnInvIds.add(t.invoiceId); });
         const bakiInvs = invoices.filter(inv => {
           if (inv.status === "voided") return false;
           if (inRepRange(inv.dateKey) && (inv.payType === "baki" || (inv.payType === "partial" && inv.bakiAmount > 0))) return true;
-          const relTxn = txns.find(t => t.invoiceId === inv.id && inRepRange(t.dateKey) && t.type === "baki");
-          return !!relTxn;
+          return bakiTxnInvIds.has(inv.id);
         });
         const selfUseInvs = invoices.filter(inv => inRepRange(inv.dateKey) && inv.isSelfUse && inv.status !== "voided");
         const selfUseCost = selfUseInvs.reduce((s, inv) => {
@@ -16998,7 +17055,8 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
         }, 0);
         const voidedInvs = invoices.filter(inv => inRepRange(inv.dateKey) && inv.status === "voided");
         return { invs, total, cashSale, baki, profit, bakiInvs, selfUseInvs, selfUseCost, voidedInvs };
-      })();
+      })()
+  ), [isToday, todayInvs, todayTotal, todayCashSale, todayBaki, todayProfit, todayBakiInvsFull, todaySelfUseInvs, todaySelfUseCost, todayVoidedInvs, invoices, txns, products, repStart, repEnd]);
 
   // ── dark থিমে Glassmorphism, light থিমে POS Bold — থিম অনুযায়ী ড্যাশবোর্ড টোকেন ──
   const DT = getDashTokens(T);
@@ -17401,6 +17459,12 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
 
   // rfmData-কে Map-এ রাখি যাতে O(1) lookup হয়
   const rfmMap = useMemo(() => new Map(rfmData.map(c => [c.id, c])), [rfmData]);
+  // সেগমেন্ট-ভিত্তিক কাউন্ট — অ্যানালিটিক্স প্যানেলে বারবার rfmData.filter() না করে একবারে হিসাব
+  const segmentCounts = useMemo(() => {
+    const counts = {};
+    rfmData.forEach(c => { counts[c.segment] = (counts[c.segment] || 0) + 1; });
+    return counts;
+  }, [rfmData]);
 
   const addCustomer = () => {
     const name = (nameRef.current?.value?.trim() || form.name || "").trim();
@@ -17437,8 +17501,31 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
     setConfirmId(null);
   };
 
-  const bakiCount = customers.filter(c => c.balance > 0).length;
-  const clearCount = customers.filter(c => c.balance <= 0).length;
+  const bakiCount = useMemo(() => customers.filter(c => c.balance > 0).length, [customers]);
+  const clearCount = useMemo(() => customers.filter(c => c.balance <= 0).length, [customers]);
+
+  // 🔴 পারফরম্যান্স ফিক্স: আগে এই সার্চ/সেগমেন্ট ফিল্টার প্রতিটি keystroke বা
+  // যেকোনো state পরিবর্তনে (useMemo ছাড়া) পুরো customers অ্যারে map+filter করত —
+  // ১০,০০০ কাস্টমারে প্রতি keystroke-এ ~১০,০০০ object spread + fuzzy-match কল হতো।
+  const withSerial = useMemo(() =>
+    customers.map((c, i) => ({ ...c, serial: i + 1, serialStr: String(i + 1) })),
+    [customers]
+  );
+  const bySearch = useMemo(() => {
+    const q = search.trim();
+    if (!q) return withSerial;
+    return withSerial.filter(c => {
+      const score = Math.max(smartMatch(c.name, q), smartMatch(c.mobile, q), smartMatch(c.serialStr, q));
+      return score > 0;
+    });
+  }, [withSerial, search]);
+  const filteredCustomers = useMemo(() => (
+    segFilter === "all" ? bySearch
+      : bySearch.filter(c => {
+          const rfm = rfmMap.get(c.id);
+          return rfm?.segment === segFilter;
+        })
+  ), [bySearch, segFilter, rfmMap]);
 
   // L5 fix: render-এ side effect না করে useEffect ব্যবহার
   useEffect(() => {
@@ -17511,7 +17598,7 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
           📊 {showAnalytics?"লুকান":"Analytics"}
         </button>
         {Object.entries(SEGMENTS).map(([key, seg]) => {
-          const count = rfmData.filter(c => c.segment === key).length;
+          const count = segmentCounts[key] || 0;
           if (!count) return null;
           return (
             <button key={key} onClick={() => setSegFilter(segFilter === key ? "all" : key)}
@@ -17559,7 +17646,7 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
             {/* Segment breakdown bar */}
             <div style={{ height:8, borderRadius:8, overflow:"hidden", display:"flex" }}>
               {Object.entries(SEGMENTS).map(([key, seg]) => {
-                const count = rfmData.filter(c => c.segment === key).length;
+                const count = segmentCounts[key] || 0;
                 const pct   = rfmData.length ? count / rfmData.length * 100 : 0;
                 if (!pct) return null;
                 return <div key={key} style={{ width:`${pct}%`, background:seg.color, transition:"width 0.5s" }}
@@ -17568,7 +17655,7 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
             </div>
             <div style={{ display:"flex", gap:8, marginTop:6, flexWrap:"wrap" }}>
               {Object.entries(SEGMENTS).map(([key, seg]) => {
-                const count = rfmData.filter(c => c.segment === key).length;
+                const count = segmentCounts[key] || 0;
                 if (!count) return null;
                 return (
                   <span key={key} style={{ color:seg.color, fontSize:10, fontWeight:700 }}>
@@ -17583,17 +17670,7 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
 
       {/* Virtuoso infinite scroll — filtered by search + segment */}
       {(() => {
-        const withSerial = customers.map((c, i) => ({ ...c, serial: i + 1, serialStr: String(i + 1) }));
-        const q = search.trim();
-        const bySearch = !q ? withSerial : withSerial.filter(c => {
-          const score = Math.max(smartMatch(c.name, q), smartMatch(c.mobile, q), smartMatch(c.serialStr, q));
-          return score > 0;
-        });
-        const filtered = segFilter === "all" ? bySearch
-          : bySearch.filter(c => {
-              const rfm = rfmMap.get(c.id);
-              return rfm?.segment === segFilter;
-            });
+        const filtered = filteredCustomers;
 
         return (
       <div style={{
@@ -17730,6 +17807,12 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
   const [txnPage,          setTxnPage]          = useState(1);
   const [histMonths,       setHistMonths]       = useState(null);
   const [showInvoicePicker,setShowInvoicePicker]= useState(false); // type picker
+  // 🔴 পারফরম্যান্স ফিক্স: আগে Virtuoso-র প্রতিটা visible row রেন্ডারে invoices.find()/
+  // paymentInvoices.find() চালানো হতো — অর্থাৎ প্রতি row-এ পুরো invoices array (linear scan)।
+  // ১,০০,০০০ ইনভয়েসে স্ক্রল করলে প্রতি ব্যাচ (~২০ row) ২০ লক্ষ তুলনা হতো। এখন একবারে
+  // Map বানিয়ে O(1) lookup — ঠিক যেভাবে কোডের অন্য জায়গায় (globalProdMap, prodMap ইত্যাদি) করা হয়।
+  const invoiceMap = useMemo(() => new Map((invoices || []).map(iv => [iv.id, iv])), [invoices]);
+  const paymentInvoiceMap = useMemo(() => new Map((paymentInvoices || []).map(p => [p.id, p])), [paymentInvoices]);
   if (!customer) return null;
   // Virtuoso handles virtualization — pagination removed
 
@@ -17921,8 +18004,8 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
         style={{ height: "calc(100dvh - 320px)" }}
         data={txns}
         itemContent={(_, t) => {
-          const inv = t.invoiceId ? invoices.find(iv => iv.id === t.invoiceId) : null;
-          const payInv = t.paymentInvoiceId ? paymentInvoices.find(p => p.id === t.paymentInvoiceId) : null;
+          const inv = t.invoiceId ? invoiceMap.get(t.invoiceId) : null;
+          const payInv = t.paymentInvoiceId ? paymentInvoiceMap.get(t.paymentInvoiceId) : null;
           const isBaki = t.type === "baki";
           // নগদ বিক্রয়ের txn-এ কোনো আলাদা void-reversal এন্ট্রি তৈরি হয় না (balance অপরিবর্তিত থাকে বলে) —
           // তাই ইনভয়েস ভয়েড হলে এখানেই badge দেখিয়ে স্পষ্ট করা হচ্ছে যে এই বিক্রয়টি বাতিল হয়ে গেছে।
@@ -18676,6 +18759,40 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   // ── Mandatory field validation — নতুন পণ্য/সার্ভিস ফর্ম ও ক্রয় এন্ট্রি ফর্মের জন্য ──
   const [formErrors, setFormErrors] = useState({}); // { name, price }
   const [peFormErrors, setPeFormErrors] = useState({}); // { productId, qty }
+  // ── ক্রয় এন্ট্রি ট্যাবের ভারী হিসাব — memo করা, যাতে প্রতি keystroke/re-render-এ পুরো array স্ক্যান না হয় ──
+  const peAllEntries = useMemo(() => purchaseOrders.filter(p => p._type === "pe"), [purchaseOrders]);
+  const peSelProdForBatch = useMemo(() => products.find(p => p.id === peForm.productId), [products, peForm.productId]);
+  const peLatestBatchLabel = useMemo(() => {
+    if (!peSelProdForBatch?.batches?.length) return null;
+    const inStock = peSelProdForBatch.batches.filter(b => (b.qty || 0) > 0);
+    const pool = inStock.length ? inStock : peSelProdForBatch.batches;
+    const latest = [...pool].sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0))[0];
+    return latest?.batchNo || null;
+  }, [peSelProdForBatch]);
+  const peFilteredProds = useMemo(() => (
+    peForm.productSearch
+      ? products.filter(p => p.name.toLowerCase().includes(peForm.productSearch.toLowerCase()) || (p.unit||"").includes(peForm.productSearch))
+      : products
+  ), [products, peForm.productSearch]);
+  const peNextBatchLabel = useMemo(() => (
+    peForm.productId ? calcNextBatch(peForm.productId, products, purchaseOrders) : "—"
+  ), [peForm.productId, products, purchaseOrders]);
+  const peDisplayed = useMemo(() => {
+    const todayKey = new Date().toISOString().split("T")[0];
+    return peAllEntries
+      .filter(e => {
+        if (peFilter === "today") return e.dateKey === todayKey;
+        if (peFilter === "date")  return e.dateKey === peHistDate;
+        return true;
+      })
+      .filter(e => !peSearch || e.productName?.includes(peSearch) || (e.batch || "").includes(peSearch));
+  }, [peAllEntries, peFilter, peHistDate, peSearch]);
+  const peDisplayedTotal = useMemo(() => peDisplayed.reduce((s, e) => s + (e.totalCost || 0), 0), [peDisplayed]);
+  const retailTodayPurchases = useMemo(() => {
+    const todayKey2 = new Date().toISOString().split("T")[0];
+    return peAllEntries.filter(p => p.dateKey === todayKey2 || (p.createdAt && p.createdAt.startsWith(todayKey2)));
+  }, [peAllEntries]);
+  const retailTodayPurchaseTotal = useMemo(() => retailTodayPurchases.reduce((s, p) => s + (p.totalCost || 0), 0), [retailTodayPurchases]);
   // ── #১ নাম অটো-সাজেশন — MEDICINE_DATASET থেকে নাম+পাওয়ার সাজেস্ট, সিলেক্ট করলে সাপ্লায়ার অটো-ফিল ──
   const [nameSuggestOpen, setNameSuggestOpen] = useState(false);
   const nameInputRef = useRef(null);
@@ -18723,8 +18840,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     try { localStorage.setItem("sbm_custom_units", JSON.stringify(units)); } catch {}
   };
   // Virtuoso — pagination সরানো
-  const lowStock = products.filter(p => (p.stock || 0) <= 5 && (p.stock || 0) > 0);
-  const outOfStock = products.filter(p => (p.stock || 0) === 0);
+  const lowStock = useMemo(() => products.filter(p => (p.stock || 0) <= 5 && (p.stock || 0) > 0), [products]);
+  const outOfStock = useMemo(() => products.filter(p => (p.stock || 0) === 0), [products]);
 
   const saveProduct = () => {
     const errs = {};
@@ -18941,21 +19058,15 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
          ══════════════════════════════════════════════════════════════════════ */}
       {activeTab === "purchase" && (() => {
         // ── ক্রয় এন্ট্রি সেভ (Weighted Average Cost) ───────────────────────
-        const allEntries = purchaseOrders.filter(p => p._type === "pe");
+        const allEntries = peAllEntries;
         const todayKey   = new Date().toISOString().split("T")[0];
 
         // ── পণ্য-ভিত্তিক Auto Batch Number — global helper ব্যবহার ─────────
         const getNextBatch = (productId) => calcNextBatch(productId, products, purchaseOrders);
-        const nextBatchLabel = peForm.productId ? getNextBatch(peForm.productId) : "—";
-        const selProdForBatch = products.find(p => p.id === peForm.productId);
+        const nextBatchLabel = peNextBatchLabel;
+        const selProdForBatch = peSelProdForBatch;
         // সর্বশেষ ব্যাচ যা বর্তমানে স্টকে আছে (তথ্যমূলক ব্যাজের জন্য) — nextBatchLabel থেকে আলাদা
-        const latestBatchLabel = (() => {
-          if (!selProdForBatch?.batches?.length) return null;
-          const inStock = selProdForBatch.batches.filter(b => (b.qty || 0) > 0);
-          const pool = inStock.length ? inStock : selProdForBatch.batches;
-          const latest = [...pool].sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0))[0];
-          return latest?.batchNo || null;
-        })();
+        const latestBatchLabel = peLatestBatchLabel;
 
         // ── একটা পণ্যে একটা ব্যাচ যোগ করার কেন্দ্রীয় লজিক (Weighted Average Cost) —
         // এককভাবে savePE (নিচে) থেকে, আর বাল্ক চালান-কনফার্ম থেকেও এই একই ফাংশন কল হয় ──
@@ -19059,15 +19170,9 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           showToast(`✅ ${successCount}টা পণ্য স্টকে যোগ হয়েছে`, "#a78bfa");
         };
 
-        const displayed  = allEntries
-          .filter(e => {
-            if (peFilter === "today") return e.dateKey === todayKey;
-            if (peFilter === "date")  return e.dateKey === peHistDate;
-            return true;
-          })
-          .filter(e => !peSearch || e.productName?.includes(peSearch) || (e.batch || "").includes(peSearch));
-        const displayedTotal = displayed.reduce((s, e) => s + (e.totalCost || 0), 0);
-        const selProd    = products.find(p => p.id === peForm.productId);
+        const displayed  = peDisplayed;
+        const displayedTotal = peDisplayedTotal;
+        const selProd    = peSelProdForBatch;
 
         return (
           <div>
@@ -19242,9 +19347,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               {/* Search-based পণ্য নির্বাচন */}
               <label style={S.label}>📦 পণ্য খুঁজুন *</label>
               {(() => {
-                const filteredProds = peForm.productSearch
-                  ? products.filter(p => p.name.toLowerCase().includes(peForm.productSearch.toLowerCase()) || (p.unit||"").includes(peForm.productSearch))
-                  : products;
+                const filteredProds = peFilteredProds;
                 return (
                   <div style={{ position:"relative", marginBottom: selProd ? 4 : (peFormErrors.productId ? 2 : 12) }}>
                     <input
@@ -19700,9 +19803,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
 
       {/* ── ক্রয় এন্ট্রি কার্ড — হোম থেকে স্থানান্তরিত ── */}
       {(currentUser?.role !== "staff" || (hasPerm && hasPerm(currentUser, "purchase_entry"))) && (() => {
-        const todayKey2 = new Date().toISOString().split("T")[0];
-        const todayPurchases2 = purchaseOrders.filter(p => p._type === "pe" && (p.dateKey === todayKey2 || (p.createdAt && p.createdAt.startsWith(todayKey2))));
-        const todayPurchaseTotal2 = todayPurchases2.reduce((s, p) => s + (p.totalCost || 0), 0);
+        const todayPurchases2 = retailTodayPurchases;
+        const todayPurchaseTotal2 = retailTodayPurchaseTotal;
         return (
           <button className="tap-card"
             onClick={() => setActiveTab("purchase")}
@@ -20304,8 +20406,11 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
   // ── Selected supplier data ─────────────────────────────────────────────────
   const selSummary = selectedSupplier ? (paymentSummary[selectedSupplier.name] || { paid: 0, count: 0 }) : null;
   const selDue = selectedSupplier ? Math.max(0, (selectedSupplier.totalPurchased || 0) - (selSummary?.paid || 0)) : 0;
-  const selPayments = supplierPayments.filter(p => p.supplierName === selectedSupplier?.name)
-    .sort((a, b) => (b.dateKey || "").localeCompare(a.dateKey || ""));
+  const selPayments = useMemo(() =>
+    supplierPayments.filter(p => p.supplierName === selectedSupplier?.name)
+      .sort((a, b) => (b.dateKey || "").localeCompare(a.dateKey || "")),
+    [supplierPayments, selectedSupplier]
+  );
 
   // ── Save payment ───────────────────────────────────────────────────────────
   const savePayment = React.useCallback(() => {
@@ -21375,7 +21480,9 @@ function SmsLog({ T, S, smsLog, smsCount, setSmsCount, customers, sendSMS, showT
   const [bulkSending, setBulkSending] = useState(false);
   const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 });
 
-  const bakiCustomers = customers.filter(c => (c.balance || 0) > 0 && c.mobile);
+  const bakiCustomers = useMemo(() => customers.filter(c => (c.balance || 0) > 0 && c.mobile), [customers]);
+  const smsDeliveredCount = useMemo(() => smsLog.filter(s=>s.delivered).length, [smsLog]);
+  const smsSimulatedCount = useMemo(() => smsLog.filter(s=>!s.delivered).length, [smsLog]);
 
   const sendCustom = async () => {
     if (!custId || !msg.trim()) { showToast("কাস্টমার ও বার্তা দিন", "#ef4444"); return; }
@@ -21415,11 +21522,11 @@ function SmsLog({ T, S, smsLog, smsCount, setSmsCount, customers, sendSMS, showT
     <div style={S.page}>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
         <div style={{ background: T.card, borderRadius: 14, padding: 14, border: `1px solid ${T.border}` }}>
-          <div style={{ color: "#22c55e", fontWeight: 800, fontSize: 22 }}>{smsLog.filter(s=>s.delivered).length}</div>
+          <div style={{ color: "#22c55e", fontWeight: 800, fontSize: 22 }}>{smsDeliveredCount}</div>
           <div style={{ color: T.sub, fontSize: 12 }}>SMS পাঠানো হয়েছে</div>
         </div>
         <div style={{ background: T.card, borderRadius: 14, padding: 14, border: `1px solid ${T.border}` }}>
-          <div style={{ color: "#f59e0b", fontWeight: 800, fontSize: 22 }}>{smsLog.filter(s=>!s.delivered).length}</div>
+          <div style={{ color: "#f59e0b", fontWeight: 800, fontSize: 22 }}>{smsSimulatedCount}</div>
           <div style={{ color: T.sub, fontSize: 12 }}>সিমুলেশন (গেটওয়ে নেই)</div>
         </div>
       </div>
@@ -22111,7 +22218,7 @@ function Settings_({ T, S, shopName,
   // 📤 ১ ক্লিকে বাকি রিমাইন্ডার SMS
   const [bulkSmsSending, setBulkSmsSending] = useState(false);
   const [bulkSmsProgress, setBulkSmsProgress] = useState({ done: 0, total: 0 });
-  const bakiSmsCustomers = customers.filter(c => (c.balance || 0) > 0 && c.mobile);
+  const bakiSmsCustomers = useMemo(() => customers.filter(c => (c.balance || 0) > 0 && c.mobile), [customers]);
   const sendBulkBakiReminderFromSettings = async () => {
     if (bakiSmsCustomers.length === 0) {
       showToast("বাকি আছে এমন কোনো কাস্টমার (মোবাইল নম্বরসহ) নেই", "#f59e0b");
