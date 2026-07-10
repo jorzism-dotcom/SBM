@@ -9076,11 +9076,27 @@ function SmartBusinessMgmt() {
       const firebaseOn  = fbOn ?? false;
       if (firebaseCfg && firebaseOn) { FB.init(firebaseCfg); FSS.init(firebaseCfg); }
 
+      // ── #৭ বুট-টাইম পারফরম্যান্স — ইনভয়েস প্রোগ্রেসিভ হাইড্রেশন ──────────────
+      // ১,০০,০০০+ ইনভয়েস থাকলে পুরো অ্যারে প্রথম রেন্ডারেই state-এ বসালে Dashboard/RFM/
+      // ইত্যাদির ভারী useMemo হিসাব প্রথম পেইন্টকেই ব্লক করে ফেলত ("অ্যাপ খোলার সময় লোডিং বেশি")।
+      // তাই প্রথমে শুধু সাম্প্রতিক ৯০ দিনের window দিয়ে state সেট করা হচ্ছে (দ্রুত, হালকা প্রথম
+      // রেন্ডার), তারপর প্রথম পেইন্ট শেষ হওয়ার পর (setTimeout 0) পুরো ডেটা দিয়ে ব্যাকফিল করা হয় —
+      // চূড়ান্ত অবস্থা অপরিবর্তিত (অফলাইন দোকানে পুরো হিস্ট্রি state-এই থাকে, Firebase চালু
+      // দোকানে এমনিতেই কিছুক্ষণ পর Firestore-এর ৩০ দিনের windowed listener পুরোটা ওভাররাইট
+      // করে দেয় — শুধু বুটের প্রথম মুহূর্তের ভারী কাজটা সরানো হলো, কোনো ডেটা হারায় না)।
+      const allInvoicesForBoot = rawInvoices || [];
+      const invoiceCutoff90 = new Date();
+      invoiceCutoff90.setDate(invoiceCutoff90.getDate() - 90);
+      const invoiceCutoff90Key = invoiceCutoff90.toISOString().split("T")[0];
+      const recentInvoicesForBoot = allInvoicesForBoot.length > 500
+        ? allInvoicesForBoot.filter(i => !i.dateKey || i.dateKey >= invoiceCutoff90Key)
+        : allInvoicesForBoot; // ছোট দোকানে (৫০০-এর কম ইনভয়েস) windowing-এর দরকারই নেই
+
       // ── সব state একসাথে batch update — একটাই React re-render ────────────────
       _patch({
         customers:             rawCustomers        || SEED_CUSTOMERS,
         products:              migratedProds,
-        invoices:              rawInvoices         || [],
+        invoices:              recentInvoicesForBoot,
         txns:                  rawTxns             || [],
         smsLog:                rawSmsLog           || [],
         users:                 rawUsers            || SEED_USERS,
@@ -9124,6 +9140,13 @@ function SmartBusinessMgmt() {
       // ── Device ID generate করুন (একবারই) ───────────────────────────────────
       if (!localStorage.getItem("hg_device_id")) {
         localStorage.setItem("hg_device_id", "dev_" + Math.random().toString(36).slice(2, 10) + "_" + Date.now().toString(36));
+      }
+
+      // ── ইনভয়েস ব্যাকফিল — প্রথম পেইন্ট শেষ হওয়ার পর পুরো হিস্ট্রি দিয়ে state আপডেট ──
+      // (windowing হয়েছিল শুধু allInvoicesForBoot.length > 500 হলে, তাই ছোট দোকানে এই
+      // ব্যাকফিল কার্যত no-op — একই অ্যারে ফিরিয়ে দিলে React re-render-ই করবে না)
+      if (recentInvoicesForBoot !== allInvoicesForBoot) {
+        setTimeout(() => { _patch({ invoices: allInvoicesForBoot }); }, 0);
       }
 
       // ── Notification permission ও FCM setup — deferred (UI block না করতে) ──
@@ -14939,6 +14962,17 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   const todayKeyStr = todayEn();
   // ── bakiCustomers: বাকি আছে এমন কাস্টমার (Dashboard-wide) ──────────────────
   const bakiCustomers = customers.filter(c => (c.balance || 0) > 0);
+  // 🔴 পারফরম্যান্স ফিক্স: নিচে "বাকি আছে এমন কাস্টমার" ব্রেকডাউন মোডালে আগে প্রতি
+  // কাস্টমারে txns.filter() করা হতো (O(কাস্টমার×txns)) — এখন একবারে Map-এ গ্রুপ করে O(1) lookup।
+  const txnsByCustForBaki = React.useMemo(() => {
+    const m = new Map();
+    (txns || []).forEach(t => {
+      if (t.customerId == null) return;
+      const arr = m.get(t.customerId);
+      if (arr) arr.push(t); else m.set(t.customerId, [t]);
+    });
+    return m;
+  }, [txns]);
   const cashLogsAll = cashLogs || [];
   const todayOpeningEntries = React.useMemo(() =>
     cashLogsAll.filter(c => c.type === "opening" && c.dateKey === todayKeyStr),
@@ -16979,7 +17013,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
               idx:2,
               sub:`${bakiCustomers.length}জন কাস্টমারের বাকি`,
               iconPath: <><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20"/><path d="M7 15h2"/><path d="M12 15h5"/></>,
-              modal: { title:"বাকি আছে এমন কাস্টমার", type:"customer-breakdown", rows: bakiCustomers.map(c => { const cTxns = txns.filter(t => t.customerId === c.id); return { name:c.name, mobile:c.mobile, balance:c.balance, baki:cTxns.filter(t=>t.type==="baki").reduce((s,t)=>s+t.amount,0), joma:cTxns.filter(t=>t.type==="joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale").reduce((s,t)=>s+t.amount,0) }; }).sort((a,b)=>b.balance-a.balance) },
+              modal: { title:"বাকি আছে এমন কাস্টমার", type:"customer-breakdown", rows: bakiCustomers.map(c => { const cTxns = txnsByCustForBaki.get(c.id) || []; return { name:c.name, mobile:c.mobile, balance:c.balance, baki:cTxns.filter(t=>t.type==="baki").reduce((s,t)=>s+t.amount,0), joma:cTxns.filter(t=>t.type==="joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale").reduce((s,t)=>s+t.amount,0) }; }).sort((a,b)=>b.balance-a.balance) },
             },
             {
               label:"আজকের বাকি আদায়", value:`৳${fmt(todayJoma)}`,
@@ -17059,9 +17093,27 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
     const totalSales = invoices.reduce((s, i) => s + (i.total || 0), 0);
     const monthSale  = invoices.filter(i => (i.dateKey || "") >= d30).reduce((s, i) => s + (i.total || 0), 0);
 
+    // 🔴 পারফরম্যান্স ফিক্স: আগে প্রতিটা কাস্টমারের জন্য পুরো invoices/txns অ্যারে আলাদা
+    // করে .filter() করা হতো — O(কাস্টমার × ইনভয়েস), ১০,০০০ কাস্টমার × ১,০০,০০০ ইনভয়েসে
+    // প্রায় ১০০ কোটি অপারেশন, যা Customer ট্যাব ল্যাগ করানোর মূল কারণ ছিল।
+    // এখন একবারে (single pass) invoices/txns-কে customerId দিয়ে Map-এ গ্রুপ করে নিচ্ছি,
+    // তারপর প্রতি কাস্টমারে শুধু O(1) Map lookup — মোট জটিলতা O(কাস্টমার+ইনভয়েস+txns)।
+    const invByCust = new Map();
+    invoices.forEach(i => {
+      if (i.customerId == null) return;
+      const arr = invByCust.get(i.customerId);
+      if (arr) arr.push(i); else invByCust.set(i.customerId, [i]);
+    });
+    const txnByCust = new Map();
+    txns.forEach(t => {
+      if (t.customerId == null) return;
+      const arr = txnByCust.get(t.customerId);
+      if (arr) arr.push(t); else txnByCust.set(t.customerId, [t]);
+    });
+
     return customers.map(c => {
-      const custInvs = invoices.filter(i => i.customerId === c.id);
-      const custTxns = txns.filter(t => t.customerId === c.id);
+      const custInvs = invByCust.get(c.id) || [];
+      const custTxns = txnByCust.get(c.id) || [];
       const ltv      = custInvs.reduce((s, i) => s + (i.total || 0), 0);
       const frequency = custInvs.length;
       const sorted   = [...custInvs].sort((a, b) => (b.dateKey||"").localeCompare(a.dateKey||""));
