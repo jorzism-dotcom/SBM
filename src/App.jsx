@@ -9698,7 +9698,15 @@ function SmartBusinessMgmt() {
 
         if (Math.random() < 0.1) FS.deleteOldBackups(7); // মাঝেমধ্যে পুরনো (>৭দিন) ফাইল পরিষ্কার
         if (Math.random() < 0.1) FieldChangeLog.prune(); // #১৫ — একই ফ্রিকোয়েন্সিতে চেঞ্জ-লগও সীমার মধ্যে রাখা
-      } catch {}
+      } catch (e) {
+        // 🔴 ডিবাগ ফিক্স: আগে এই ব্লকে এরর সম্পূর্ণ silent-এ গিলে ফেলা হতো —
+        // FS.saveBackup() ব্যর্থ হলেও কোথাও কোনো চিহ্ন থাকত না, ফাইল
+        // stale থেকে যেত কিন্তু বোঝার উপায় ছিল না কেন। এখন SyncLog +
+        // console.error দুটোতেই লেখা হয়, যাতে Settings-এর "চেঞ্জ লগ"
+        // থেকেই আসল কারণ ধরা যায়।
+        console.error("[autoLocalFile] ব্যাকআপ ব্যর্থ:", e);
+        try { SyncLog.add("error", "Auto local file ব্যাকআপ ব্যর্থ: " + (e?.message || String(e))); } catch {}
+      }
     };
 
     const runDriveBackup = async () => {
