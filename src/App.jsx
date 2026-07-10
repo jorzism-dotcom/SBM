@@ -6315,51 +6315,6 @@ const todayStr = () => new Date().toLocaleDateString("en-US");
 const nowStr   = () => new Date().toLocaleString("en-US");
 const fmt      = (n) => Number(n).toLocaleString("en-US");
 
-// ─── 📷 Barcode Scanner — Capacitor ML Kit (Android-native, fast, offline) ────
-// সব জায়গা থেকে ব্যবহারযোগ্য: Invoice, Product form, Purchase entry
-async function scanBarcode(showToast) {
-  try {
-    const { BarcodeScanner } = await import("@capacitor-mlkit/barcode-scanning");
-
-    // Permission check
-    const { camera } = await BarcodeScanner.checkPermissions();
-    if (camera !== "granted") {
-      const result = await BarcodeScanner.requestPermissions();
-      if (result.camera !== "granted") {
-        showToast?.("ক্যামেরা পারমিশন প্রয়োজন", "#ef4444");
-        return null;
-      }
-    }
-
-    // Google Barcode Scanner module (Play Services) — প্রথমবার দরকার হলে download হবে
-    const { available } = await BarcodeScanner.isGoogleBarcodeScannerModuleAvailable();
-    if (!available) {
-      showToast?.("স্ক্যানার প্রস্তুত হচ্ছে...", "#f59e0b");
-      await BarcodeScanner.installGoogleBarcodeScannerModule();
-    }
-
-    const { barcodes } = await BarcodeScanner.scan({
-      formats: [], // সব format সাপোর্ট (EAN13, CODE128, QR ইত্যাদি)
-    });
-
-    if (barcodes && barcodes.length > 0) {
-      return barcodes[0].rawValue || barcodes[0].displayValue || null;
-    }
-    return null;
-  } catch (e) {
-    // Web/dev environment-এ plugin না থাকলে silent fail
-    if (e?.message?.includes("not implemented") || e?.message?.includes("not available")) {
-      showToast?.("এই ডিভাইসে ক্যামেরা স্ক্যান সাপোর্ট নেই", "#ef4444");
-    } else if (e?.message?.includes("cancel") || e?.code === "CANCELLED") {
-      // user বাতিল করেছে — toast দরকার নেই
-    } else {
-      console.warn("[BarcodeScanner] error:", e);
-      showToast?.("স্ক্যান করতে সমস্যা হয়েছে", "#ef4444");
-    }
-    return null;
-  }
-}
-
 // ─── 📱 WhatsApp Quick Share — Capacitor Browser দিয়ে wa.me link খোলে ────────
 // বাংলাদেশের মোবাইল নম্বর normalize করে — 01XXXXXXXXX → 8801XXXXXXXXX
 function normalizeBDMobile(mobile) {
@@ -8731,8 +8686,6 @@ function SmartBusinessMgmt() {
       workerRef.current.onmessage = ({ data }) => {
         if (data.type === "DASHBOARD_RESULT") setDashStats(data.payload);
         if (data.type === "REORDER_ALERTS")   setReorderAlerts(data.payload);
-        if (data.type === "ABC_RESULT")        setAbcData(data.payload);
-        if (data.type === "DEAD_STOCK_RESULT") setDeadStock(data.payload);
         if (data.type === "CASH_FLOW_RESULT")  setCashFlow(data.payload);
       };
       workerRef.current.onerror = (e) => console.warn("Worker error:", e);
@@ -8770,45 +8723,13 @@ function SmartBusinessMgmt() {
     });
   }, [invoices, customers, txns, expenses, purchaseOrders]);
 
-  // ABC Analysis — পণ্য শ্রেণীবিভাগ (Worker)
-  const [abcData,    setAbcData]    = React.useState([]);
-  const [deadStock,  setDeadStock]  = React.useState([]);
   const [cashFlow,   setCashFlow]   = React.useState(null); // Cash Flow Forecast
-
-  useEffect(() => {
-    if (!workerRef.current || !products.length || !invoices.length) return;
-    workerRef.current.postMessage({
-      type: "ABC_ANALYSIS",
-      payload: { products, invoices }
-    });
-    workerRef.current.postMessage({
-      type: "DEAD_STOCK",
-      payload: { products, invoices, thresholdDays: 90 }
-    });
-  }, [products, invoices]);
 
   // Global prodMap — একবার তৈরি, সব জায়গায় ব্যবহার
   const globalProdMap = useMemo(
     () => new Map(products.map(p => [p.id, p])),
     [products]
   );
-
-  // ── 🔒 Session Timeout state — actual effect showToast সংজ্ঞার পরে (নিচে) ──
-  const lastActivityRef = useRef(Date.now());
-  const [sessionTimeoutMin, setSessionTimeoutMinState] = useState(() => {
-    try {
-      const saved = localStorage.getItem("sbm-session-timeout");
-      return saved ? parseInt(saved) : null; // null = role-based default ব্যবহার হবে
-    } catch { return null; }
-  });
-
-  const setSessionTimeoutMin = useCallback((mins) => {
-    setSessionTimeoutMinState(mins);
-    try {
-      if (mins === null) localStorage.removeItem("sbm-session-timeout");
-      else localStorage.setItem("sbm-session-timeout", String(mins));
-    } catch {}
-  }, []);
 
   useEffect(() => {
     (async () => {
@@ -9322,34 +9243,6 @@ function SmartBusinessMgmt() {
     const dur = (color === "#f59e0b" || color === "#ef4444") ? 8000 : 3200;
     setToast({ msg, color }); safeTimeout(() => setToast(null), dur);
   }, [safeTimeout]);
-
-  // ── 🔒 Session Timeout — নিষ্ক্রিয় থাকলে auto-logout ──────────────────────
-  // Staff: ৩০ মিনিট, Owner/Admin: ২ ঘণ্টা ডিফল্ট — Settings-এ কাস্টমাইজ করা যায়
-  useEffect(() => {
-    if (!currentUser) return; // লগইন করা না থাকলে টাইমার দরকার নেই
-
-    const defaultMin = currentUser.role === "staff" ? 30 : 120;
-    const timeoutMs  = (sessionTimeoutMin ?? defaultMin) * 60 * 1000;
-
-    lastActivityRef.current = Date.now(); // লগইন করার সাথে সাথে টাইমার রিসেট
-
-    const resetActivity = () => { lastActivityRef.current = Date.now(); };
-    const events = ["touchstart", "mousedown", "keydown", "scroll"];
-    events.forEach(ev => document.addEventListener(ev, resetActivity, { passive: true }));
-
-    const checkInterval = setInterval(() => {
-      const idleMs = Date.now() - lastActivityRef.current;
-      if (idleMs > timeoutMs) {
-        setCurrentUser(null);
-        showToast("⏱️ নিষ্ক্রিয়তার কারণে স্বয়ংক্রিয়ভাবে লগ-আউট হয়েছে", "#f59e0b");
-      }
-    }, 30000); // প্রতি ৩০ সেকেন্ডে চেক
-
-    return () => {
-      events.forEach(ev => document.removeEventListener(ev, resetActivity));
-      clearInterval(checkInterval);
-    };
-  }, [currentUser, sessionTimeoutMin, showToast, setCurrentUser]);
 
   // 🔴 Backup source fix — আগে এই ফাংশন windowed local `invoices` state (শুধু
   // শেষ ৩০ দিন) থেকে backup বানাত, তাই ৩০ দিনের বেশি পুরনো সব invoice নিঃশব্দে
@@ -10034,7 +9927,6 @@ function SmartBusinessMgmt() {
       { id: "products",  label: "পণ্য",     icon: "M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4zM3 6h18" },
       { id: "expense",  label: "খরচ",      icon: "M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" },
       { id: "returns",  label: "ফেরত",     icon: "M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM9 22V12h6v10" },
-      { id: "quotation", label: "কোটেশন",  icon: "M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" },
       { id: "supplier",  label: "সাপ্লায়ার", icon: "M19 21V5a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v16m14 0h2m-2 0H5m14 0a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2m14 0V5M5 21V5m0 0a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2M9 7h6M9 11h6m-6 4h6" },
       { id: "ai",       label: "AI",       icon: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8 11a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm8 0a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm-4 6c-2.5 0-4.7-1.3-6-3.3h12c-1.3 2-3.5 3.3-6 3.3z" },
       { id: "settings",  label: "সেটিং",   icon: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" },
@@ -10043,6 +9935,13 @@ function SmartBusinessMgmt() {
     return isStaff ? all.filter(n => !["sms", "ai"].includes(n.id)) : all;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStaff]);
+
+  // ── ফোনে বাটন কম রাখতে: শুধু হোম/কাস্টমার/ইনভয়েস/পণ্য নিচে থাকবে,
+  // বাকি মডিউল "অন্যান্য" চাপলে সাইড থেকে খুলবে ──────────────────────────
+  const PRIMARY_NAV_IDS = ["dashboard", "customers", "invoice", "products"];
+  const primaryNavItems = React.useMemo(() => navItems.filter(n => PRIMARY_NAV_IDS.includes(n.id)), [navItems]);
+  const moreNavItems    = React.useMemo(() => navItems.filter(n => !PRIMARY_NAV_IDS.includes(n.id)), [navItems]);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
 
   // Hide HTML splash screen once React is fully ready (data loaded + auth checked)
   useEffect(() => {
@@ -10081,6 +9980,8 @@ function SmartBusinessMgmt() {
   useEffect(() => {
     const handleBackButton = (e) => {
       e.preventDefault();
+      // If the "অন্যান্য" side drawer is open, close it first
+      if (showMoreMenu) { setShowMoreMenu(false); return; }
       // If detail view is open, go back to list
       if (detailCId) { setDetailCId(null); return; }
       // If a cash drawer modal is open, close it first (go back to dashboard)
@@ -10111,7 +10012,7 @@ function SmartBusinessMgmt() {
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detailCId, tab, dashModal, invModal, cashModal]);
+  }, [detailCId, tab, dashModal, invModal, cashModal, showMoreMenu]);
 
   if (!loaded || !authChecked) return (
     <div style={{ ...makeS(DARK).loadScreen, background: "radial-gradient(ellipse at 50% 40%,#001a2c 0%,#000d18 70%)" }}>
@@ -10181,6 +10082,7 @@ function SmartBusinessMgmt() {
         @keyframes fadeUp     { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:translateY(0); } }
         @keyframes slideUpModal { from { opacity:0; transform:translateY(40px); } to { opacity:1; transform:translateY(0); } }
         @keyframes slideDown  { from { opacity:0; transform:translateY(-10px); } to { opacity:1; transform:translateY(0); } }
+        @keyframes slideInRight { from { opacity:0; transform:translateX(24px); } to { opacity:1; transform:translateX(0); } }
         @keyframes pinPop     { 0%{transform:scale(0.6)} 60%{transform:scale(1.2)} 100%{transform:scale(1)} }
         @keyframes toastPop   { 0%{opacity:0;transform:translateX(-50%) translateY(18px) scale(0.88)} 60%{transform:translateX(-50%) translateY(-4px) scale(1.03)} 100%{opacity:1;transform:translateX(-50%) translateY(0) scale(1)} }
         @keyframes blinkDot   { 0%{opacity:1;box-shadow:0 0 6px currentColor} 100%{opacity:0.15;box-shadow:none} }
@@ -10578,8 +10480,6 @@ function SmartBusinessMgmt() {
               initialTab={productInitTab}
               currentUser={currentUser} hasPerm={hasPerm}
               shopName={shopName}
-              abcData={abcData}
-              deadStock={deadStock}
               auditLog={auditLog}
             />
           </ErrorBoundary>
@@ -10594,27 +10494,6 @@ function SmartBusinessMgmt() {
               showToast={showToast}
               currentUser={currentUser}
               shopName={shopName}
-            />
-          </ErrorBoundary>
-        )}
-        {tab === "quotation" && (
-          <ErrorBoundary T={T}>
-            <QuotationModule T={T} S={S}
-              quotations={quotations}
-              setQuotations={setQuotations}
-              customers={customers}
-              products={products}
-              invoices={invoices}
-              setInvoices={setInvoices}
-              setProducts={setProducts}
-              setCustomers={setCustomers}
-              addTxn={addTxn}
-              showToast={showToast}
-              currentUser={currentUser}
-              shopName={shopName}
-              setTab={setTab}
-              setPreselectedCust={setPreselectedCust}
-              setPreselectedType={setPreselectedType}
             />
           </ErrorBoundary>
         )}
@@ -10722,7 +10601,6 @@ function SmartBusinessMgmt() {
               returns={returns} setReturns={setReturns}
               quotations={quotations} setQuotations={setQuotations}
               supplierPayments={supplierPayments} setSupplierPayments={setSupplierPayments}
-              sessionTimeoutMin={sessionTimeoutMin} setSessionTimeoutMin={setSessionTimeoutMin}
               auditLogs={auditLogs} setAuditLogs={setAuditLogs}
               hasPerm={hasPerm} fssReady={fssReady}
               pendingConflicts={pendingConflicts}
@@ -10756,15 +10634,15 @@ function SmartBusinessMgmt() {
       </main>
 
       <nav style={S.nav}>
-        {navItems.map(n => {
-          const isActive = tab === n.id && !showDetail;
+        {primaryNavItems.map(n => {
+          const isActive = tab === n.id && !showDetail && !showMoreMenu;
           return (
             <button key={n.id}
               style={{
                 ...S.navBtn,
                 color: isActive ? "#fff" : `${T.headingColor}80`,
               }}
-              onClick={() => { setDetailCId(null); setInvModal(null); setDashModal(null); setCashModal(null); setTab(n.id); }}>
+              onClick={() => { setShowMoreMenu(false); setDetailCId(null); setInvModal(null); setDashModal(null); setCashModal(null); setTab(n.id); }}>
               {isActive && <span style={{ position:"absolute", inset:0, background:`${T.accent}55`, border:`1px solid ${T.accent}88`, borderRadius:14, animation:"bounceIn 0.25s cubic-bezier(0.4,0,0.2,1)" }} />}
               <span style={{ position: "relative", zIndex: 1, transition: "transform 0.2s", transform: isActive ? "scale(1.15)" : "scale(1)" }}>
                 <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={isActive ? 2.5 : 1.8} strokeLinecap="round" strokeLinejoin="round">
@@ -10777,7 +10655,33 @@ function SmartBusinessMgmt() {
                 transition: "all 0.2s",
                 letterSpacing: isActive ? 0.3 : 0,
               }}>{n.label}</span>
-              {n.id === "settings" && backupNeeded && (
+            </button>
+          );
+        })}
+        {(() => {
+          const isMoreActive = (moreNavItems.some(n => n.id === tab) && !showDetail) || showMoreMenu;
+          return (
+            <button key="more"
+              style={{
+                ...S.navBtn,
+                color: isMoreActive ? "#fff" : `${T.headingColor}80`,
+              }}
+              onClick={() => setShowMoreMenu(v => !v)}>
+              {isMoreActive && <span style={{ position:"absolute", inset:0, background:`${T.accent}55`, border:`1px solid ${T.accent}88`, borderRadius:14, animation:"bounceIn 0.25s cubic-bezier(0.4,0,0.2,1)" }} />}
+              <span style={{ position: "relative", zIndex: 1, transition: "transform 0.2s", transform: isMoreActive ? "scale(1.15)" : "scale(1)" }}>
+                <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={isMoreActive ? 2.5 : 1.8} strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="5" cy="12" r="1.8" fill="currentColor" stroke="none" />
+                  <circle cx="12" cy="12" r="1.8" fill="currentColor" stroke="none" />
+                  <circle cx="19" cy="12" r="1.8" fill="currentColor" stroke="none" />
+                </svg>
+              </span>
+              <span style={{
+                fontSize: 9.5, fontWeight: isMoreActive ? 800 : 600,
+                position: "relative", zIndex: 1,
+                transition: "all 0.2s",
+                letterSpacing: isMoreActive ? 0.3 : 0,
+              }}>অন্যান্য</span>
+              {backupNeeded && (
                 <span style={{
                   width: 7, height: 7,
                   background: "#f59e0b",
@@ -10789,8 +10693,52 @@ function SmartBusinessMgmt() {
               )}
             </button>
           );
-        })}
+        })()}
       </nav>
+
+      {/* ── "অন্যান্য" সাইড ড্রয়ার — খরচ/ফেরত/সাপ্লায়ার/AI/সেটিং ইত্যাদি এখানে ── */}
+      {showMoreMenu && (
+        <div style={{ position:"fixed", inset:0, zIndex:60, display:"flex", justifyContent:"flex-end" }}>
+          <div
+            onClick={() => setShowMoreMenu(false)}
+            style={{ position:"absolute", inset:0, background:"#000000aa", animation:"fadeIn 0.2s ease" }}
+          />
+          <div style={{
+            position:"relative", width:"72%", maxWidth:300, height:"100%",
+            background: T.header, borderLeft:`1px solid ${T.accent}33`,
+            boxShadow:`-4px 0 24px #0008`, padding:"18px 12px",
+            paddingBottom: "calc(18px + env(safe-area-inset-bottom, 0px))",
+            display:"flex", flexDirection:"column", gap:6,
+            animation:"slideInRight 0.22s cubic-bezier(0.4,0,0.2,1)",
+            overflowY:"auto",
+          }}>
+            <div style={{ color:T.headingColor, fontWeight:900, fontSize:15, padding:"4px 8px 14px" }}>অন্যান্য মডিউল</div>
+            {moreNavItems.map(n => {
+              const isActive = tab === n.id && !showDetail;
+              return (
+                <button key={n.id}
+                  onClick={() => { setShowMoreMenu(false); setDetailCId(null); setInvModal(null); setDashModal(null); setCashModal(null); setTab(n.id); }}
+                  style={{
+                    display:"flex", alignItems:"center", gap:12,
+                    background: isActive ? `${T.accent}33` : "transparent",
+                    border: isActive ? `1px solid ${T.accent}88` : "1px solid transparent",
+                    borderRadius: 12, padding:"11px 12px",
+                    color: isActive ? "#fff" : `${T.headingColor}cc`,
+                    cursor:"pointer", fontFamily:"inherit", width:"100%", textAlign:"left",
+                  }}>
+                  <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={isActive ? 2.5 : 1.8} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0 }}>
+                    <path d={n.icon} />
+                  </svg>
+                  <span style={{ fontSize:13.5, fontWeight: isActive ? 800 : 600 }}>{n.label}</span>
+                  {n.id === "settings" && backupNeeded && (
+                    <span style={{ width:7, height:7, background:"#f59e0b", borderRadius:"50%", marginLeft:"auto", boxShadow:"0 0 6px #f59e0b88" }} />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Stock notifications moved to individual home cards */}
 
@@ -12950,29 +12898,6 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
             {prodSearch && (
               <button onPointerDown={e => e.preventDefault()} onClick={e => { e.currentTarget.closest("div").querySelector("input")?.value !== undefined && (e.currentTarget.closest("div").querySelector("input").value = ""); setProdSearch(""); setProdPage(1); }} style={{ background:"#22c55e22",border:"none",color:"#22c55e",cursor:"pointer",borderRadius:8,width:22,height:22,fontSize:11,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0 }}>✕</button>
             )}
-            <button
-              onClick={async () => {
-                const code = await scanBarcode(showToast);
-                if (!code) return;
-                const match = products.find(p => p.barcode && p.barcode === code);
-                if (match) {
-                  changeQty(match, 1);
-                  showToast(`✅ ${match.name} যোগ হয়েছে`, "#22c55e");
-                } else {
-                  showToast(`বারকোড "${code}" এর কোনো পণ্য পাওয়া যায়নি`, "#f59e0b");
-                  setProdSearch(code); setProdPage(1);
-                }
-              }}
-              style={{ background:"#22c55e22", border:"1px solid #22c55e44", borderRadius:8,
-                width:30, height:30, display:"flex", alignItems:"center", justifyContent:"center",
-                cursor:"pointer", flexShrink:0 }}
-              title="বারকোড স্ক্যান করুন">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/>
-                <line x1="7" y1="8" x2="7" y2="16"/><line x1="11" y1="8" x2="11" y2="16"/>
-                <line x1="14" y1="8" x2="14" y2="16"/><line x1="17" y1="8" x2="17" y2="16"/>
-              </svg>
-            </button>
           </div>
 
           {/* Product Grid — 2 column — Virtuoso Virtual */}
@@ -18049,19 +17974,11 @@ function InvoiceReceiptPrint({ inv, customer, type }) {
 }
 
 // ── Products ───────────────────────────────────────────────────────────────────
-function Products({ T, S, products, setProducts, showToast, stockMovements = [], setStockMovements, purchaseOrders = [], setPurchaseOrders, deletedProducts = [], setDeletedProducts, initialTab, currentUser, hasPerm, shopName, abcData = [], deadStock = [], auditLog }) {
+function Products({ T, S, products, setProducts, showToast, stockMovements = [], setStockMovements, purchaseOrders = [], setPurchaseOrders, deletedProducts = [], setDeletedProducts, initialTab, currentUser, hasPerm, shopName, auditLog }) {
   const [showAdd,      setShowAdd]      = useState(false);
   const [editId,       setEditId]       = useState(null);
   const [form,         setForm]         = useState({ name: "", price: "", stock: "", minStockAlert: "5", category: "অন্যান্য", company: "", productType: "product", costPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false });
   const [search,       setSearch]       = useState("");
-  // 🔴 ফিক্স (React error #310 — Rendered fewer/more hooks than during previous render):
-  // এই দুটো useState আগে abcData.length>0 / deadStock.length>0 শর্তাধীন IIFE-এর
-  // ভেতরে ছিল। শর্ত সত্য/মিথ্যা হওয়ার ওপর ভিত্তি করে hook কল সংখ্যা রেন্ডার থেকে
-  // রেন্ডারে বদলে যেত (Rules of Hooks ভঙ্গ) — যেমন প্রথম পণ্য যোগ করার পর
-  // abcData/deadStock খালি থেকে নন-খালি হলে হঠাৎ ২টা নতুন hook যোগ হতো, আর React
-  // পুরো পেজ ক্র্যাশ করে দিত। এখন এই state কম্পোনেন্টের টপ-লেভেলে, শর্তহীনভাবে আছে।
-  const [showAbc,  setShowAbc]  = useState(false);
-  const [showDead, setShowDead] = useState(false);
   // React 18 useDeferredValue — type করলে UI block হবে না
   const deferredSearch = useDeferredValue(search);
 
@@ -18982,91 +18899,6 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
 
       {activeTab === "retail" && <>
 
-      {/* ══ ABC Analysis Card ══ */}
-      {abcData.length > 0 && (() => {
-        const aCount = abcData.filter(p => p.category === "A").length;
-        const bCount = abcData.filter(p => p.category === "B").length;
-        const cCount = abcData.filter(p => p.category === "C").length;
-        return (
-          <div className="qc-gradient-card" style={{ ...S.card, marginBottom:10, padding:"12px 14px", border:"1.5px solid #6366f133" }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: showAbc?10:0 }}
-              onClick={() => setShowAbc(v=>!v)}>
-              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                <span style={{ fontSize:18 }}>📊</span>
-                <div>
-                  <div style={{ color:T.text, fontWeight:900, fontSize:13 }}>ABC বিশ্লেষণ</div>
-                  <div style={{ color:T.sub, fontSize:11 }}>A:{aCount} · B:{bCount} · C:{cCount} পণ্য</div>
-                </div>
-              </div>
-              <span style={{ color:T.sub, fontSize:13 }}>{showAbc?"▲":"▼"}</span>
-            </div>
-            {showAbc && (
-              <div>
-                {[
-                  { cat:"A", label:"উচ্চ মূল্য (৮০% রাজস্ব)", color:"#ef4444", emoji:"🔴", items: abcData.filter(p=>p.category==="A") },
-                  { cat:"B", label:"মধ্যম মূল্য (১৫% রাজস্ব)", color:"#f59e0b", emoji:"🟡", items: abcData.filter(p=>p.category==="B") },
-                  { cat:"C", label:"কম মূল্য (৫% রাজস্ব)", color:"#22c55e", emoji:"🟢", items: abcData.filter(p=>p.category==="C") },
-                ].map(group => (
-                  <div key={group.cat} style={{ marginBottom:8 }}>
-                    <div style={{ color:group.color, fontWeight:800, fontSize:12, marginBottom:4 }}>
-                      {group.emoji} Category {group.cat} — {group.label}
-                    </div>
-                    <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
-                      {group.items.slice(0,5).map(p => (
-                        <span key={p.id} style={{ background:group.color+"18", border:`1px solid ${group.color}33`,
-                          borderRadius:8, padding:"3px 8px", color:group.color, fontSize:11, fontWeight:700 }}>
-                          {p.name}
-                        </span>
-                      ))}
-                      {group.items.length > 5 && <span style={{ color:T.sub, fontSize:11 }}>+{group.items.length-5}টি</span>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      })()}
-
-      {/* ══ Dead Stock Alert ══ */}
-      {deadStock.length > 0 && (() => {
-        const totalValue = deadStock.reduce((s,p) => s+(p.stockValue||0), 0);
-        return (
-          <div className="qc-gradient-card" style={{ ...S.card, marginBottom:10, padding:"12px 14px", border:"1.5px solid #f59e0b33" }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom: showDead?10:0 }}
-              onClick={() => setShowDead(v=>!v)}>
-              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                <span style={{ fontSize:18 }}>🗃️</span>
-                <div>
-                  <div style={{ color:"#f59e0b", fontWeight:900, fontSize:13 }}>ডেড স্টক সতর্কতা</div>
-                  <div style={{ color:T.sub, fontSize:11 }}>{deadStock.length}টি পণ্য · মূল্য ৳{Math.round(totalValue).toLocaleString("en-US")}</div>
-                </div>
-              </div>
-              <span style={{ color:T.sub, fontSize:13 }}>{showDead?"▲":"▼"}</span>
-            </div>
-            {showDead && (
-              <Virtuoso
-                style={{ height: Math.min(deadStock.length * 64, 280) }}
-                data={deadStock}
-                itemContent={(_, p) => (
-                  <div style={{ padding:"6px 0", borderBottom:`1px solid ${T.border}`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                    <div>
-                      <div style={{ color:T.text, fontWeight:700, fontSize:12 }}>{p.name}</div>
-                      <div style={{ color:T.sub, fontSize:11 }}>
-                        স্টক: {p.stock}টি · {p.daysSinceLastSale < 9999 ? `${p.daysSinceLastSale} দিন আগে বিক্রি` : "কখনো বিক্রি হয়নি"}
-                      </div>
-                    </div>
-                    <div style={{ color:"#f59e0b", fontWeight:800, fontSize:12, textAlign:"right" }}>
-                      ৳{Math.round(p.stockValue||0).toLocaleString("en-US")}
-                    </div>
-                  </div>
-                )}
-              />
-            )}
-          </div>
-        );
-      })()}
-
       {/* ── ক্রয় এন্ট্রি কার্ড — হোম থেকে স্থানান্তরিত ── */}
       {(currentUser?.role !== "staff" || (hasPerm && hasPerm(currentUser, "purchase_entry"))) && (() => {
         const todayKey2 = new Date().toISOString().split("T")[0];
@@ -19119,24 +18951,6 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           voiceColor="#22c55e"
           style={{ flex: 1, marginBottom: 0 }}
         />
-        <button
-          onClick={async () => {
-            const code = await scanBarcode(showToast);
-            if (!code) return;
-            const match = products.find(p => p.barcode === code);
-            if (match) { setSearch(match.name); showToast(`✅ ${match.name} পাওয়া গেছে`, "#22c55e"); }
-            else { setSearch(code); showToast(`বারকোড "${code}" এর কোনো পণ্য নেই`, "#f59e0b"); }
-          }}
-          style={{ background:"#22c55e22", border:"1px solid #22c55e44", borderRadius:10,
-            width:38, height:38, display:"flex", alignItems:"center", justifyContent:"center",
-            cursor:"pointer", flexShrink:0 }}
-          title="বারকোড স্ক্যান করে পণ্য খুঁজুন">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/>
-            <line x1="7" y1="8" x2="7" y2="16"/><line x1="11" y1="8" x2="11" y2="16"/>
-            <line x1="14" y1="8" x2="14" y2="16"/><line x1="17" y1="8" x2="17" y2="16"/>
-          </svg>
-        </button>
       </div>
 
       {showAdd && (
@@ -19161,34 +18975,6 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               inputMode="text" enterKeyHint="next" />
           </div>
           {formErrors.name && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginBottom:6, marginTop:-2 }}>⚠️ নাম আবশ্যক</div>}
-          {/* ── বারকোড — ক্যামেরা স্ক্যান সাপোর্ট ── */}
-          {form.productType !== "service" && (<>
-          <label style={S.label}>📷 বারকোড (ঐচ্ছিক)</label>
-          <div style={{ display:"flex", gap:6, alignItems:"center", marginBottom:4 }}>
-            <input style={{ ...S.input, flex:1, marginBottom:0 }}
-              placeholder="স্ক্যান করুন বা টাইপ করুন"
-              value={form.barcode || ""}
-              onChange={e => setForm({ ...form, barcode: e.target.value })}
-              autoComplete="off" inputMode="text" />
-            <button type="button"
-              onClick={async () => {
-                const code = await scanBarcode(showToast);
-                if (code) {
-                  setForm(f => ({ ...f, barcode: code }));
-                  showToast("✅ বারকোড স্ক্যান হয়েছে", "#22c55e");
-                }
-              }}
-              style={{ background:"#22c55e22", border:"1px solid #22c55e44", borderRadius:10,
-                width:42, height:42, display:"flex", alignItems:"center", justifyContent:"center",
-                cursor:"pointer", flexShrink:0 }}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/>
-                <line x1="7" y1="8" x2="7" y2="16"/><line x1="11" y1="8" x2="11" y2="16"/>
-                <line x1="14" y1="8" x2="14" y2="16"/><line x1="17" y1="8" x2="17" y2="16"/>
-              </svg>
-            </button>
-          </div>
-          </>)}
           {/* ── সাপ্লায়ার selector — শুধু পণ্যের জন্য ── */}
           {form.productType !== "service" && (<>
           <label style={S.label}>🏭 সাপ্লায়ার</label>
@@ -19272,8 +19058,6 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           style={{ height: "calc(100dvh - 260px)" }}
           data={filteredAll}
           itemContent={(_, p) => {
-            const abcInfo = abcData.find(a => a.id === p.id);
-            const abcColors = { A:"#ef4444", B:"#f59e0b", C:"#22c55e" };
             return (
           <div style={{ paddingBottom: 8 }}>
           <div key={p.id} className="qc-gradient-card" style={{
@@ -19290,7 +19074,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               <div style={{ flex: 1 }}>
                 {/* ── সারি ১: নাম + সার্ভিস ব্যাজ ── */}
                 <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
-                  <span style={{ color: T.text, fontWeight: 700, fontSize: 14 }}>{p.name}{p.unit ? <span style={{ color: T.sub, fontWeight: 600, fontSize: 12, marginLeft: 4 }}>({p.unit})</span> : null}{abcInfo && <span style={{ marginLeft:6, background:abcColors[abcInfo.category]+"22", border:`1px solid ${abcColors[abcInfo.category]}44`, borderRadius:6, padding:"1px 6px", fontSize:10, fontWeight:800, color:abcColors[abcInfo.category] }}>{abcInfo.category}</span>}</span>
+                  <span style={{ color: T.text, fontWeight: 700, fontSize: 14 }}>{p.name}{p.unit ? <span style={{ color: T.sub, fontWeight: 600, fontSize: 12, marginLeft: 4 }}>({p.unit})</span> : null}</span>
                   {p.productType === "service" && <span style={{ background:"#0ea5e922", color:"#38bdf8", fontSize:10, borderRadius:6, padding:"1px 7px", fontWeight:800, border:"1px solid #38bdf844", flexShrink:0 }}>🔧 সার্ভিস</span>}
                 </div>
                 {/* ── সারি ২: ক্রয়|বিক্রয়|স্টক|সাপ্লায়ার ── */}
@@ -19773,553 +19557,6 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// 📋 QuotationModule — কোটেশন / এস্টিমেট ব্যবস্থাপনা
-// ══════════════════════════════════════════════════════════════════════════════
-
-const QUOT_STATUS_LABELS = {
-  pending:  { label:"অপেক্ষমান", color:"#f59e0b", icon:"⏳" },
-  approved: { label:"অনুমোদিত",  color:"#22c55e", icon:"✅" },
-  rejected: { label:"প্রত্যাখ্যাত", color:"#ef4444", icon:"❌" },
-  expired:  { label:"মেয়াদোত্তীর্ণ", color:"#64748b", icon:"⌛" },
-  converted:{ label:"ইনভয়েসে রূপান্তরিত", color:"#6366f1", icon:"🔄" },
-};
-
-function QuotationModule({ T, S, quotations = [], setQuotations, customers = [],
-  products = [], invoices = [], setInvoices, setProducts, setCustomers,
-  addTxn, showToast, currentUser, shopName, setTab, setPreselectedCust, setPreselectedType }) {
-
-  const fmt     = n => Math.round(n || 0).toLocaleString("en-US");
-  const todayKey = new Date().toISOString().split("T")[0];
-
-  // ── State ─────────────────────────────────────────────────────────────────
-  const [view,        setView]       = React.useState("list"); // list | create | detail
-  const [selectedQt,  setSelectedQt] = React.useState(null);
-  const [filterStatus, setFilterStatus] = React.useState("all");
-  const [search,      setSearch]     = React.useState("");
-
-  // Create form state
-  const [selCust,     setSelCust]    = React.useState(null);
-  const [custSearch,  setCustSearch] = React.useState("");
-  const [items,       setItems]      = React.useState([]); // [{productId, name, qty, price, unit}]
-  const [prodSearch,  setProdSearch] = React.useState("");
-  const [note,        setNote]       = React.useState("");
-  const [validDays,   setValidDays]  = React.useState(7);
-  const [discount,    setDiscount]   = React.useState("");
-  const [walkInName,  setWalkInName] = React.useState("");
-
-  // ── Computed ───────────────────────────────────────────────────────────────
-  const prodMap  = React.useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
-  const custMap  = React.useMemo(() => new Map(customers.map(c => [c.id, c])), [customers]);
-
-  const subtotal = items.reduce((s, it) => s + (it.price||0) * (it.qty||1), 0);
-  const discAmt  = Math.min(parseFloat(discount)||0, subtotal);
-  const total    = subtotal - discAmt;
-
-  const filteredCustomers = React.useMemo(() => {
-    if (!custSearch.trim()) return customers.slice(0, 20);
-    const q = custSearch.toLowerCase();
-    return customers.filter(c =>
-      c.name?.toLowerCase().includes(q) || c.mobile?.includes(q)
-    ).slice(0, 15);
-  }, [customers, custSearch]);
-
-  const filteredProducts = React.useMemo(() => {
-    if (!prodSearch.trim()) return products.filter(p => (p.stock||0) > 0).slice(0, 30);
-    const q = prodSearch.toLowerCase();
-    return products.filter(p =>
-      p.name?.toLowerCase().includes(q) || p.barcode?.includes(prodSearch)
-    ).slice(0, 20);
-  }, [products, prodSearch]);
-
-  // ── Quotation list filtered ────────────────────────────────────────────────
-  const filteredQt = React.useMemo(() => {
-    let list = filterStatus === "all" ? [...quotations] : quotations.filter(q => q.status === filterStatus);
-    if (search.trim()) {
-      const s = search.toLowerCase();
-      list = list.filter(q =>
-        (q.customerName||"").toLowerCase().includes(s) ||
-        (q.id||"").toLowerCase().includes(s) ||
-        (q.quotNo||"").toLowerCase().includes(s)
-      );
-    }
-    // Auto-expire: যেগুলোর validUntil পার হয়ে গেছে এবং pending
-    list = list.map(q => {
-      if (q.status === "pending" && q.validUntil && q.validUntil < todayKey) {
-        return { ...q, status: "expired" };
-      }
-      return q;
-    });
-    return list.sort((a,b) => (b.createdAt||"").localeCompare(a.createdAt||""));
-  }, [quotations, filterStatus, search, todayKey]);
-
-  // ── Item management ────────────────────────────────────────────────────────
-  const addItem = React.useCallback((p) => {
-    setItems(prev => {
-      const existing = prev.findIndex(it => it.productId === p.id);
-      if (existing >= 0) {
-        return prev.map((it,i) => i === existing ? { ...it, qty: it.qty + 1 } : it);
-      }
-      return [...prev, { productId:p.id, name:p.name, qty:1, price:p.price||0, unit:p.unit||"" }];
-    });
-    setProdSearch("");
-  }, []);
-
-  const removeItem = React.useCallback((idx) => {
-    setItems(prev => prev.filter((_,i) => i !== idx));
-  }, []);
-
-  const updateItem = React.useCallback((idx, field, val) => {
-    setItems(prev => prev.map((it,i) => i===idx ? {...it, [field]:val} : it));
-  }, []);
-
-  // ── Save quotation ─────────────────────────────────────────────────────────
-  const saveQuotation = React.useCallback(() => {
-    if (!selCust && !walkInName.trim()) {
-      showToast("কাস্টমার বা নাম দিন", "#ef4444"); return;
-    }
-    if (items.length === 0) {
-      showToast("অন্তত একটি পণ্য যোগ করুন", "#ef4444"); return;
-    }
-    const validUntil = new Date(Date.now() + validDays * 86400000).toISOString().split("T")[0];
-    const qt = {
-      id:           uid(),
-      quotNo:       "QT-" + Date.now().toString(36).slice(-6).toUpperCase(),
-      customerId:   selCust?.id || null,
-      customerName: selCust?.name || walkInName.trim() || "Walk-in",
-      customerMobile: selCust?.mobile || "",
-      items:        items.map(it => ({ ...it })),
-      subtotal,
-      discount:     discAmt,
-      total,
-      note:         note.trim(),
-      validDays,
-      validUntil,
-      status:       "pending",
-      dateKey:      todayKey,
-      date:         new Date().toLocaleDateString("bn-BD"),
-      shopName:     shopName || "SBM",
-      createdBy:    currentUser?.name || "মালিক",
-      createdAt:    new Date().toISOString(),
-    };
-    setQuotations(prev => [qt, ...prev]);
-    showToast(`✅ কোটেশন ${qt.quotNo} তৈরি হয়েছে`, "#22c55e");
-    // Reset form
-    setSelCust(null); setItems([]); setNote(""); setDiscount(""); setWalkInName(""); setValidDays(7);
-    setView("list");
-  }, [selCust, walkInName, items, subtotal, discAmt, total, note, validDays, todayKey,
-      shopName, currentUser, setQuotations, showToast]);
-
-  // ── Status update ──────────────────────────────────────────────────────────
-  const updateStatus = React.useCallback((qtId, newStatus) => {
-    setQuotations(prev => prev.map(q => q.id === qtId ? {...q, status: newStatus} : q));
-    showToast(`কোটেশন ${newStatus === "approved" ? "অনুমোদিত" : "আপডেট"} হয়েছে`, "#22c55e");
-  }, [setQuotations, showToast]);
-
-  // ── Convert to Invoice ─────────────────────────────────────────────────────
-  const convertToInvoice = React.useCallback((qt) => {
-    const cust = custMap.get(qt.customerId);
-    // Invoice builder-এ send করি — preselected customer + items
-    if (cust) {
-      setPreselectedCust?.(cust);
-      setPreselectedType?.("retail");
-    }
-    // Status update
-    updateStatus(qt.id, "converted");
-    showToast("Invoice Builder-এ পাঠানো হয়েছে — পণ্য আবার যোগ করুন", "#6366f1");
-    setTab("invoice");
-  }, [custMap, setPreselectedCust, setPreselectedType, updateStatus, showToast, setTab]);
-
-  // ── WhatsApp share ─────────────────────────────────────────────────────────
-  const shareQuotationWhatsApp = React.useCallback((qt) => {
-    if (!qt.customerMobile) { showToast("কাস্টমারের মোবাইল নম্বর নেই", "#ef4444"); return; }
-    const nl = "\n";
-    const itemLines = (qt.items||[]).map(it =>
-      `  \u2022 ${it.name} \u00d7${it.qty} @ \u09f3${it.price} = \u09f3${Math.round(it.qty*it.price).toLocaleString("en-US")}`
-    ).join(nl);
-    let msg = `\ud83d\udccb *\u0995\u09cb\u099f\u09c7\u09b6\u09a8 ${qt.quotNo}*${nl}`;
-    msg += `${qt.shopName || shopName}${nl}${nl}`;
-    msg += `\u0995\u09be\u09b8\u09cd\u099f\u09ae\u09be\u09b0: ${qt.customerName}${nl}`;
-    msg += `\u09a4\u09be\u09b0\u09bf\u0996: ${qt.dateKey}${nl}`;
-    msg += `\u09ac\u09c8\u09a7\u09a4\u09be: ${qt.validUntil} \u09aa\u09b0\u09cd\u09af\u09a8\u09cd\u09a4${nl}${nl}`;
-    msg += `\u09aa\u09a3\u09cd\u09af:${nl}${itemLines}${nl}${nl}`;
-    if ((qt.discount||0) > 0) msg += `\u09a1\u09bf\u09b8\u0995\u09be\u0989\u09a8\u09cd\u099f: \u2013\u09f3${Math.round(qt.discount).toLocaleString("en-US")}${nl}`;
-    msg += `*\u09ae\u09cb\u099f: \u09f3${Math.round(qt.total).toLocaleString("en-US")}*${nl}${nl}`;
-    if (qt.note) msg += `\u09a8\u09cb\u099f: ${qt.note}${nl}${nl}`;
-    msg += "\u09a7\u09a8\u09cd\u09af\u09ac\u09be\u09a6\u0964 \u0985\u09a8\u09c1\u09ae\u09cb\u09a6\u09a8 \u0995\u09b0\u09b2\u09c7 \u099c\u09be\u09a8\u09be\u09a8\u0964";
-    shareViaWhatsApp(qt.customerMobile, msg, showToast);
-  }, [shopName, showToast]);
-
-  // ══════════════════════════════════════════════════════
-  // RENDER
-  // ══════════════════════════════════════════════════════
-  return (
-    <div style={{ ...S.page, paddingBottom:100 }}>
-
-      {/* ── Header ── */}
-      <div style={{ ...S.header, marginBottom:0 }}>
-        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-          <div style={{ width:4, height:22, borderRadius:2, background:"linear-gradient(180deg,#6366f1,#8b5cf6)" }} />
-          <span style={{ ...S.headerTitle, fontSize:17 }}>📋 কোটেশন</span>
-        </div>
-        <div style={{ display:"flex", gap:8 }}>
-          {view !== "list" && (
-            <button onClick={() => setView("list")}
-              style={{ ...S.cancelBtn, padding:"8px 14px", margin:0 }}>← তালিকা</button>
-          )}
-          {view === "list" && (
-            <button onClick={() => setView("create")}
-              style={{ ...S.addBtn, width:"auto", padding:"8px 16px", margin:0,
-                display:"flex", alignItems:"center", gap:6,
-                background:"linear-gradient(135deg,#6366f1,#8b5cf6)" }}>
-              <IcPlus /><span style={{ fontSize:13, fontWeight:800 }}>নতুন কোটেশন</span>
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* ══ LIST VIEW ══ */}
-      {view === "list" && (
-        <div style={{ marginTop:14 }}>
-          {/* Stats */}
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:12 }}>
-            {[
-              { label:"মোট",       value:quotations.length, color:"#6366f1" },
-              { label:"অপেক্ষমান",  value:quotations.filter(q=>q.status==="pending").length, color:"#f59e0b" },
-              { label:"অনুমোদিত",  value:quotations.filter(q=>q.status==="approved").length, color:"#22c55e" },
-            ].map(s => (
-              <div key={s.label} className="qc-gradient-card" style={{ ...S.card, padding:"10px 12px" }}>
-                <div style={{ color:s.color, fontWeight:900, fontSize:16 }}>{s.value}</div>
-                <div style={{ color:T.sub, fontSize:11 }}>{s.label}</div>
-              </div>
-            ))}
-          </div>
-
-          {/* Search */}
-          <input placeholder="কোটেশন নম্বর বা কাস্টমার খুঁজুন..."
-            value={search} onChange={e => setSearch(e.target.value)}
-            style={{ ...S.input, marginBottom:8 }} />
-
-          {/* Status filter */}
-          <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:12 }}>
-            {[["all","সব"],["pending","অপেক্ষমান"],["approved","অনুমোদিত"],["converted","রূপান্তরিত"],["rejected","প্রত্যাখ্যাত"],["expired","মেয়াদোত্তীর্ণ"]].map(([k,l]) => (
-              <button key={k} onClick={() => setFilterStatus(k)}
-                style={{ padding:"5px 10px", borderRadius:16, fontFamily:"inherit",
-                  border:`1.5px solid ${filterStatus===k?"#6366f1":T.border}`,
-                  background:filterStatus===k?"#6366f122":T.card,
-                  color:filterStatus===k?"#6366f1":T.sub, fontSize:11, fontWeight:700, cursor:"pointer" }}>
-                {l}
-              </button>
-            ))}
-          </div>
-
-          {/* List */}
-          {filteredQt.length === 0 ? (
-            <div style={S.empty}>
-              <div style={{ fontSize:36, marginBottom:10 }}>📋</div>
-              <div style={{ color:T.text, fontWeight:700 }}>কোনো কোটেশন নেই</div>
-              <div style={{ color:T.sub, fontSize:13, marginTop:4 }}>"নতুন কোটেশন" বাটন দিয়ে তৈরি করুন</div>
-            </div>
-          ) : (
-            <Virtuoso
-              style={{ height:"calc(100dvh - 340px)", minHeight:200 }}
-              data={filteredQt}
-              itemContent={(_, qt) => {
-                const info = QUOT_STATUS_LABELS[qt.status] || QUOT_STATUS_LABELS.pending;
-                const isExpired = qt.status === "pending" && qt.validUntil < todayKey;
-                const daysLeft = qt.validUntil
-                  ? Math.max(0, Math.round((new Date(qt.validUntil) - new Date()) / 86400000))
-                  : null;
-                return (
-                  <div style={{ paddingBottom:8 }}>
-                    <div className="qc-gradient-card list-item" style={{ ...S.card, padding:"12px 14px",
-                      borderLeft:`3px solid ${isExpired?"#64748b":info.color}`, marginBottom:0 }}
-                      onClick={() => { setSelectedQt(qt); setView("detail"); }}>
-                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:6 }}>
-                        <div>
-                          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                            <span style={{ color:T.text, fontWeight:900, fontSize:13 }}>{qt.quotNo}</span>
-                            <span style={{ background:info.color+"22", border:`1px solid ${info.color}44`,
-                              borderRadius:8, padding:"2px 7px", fontSize:10, fontWeight:800, color:info.color }}>
-                              {info.icon} {isExpired?"মেয়াদোত্তীর্ণ":info.label}
-                            </span>
-                          </div>
-                          <div style={{ color:T.sub, fontSize:11, marginTop:3 }}>
-                            {qt.customerName} · {qt.dateKey}
-                          </div>
-                          {daysLeft !== null && qt.status==="pending" && !isExpired && (
-                            <div style={{ color:daysLeft<=2?"#ef4444":"#f59e0b", fontSize:10, marginTop:2, fontWeight:700 }}>
-                              ⏱️ {daysLeft} দিন বাকি
-                            </div>
-                          )}
-                        </div>
-                        <div style={{ color:"#6366f1", fontWeight:900, fontSize:15 }}>৳{fmt(qt.total)}</div>
-                      </div>
-                      <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
-                        {(qt.items||[]).slice(0,3).map((it,i) => (
-                          <span key={i} style={{ background:T.border, borderRadius:8, padding:"2px 7px",
-                            color:T.sub, fontSize:10, fontWeight:600 }}>
-                            {it.name} ×{it.qty}
-                          </span>
-                        ))}
-                        {(qt.items||[]).length > 3 && <span style={{ color:T.sub, fontSize:10 }}>+{qt.items.length-3}টি</span>}
-                      </div>
-                    </div>
-                  </div>
-                );
-              }}
-            />
-          )}
-        </div>
-      )}
-
-      {/* ══ CREATE VIEW ══ */}
-      {view === "create" && (
-        <div style={{ marginTop:14 }}>
-          {/* Customer select */}
-          <div className="qc-gradient-card" style={{ ...S.card, marginBottom:10, padding:"12px 14px" }}>
-            <div style={{ color:T.sub, fontSize:12, fontWeight:700, marginBottom:6 }}>👤 কাস্টমার</div>
-            {selCust ? (
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                <div>
-                  <div style={{ color:T.text, fontWeight:800 }}>{selCust.name}</div>
-                  <div style={{ color:T.sub, fontSize:11 }}>{selCust.mobile}</div>
-                </div>
-                <button onClick={() => setSelCust(null)}
-                  style={{ background:"#ef444415", border:"none", borderRadius:8, padding:"6px 10px",
-                    color:"#ef4444", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700 }}>✕</button>
-              </div>
-            ) : (
-              <>
-                <input placeholder="কাস্টমার খুঁজুন..." value={custSearch}
-                  onChange={e => setCustSearch(e.target.value)}
-                  style={{ ...S.input, marginBottom:6, marginTop:0 }} />
-                {custSearch ? (
-                  <div style={{ maxHeight:160, overflowY:"auto" }}>
-                    {filteredCustomers.map(c => (
-                      <div key={c.id} onClick={() => { setSelCust(c); setCustSearch(""); }}
-                        style={{ padding:"8px 10px", borderRadius:8, cursor:"pointer",
-                          color:T.text, fontSize:13, fontWeight:600,
-                          background:"transparent", borderBottom:`1px solid ${T.border}` }}>
-                        {c.name} <span style={{ color:T.sub, fontSize:11 }}>{c.mobile}</span>
-                      </div>
-                    ))}
-                    {filteredCustomers.length === 0 && (
-                      <div style={{ color:T.sub, fontSize:12, padding:8 }}>পাওয়া যায়নি</div>
-                    )}
-                  </div>
-                ) : (
-                  <input placeholder="অথবা হাঁটা কাস্টমারের নাম লিখুন..."
-                    value={walkInName} onChange={e => setWalkInName(e.target.value)}
-                    style={{ ...S.input, marginTop:0 }} />
-                )}
-              </>
-            )}
-          </div>
-
-          {/* Product search + add */}
-          <div className="qc-gradient-card" style={{ ...S.card, marginBottom:10, padding:"12px 14px" }}>
-            <div style={{ color:T.sub, fontSize:12, fontWeight:700, marginBottom:6 }}>📦 পণ্য যোগ করুন</div>
-            <input placeholder={`পণ্য খুঁজুন... (${products.length}টি)`}
-              value={prodSearch} onChange={e => setProdSearch(e.target.value)}
-              style={{ ...S.input, marginTop:0, marginBottom:6 }} />
-            {prodSearch && filteredProducts.map(p => (
-              <div key={p.id} onClick={() => addItem(p)}
-                style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
-                  padding:"8px 10px", borderRadius:8, cursor:"pointer",
-                  background:T.border+"44", marginBottom:4 }}>
-                <div>
-                  <div style={{ color:T.text, fontSize:13, fontWeight:700 }}>{p.name}</div>
-                  <div style={{ color:T.sub, fontSize:11 }}>৳{p.price} · স্টক: {p.stock||0}</div>
-                </div>
-                <IcPlus />
-              </div>
-            ))}
-          </div>
-
-          {/* Cart items */}
-          {items.length > 0 && (
-            <div className="qc-gradient-card" style={{ ...S.card, marginBottom:10, padding:"12px 14px" }}>
-              <div style={{ color:T.sub, fontSize:12, fontWeight:700, marginBottom:8 }}>🛒 নির্বাচিত পণ্য</div>
-              {items.map((it, idx) => (
-                <div key={idx} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8,
-                  paddingBottom:8, borderBottom:`1px solid ${T.border}` }}>
-                  <div style={{ flex:1 }}>
-                    <div style={{ color:T.text, fontWeight:700, fontSize:13 }}>{it.name}</div>
-                    <div style={{ display:"flex", gap:6, marginTop:4, alignItems:"center" }}>
-                      <button onClick={() => updateItem(idx, "qty", Math.max(1, it.qty-1))}
-                        style={{ width:26, height:26, borderRadius:8, border:`1px solid ${T.border}`,
-                          background:T.card, color:T.text, fontSize:16, cursor:"pointer", fontFamily:"inherit" }}>−</button>
-                      <span style={{ color:T.text, fontWeight:800, minWidth:24, textAlign:"center" }}>{it.qty}</span>
-                      <button onClick={() => updateItem(idx, "qty", it.qty+1)}
-                        style={{ width:26, height:26, borderRadius:8, border:`1px solid ${T.border}`,
-                          background:T.card, color:T.text, fontSize:16, cursor:"pointer", fontFamily:"inherit" }}>+</button>
-                      <span style={{ color:T.sub, fontSize:11 }}>× ৳</span>
-                      <input type="number" value={it.price}
-                        onChange={e => updateItem(idx, "price", parseFloat(e.target.value)||0)}
-                        style={{ width:70, padding:"4px 8px", borderRadius:8, border:`1px solid ${T.border}`,
-                          background:T.card, color:T.text, fontSize:12, fontFamily:"inherit" }} />
-                    </div>
-                  </div>
-                  <div style={{ textAlign:"right" }}>
-                    <div style={{ color:"#6366f1", fontWeight:900, fontSize:14 }}>৳{fmt(it.qty*it.price)}</div>
-                    <button onClick={() => removeItem(idx)}
-                      style={{ background:"none", border:"none", color:"#ef4444", cursor:"pointer",
-                        fontSize:11, padding:0, fontFamily:"inherit", marginTop:4 }}>মুছুন</button>
-                  </div>
-                </div>
-              ))}
-              {/* Subtotal / Discount / Total */}
-              <div style={{ borderTop:`1px solid ${T.border}`, paddingTop:8 }}>
-                <div style={{ display:"flex", justifyContent:"space-between", color:T.sub, fontSize:12, marginBottom:4 }}>
-                  <span>সর্বমোট</span><span>৳{fmt(subtotal)}</span>
-                </div>
-                <div style={{ display:"flex", gap:8, alignItems:"center", marginBottom:8 }}>
-                  <span style={{ color:T.sub, fontSize:12 }}>ডিসকাউন্ট ৳</span>
-                  <input type="number" value={discount}
-                    onChange={e => setDiscount(Math.max(0, parseFloat(e.target.value)||0))}
-                    placeholder="0"
-                    style={{ flex:1, padding:"4px 8px", borderRadius:8, border:`1px solid ${T.border}`,
-                      background:T.card, color:"#22c55e", fontSize:13, fontFamily:"inherit", fontWeight:700 }} />
-                </div>
-                <div style={{ display:"flex", justifyContent:"space-between", color:"#6366f1",
-                  fontWeight:900, fontSize:16, paddingTop:4 }}>
-                  <span>মোট</span><span>৳{fmt(total)}</span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Validity + Note */}
-          <div className="qc-gradient-card" style={{ ...S.card, marginBottom:12, padding:"12px 14px" }}>
-            <div style={{ color:T.sub, fontSize:12, fontWeight:700, marginBottom:8 }}>⚙️ সেটিং</div>
-            <div style={{ marginBottom:8 }}>
-              <div style={{ color:T.sub, fontSize:11, marginBottom:4 }}>বৈধতার মেয়াদ</div>
-              <div style={{ display:"flex", gap:6 }}>
-                {[3,7,14,30].map(d => (
-                  <button key={d} onClick={() => setValidDays(d)}
-                    style={{ flex:1, padding:"6px 0", borderRadius:10, fontFamily:"inherit",
-                      border:`1.5px solid ${validDays===d?"#6366f1":T.border}`,
-                      background:validDays===d?"#6366f122":T.card,
-                      color:validDays===d?"#6366f1":T.sub, fontSize:11, fontWeight:700, cursor:"pointer" }}>
-                    {d} দিন
-                  </button>
-                ))}
-              </div>
-            </div>
-            <input placeholder="নোট (ঐচ্ছিক)" value={note}
-              onChange={e => setNote(e.target.value)}
-              style={{ ...S.input, marginTop:0 }} />
-          </div>
-
-          {/* Save button */}
-          <div style={{ display:"flex", gap:8 }}>
-            <button onClick={() => setView("list")}
-              style={{ ...S.cancelBtn, flex:1 }}>বাতিল</button>
-            <button onClick={saveQuotation}
-              style={{ ...S.saveBtn, flex:2, background:"linear-gradient(135deg,#6366f1,#8b5cf6)" }}>
-              📋 কোটেশন সেভ করুন
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ══ DETAIL VIEW ══ */}
-      {view === "detail" && selectedQt && (() => {
-        const qt = quotations.find(q => q.id === selectedQt.id) || selectedQt;
-        const info = QUOT_STATUS_LABELS[qt.status] || QUOT_STATUS_LABELS.pending;
-        const isExpired = qt.status === "pending" && qt.validUntil < todayKey;
-        const canConvert = qt.status === "approved" || qt.status === "pending";
-        const cust = custMap.get(qt.customerId);
-        return (
-          <div style={{ marginTop:14 }}>
-            {/* Header card */}
-            <div className="qc-gradient-card" style={{ ...S.card, padding:"14px 16px", marginBottom:10,
-              border:`1.5px solid ${info.color}44` }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
-                <div>
-                  <div style={{ color:T.text, fontWeight:900, fontSize:16 }}>{qt.quotNo}</div>
-                  <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>{qt.customerName} · {qt.dateKey}</div>
-                  <div style={{ color:T.sub, fontSize:11, marginTop:1 }}>বৈধ: {qt.validUntil} পর্যন্ত</div>
-                </div>
-                <div>
-                  <span style={{ background:info.color+"22", border:`1px solid ${info.color}44`,
-                    borderRadius:10, padding:"4px 10px", fontSize:12, fontWeight:800, color:info.color }}>
-                    {info.icon} {isExpired?"মেয়াদোত্তীর্ণ":info.label}
-                  </span>
-                  <div style={{ color:"#6366f1", fontWeight:900, fontSize:18, marginTop:6, textAlign:"right" }}>৳{fmt(qt.total)}</div>
-                </div>
-              </div>
-
-              {/* Items */}
-              {(qt.items||[]).map((it,i) => (
-                <div key={i} style={{ display:"flex", justifyContent:"space-between",
-                  padding:"5px 0", borderBottom:`1px solid ${T.border}`, fontSize:12 }}>
-                  <span style={{ color:T.text, fontWeight:600 }}>{it.name} ×{it.qty}</span>
-                  <span style={{ color:T.sub }}>৳{fmt(it.qty*it.price)}</span>
-                </div>
-              ))}
-
-              {/* Totals */}
-              <div style={{ marginTop:8 }}>
-                {(qt.discount||0)>0 && (
-                  <div style={{ display:"flex", justifyContent:"space-between", color:"#22c55e", fontSize:12 }}>
-                    <span>ডিসকাউন্ট</span><span>–৳{fmt(qt.discount)}</span>
-                  </div>
-                )}
-                <div style={{ display:"flex", justifyContent:"space-between", fontWeight:900,
-                  color:"#6366f1", fontSize:16, marginTop:4 }}>
-                  <span>মোট</span><span>৳{fmt(qt.total)}</span>
-                </div>
-              </div>
-
-              {qt.note && <div style={{ color:T.sub, fontSize:12, marginTop:8 }}>📝 {qt.note}</div>}
-            </div>
-
-            {/* Action buttons */}
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
-              {qt.status === "pending" && !isExpired && (
-                <button onClick={() => updateStatus(qt.id, "approved")}
-                  style={{ ...S.saveBtn, background:"linear-gradient(135deg,#16a34a,#22c55e)" }}>
-                  ✅ অনুমোদন করুন
-                </button>
-              )}
-              {qt.status === "pending" && !isExpired && (
-                <button onClick={() => updateStatus(qt.id, "rejected")}
-                  style={{ ...S.cancelBtn }}>❌ প্রত্যাখ্যান</button>
-              )}
-              {canConvert && (
-                <button onClick={() => convertToInvoice(qt)}
-                  style={{ ...S.saveBtn, background:"linear-gradient(135deg,#6366f1,#8b5cf6)" }}>
-                  🔄 ইনভয়েসে রূপান্তর
-                </button>
-              )}
-              {qt.customerMobile && (
-                <button onClick={() => shareQuotationWhatsApp(qt)}
-                  style={{ ...S.saveBtn, background:"linear-gradient(135deg,#16a34a,#22c55e)" }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="#fff" style={{ marginRight:4 }}><path d="M17.6 6.32A8.86 8.86 0 0 0 12.05 4a8.94 8.94 0 0 0-7.93 13.13L3 21l3.95-1.04a8.93 8.93 0 0 0 4.95 1.5h.01a8.92 8.92 0 0 0 8.92-8.91 8.85 8.85 0 0 0-2.63-6.23zm-5.55 13.7h-.01a7.4 7.4 0 0 1-3.78-1.03l-.27-.16-2.81.74.75-2.74-.18-.28a7.43 7.43 0 0 1 6.31-11.4 7.36 7.36 0 0 1 5.24 2.17 7.34 7.34 0 0 1 2.18 5.25 7.43 7.43 0 0 1-7.43 7.45z"/></svg>
-                  WhatsApp
-                </button>
-              )}
-            </div>
-
-            {/* Delete */}
-            <button onClick={() => {
-              if (window.confirm("এই কোটেশন মুছবেন?")) {
-                setQuotations(prev => prev.filter(q => q.id !== qt.id));
-                showToast("কোটেশন মুছে ফেলা হয়েছে", "#ef4444");
-                setView("list");
-              }
-            }} style={{ ...S.cancelBtn, width:"100%", color:"#ef4444", border:"1px solid #ef444422" }}>
-              🗑️ মুছুন
-            </button>
-          </div>
-        );
-      })()}
     </div>
   );
 }
@@ -21834,7 +21071,7 @@ function StaffCustomTimePicker({ T, staffName, onGrant }) {
 }
 
 function Settings_({ T, S, shopName,
- setShopName, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, sessionTimeoutMin, setSessionTimeoutMin, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [] }) {
+ setShopName, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [] }) {
   const [editName,    setEditName]    = useState(false);
   const [nameInput,   setNameInput]   = useState(shopName);
   const [showNewUser, setShowNewUser] = useState(false);
@@ -24345,42 +23582,6 @@ onChange={()=>{}} />
           </div>
         );
       })()}
-
-      {/* ══ Session Timeout (শুধু Owner/Admin) ══ */}
-      {currentUser?.role !== "staff" && (
-        <div className="qc-gradient-card" style={{ ...S.card, padding: "14px 16px" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
-            <span style={{ fontSize:18 }}>🔒</span>
-            <div>
-              <div style={{ color:T.text, fontWeight:900, fontSize:14 }}>নিষ্ক্রিয়তায় Auto-Logout</div>
-              <div style={{ color:T.sub, fontSize:11, marginTop:1 }}>
-                ডিফল্ট: Staff ৩০ মিনিট · Owner/Admin ২ ঘণ্টা
-              </div>
-            </div>
-          </div>
-          <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-            {[
-              { label:"১৫ মিনিট", val:15 },
-              { label:"৩০ মিনিট", val:30 },
-              { label:"১ ঘণ্টা", val:60 },
-              { label:"২ ঘণ্টা", val:120 },
-              { label:"ডিফল্ট", val:null },
-            ].map(opt => (
-              <button key={opt.label}
-                onClick={() => setSessionTimeoutMin?.(opt.val)}
-                style={{
-                  padding:"7px 12px", borderRadius:16,
-                  border: `1.5px solid ${sessionTimeoutMin === opt.val ? "#22c55e" : T.border}`,
-                  background: sessionTimeoutMin === opt.val ? "#22c55e22" : T.card,
-                  color: sessionTimeoutMin === opt.val ? "#22c55e" : T.sub,
-                  fontSize:12, fontWeight:700, cursor:"pointer", fontFamily:"inherit",
-                }}>
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
 
       <button style={{ ...S.cancelBtn, width: "100%", padding: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
         onClick={() => { setCurrentUser(null); }}>
