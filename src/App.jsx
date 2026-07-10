@@ -3898,7 +3898,16 @@ const ArchiveDB = {
   },
 };
 
-function _dateKeyOf(d) { return d.toISOString().split("T")[0]; } // YYYY-MM-DD
+// 🔴 ফিক্স #১২: আগে d.toISOString().split("T")[0] দিয়ে UTC তারিখ নেওয়া হতো।
+// বাংলাদেশ UTC+৬, তাই স্থানীয় রাত ১২টা থেকে ভোর ৬টা পর্যন্ত UTC তারিখ এখনো
+// "গতকাল" দেখায় — ফলে দিনের প্রথম ৬ ঘণ্টায় retention/WORM/auto-backup-এর
+// dateKey/মাসের-key ভুল (আগের দিনের/মাসের) হয়ে যেত। এখন ডিভাইসের local
+// calendar date (getFullYear/getMonth/getDate) থেকে key বানানো হয়, যেটা
+// দোকানের প্রকৃত স্থানীয় তারিখের সাথে মেলে।
+function _dateKeyOf(d) {
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0"), day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 function _monthKeyOf(d) { return _dateKeyOf(d).slice(0, 7); }     // YYYY-MM
 function _isoWeekKeyOf(d) {
   // ISO week key — একই সপ্তাহের সব দিন একই key পায় (weekly thinning-এর জন্য)
@@ -4258,6 +4267,12 @@ const RestoreSelfTest = {
     const valid = validateBackup(snapshot);
     if (valid.ok === false && !valid.isEncrypted) {
       return { ok: false, detail: valid.msg || "ভ্যালিডেশন ব্যর্থ" };
+    }
+    // 🔴 ফিক্স #১১: আগে শুধু contentIssues (per-record hash) দেখা হতো,
+    // checksumMismatch (count-ভিত্তিক, পুরনো v2-v6 ফরম্যাটও কভার করে) ফ্ল্যাগ
+    // উপেক্ষিত থাকত — সেলফ-টেস্ট validateBackup-এর পুরো সিগন্যাল কাজে লাগাচ্ছিল না।
+    if (valid.checksumMismatch) {
+      return { ok: false, detail: "checksum মেলেনি — স্ন্যাপশট সন্দেহজনক" };
     }
     if (valid.contentIssues?.length) {
       return { ok: false, detail: `কনটেন্ট-মিসম্যাচ সন্দেহ: ${valid.contentIssues.map(f => BACKUP_FIELD_LABELS_BN[f] || f).join(", ")}` };
@@ -9396,7 +9411,7 @@ function SmartBusinessMgmt() {
   const performDriveBackup = useCallback(async () => {
     setDriveStatus("uploading");
     const now = new Date();
-    const filename = `dukan-backup-${now.toISOString().split("T")[0]}.json`;
+    const filename = `dukan-backup-${_dateKeyOf(now)}.json`;
     const data = await buildBackupData();
     try {
       // 1️⃣ Save file locally (Downloads on APK, browser download on web)
@@ -9566,7 +9581,7 @@ function SmartBusinessMgmt() {
         setBackupNeeded(false);
       } else try {
         // #৫ রিট্রাই + ব্যাকঅফ — Master Sync-এর শেষ ধাপেও একই সুরক্ষা
-        await withRetry(() => FS.saveBackup(freshPayload, `dukan-backup-${now.toISOString().split("T")[0]}.json`), { retries: 3 });
+        await withRetry(() => FS.saveBackup(freshPayload, `dukan-backup-${_dateKeyOf(now)}.json`), { retries: 3 });
         const ts = now.toISOString();
         setLastAutoBackup(ts);
         await save(SK.lastAutoBackup, ts);
@@ -9658,7 +9673,7 @@ function SmartBusinessMgmt() {
         // ক্যালেন্ডার-তারিখ বদলে গেলে hash অপরিবর্তিত থাকলেও অন্তত একবার
         // লেখা নিশ্চিত করা হয় (dateChanged চেক), যাতে প্রতিদিনের ফাইল
         // সবসময় ওইদিনের প্রকৃত অবস্থা প্রতিফলিত করে।
-        const dateStr = new Date().toISOString().split("T")[0];
+        const dateStr = _dateKeyOf(new Date());
         const lastWrittenDate = localStorage.getItem("hg_last_auto_file_date");
         const dateChanged = lastWrittenDate !== dateStr;
 
@@ -25162,11 +25177,11 @@ function LocalStorageSection({ data, setters, showToast, T, S }) {
     if (encryptEnabled) {
       // PIN চাইতে হবে — modal খুলে রাখি, actual download confirmPinAndEncrypt-এ হবে
       setPendingRestoreData(backupData); // re-use করছি "data waiting for pin" হিসেবে
-      setPendingRestoreFilename(`sbm-backup-${new Date().toISOString().split("T")[0]}.json`);
+      setPendingRestoreFilename(`sbm-backup-${_dateKeyOf(new Date())}.json`);
       setShowPinModal("encrypt");
       return;
     }
-    const filename = `sbm-backup-${new Date().toISOString().split("T")[0]}.json`;
+    const filename = `sbm-backup-${_dateKeyOf(new Date())}.json`;
     const result = await FS.saveBackup(backupData, filename);
     if (result?.ok) {
       showToast(result.msg || "💾 ব্যাকআপ ফাইল সেভ হয়েছে");
@@ -26461,7 +26476,26 @@ const GDrive = {
   async _ensureFolder(token) {
     // Cache করা folder ID আছে?
     const cached = localStorage.getItem("sbm_gd_folder_id");
-    if (cached) return cached;
+    if (cached) {
+      // 🔴 ফিক্স #১০: আগে cached ID অন্ধভাবে ফেরত দেওয়া হতো — অন্য Google
+      // অ্যাকাউন্টে reconnect হলে (Disconnect না চেপে) বা ইউজার নিজে Drive-এ
+      // ফোল্ডারটা ডিলিট/ট্র্যাশ করলে এই ID অকেজো হয়ে যেত, কিন্তু কখনো self-heal
+      // করত না — প্রতিটা backup/restore অস্পষ্ট 403/404 এরর দিয়ে ব্যর্থ হতো।
+      // এখন হালকা একটা validation কল করে দেখা হয় ফোল্ডারটা এখনো এই টোকেনে
+      // অ্যাক্সেসযোগ্য/ট্র্যাশড না কিনা — না হলে ক্যাশ ফেলে দিয়ে নতুন করে
+      // search-or-create-এ যাওয়া হয়।
+      try {
+        const check = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${cached}?fields=id,trashed`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (check.ok) {
+          const info = await check.json();
+          if (!info.trashed) return cached;
+        }
+      } catch {}
+      localStorage.removeItem("sbm_gd_folder_id"); // stale/invalid — পরিষ্কার করে নিচে আবার খোঁজা হবে
+    }
 
     // Drive-এ "SBM Backups" folder আছে কিনা খোঁজো
     const q = encodeURIComponent(`name="${this.FOLDER_NAME}" and mimeType="application/vnd.google-apps.folder" and trashed=false`);
