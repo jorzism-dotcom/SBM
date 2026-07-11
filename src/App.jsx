@@ -22394,7 +22394,15 @@ function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoic
 
   const sendTestNotif = async () => {
     try {
-      const granted = await withTimeout(Notif.requestPermission(), 6000, "Permission check");
+      // 🔴 ফিক্স — আগে permission popup আসতে পারে এমন সতর্কবার্তা ছিল না, আর timeout
+      // ছিল মাত্র ৬ সেকেন্ড। fresh install-এর পর permission "prompt" অবস্থায় থাকলে
+      // আসল সিস্টেম Allow/Deny পপআপ আসে, যেটা দেখে ট্যাপ করতে ব্যবহারকারীর কিছুটা
+      // সময় লাগে — তাই আগে থেকে জানিয়ে দেওয়া ও টাইমআউট বাড়ানো হলো।
+      const existing = await Notif.checkPermission();
+      if (!existing) {
+        window.alert("⏳ এখন একটা Allow/Deny পারমিশন পপআপ আসতে পারে — এলে তাতে অবশ্যই 'Allow' চাপুন।");
+      }
+      const granted = await withTimeout(Notif.requestPermission(), 20000, "Permission check");
       setPermStatus(granted);
       if (!granted) {
         showToast("⚠️ নোটিফিকেশন Permission নেই — Settings থেকে Allow করুন", "#ef4444");
