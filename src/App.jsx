@@ -15656,6 +15656,125 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     "linear-gradient(90deg,#0ea5e9,#6366f1)","linear-gradient(90deg,#f43f5e,#ec4899,#a855f7)",
   ];
 
+
+  // 🔴 পারফরম্যান্স ফিক্স: আগে এই ব্লকটা প্রতি render-এ (Dashboard-এর যেকোনো state
+  // পরিবর্তনেও) invoices/paymentInvoices পুরো array filter করত, আর todayBakiInvs-এর
+  // ভিতরে প্রতিটা invoice-এর জন্য txns.find() চালাতো — O(invoices × txns)।
+  // ১,০০,০০০ ইনভয়েস + ১,০০,০০০ txn-এ এটাই সবচেয়ে বড় ল্যাগের কারণ ছিল।
+  // এখন useMemo + Set-ভিত্তিক O(1) lookup দিয়ে O(invoices+txns) করা হলো।
+  const todayBakiTxnInvoiceIds = useMemo(() => {
+    const s = new Set();
+    (txns || []).forEach(t => {
+      if (t.dateKey === todayKeyStr && t.type === "baki" && t.invoiceId != null) s.add(t.invoiceId);
+    });
+    return s;
+  }, [txns, todayKeyStr]);
+
+  const todayPayInvs  = useMemo(() =>
+    (paymentInvoices || []).filter(p => p.dateKey === todayKeyStr && p.source !== "partial-sale"),
+    [paymentInvoices, todayKeyStr]
+  );
+  const todaySelfUseInvs = useMemo(() =>
+    invoices.filter(inv => inv.dateKey === todayKeyStr && inv.isSelfUse && inv.status !== "voided"),
+    [invoices, todayKeyStr]
+  );
+  // 🏠 আজকের নিজের ব্যবহারের পণ্যের মোট ক্রয়মূল্য (খরচমূল্য)
+  const _selfUseProdMap = useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
+  const todaySelfUseCost = useMemo(() => todaySelfUseInvs.reduce((s, inv) => {
+    if (inv.selfUseCost != null) return s + inv.selfUseCost;
+    return s + (inv.items || []).reduce((cs, item) => cs + _itemCostPrice(item, _selfUseProdMap) * (item.qty || 1), 0);
+  }, 0), [todaySelfUseInvs, _selfUseProdMap]);
+  // 🚫 আজকের বাতিলকৃত ইনভয়েস
+  const todayVoidedInvs = useMemo(() =>
+    invoices.filter(inv => inv.dateKey === todayKeyStr && inv.status === "voided"),
+    [invoices, todayKeyStr]
+  );
+  const todayBakiInvs = useMemo(() => invoices.filter(inv => {
+    if (inv.status === "voided") return false;
+    // Bug fix: include baki/partial invoices created today directly (no txn lookup needed)
+    if (inv.dateKey === todayKeyStr && (inv.payType === "baki" || (inv.payType === "partial" && inv.bakiAmount > 0))) return true;
+    // Also check via txn for edge cases — O(1) Set lookup instead of txns.find()
+    return todayBakiTxnInvoiceIds.has(inv.id);
+  }), [invoices, todayKeyStr, todayBakiTxnInvoiceIds]);
+  // কাস্টমার-ডিটেইলস পেজ থেকে করা ম্যানুয়াল বাকি/জমা এন্ট্রি (invoiceId: null) ইচ্ছাকৃতভাবেই
+  // "আজকের বাকি" থেকে বাদ — শুধু মোট বাকিতে (customer.balance এর মাধ্যমে) থাকবে।
+  const todayBakiInvsFull = todayBakiInvs;
+
+  // ── 📅 "আজকের রিপোর্ট"-এর জন্য নির্বাচিত তারিখ/রেঞ্জের হিসাব ─────────────────
+  const REPORT_RANGES = [
+    { key: "today",     label: "আজ" },
+    { key: "yesterday", label: "গতকাল" },
+    { key: "custom",    label: "📅 তারিখ" },
+    { key: "7d",        label: "৭ দিন" },
+    { key: "30d",       label: "১ মাস" },
+    { key: "90d",       label: "৩ মাস" },
+    { key: "180d",      label: "৬ মাস" },
+    { key: "365d",      label: "১ বছর" },
+  ];
+  let repStart, repEnd, repLabel;
+  const isToday = reportRange === "today";
+  {
+    const toKey = (d) => { const bd = new Date(d.getTime() - 2 * 60 * 60 * 1000 + 6 * 60 * 60 * 1000); return bd.toISOString().split("T")[0]; };
+    const now = new Date();
+    if (reportRange === "today") {
+      repStart = repEnd = todayKeyStr; repLabel = "আজকের";
+    } else if (reportRange === "yesterday") {
+      const y = new Date(now); y.setDate(y.getDate() - 1);
+      repStart = repEnd = toKey(y); repLabel = "গতকালের";
+    } else if (reportRange === "custom") {
+      repStart = repEnd = reportCustomDate || todayKeyStr;
+      repLabel = repStart === todayKeyStr ? "আজকের" : `${new Date(repStart).toLocaleDateString("en-US", { day:"numeric", month:"long", year:"numeric" })} তারিখের`;
+    } else {
+      const daysMap  = { "7d":7, "30d":30, "90d":90, "180d":180, "365d":365 };
+      const labelMap = { "7d":"গত ৭ দিনের", "30d":"গত ১ মাসের", "90d":"গত ৩ মাসের", "180d":"গত ৬ মাসের", "365d":"গত ১ বছরের" };
+      const days = daysMap[reportRange] || 1;
+      const start = new Date(now); start.setDate(start.getDate() - (days - 1));
+      repStart = toKey(start); repEnd = todayKeyStr; repLabel = labelMap[reportRange] || "নির্বাচিত সময়ের";
+    }
+  }
+  const inRepRange = (dk) => dk >= repStart && dk <= repEnd;
+
+  // 🔴 পারফরম্যান্স ফিক্স: এই ব্লকটা (কাস্টম তারিখ-রেঞ্জ রিপোর্ট) আগে useMemo ছাড়া
+  // প্রতি render-এ চলত, আর bakiInvs বের করতে প্রতিটা invoice-এর জন্য txns.find() —
+  // অর্থাৎ .filter()-এর ভিতরে .find() = O(invoices × txns), সবচেয়ে খারাপ প্যাটার্ন।
+  // এখন useMemo + Set-ভিত্তিক O(1) lookup ব্যবহার করা হলো।
+  const repData = useMemo(() => (isToday
+    ? {
+        invs: todayInvs, total: todayTotal, cashSale: todayCashSale, baki: todayBaki,
+        profit: todayProfit, bakiInvs: todayBakiInvsFull,
+        selfUseInvs: todaySelfUseInvs, selfUseCost: todaySelfUseCost,
+        voidedInvs: todayVoidedInvs,
+      }
+    : (() => {
+        const invs = invoices.filter(i => inRepRange(i.dateKey) && !i.isSelfUse && i.status !== "voided");
+        const total = invs.reduce((s, i) => s + (i.total || 0), 0);
+        const cashSale = invs.reduce((s, i) => {
+          if (i.payType === "cash") return s + (i.total || 0);
+          if (i.payType === "partial") return s + Math.min(i.paidAmount || 0, i.total || 0);
+          return s;
+        }, 0);
+        const voidedInvIds = new Set(invoices.filter(i => i.status === "voided").map(i => i.id));
+        const baki = txns.filter(t => inRepRange(t.dateKey) && t.type === "baki" && !voidedInvIds.has(t.invoiceId)).reduce((s, t) => s + t.amount, 0);
+        const prodMap = new Map(products.map(p => [p.id, p]));
+        const profit = calcProfitTotal(invs, prodMap);
+        // range-ভুক্ত baki-txn আছে এমন invoiceId-গুলোর Set — O(1) lookup, .find() এড়ানো হলো
+        const bakiTxnInvIds = new Set();
+        txns.forEach(t => { if (inRepRange(t.dateKey) && t.type === "baki" && t.invoiceId != null) bakiTxnInvIds.add(t.invoiceId); });
+        const bakiInvs = invoices.filter(inv => {
+          if (inv.status === "voided") return false;
+          if (inRepRange(inv.dateKey) && (inv.payType === "baki" || (inv.payType === "partial" && inv.bakiAmount > 0))) return true;
+          return bakiTxnInvIds.has(inv.id);
+        });
+        const selfUseInvs = invoices.filter(inv => inRepRange(inv.dateKey) && inv.isSelfUse && inv.status !== "voided");
+        const selfUseCost = selfUseInvs.reduce((s, inv) => {
+          if (inv.selfUseCost != null) return s + inv.selfUseCost;
+          return s + (inv.items || []).reduce((cs, item) => cs + _itemCostPrice(item, prodMap) * (item.qty || 1), 0);
+        }, 0);
+        const voidedInvs = invoices.filter(inv => inRepRange(inv.dateKey) && inv.status === "voided");
+        return { invs, total, cashSale, baki, profit, bakiInvs, selfUseInvs, selfUseCost, voidedInvs };
+      })()
+  ), [isToday, todayInvs, todayTotal, todayCashSale, todayBaki, todayProfit, todayBakiInvsFull, todaySelfUseInvs, todaySelfUseCost, todayVoidedInvs, invoices, txns, products, repStart, repEnd]);
+
   if (viewInv) {
     const cust = customers.find(c => c.id === viewInv.customerId);
     return (
@@ -16688,123 +16807,6 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   }
 
 
-  // 🔴 পারফরম্যান্স ফিক্স: আগে এই ব্লকটা প্রতি render-এ (Dashboard-এর যেকোনো state
-  // পরিবর্তনেও) invoices/paymentInvoices পুরো array filter করত, আর todayBakiInvs-এর
-  // ভিতরে প্রতিটা invoice-এর জন্য txns.find() চালাতো — O(invoices × txns)।
-  // ১,০০,০০০ ইনভয়েস + ১,০০,০০০ txn-এ এটাই সবচেয়ে বড় ল্যাগের কারণ ছিল।
-  // এখন useMemo + Set-ভিত্তিক O(1) lookup দিয়ে O(invoices+txns) করা হলো।
-  const todayBakiTxnInvoiceIds = useMemo(() => {
-    const s = new Set();
-    (txns || []).forEach(t => {
-      if (t.dateKey === todayKeyStr && t.type === "baki" && t.invoiceId != null) s.add(t.invoiceId);
-    });
-    return s;
-  }, [txns, todayKeyStr]);
-
-  const todayPayInvs  = useMemo(() =>
-    (paymentInvoices || []).filter(p => p.dateKey === todayKeyStr && p.source !== "partial-sale"),
-    [paymentInvoices, todayKeyStr]
-  );
-  const todaySelfUseInvs = useMemo(() =>
-    invoices.filter(inv => inv.dateKey === todayKeyStr && inv.isSelfUse && inv.status !== "voided"),
-    [invoices, todayKeyStr]
-  );
-  // 🏠 আজকের নিজের ব্যবহারের পণ্যের মোট ক্রয়মূল্য (খরচমূল্য)
-  const _selfUseProdMap = useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
-  const todaySelfUseCost = useMemo(() => todaySelfUseInvs.reduce((s, inv) => {
-    if (inv.selfUseCost != null) return s + inv.selfUseCost;
-    return s + (inv.items || []).reduce((cs, item) => cs + _itemCostPrice(item, _selfUseProdMap) * (item.qty || 1), 0);
-  }, 0), [todaySelfUseInvs, _selfUseProdMap]);
-  // 🚫 আজকের বাতিলকৃত ইনভয়েস
-  const todayVoidedInvs = useMemo(() =>
-    invoices.filter(inv => inv.dateKey === todayKeyStr && inv.status === "voided"),
-    [invoices, todayKeyStr]
-  );
-  const todayBakiInvs = useMemo(() => invoices.filter(inv => {
-    if (inv.status === "voided") return false;
-    // Bug fix: include baki/partial invoices created today directly (no txn lookup needed)
-    if (inv.dateKey === todayKeyStr && (inv.payType === "baki" || (inv.payType === "partial" && inv.bakiAmount > 0))) return true;
-    // Also check via txn for edge cases — O(1) Set lookup instead of txns.find()
-    return todayBakiTxnInvoiceIds.has(inv.id);
-  }), [invoices, todayKeyStr, todayBakiTxnInvoiceIds]);
-  // কাস্টমার-ডিটেইলস পেজ থেকে করা ম্যানুয়াল বাকি/জমা এন্ট্রি (invoiceId: null) ইচ্ছাকৃতভাবেই
-  // "আজকের বাকি" থেকে বাদ — শুধু মোট বাকিতে (customer.balance এর মাধ্যমে) থাকবে।
-  const todayBakiInvsFull = todayBakiInvs;
-
-  // ── 📅 "আজকের রিপোর্ট"-এর জন্য নির্বাচিত তারিখ/রেঞ্জের হিসাব ─────────────────
-  const REPORT_RANGES = [
-    { key: "today",     label: "আজ" },
-    { key: "yesterday", label: "গতকাল" },
-    { key: "custom",    label: "📅 তারিখ" },
-    { key: "7d",        label: "৭ দিন" },
-    { key: "30d",       label: "১ মাস" },
-    { key: "90d",       label: "৩ মাস" },
-    { key: "180d",      label: "৬ মাস" },
-    { key: "365d",      label: "১ বছর" },
-  ];
-  let repStart, repEnd, repLabel;
-  const isToday = reportRange === "today";
-  {
-    const toKey = (d) => { const bd = new Date(d.getTime() - 2 * 60 * 60 * 1000 + 6 * 60 * 60 * 1000); return bd.toISOString().split("T")[0]; };
-    const now = new Date();
-    if (reportRange === "today") {
-      repStart = repEnd = todayKeyStr; repLabel = "আজকের";
-    } else if (reportRange === "yesterday") {
-      const y = new Date(now); y.setDate(y.getDate() - 1);
-      repStart = repEnd = toKey(y); repLabel = "গতকালের";
-    } else if (reportRange === "custom") {
-      repStart = repEnd = reportCustomDate || todayKeyStr;
-      repLabel = repStart === todayKeyStr ? "আজকের" : `${new Date(repStart).toLocaleDateString("en-US", { day:"numeric", month:"long", year:"numeric" })} তারিখের`;
-    } else {
-      const daysMap  = { "7d":7, "30d":30, "90d":90, "180d":180, "365d":365 };
-      const labelMap = { "7d":"গত ৭ দিনের", "30d":"গত ১ মাসের", "90d":"গত ৩ মাসের", "180d":"গত ৬ মাসের", "365d":"গত ১ বছরের" };
-      const days = daysMap[reportRange] || 1;
-      const start = new Date(now); start.setDate(start.getDate() - (days - 1));
-      repStart = toKey(start); repEnd = todayKeyStr; repLabel = labelMap[reportRange] || "নির্বাচিত সময়ের";
-    }
-  }
-  const inRepRange = (dk) => dk >= repStart && dk <= repEnd;
-
-  // 🔴 পারফরম্যান্স ফিক্স: এই ব্লকটা (কাস্টম তারিখ-রেঞ্জ রিপোর্ট) আগে useMemo ছাড়া
-  // প্রতি render-এ চলত, আর bakiInvs বের করতে প্রতিটা invoice-এর জন্য txns.find() —
-  // অর্থাৎ .filter()-এর ভিতরে .find() = O(invoices × txns), সবচেয়ে খারাপ প্যাটার্ন।
-  // এখন useMemo + Set-ভিত্তিক O(1) lookup ব্যবহার করা হলো।
-  const repData = useMemo(() => (isToday
-    ? {
-        invs: todayInvs, total: todayTotal, cashSale: todayCashSale, baki: todayBaki,
-        profit: todayProfit, bakiInvs: todayBakiInvsFull,
-        selfUseInvs: todaySelfUseInvs, selfUseCost: todaySelfUseCost,
-        voidedInvs: todayVoidedInvs,
-      }
-    : (() => {
-        const invs = invoices.filter(i => inRepRange(i.dateKey) && !i.isSelfUse && i.status !== "voided");
-        const total = invs.reduce((s, i) => s + (i.total || 0), 0);
-        const cashSale = invs.reduce((s, i) => {
-          if (i.payType === "cash") return s + (i.total || 0);
-          if (i.payType === "partial") return s + Math.min(i.paidAmount || 0, i.total || 0);
-          return s;
-        }, 0);
-        const voidedInvIds = new Set(invoices.filter(i => i.status === "voided").map(i => i.id));
-        const baki = txns.filter(t => inRepRange(t.dateKey) && t.type === "baki" && !voidedInvIds.has(t.invoiceId)).reduce((s, t) => s + t.amount, 0);
-        const prodMap = new Map(products.map(p => [p.id, p]));
-        const profit = calcProfitTotal(invs, prodMap);
-        // range-ভুক্ত baki-txn আছে এমন invoiceId-গুলোর Set — O(1) lookup, .find() এড়ানো হলো
-        const bakiTxnInvIds = new Set();
-        txns.forEach(t => { if (inRepRange(t.dateKey) && t.type === "baki" && t.invoiceId != null) bakiTxnInvIds.add(t.invoiceId); });
-        const bakiInvs = invoices.filter(inv => {
-          if (inv.status === "voided") return false;
-          if (inRepRange(inv.dateKey) && (inv.payType === "baki" || (inv.payType === "partial" && inv.bakiAmount > 0))) return true;
-          return bakiTxnInvIds.has(inv.id);
-        });
-        const selfUseInvs = invoices.filter(inv => inRepRange(inv.dateKey) && inv.isSelfUse && inv.status !== "voided");
-        const selfUseCost = selfUseInvs.reduce((s, inv) => {
-          if (inv.selfUseCost != null) return s + inv.selfUseCost;
-          return s + (inv.items || []).reduce((cs, item) => cs + _itemCostPrice(item, prodMap) * (item.qty || 1), 0);
-        }, 0);
-        const voidedInvs = invoices.filter(inv => inRepRange(inv.dateKey) && inv.status === "voided");
-        return { invs, total, cashSale, baki, profit, bakiInvs, selfUseInvs, selfUseCost, voidedInvs };
-      })()
-  ), [isToday, todayInvs, todayTotal, todayCashSale, todayBaki, todayProfit, todayBakiInvsFull, todaySelfUseInvs, todaySelfUseCost, todayVoidedInvs, invoices, txns, products, repStart, repEnd]);
 
   if (dashModal) {
     if (dashModal.type === "customer-breakdown") {
