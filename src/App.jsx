@@ -22635,6 +22635,51 @@ function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoic
             style={{ width:"100%", marginTop:8, background:"#ec489922", color:"#f9a8d4", border:"1px dashed #ec489966", borderRadius:12, padding:"8px 0", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
             🎯 ডিবাগ ৪: শুধু requestPermissions() টেস্ট (popup আসে কিনা দেখুন)
           </button>
+          {/* 🔴 নতুন ডিবাগ বাটন ৫ — একটা real notification 5 সেকেন্ড পরের সময়ে
+              schedule করে, তারপর 8 সেকেন্ড অপেক্ষা করে getDeliveredNotifications()
+              (নোটিফিকেশন শেডে সত্যিই আছে কিনা — OS-এর নিজের কনফার্মেশন) ও
+              getPending() (এখনো pending আছে মানে fire-ই হয়নি) দুটোই চেক করে।
+              এতে নিশ্চিতভাবে বোঝা যাবে সমস্যাটা scheduling-এ নাকি display-এ। */}
+          <button onClick={async () => {
+              try {
+                const LN = window.Capacitor?.Plugins?.LocalNotifications;
+                if (!LN) { window.alert("প্লাগইন নেই!"); return; }
+                const testId = 8888;
+                await LN.schedule({
+                  notifications: [{
+                    id: testId,
+                    title: "🔎 ডিবাগ ৫ টেস্ট",
+                    body: "এটা ৫ সেকেন্ড পর শিডিউল হওয়া নোটিফিকেশন",
+                    smallIcon: "ic_stat_pulse",
+                    iconColor: "#8b5cf6",
+                    schedule: { at: new Date(Date.now() + 5000), allowWhileIdle: true },
+                  }],
+                });
+                window.alert("⏳ শিডিউল করা হয়েছে — ৮ সেকেন্ড অপেক্ষা করুন, তারপর ফলাফল আসবে। এই সময়ে নোটিফিকেশন ট্রে-তে (স্ক্রিনের উপর থেকে টেনে নামান) কিছু আসে কিনা খেয়াল করুন।");
+                await new Promise(r => setTimeout(r, 8000));
+                let msg = "";
+                try {
+                  const delivered = await LN.getDeliveredNotifications();
+                  const found = (delivered?.notifications || []).find(n => n.id === testId);
+                  msg += found
+                    ? "✅ getDeliveredNotifications() বলছে এটা সত্যিই দেখানো হয়েছিল (OS কনফার্ম করেছে)\n\n"
+                    : "❌ getDeliveredNotifications() এ এটা নেই — OS বলছে এটা কখনো ট্রেতে দেখানো হয়নি\n\n";
+                } catch(e) { msg += `getDeliveredNotifications() error/unsupported: ${e?.message || e}\n\n`; }
+                try {
+                  const pending = await LN.getPending();
+                  const stillPending = (pending?.notifications || []).find(n => n.id === testId);
+                  msg += stillPending
+                    ? "⚠️ এখনো pending-এ আছে — মানে এটা fire-ই হয়নি এখনো"
+                    : "ℹ️ আর pending-এ নেই — মানে scheduled সময়ে fire হয়ে গেছে (delivered কিনা উপরে দেখুন)";
+                } catch(e) { msg += `getPending() error: ${e?.message || e}`; }
+                window.alert(msg);
+              } catch(e) {
+                window.alert("এরর: " + (e?.message || e));
+              }
+            }}
+            style={{ width:"100%", marginTop:8, background:"#06b6d422", color:"#67e8f9", border:"1px dashed #06b6d466", borderRadius:12, padding:"8px 0", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
+            🔎 ডিবাগ ৫: সত্যিই notification tray-তে দেখানো হয় কিনা (OS কনফার্মেশন)
+          </button>
           <button onClick={async () => {
               // 🔴 ডিবাগ ফিক্স — আগে এখানে try/catch/timeout ছিল না, তাই hang
               // হলে বাটন চাপ দিয়ে কিছুই দেখা যেত না (সম্পূর্ণ silent)। এখন
