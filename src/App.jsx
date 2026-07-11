@@ -339,21 +339,30 @@ function HighlightText({ text, query, style, highlightColor = "#22c55e" }) {
 // ─── SupplierPicker — টাইপাহেড সার্চ-করে-বাছাই সাপ্লায়ার সিলেক্টর ───────────
 // BD_PHARMA_COMPANIES (MEDICINE_DATASET থেকে ডিরাইভ করা, ২১১টি) এর মধ্যে ফাজি সার্চ (smartMatch),
 // অথবা "নিজে লিখুন" কাস্টম মোড।
-function SupplierPicker({ value, onChange, error, T, S, autoFocus }) {
+function SupplierPicker({ value, onChange, error, T, S, autoFocus, extraSuppliers = [] }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [customMode, setCustomMode] = useState(() => !!value && !BD_PHARMA_COMPANIES.includes(value));
+  // extraSuppliers = দোকানে আগে ম্যানুয়ালি লেখা কাস্টম সাপ্লায়ারের নাম (products/purchaseOrders থেকে) —
+  // এগুলো তালিকায় যুক্ত হবে যাতে একবার লিখলে পরেরবার সাজেশনে দেখা যায় ("অটো-সেভ")
+  const allSuppliers = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    extraSuppliers.forEach(s => { const n = (s || "").trim(); if (n && !seen.has(n)) { seen.add(n); out.push(n); } });
+    BD_PHARMA_COMPANIES.forEach(s => { if (!seen.has(s)) { seen.add(s); out.push(s); } });
+    return out;
+  }, [extraSuppliers]);
+  const [customMode, setCustomMode] = useState(() => !!value && !allSuppliers.includes(value));
 
   const filtered = useMemo(() => {
     const q = query.trim();
-    if (!q) return BD_PHARMA_COMPANIES.slice(0, 30);
-    return BD_PHARMA_COMPANIES
+    if (!q) return allSuppliers.slice(0, 30);
+    return allSuppliers
       .map(c => ({ c, s: smartMatch(c, q) }))
       .filter(x => x.s > 0)
       .sort((a, b) => b.s - a.s)
       .slice(0, 30)
       .map(x => x.c);
-  }, [query]);
+  }, [query, allSuppliers]);
 
   if (customMode) {
     return (
@@ -411,6 +420,15 @@ function SupplierPicker({ value, onChange, error, T, S, autoFocus }) {
     </div>
   );
 }
+
+// ── আগে ম্যানুয়ালি এন্ট্রি করা সাপ্লায়ারের নাম বের করা (products.company/supplier + purchaseOrders.supplier থেকে) ──
+// SupplierPicker-এ extraSuppliers হিসেবে দিলে কাস্টম নাম "অটো-সেভ" হয়ে পরের বার সাজেশনে দেখা যায়
+const getKnownSuppliers = (products = [], purchaseOrders = []) => {
+  const set = new Set();
+  (products || []).forEach(p => { const n = (p.company || p.supplier || "").trim(); if (n) set.add(n); });
+  (purchaseOrders || []).forEach(po => { const n = (po.supplier || po.company || "").trim(); if (n) set.add(n); });
+  return Array.from(set);
+};
 
 // ─── SearchBar — reusable smart search input component ───────────────────────
 function SearchBar({ placeholder, value, onChange, onClear, color = "#22c55e", T, S, style, voiceColor, showCount, count, accentBorder, autoFocus }) {
@@ -7432,7 +7450,7 @@ const MemoLoginScreen      = React.memo(LoginScreen);
 //  ✗ ভয়েস বাটন (ডেকোরেটিভ ছিল, কাজ করত না)
 // ════════════════════════════════════════════════════════════════════════════════
 
-function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, shopName, anthropicKey, expenses = [] }) {
+function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, shopName, anthropicKey, expenses = [], cashLogs = [], purchaseOrders = [] }) {
   const [aiTab, setAiTab] = React.useState("dashboard");
   const [chatMessages, setChatMessages] = React.useState([]);
   const [chatInput, setChatInput] = React.useState("");
@@ -7492,6 +7510,62 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
       const cp = it.costPrice || p?.costPrice || 0;
       return cs + cp * (it.qty || 1);
     }, 0), 0);
+
+  // ── নিজের ব্যবহার — আজকের মোট (খরচমূল্যে) + পণ্যের ব্রেকডাউন ───────────────
+  const todaySelfUseInvs = selfUseInvs.filter(i => i.dateKey === todayKey || (i.date && i.date.startsWith(todayKey)));
+  const monthSelfUseInvs = selfUseInvs.filter(i => (i.dateKey || i.date || "") >= d30);
+  const selfUseCostOf = (invList) => invList.reduce((s, inv) => s + (inv.items || []).reduce((cs, it) => {
+    const p = prodMap.get(it.productId);
+    const cp = it.costPrice || p?.costPrice || 0;
+    return cs + cp * (it.qty || 1);
+  }, 0), 0);
+  const selfUseProductsOf = (invList) => {
+    const map = {};
+    invList.forEach(inv => (inv.items || []).forEach(it => {
+      const key = it.name || it.productId;
+      if (!map[key]) map[key] = { name: it.name || "—", qty: 0 };
+      map[key].qty += (it.qty || 1);
+    }));
+    return Object.values(map);
+  };
+  const todaySelfUseCost = selfUseCostOf(todaySelfUseInvs);
+  const todaySelfUseProducts = selfUseProductsOf(todaySelfUseInvs);
+  const monthSelfUseProducts = selfUseProductsOf(monthSelfUseInvs);
+  const fmtProductList = (arr) => arr.length === 0
+    ? "কোনো এন্ট্রি নেই"
+    : arr.slice(0, 3).map(p => `${p.name} x${fmt(p.qty)}`).join(", ") + (arr.length > 3 ? " ..." : "");
+
+  // ── আজকের নগদ বিক্রয় ও তার লাভ ──────────────────────────────────────────
+  const todayCashSale = todayInvs.reduce((s, i) => {
+    if (i.payType === "cash") return s + (i.total || 0);
+    if (i.payType === "partial") return s + Math.min(i.paidAmount || 0, i.total || 0);
+    return s;
+  }, 0);
+  const todayCashProfit = calcProfit(todayInvs.filter(i => i.payType === "cash" || i.payType === "partial"));
+
+  // ── আজকের বাকি (নতুন) ও আজকের বাকি আদায় ────────────────────────────────
+  const todayKeyEn = todayEn();
+  const _voidedIds = new Set((invoices || []).filter(i => i.status === "voided").map(i => i.id));
+  const todayBakiIncurred = txnAll.filter(t => t.dateKey === todayKeyEn && t.type === "baki" && t.invoiceId && !_voidedIds.has(t.invoiceId)).reduce((s, t) => s + (t.amount || 0), 0);
+  const todayJoma = txnAll.filter(t => t.dateKey === todayKeyEn && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale").reduce((s, t) => s + (t.amount || 0), 0);
+
+  // ── ক্যাশ ড্রয়ার — ওপেনিং/উইথড্রয়াল/বর্তমান ক্যাশ ────────────────────────
+  const cashLogsAll = cashLogs || [];
+  const openingCashToday = cashLogsAll.filter(c => c.type === "opening" && c.dateKey === todayKeyEn).reduce((s, c) => s + (c.amount || 0), 0);
+  const withdrawalToday = cashLogsAll.filter(c => c.type === "withdrawal" && c.dateKey === todayKeyEn).reduce((s, c) => s + (c.amount || 0), 0);
+
+  // ── ক্রয় (আজ/এই মাস) ────────────────────────────────────────────────────
+  const purchaseOrdersAll = (purchaseOrders || []).filter(p => p._type === "pe");
+  const todayPurchases = purchaseOrdersAll.filter(p => p.dateKey === todayKey);
+  const todayPurchaseCost = todayPurchases.reduce((s, p) => s + (p.totalCost || 0), 0);
+  const todayPurchaseCount = todayPurchases.length;
+  const monthPurchaseCost = purchaseOrdersAll.filter(p => (p.dateKey || "") >= d30).reduce((s, p) => s + (p.totalCost || 0), 0);
+
+  const currentCashDrawer = openingCashToday + todayCashSale + todayJoma - withdrawalToday - todayPurchaseCost;
+
+  // ── খরচ (আজ/এই মাস) ─────────────────────────────────────────────────────
+  const todayExpense = (expenses || []).filter(e => (e.dateKey || e.date) === todayKey).reduce((s, e) => s + (e.amount || 0), 0);
+  const monthExpense = (expenses || []).filter(e => (e.dateKey || e.date || "") >= d30).reduce((s, e) => s + (e.amount || 0), 0);
 
   // ── বিজনেস হেলথ স্কোর (০-১০০) ─────────────────────────────────────────────
   const healthScore = React.useMemo(() => {
@@ -7838,14 +7912,24 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
             {[
               { icon: "💰", val: `৳${fmt(todaySale)}`, label: "আজকের বিক্রয়", sub: `${todayInvs.length}টি ইনভয়েস`, color: "#22c55e" },
+              { icon: "💵", val: `৳${fmt(todayCashSale)}`, label: "আজকের নগদ বিক্রয়", sub: "নগদ + আংশিক পরিশোধ", color: "#16a34a" },
+              { icon: "🟢", val: `৳${fmt(todayCashProfit)}`, label: "নগদ বিক্রয়ে মোট লাভ", sub: `মার্জিন ${pct(todayCashProfit, todayCashSale)}%`, color: "#22c55e" },
+              { icon: "📌", val: `৳${fmt(todayBakiIncurred)}`, label: "আজকের বাকি", sub: "আজ নতুন বাকি বিক্রয়", color: "#f97316" },
               { icon: "⚡", val: `৳${fmt(todayProfit)}`, label: "আজকের লাভ", sub: `মার্জিন ${pct(todayProfit, todaySale)}%`, color: "#f59e0b" },
-              { icon: "📈", val: `৳${fmt(monthSale)}`, label: "মাসিক বিক্রয়", sub: growthPct !== null ? `${growthPct > 0 ? "▲" : "▼"} গত মাসের তুলনায় ${Math.abs(growthPct)}%` : "এ মাসের বিক্রয়", color: "#3b82f6" },
-              { icon: "💎", val: `${monthMargin}%`, label: "মাসিক মার্জিন", sub: `লাভ ৳${fmt(monthProfit)}`, color: monthMargin >= 15 ? "#22c55e" : monthMargin >= 8 ? "#f59e0b" : "#ef4444" },
               { icon: "🔴", val: `৳${fmt(totalBaki)}`, label: "মোট বকেয়া", sub: `${bakiCustomers}জনের কাছে`, color: "#ef4444" },
+              { icon: "📥", val: `৳${fmt(todayJoma)}`, label: "আজকের বাকি আদায়", sub: "আজ সংগৃহীত বকেয়া", color: "#3b82f6" },
+              { icon: "🏠", val: `৳${fmt(todaySelfUseCost)}`, label: "নিজের ব্যবহার (আজ)", sub: fmtProductList(todaySelfUseProducts), color: "#a78bfa" },
+              { icon: "🏡", val: `৳${fmt(monthSelfUseCost)}`, label: "নিজের ব্যবহার (এই মাস)", sub: fmtProductList(monthSelfUseProducts), color: "#a78bfa" },
+              { icon: "🪙", val: `৳${fmt(openingCashToday)}`, label: "আজকের ওপেনিং ক্যাশ", sub: "দোকান খোলার সময়ের ক্যাশ", color: "#0ea5e9" },
+              { icon: "🏧", val: `৳${fmt(withdrawalToday)}`, label: "আজকের উইথড্রয়াল", sub: "ক্যাশ ড্রয়ার থেকে বের হওয়া", color: "#f43f5e" },
+              { icon: "🏦", val: `৳${fmt(currentCashDrawer)}`, label: "ক্যাশড্রয়ারে বর্তমান ক্যাশ", sub: "ওপেনিং+নগদ+আদায়-খরচ-ক্রয়", color: "#0ea5e9" },
+              { icon: "🛒", val: `৳${fmt(todayPurchaseCost)}`, label: "আজকের ক্রয়", sub: `${todayPurchaseCount}টি এন্ট্রি`, color: "#8b5cf6" },
+              { icon: "📦", val: `৳${fmt(monthPurchaseCost)}`, label: "এই মাসের ক্রয়", sub: "গত ৩০ দিনের ক্রয়", color: "#8b5cf6" },
+              { icon: "🧾", val: `৳${fmt(todayExpense)}`, label: "আজকের খরচ", sub: "আজকের মোট খরচ", color: "#ef4444" },
+              { icon: "🧮", val: `৳${fmt(monthExpense)}`, label: "এ মাসের খরচ", sub: "গত ৩০ দিনের খরচ", color: "#ef4444" },
+              { icon: "📈", val: `৳${fmt(monthSale)}`, label: "মাসিক বিক্রয়", sub: growthPct !== null ? `${growthPct > 0 ? "▲" : "▼"} গত মাসের তুলনায় ${Math.abs(growthPct)}%` : "এ মাসের বিক্রয়", color: "#3b82f6" },
+              { icon: "💎", val: `৳${fmt(monthProfit)}`, label: "মাসিক লাভ", sub: `মার্জিন ${monthMargin}%`, color: monthMargin >= 15 ? "#22c55e" : monthMargin >= 8 ? "#f59e0b" : "#ef4444" },
               { icon: "📦", val: `৳${fmt(stockValue)}`, label: "স্টক মূল্য", sub: `কম স্টক: ${lowStockItems.length}টি`, color: "#ec4899" },
-              ...(monthSelfUseCost > 0 ? [
-                { icon: "🏠", val: `৳${fmt(monthSelfUseCost)}`, label: "নিজের ব্যবহার (এই মাস)", sub: "মালিকের ড্রয়িং — খরচমূল্যে, লাভ/লসে ধরা হয়নি", color: "#a78bfa" },
-              ] : []),
             ].map((item, i) => (
               <div key={i} style={{
                 background: T.card, borderRadius: 14, padding: "14px 12px",
@@ -7862,31 +7946,6 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
                 <div style={{ color: T.sub, fontSize: 11, marginTop: 2 }}>{item.sub}</div>
               </div>
             ))}
-          </div>
-
-          {/* ৩০ দিনের প্রজেকশন */}
-          <div style={{
-            background: T.card, borderRadius: 14, padding: "14px 16px",
-            border: "1px solid #6366f133", boxShadow: "0 2px 14px #6366f118",
-          }}>
-            <div style={{ color: "#6366f1", fontWeight: 800, fontSize: 13, marginBottom: 6 }}>
-              🔮 আগামী ৩০ দিনে আনুমানিক বিক্রয়
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <div style={{ color: T.text, fontWeight: 900, fontSize: 22 }}>৳{fmt(Math.round(dailyAvg * 30))}</div>
-                <div style={{ color: T.sub, fontSize: 12 }}>দৈনিক গড় ৳{fmt(Math.round(dailyAvg))}</div>
-              </div>
-              <div style={{ textAlign: "right" }}>
-                <div style={{ color: "#6366f1", fontWeight: 800, fontSize: 13 }}>আনুমানিক লাভ</div>
-                <div style={{ color: "#22c55e", fontWeight: 900, fontSize: 18 }}>
-                  ৳{fmt(Math.round(dailyAvg * 30 * monthMargin / 100))}
-                </div>
-                <div style={{ color: T.sub, fontSize: 11 }}>{monthMargin}% মার্জিন অনুযায়ী</div>
-              </div>
-            </div>
-            {/* মিনি বার চার্ট — সাপ্তাহিক */}
-            <WeeklySalesBar invoices={invAll} T={T} color="#6366f1" />
           </div>
 
           {/* সতর্কতা */}
@@ -11140,6 +11199,8 @@ function SmartBusinessMgmt() {
               shopName={shopName}
               anthropicKey={anthropicKey}
               expenses={expenses}
+              cashLogs={cashLogs}
+              purchaseOrders={purchaseOrders}
             />
             </React.Suspense>
           </ErrorBoundary>
@@ -13254,6 +13315,9 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
             padding: "6px 8px 16px 8px",
             marginBottom: 4,
             boxShadow: T.bg === "#f8fafc" ? "inset 0 2px 8px rgba(249,115,22,0.06)" : "none",
+            WebkitOverflowScrolling: "touch",
+            touchAction: "pan-y",
+            overscrollBehavior: "contain",
           }}>
             {filteredCustomers.map((c, idx) => (
               <div key={c.id}
@@ -14938,6 +15002,7 @@ function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements
 
   const allEntries = useMemo(() => purchaseOrders.filter(p => p._type === "pe"), [purchaseOrders]);
   const todayKey   = new Date().toISOString().split("T")[0];
+  const knownSuppliers = useMemo(() => getKnownSuppliers(products, purchaseOrders), [products, purchaseOrders]);
 
   const getNextBatch = (productId) => calcNextBatch(productId, products, purchaseOrders);
   const nextBatchLabel = peForm.productId ? getNextBatch(peForm.productId) : "—";
@@ -15120,6 +15185,7 @@ function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements
           <label style={S.label}>🏭 সাপ্লায়ার</label>
           <SupplierPicker T={T} S={S}
             value={peForm.supplier}
+            extraSuppliers={knownSuppliers}
             onChange={v => setPeForm(f => ({ ...f, supplier: v }))} />
         </div>
 
@@ -18684,6 +18750,10 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
 
   const [demandFilter, setDemandFilter] = useState("সব"); // "সব" | "common" | "uncommon"
 
+  // আগে ম্যানুয়ালি লেখা সাপ্লায়ারের নাম — SupplierPicker-এ সাজেশন হিসেবে দেওয়ার জন্য ("অটো-সেভ")
+  const knownSuppliers = useMemo(() => getKnownSuppliers(products, purchaseOrders), [products, purchaseOrders]);
+
+
   const filteredAll = useMemo(() => {
     const q = (deferredSearch || "").trim();
     let base = productsWithSerialAll;
@@ -19439,6 +19509,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                     <div style={{ marginBottom: 8 }}>
                       <SupplierPicker T={T} S={S}
                         value={peNewProduct.company}
+                        extraSuppliers={knownSuppliers}
                         onChange={v => { setPeNewProduct(vv => ({ ...vv, company: v })); setPeForm(f => ({ ...f, supplier: v })); }} />
                     </div>
 
@@ -19523,6 +19594,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                 <label style={S.label}>🏭 সাপ্লায়ার</label>
                 <SupplierPicker T={T} S={S}
                   value={peForm.supplier}
+                  extraSuppliers={knownSuppliers}
                   onChange={v => setPeForm(f => ({ ...f, supplier: v }))} />
               </div>
 
@@ -20040,6 +20112,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           <SupplierPicker key={editId || "new"} T={T} S={S}
             error={formErrors.company}
             value={form.company || ""}
+            extraSuppliers={knownSuppliers}
             onChange={v => { setForm({ ...form, company: v }); if (v.trim()) setFormErrors(er => ({ ...er, company: false })); }} />
           {formErrors.company && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ সাপ্লায়ার আবশ্যক</div>}
           </>)}
