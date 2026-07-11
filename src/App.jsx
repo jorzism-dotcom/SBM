@@ -8681,7 +8681,10 @@ function ruleBasedAnswer(q, data) {
   const fmt  = n => Number(n || 0).toLocaleString("en-US");
   const fmtK = n => { const a = Math.abs(Number(n||0)); return a>=100000?(a/100000).toFixed(1)+"লাখ":a>=1000?(a/1000).toFixed(1)+"K":String(Math.round(a)); };
   const has  = (...words) => words.some(w => L.includes(w));
-  const prodMap = useMemo(() => new Map((prodAll || []).map(p => [p.id, p])), [prodAll]);
+  // 🔴 ফিক্স: এটা একটা সাধারণ (plain) ফাংশন — React কম্পোনেন্ট/হুক নয়, event handler থেকে
+  // সরাসরি কল হয় (রেন্ডারের বাইরে) — তাই useMemo ব্যবহার করলে "Invalid hook call" ক্র্যাশ
+  // হতো (বিশেষত API key ছাড়া AI চ্যাট ফিচার ব্যবহার করলে)। এখন সাধারণ ভ্যারিয়েবল।
+  const prodMap = new Map((prodAll || []).map(p => [p.id, p]));
 
   // ── আজকের বিক্রয় ───────────────────────────────────────────────────────────
   if (has("আজ","আজকে","today","আজকের")) {
@@ -11319,7 +11322,7 @@ function SmartBusinessMgmt() {
               buildManualBackupData={buildManualBackupData} manualBackupSetters={manualBackupSetters}
               performMasterSync={performMasterSync} masterSyncStatus={masterSyncStatus} masterSyncDetail={masterSyncDetail}
               lastMasterSync={lastMasterSync} autoMasterSyncEnabled={autoMasterSyncEnabled} setAutoMasterSyncEnabled={setAutoMasterSyncEnabled}
-              googleDriveToken={googleDriveToken}
+              googleDriveToken={googleDriveToken} setGoogleDriveToken={setGoogleDriveToken}
               anthropicKey={anthropicKey} setAnthropicKey={setAnthropicKey}
               smsTemplates={smsTemplates} setSmsTemplates={setSmsTemplates}
               autoBackupEnabled={autoBackupEnabled} setAutoBackupEnabled={setAutoBackupEnabled}
@@ -22540,7 +22543,7 @@ function StaffCustomTimePicker({ T, staffName, onGrant }) {
 }
 
 function Settings_({ T, S, shopName,
- setShopName, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [] }) {
+ setShopName, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, setGoogleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [] }) {
   const [editName,    setEditName]    = useState(false);
   const [nameInput,   setNameInput]   = useState(shopName);
   const [showNewUser, setShowNewUser] = useState(false);
@@ -22548,6 +22551,12 @@ function Settings_({ T, S, shopName,
   const [showRecoveryExpanded, setShowRecoveryExpanded] = useState(false);
   const [userForm,    setUserForm]    = useState({ name: "", username: "", password: "", pin: "" });
   const [showGateway, setShowGateway] = useState(false);
+  const [showDailyCard, setShowDailyCard] = useState(false); // 🔴 ফিক্স: আগে IIFE-এর ভেতরে conditionally declare করা ছিল
+  const [showAudit, setShowAudit] = useState(false);         // 🔴 ফিক্স: আগে IIFE-এর ভেতরে conditionally declare করা ছিল
+  const [auditFilter, setAuditFilter] = useState("all");     // 🔴 ফিক্স: আগে IIFE-এর ভেতরে conditionally declare করা ছিল
+  const [showKey, setShowKey] = useState(false);             // 🔴 ফিক্স: আগে Claude AI কার্ডের IIFE-এর ভেতরে declare করা ছিল
+  const [keyInput, setKeyInput] = useState(anthropicKey || "");
+  const [saved, setSaved] = useState(false);
   const [gwForm,      setGwForm]      = useState(smsGateway || { provider: "ssl", username: "", apiKey: "", senderId: "", accountSid: "" });
 
   // ── 📜 Invoice History — Phase 2 cursor pagination —────────────────────────
@@ -23439,9 +23448,13 @@ function Settings_({ T, S, shopName,
       </div>
 
       {/* 🔔 Daily Summary Notification — শুধু Admin/Owner দেখবে */}
-      {currentUser?.role !== "staff" && (() => {
-        const [showDailyCard, setShowDailyCard] = React.useState(false);
-        return (
+      {/* 🔴 ফিক্স: আগে এই কার্ডটা একটা conditionally-invoked IIFE-এর ভেতরে useState
+          ব্যবহার করত — currentUser.role অনুযায়ী hook-টা কখনো কল হতো, কখনো হতো না,
+          এবং হুক নিজেই কম্পোনেন্টের বাইরে (IIFE-তে) declare করা ছিল — "Invalid hook
+          call" / hook-order ক্র্যাশের ঝুঁকি ছিল। এখন state Settings_-এর নিজের
+          top-level hook হিসেবে (showDailyCard/setShowDailyCard) unconditionally
+          declare করা হয়েছে, শুধু JSX-টুকু conditionally রেন্ডার হচ্ছে। */}
+      {currentUser?.role !== "staff" && (
           <div className="qc-gradient-card" style={{ ...S.card }}>
             <div onClick={() => setShowDailyCard(v => !v)} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer", userSelect:"none" }}>
               <div>
@@ -23459,8 +23472,7 @@ function Settings_({ T, S, shopName,
               </div>
             )}
           </div>
-        );
-      })()}
+      )}
 
       {/* ⑦ Bluetooth Printer */}
       <div className="qc-gradient-card" style={{ ...S.card }}>
@@ -24189,9 +24201,6 @@ function Settings_({ T, S, shopName,
         {/* ── CARD 4: Claude AI ── */}
         {(() => {
           const COLOR = "#a855f7";
-          const [showKey, setShowKey] = React.useState(false);
-          const [keyInput, setKeyInput] = React.useState(anthropicKey || "");
-          const [saved, setSaved] = React.useState(false);
           const isActive = !!anthropicKey;
           const handleSave = () => {
             setAnthropicKey(keyInput.trim());
@@ -25316,9 +25325,6 @@ onChange={()=>{}} />
 
       {/* ══ 📋 Audit Log Viewer (শুধু Owner/Admin) ══ */}
       {currentUser?.role !== "staff" && (() => {
-        const [showAudit, setShowAudit] = React.useState(false);
-        const [auditFilter, setAuditFilter] = React.useState("all");
-
         const ACTION_LABELS = {
           INVOICE_VOID:          { icon: "🗑️", label: "ইনভয়েস ভয়েড", color: "#ef4444" },
           PRODUCT_PRICE_CHANGE:  { icon: "💰", label: "দাম পরিবর্তন", color: "#f59e0b" },
