@@ -9818,93 +9818,19 @@ function SmartBusinessMgmt() {
     return () => document.removeEventListener("visibilitychange", repaint);
   }, []);
 
-  // 🔔 দৈনিক সারসংক্ষেপ নোটিফিকেশন — Capacitor native schedule (অ্যাপ বন্ধ থাকলেও কাজ করবে)
-  // ⚠️ এটি শুধুমাত্র admin/owner-এর জন্য — staff-এর ডিভাইসে এই সারসংক্ষেপ
-  // (পুরো দোকানের বিক্রয়/লাভ/বাকির তথ্য) যাওয়া উচিত নয়, এমনকি staff নিজের
-  // ডিভাইসে নোটিফিকেশন সেটিং বন্ধ না করলেও।
-  useEffect(() => {
-    if (!loaded) return;
-    const isAdmin = currentUser?.role === "admin" || currentUser?.role === "owner";
-    if (!isAdmin) {
-      // staff (বা লগআউট অবস্থায়) — আগে কোনো শিডিউল থাকলে বাতিল করি
-      if (window.Capacitor?.isNativePlatform()) {
-        (async () => {
-          try {
-            const LocalNotifications = await Notif._getLocalNotif();
-            await LocalNotifications.cancel({ notifications: [{ id: 1001 }] });
-          } catch {}
-        })();
-      }
-      return;
-    }
-    let cancelled = false;
-    const reschedule = async () => {
-      try {
-        const notifEnabled = localStorage.getItem("notif_enabled") !== "false";
-        if (!notifEnabled) {
-          // বন্ধ থাকলে আগের শিডিউল ক্যানসেল করি
-          if (window.Capacitor?.isNativePlatform()) {
-            try {
-              const LocalNotifications = await Notif._getLocalNotif();
-              await LocalNotifications.cancel({ notifications: [{ id: 1001 }] });
-            } catch {}
-          }
-          return;
-        }
-        const notifHour = parseInt(localStorage.getItem("notif_hour") || "22");
-        const notifMinute = parseInt(localStorage.getItem("notif_minute") || "0");
-        const now = new Date();
-        const target = new Date();
-        target.setHours(notifHour, notifMinute, 0, 0);
-        if (now >= target) target.setDate(target.getDate() + 1);
-
-        const todayKey = todayEn();
-        const todayInvList  = (invoices || []).filter(i => i.dateKey === todayKey && !i.isSelfUse && i.status !== "voided");
-        const revenue       = todayInvList.reduce((s, i) => s + (i.total || 0), 0);
-        const cashSale      = todayInvList.reduce((s, i) => {
-          if (i.payType === "cash") return s + (i.total || 0);
-          if (i.payType === "partial") return s + Math.min(i.paidAmount || 0, i.total || 0);
-          return s;
-        }, 0);
-        const _voidedIds1   = new Set((invoices||[]).filter(i=>i.status==="voided").map(i=>i.id));
-        const bakiToday     = (txns || []).filter(t => t.dateKey === todayKey && t.type === "baki" && t.invoiceId && !_voidedIds1.has(t.invoiceId)).reduce((s, t) => s + t.amount, 0);
-        const jomaToday     = (txns || []).filter(t => t.dateKey === todayKey && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale").reduce((s, t) => s + t.amount, 0);
-        const totalBakiNow  = (customers || []).reduce((s, c) => s + (c.balance || 0), 0);
-        // invoice-level আলাদা করে লাভ/লস — buildSummary()-এর সাথে মিল থাকবে
-        const _prodMap    = new Map((products || []).map(p => [p.id, p]));
-        const profitToday = todayInvList.reduce((s, inv) => {
-          const p = calcInvoiceProfit(inv, _prodMap);
-          return s + (p > 0 ? p : 0);
-        }, 0);
-        const lossToday = todayInvList.reduce((s, inv) => {
-          const p = calcInvoiceProfit(inv, _prodMap);
-          return s + (p < 0 ? Math.abs(p) : 0);
-        }, 0);
-        const f = (n) => Math.round(n || 0).toLocaleString("en-US");
-
-        if (cancelled) return;
-        await Notif.send({
-          id: 1001,
-          title: `✨ ${shopName} — আজকের সারসংক্ষেপ`,
-          iconColor: "#8b5cf6",
-          body: `💎 বিক্রয় ৳${f(revenue)}  •  💵 নগদ ৳${f(cashSale)}  •  📌 বাকি ৳${f(bakiToday)}`,
-          largeBody:
-            `💎 আজকের বিক্রয়: ৳${f(revenue)}\n` +
-            `💵 আজকের নগদ বিক্রয়: ৳${f(cashSale)}\n` +
-            `📌 আজকের বাকি: ৳${f(bakiToday)}\n` +
-            `🟢 আজকের লাভ: ৳${f(profitToday)}\n` +
-            `🔴 আজকের লস: ৳${f(lossToday)}\n` +
-            `🔴 মোট বাকি: ৳${f(totalBakiNow)}\n` +
-            `📥 আজকের বাকি আদায়: ৳${f(jomaToday)}`,
-          summaryText: `${shopName} • দৈনিক রিপোর্ট ✨`,
-          repeatDailyAt: { hour: notifHour, minute: notifMinute },
-        });
-      } catch(e) { /* silent */ }
-    };
-    // ডেটা পরিবর্তন হলে debounce করে রিশিডিউল
-    const t = setTimeout(reschedule, 1500);
-    return () => { cancelled = true; clearTimeout(t); };
-  }, [loaded, invoices, txns, customers, products, shopName, currentUser?.role]);
+  // 🔴 ফিক্স (নোটিফিকেশন বন্ধ হয়ে যাওয়া): এখানে আগে একটা পুরনো/ডুপ্লিকেট
+  // দৈনিক সারসংক্ষেপ notification effect ছিল যেটা id 1001-এ শিডিউল করত,
+  // পুরনো "notif_hour"/"notif_minute" localStorage key ব্যবহার করে (যেটা নতুন
+  // multi-time UI — DailyNotifCard/notif_times — আর আপডেট করে না, তাই সবসময়
+  // ডিফল্ট ২২:০০ ধরে নিত)। এটা customers/products/invoices/txns-এর প্রতিটি
+  // পরিবর্তনে (debounce ১.৫s) বারবার চলত — অর্থাৎ প্রতিটা বিক্রি/এন্ট্রিতে
+  // একবার করে native LocalNotifications.schedule() কল হতো, যেটা নতুন
+  // DailyNotifCard-এর (rescheduleAll, শুধু ব্যবহারকারী সময় বদলালে/চালু
+  // করলে চলে) সাথে id 1001-এ কনফ্লিক্ট করত এবং অতিরিক্ত ঘনঘন
+  // background-scheduling কলের কারণে Android নিজে থেকেই অ্যাপকে battery/
+  // notification-restriction-এর আওতায় ফেলতে পারত (OS-এর "Pause app
+  // activity if unused" বা অনুরূপ auto-revoke ফিচার)। এখন এই ডুপ্লিকেট
+  // effect সম্পূর্ণ সরানো হলো — শিডিউলিং শুধু DailyNotifCard থেকেই হয়।
 
   // 🔥 Firebase Auto-Backup সরানো হয়েছে — শুধু sync থাকবে, full DB upload নয়
   // 🔴 Timer consolidation — আগে এখানে একটা আলাদা hourly-check timer ছিল
@@ -10097,8 +10023,25 @@ function SmartBusinessMgmt() {
     try {
       // ১. Google Drive থেকে latest backup নাও
       let driveData = null;
-      const tk = googleDriveToken;
-      const fresh = tk?.token && tk?.savedAt && (Date.now() - tk.savedAt) < 58 * 60 * 1000;
+      let tk = googleDriveToken;
+      let fresh = tk?.token && tk?.savedAt && (Date.now() - tk.savedAt) < 58 * 60 * 1000;
+      // 🔴 ফিক্স (Google Drive "কখনো না" আটকে থাকা): token stale হলে আগে এখানেই
+      // চুপচাপ পুরো Drive ধাপ (download + পরের upload) skip হয়ে যেত, কোনো
+      // refresh চেষ্টা ছাড়াই। Admin ডিভাইসে (staff নয়) এখন একবার silent
+      // token refresh চেষ্টা করা হয় — অন্য জায়গাগুলোর (auto-backup timer)
+      // মতোই — যাতে sbm_gd_last_sync চিরস্থায়ীভাবে unset থেকে না যায়।
+      const isStaffDevice = currentUser?.role === "staff";
+      if (!fresh && !isStaffDevice) {
+        try {
+          const refreshed = await GDrive.ensureTokenSilent(GOOGLE_WEB_CLIENT_ID);
+          if (refreshed) {
+            tk = { token: refreshed, savedAt: Date.now() };
+            fresh = true;
+            setGoogleDriveToken(tk);
+            try { FSS.setSettings({ googleDriveToken: tk }); } catch {}
+          }
+        } catch { /* silent — refresh ব্যর্থ হলে আগের মতোই এই সাইকেল skip হবে */ }
+      }
       if (fresh) {
         try {
           setMasterSyncDetail("Drive থেকে backup নেওয়া হচ্ছে...");
@@ -10261,7 +10204,7 @@ function SmartBusinessMgmt() {
       setMasterSyncDetail("Sync ব্যর্থ: " + (e?.message || "অজানা error"));
       safeTimeout(() => { setMasterSyncStatus(null); setMasterSyncDetail(""); }, 5000);
     }
-  }, [masterSyncStatus, googleDriveToken, customers, products, invoices, txns, smsLog,
+  }, [masterSyncStatus, googleDriveToken, setGoogleDriveToken, currentUser, customers, products, invoices, txns, smsLog,
       paymentInvoices, purchaseOrders, stockMovements, cashLogs, suppliers,
       expenses, returns, auditLogs, quotations, supplierPayments,
       users, deletedProducts, deletedCustomers, setLastAutoBackup,
@@ -19064,26 +19007,37 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     const q = (deferredSearch || "").trim();
     let base = productsWithSerialAll;
     if (demandFilter !== "সব") base = base.filter(p => (p.demandType || "common") === demandFilter);
+    let result;
     if (!q || q.startsWith("__")) {
       // সার্চ নেই — ডিফল্ট সর্ট: কমন আগে, আনকমন পরে (স্টেবল, বাকি অর্ডার অক্ষত)
-      return [...base].sort((a, b) => {
+      result = [...base].sort((a, b) => {
         const da = (a.demandType || "common") === "uncommon" ? 1 : 0;
         const db = (b.demandType || "common") === "uncommon" ? 1 : 0;
         return da - db;
       });
+    } else {
+      result = base
+        .map(p => ({
+          ...p,
+          _score: Math.max(
+            smartMatch(p.name, q),
+            smartMatch(p.serialStr, q),
+            smartMatch(p.company || "", q),
+            smartMatch(p.barcode || "", q)
+          )
+        }))
+        .filter(p => p._score > 0)
+        .sort((a, b) => b._score - a._score);
     }
-    return base
-      .map(p => ({
-        ...p,
-        _score: Math.max(
-          smartMatch(p.name, q),
-          smartMatch(p.serialStr, q),
-          smartMatch(p.company || "", q),
-          smartMatch(p.barcode || "", q)
-        )
-      }))
-      .filter(p => p._score > 0)
-      .sort((a, b) => b._score - a._score);
+    // 🔴 ফিক্স (সিরিয়াল ব্রেক — ভিজ্যুয়াল): এই badge নম্বর আগে মূল products
+    // অ্যারের পজিশন থেকে আসত (productsWithSerialAll), কিন্তু কমন/আনকমন
+    // গ্রুপিং বা সার্চ র‍্যাঙ্কিং সেই ক্রম ভেঙে দিত — তালিকায় ১৩-এর পর ১২
+    // দেখানোর মতো টুকরো টুকরো নম্বর দেখাত, যদিও আসল ডেটা ঠিকই ছিল। এখন এই
+    // badge সবসময় স্ক্রিনে দেখানো ক্রম অনুযায়ী ১,২,৩...— ধারাবাহিক। (মূল
+    // productsWithSerialAll/serialStr অপরিবর্তিত থাকে, তাই সার্চ ম্যাচিং ও
+    // অন্য জায়গার আসল serial রেফারেন্স প্রভাবিত হয় না — এটা শুধু এই ভিউয়ের
+    // ডিসপ্লে নম্বর।)
+    return result.map((p, i) => ({ ...p, serial: i + 1, serialStr: String(i + 1) }));
   }, [productsWithSerialAll, deferredSearch, demandFilter]);
 
   // ── FIFO active-batch map — প্রোডাক্ট লিস্টের ব্যাচ ব্যাজ দেখানোর জন্য (prodBatchMap fix) ──
@@ -24458,7 +24412,11 @@ function Settings_({ T, S, shopName,
               <div style={{ color:"#f1f5f9", fontWeight:900, fontSize:13, marginBottom:3 }}>Google Drive</div>
               <div style={{ color: gdConnected ? COLOR : "#475569", fontSize:10, marginBottom:12, display:"flex", alignItems:"center", gap:4 }}>
                 {gdConnected
-                  ? <><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={COLOR} strokeWidth="3" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>Cloud backup active</>
+                  // 🔴 ফিক্স (বিভ্রান্তিকর কপি): "Cloud backup active" শুনতে মনে
+                  // হতো ব্যাকআপ আপলোড হয়েছে, কিন্তু এই কার্ড আসলে শুধু
+                  // token/connection সচল কিনা তাই বলে — Backup Health কার্ডের
+                  // "সর্বশেষ ব্যাকআপ" টাইমস্ট্যাম্পই আসল আপলোড-স্ট্যাটাস দেখায়।
+                  ? <><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={COLOR} strokeWidth="3" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>সংযুক্ত (Connected)</>
                   : "Secure cloud backup"}
               </div>
 
