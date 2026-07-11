@@ -2542,39 +2542,61 @@ const Notif = {
   // ফোল্ডারগুলোতে ic_stat_pulse.png কপি করতে হবে। ফোল্ডারগুলো না থাকলে নতুন তৈরি করুন।
   async send({ id = Date.now(), title, body, scheduleAt = null, repeatDailyAt = null, iconColor = "#10b981", largeBody = null, summaryText = null, smallIcon = "ic_stat_pulse" }) {
     if (window.Capacitor?.isNativePlatform()) {
+      const LocalNotifications = await Notif._getLocalNotif();
+      let schedule;
+      if (repeatDailyAt) {
+        // প্রতিদিন নির্দিষ্ট সময়ে রিপিট — 'on' ফরম্যাট ব্যবহার করতে হবে, 'at'+'every' একসাথে কাজ করে না
+        schedule = { on: { hour: repeatDailyAt.hour, minute: repeatDailyAt.minute }, allowWhileIdle: true };
+      } else if (scheduleAt) {
+        schedule = { at: new Date(scheduleAt), allowWhileIdle: true };
+      } else {
+        // 🔴 ফিক্স — schedule ফিল্ড পুরোপুরি বাদ দিলে (immediate ধরে নেওয়ার আশায়)
+        // ডিভাইসে notification silently কখনোই দেখানো হচ্ছিল না — ডিবাগ ৫ টেস্টে
+        // প্রমাণিত হয়েছে explicit schedule.at থাকলে ঠিকমতো দেখায়। তাই এখন immediate
+        // notification-এর জন্যও ১ সেকেন্ড পরের একটা explicit 'at' সময় দেওয়া হচ্ছে।
+        schedule = { at: new Date(Date.now() + 1000), allowWhileIdle: true };
+      }
+      const notif = {
+        id: id % 2147483647, title, body, allowWhileIdle: true,
+        iconColor, smallIcon, schedule,
+        ...(largeBody ? { largeBody } : {}),
+        ...(summaryText ? { summaryText } : {}),
+      };
+      // 🔴 ফিক্স — প্রমাণিত হয়েছে (টেস্ট নোটিফিকেশন এরর: "8s এর মধ্যে সাড়া দেয়নি")
+      // যে full payload (largeBody/summaryText সহ) schedule() কল কখনো কখনো
+      // চিরকাল hang করে — না resolve হয়, না reject হয়। তার মানে আগের কোডে
+      // ভেতরের catch(e) ব্লকটা কখনোই ট্রিগার হতো না (কারণ hang হলে কোনো error
+      // থ্রো হয় না), শুধু বাইরের কলার-এর (sendTestNotif) external timeout-ই
+      // fire করত। ফলে minimal-payload fallback (ডিবাগ ৫-এর মতো) কখনো ট্রাই-ই
+      // হতো না। এখন প্রতিটা schedule() কল নিজের একটা ছোট (4s) internal timeout
+      // দিয়ে race করা হচ্ছে, যাতে hang হলেও দ্রুত ধরা পড়ে ও পরের ধাপে (minimal
+      // payload) যাওয়া যায় — ঠিক ডিবাগ ৫-এ যেভাবে কাজ করেছিল।
+      const withInternalTimeout = (p, ms) => Promise.race([
+        p,
+        new Promise((_, reject) => setTimeout(() => reject(new Error(`schedule() — ${ms/1000}s এর মধ্যে সাড়া দেয়নি (plugin hang)`)), ms)),
+      ]);
       try {
-        const LocalNotifications = await Notif._getLocalNotif();
-        const notif = {
-          id: id % 2147483647, title, body, allowWhileIdle: true,
-          iconColor, smallIcon,
-          ...(largeBody ? { largeBody } : {}),
-          ...(summaryText ? { summaryText } : {}),
-        };
-        if (repeatDailyAt) {
-          // প্রতিদিন নির্দিষ্ট সময়ে রিপিট — 'on' ফরম্যাট ব্যবহার করতে হবে, 'at'+'every' একসাথে কাজ করে না
-          notif.schedule = { on: { hour: repeatDailyAt.hour, minute: repeatDailyAt.minute }, allowWhileIdle: true };
-        } else if (scheduleAt) {
-          notif.schedule = { at: new Date(scheduleAt), allowWhileIdle: true };
-        } else {
-          // 🔴 ফিক্স — schedule ফিল্ড পুরোপুরি বাদ দিলে (immediate ধরে নেওয়ার আশায়)
-          // ডিভাইসে notification silently কখনোই দেখানো হচ্ছিল না — ডিবাগ ৫ টেস্টে
-          // প্রমাণিত হয়েছে explicit schedule.at থাকলে ঠিকমতো দেখায়। তাই এখন immediate
-          // notification-এর জন্যও ১ সেকেন্ড পরের একটা explicit 'at' সময় দেওয়া হচ্ছে।
-          notif.schedule = { at: new Date(Date.now() + 1000), allowWhileIdle: true };
-        }
-        await LocalNotifications.schedule({ notifications: [notif] });
+        await withInternalTimeout(LocalNotifications.schedule({ notifications: [notif] }), 4000);
         return;
       } catch(e) {
-        // 🔴 ফিক্স — আগে এই এরর এখানেই console.warn করে silently swallow করা
-        // হতো এবং ফাংশনটা normally return করত (fallback browser API silently
-        // কিছুই করত না, কারণ native WebView-তে "Notification" in window সাধারণত
-        // false বা permission granted থাকে না)। ফলে LocalNotifications.schedule()
-        // native side-এ আসলে ব্যর্থ হলেও Notif.send() কলার-এর কাছে সবসময় "সফল"
-        // দেখাত — sendTestNotif/rescheduleAll কখনো real error দেখতে পেত না, তাই
-        // fallback/retry ধাপও কখনো ট্রিগার হতো না। এখন এরর রি-থ্রো করা হচ্ছে যাতে
-        // কলাররা আসল ব্যর্থতা দেখতে ও তার উপর ভিত্তি করে পদক্ষেপ নিতে পারে।
-        console.warn("Notif send (Capacitor) error:", e?.message || e);
-        if (window.Capacitor?.isNativePlatform()) throw e;
+        console.warn("Notif send (Capacitor) error, full payload:", e?.message || e);
+        // largeBody/summaryText (BigTextStyle) ডিবাগ ৫-এ কখনো টেস্ট করা হয়নি —
+        // ডিবাগ ৫ শুধু title+body+smallIcon+iconColor+schedule দিয়ে সফল হয়েছিল।
+        // যদি largeBody/summaryText (আসল ডেটা — invoice/বিক্রয় সংখ্যা, বিশেষ
+        // ক্যারেক্টার) native schedule()-কে hang/ব্যর্থ করে থাকে, তাহলে ডিবাগ
+        // ৫-এর ঠিক সেই মিনিমাল আকারে আরেকবার ট্রাই করা হচ্ছে।
+        if (largeBody || summaryText) {
+          try {
+            await withInternalTimeout(LocalNotifications.schedule({ notifications: [{ id: notif.id, title, body, allowWhileIdle: true, iconColor, smallIcon, schedule }] }), 4000);
+            console.warn("Notif send: minimal payload (Debug-5 style) succeeded after full payload failed/hung");
+            return;
+          } catch(e2) {
+            console.warn("Notif send (Capacitor) error, minimal payload also failed:", e2?.message || e2);
+            if (window.Capacitor?.isNativePlatform()) throw e2;
+          }
+        } else {
+          if (window.Capacitor?.isNativePlatform()) throw e;
+        }
       }
     }
     try {
@@ -22343,7 +22365,7 @@ function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoic
           largeBody,
           summaryText: `${shopName} • দৈনিক রিপোর্ট ✨`,
           repeatDailyAt: { hour: t.hour, minute: t.minute },
-        }), 6000, "Notification schedule");
+        }), 10000, "Notification schedule");
       }
     };
     // 🔴 ফিক্স — permission-check fallback পুরোপুরি বাদ দেওয়া হলো। বারবার (৬s/১৫s/২০s
@@ -22439,7 +22461,7 @@ function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoic
         body,
         largeBody,
         summaryText: `${shopName} • দৈনিক রিপোর্ট ✨`,
-      }), 8000, "Notification send");
+      }), 10000, "Notification send");
       showToast("🔔 টেস্ট নোটিফিকেশন পাঠানো হয়েছে");
     } catch (e) {
       console.warn("Notif send failed:", e?.message || e);
