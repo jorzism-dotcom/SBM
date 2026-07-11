@@ -9904,7 +9904,7 @@ function SmartBusinessMgmt() {
     // ডেটা পরিবর্তন হলে debounce করে রিশিডিউল
     const t = setTimeout(reschedule, 1500);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [loaded, invoices, txns, customers, shopName, currentUser?.role]);
+  }, [loaded, invoices, txns, customers, products, shopName, currentUser?.role]);
 
   // 🔥 Firebase Auto-Backup সরানো হয়েছে — শুধু sync থাকবে, full DB upload নয়
   // 🔴 Timer consolidation — আগে এখানে একটা আলাদা hourly-check timer ছিল
@@ -10199,6 +10199,21 @@ function SmartBusinessMgmt() {
         contentHash: buildContentHashes(freshPayload),
         counts: freshCounts,
       };
+
+      // 🔴 ফিক্স: উপরের কমেন্ট বলছিল "Drive-এও updated backup রাখো" কিন্তু
+      // আসলে GDrive.uploadBackup() কখনো কল হতো না — শুধু local file সেভ হতো।
+      // ফলে Master Sync বারবার চালালেও Backup Health কার্ডে
+      // "Google Drive: কখনো না" থেকেই যেত, sbm_gd_last_sync কখনো সেট হতো না।
+      // এখন token সতেজ থাকলে সত্যিকারের Drive আপলোড হয় ও timestamp সেভ হয়।
+      if (fresh) {
+        try {
+          await withRetry(() => GDrive.uploadBackup(tk.token, {
+            ...freshPayload, _masterSync: true, _savedAt: new Date().toISOString(),
+          }), { retries: 2 });
+          localStorage.setItem("sbm_gd_last_sync", new Date().toISOString());
+        } catch { /* silent — Drive আপলোড ব্যর্থ হলেও local/Firestore sync চলতে থাকবে */ }
+      }
+
       const now = new Date();
       // #৪ ডেল্টা সিঙ্ক — শুধু hourly auto-trigger-এ প্রযোজ্য (auto===true);
       // merge উপরে আগেই হয়ে গেছে (cross-device correctness অক্ষুণ্ণ), শুধু
