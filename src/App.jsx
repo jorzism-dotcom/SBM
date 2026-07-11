@@ -22588,60 +22588,6 @@ function Settings_({ T, S, shopName,
     loadInvHistPage(true);
   };
 
-  // ══ 📜 Invoice History — ফুলস্ক্রিন পেজ (Phase 2 cursor pagination) ══
-  if (invHistOpen) {
-    const custMap = new Map((customers || []).map(c => [c.id, c]));
-    return (
-      <div style={{ minHeight:"100vh", background: T.bg, padding:"16px 14px 32px" }}>
-        <button style={S.textBtn} onClick={() => setInvHistOpen(false)}>← সেটিংসে ফিরুন</button>
-        <div style={{ color:"#f1edff", fontWeight:900, fontSize:18, margin:"10px 0 4px" }}>📜 ইনভয়েস হিস্ট্রি (পুরনো)</div>
-        <div style={{ color:"#94a3b8", fontSize:11.5, marginBottom:14 }}>নতুন থেকে পুরনো ক্রমে, ৩০টা করে লোড হয় — সরাসরি Firestore থেকে, লোকাল ৩০-দিনের সীমার বাইরের যেকোনো ইনভয়েস এখানে খুঁজে পাওয়া যাবে।</div>
-
-        {invHistError && (
-          <div style={{ background:"#ef444422", border:"1px solid #ef444455", borderRadius:12, padding:"10px 12px", color:"#fca5a5", fontSize:11.5, marginBottom:12 }}>
-            ⚠️ {invHistError}
-          </div>
-        )}
-
-        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-          {invHistRows.map((inv, i) => {
-            const cust = custMap.get(inv.customerId);
-            const badge = inv.payType === "baki" ? { label:"বাকি", color:"#ef4444" } : inv.payType === "partial" ? { label:"আংশিক", color:"#f59e0b" } : { label:"নগদ", color:"#22c55e" };
-            return (
-              <div key={inv.id || i} style={{ background:"rgba(255,255,255,0.03)", border:"1px solid rgba(255,255,255,0.07)", borderRadius:12, padding:"11px 13px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
-                <div style={{ minWidth:0 }}>
-                  <div style={{ color:"#f1edff", fontWeight:800, fontSize:13, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{cust?.name || inv.customerName || "ওয়াক-ইন"}</div>
-                  <div style={{ color:"#94a3b8", fontSize:10.5, marginTop:2 }}>{inv.date || inv.dateKey || "—"}</div>
-                </div>
-                <div style={{ textAlign:"right", flexShrink:0 }}>
-                  <div style={{ color:"#f1edff", fontWeight:900, fontSize:13 }}>৳{fmt(inv.total || 0)}</div>
-                  <div style={{ color: badge.color, fontSize:9.5, fontWeight:800, marginTop:2 }}>{badge.label}</div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {invHistRows.length === 0 && !invHistLoading && !invHistError && (
-          <div style={{ textAlign:"center", color:"#64748b", fontSize:12, marginTop:30 }}>কোনো ইনভয়েস পাওয়া যায়নি</div>
-        )}
-
-        <div style={{ marginTop:16, textAlign:"center" }}>
-          {!invHistDone ? (
-            <button
-              onClick={() => loadInvHistPage(false)}
-              disabled={invHistLoading}
-              style={{ background:"rgba(167,139,250,0.12)", border:"1px solid rgba(167,139,250,0.35)", borderRadius:12, padding:"11px 20px", color:"#ddd6fe", fontWeight:800, fontSize:12.5, cursor: invHistLoading ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: invHistLoading ? 0.6 : 1 }}
-            >
-              {invHistLoading ? "⏳ লোড হচ্ছে..." : "আরও লোড করুন ↓"}
-            </button>
-          ) : invHistRows.length > 0 ? (
-            <div style={{ color:"#64748b", fontSize:11 }}>— সব ইনভয়েস দেখানো হয়েছে —</div>
-          ) : null}
-        </div>
-      </div>
-    );
-  }
   // 📤 ১ ক্লিকে বাকি রিমাইন্ডার SMS
   const [bulkSmsSending, setBulkSmsSending] = useState(false);
   const [bulkSmsProgress, setBulkSmsProgress] = useState({ done: 0, total: 0 });
@@ -23114,6 +23060,68 @@ function Settings_({ T, S, shopName,
     };
     reader.readAsText(file);
   };
+
+  // ══ 📜 Invoice History — ফুলস্ক্রিন পেজ (Phase 2 cursor pagination) ══
+  // 🔴 ফিক্স: এই early-return আগে সব hook declare হওয়ার আগে ছিল (উপরে,
+  // loadInvHistPage/openInvHist-এর ঠিক পরে) — invHistOpen true হলে নিচের ৩০+
+  // hook (bulkSmsSending, tplForm, quotaInfo, syncDiag, fbForm, delBk*, ইত্যাদি)
+  // আর isStaffUser early-return কল-ই হতো না, ফলে React "Rendered fewer hooks
+  // than during the previous render" (minified error #300) ক্র্যাশ করত।
+  // এখন এটাকে সব hook declaration-এর পরে, isStaffUser চেকের ঠিক আগে আনা হলো —
+  // যাতে প্রতিটা render-এ hook-এর সংখ্যা/অর্ডার সবসময় একই থাকে।
+  if (invHistOpen) {
+    const custMap = new Map((customers || []).map(c => [c.id, c]));
+    return (
+      <div style={{ minHeight:"100vh", background: T.bg, padding:"16px 14px 32px" }}>
+        <button style={S.textBtn} onClick={() => setInvHistOpen(false)}>← সেটিংসে ফিরুন</button>
+        <div style={{ color:"#f1edff", fontWeight:900, fontSize:18, margin:"10px 0 4px" }}>📜 ইনভয়েস হিস্ট্রি (পুরনো)</div>
+        <div style={{ color:"#94a3b8", fontSize:11.5, marginBottom:14 }}>নতুন থেকে পুরনো ক্রমে, ৩০টা করে লোড হয় — সরাসরি Firestore থেকে, লোকাল ৩০-দিনের সীমার বাইরের যেকোনো ইনভয়েস এখানে খুঁজে পাওয়া যাবে।</div>
+
+        {invHistError && (
+          <div style={{ background:"#ef444422", border:"1px solid #ef444455", borderRadius:12, padding:"10px 12px", color:"#fca5a5", fontSize:11.5, marginBottom:12 }}>
+            ⚠️ {invHistError}
+          </div>
+        )}
+
+        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+          {invHistRows.map((inv, i) => {
+            const cust = custMap.get(inv.customerId);
+            const badge = inv.payType === "baki" ? { label:"বাকি", color:"#ef4444" } : inv.payType === "partial" ? { label:"আংশিক", color:"#f59e0b" } : { label:"নগদ", color:"#22c55e" };
+            return (
+              <div key={inv.id || i} style={{ background:"rgba(255,255,255,0.03)", border:"1px solid rgba(255,255,255,0.07)", borderRadius:12, padding:"11px 13px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
+                <div style={{ minWidth:0 }}>
+                  <div style={{ color:"#f1edff", fontWeight:800, fontSize:13, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{cust?.name || inv.customerName || "ওয়াক-ইন"}</div>
+                  <div style={{ color:"#94a3b8", fontSize:10.5, marginTop:2 }}>{inv.date || inv.dateKey || "—"}</div>
+                </div>
+                <div style={{ textAlign:"right", flexShrink:0 }}>
+                  <div style={{ color:"#f1edff", fontWeight:900, fontSize:13 }}>৳{fmt(inv.total || 0)}</div>
+                  <div style={{ color: badge.color, fontSize:9.5, fontWeight:800, marginTop:2 }}>{badge.label}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {invHistRows.length === 0 && !invHistLoading && !invHistError && (
+          <div style={{ textAlign:"center", color:"#64748b", fontSize:12, marginTop:30 }}>কোনো ইনভয়েস পাওয়া যায়নি</div>
+        )}
+
+        <div style={{ marginTop:16, textAlign:"center" }}>
+          {!invHistDone ? (
+            <button
+              onClick={() => loadInvHistPage(false)}
+              disabled={invHistLoading}
+              style={{ background:"rgba(167,139,250,0.12)", border:"1px solid rgba(167,139,250,0.35)", borderRadius:12, padding:"11px 20px", color:"#ddd6fe", fontWeight:800, fontSize:12.5, cursor: invHistLoading ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: invHistLoading ? 0.6 : 1 }}
+            >
+              {invHistLoading ? "⏳ লোড হচ্ছে..." : "আরও লোড করুন ↓"}
+            </button>
+          ) : invHistRows.length > 0 ? (
+            <div style={{ color:"#64748b", fontSize:11 }}>— সব ইনভয়েস দেখানো হয়েছে —</div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
 
   // ── Staff early return: শুধু Theme + Font Card ──────────────────────────────
   const isStaffUser = currentUser?.role === "staff";
