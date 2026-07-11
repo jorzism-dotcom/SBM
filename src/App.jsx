@@ -2398,20 +2398,34 @@ const Notif = {
   _localNotif: null,
   _importFailed: false,
   async _getLocalNotif() {
-    if (Notif._localNotif) return Notif._localNotif;
+    if (Notif._localNotif) {
+      try { window.__notifLog?.push?.(`[+?ms] _getLocalNotif(): cache hit`); } catch {}
+      return Notif._localNotif;
+    }
     // ১. আগে registered global plugin চেক করি (build এ ESM import bundle না হলেও এটা কাজ করতে পারে)
     if (window.Capacitor?.Plugins?.LocalNotifications) {
+      try { window.__notifLog?.push?.(`[+?ms] _getLocalNotif(): window.Capacitor.Plugins.LocalNotifications থেকে সরাসরি পাওয়া গেছে (sync path)`); } catch {}
       Notif._localNotif = window.Capacitor.Plugins.LocalNotifications;
       return Notif._localNotif;
     }
-    // ২. dynamic import চেষ্টা করি
+    // 🔴 ফিক্স — window.Capacitor.Plugins.LocalNotifications ওই মুহূর্তে undefined থাকলে
+    // আগে সরাসরি dynamic import("@capacitor/local-notifications") চেষ্টা হতো, কোনো
+    // timeout guard ছাড়াই — টাইমিং লগে দেখা গেছে ঠিক এখানেই send() কখনো কখনো চিরকাল
+    // আটকে থাকে (এমনকি schedule() পর্যন্ত পৌঁছানোরও আগে)। এখন এই dynamic import-ও
+    // ৩ সেকেন্ডের মধ্যে সাড়া না দিলে স্পষ্ট error থ্রো করবে, নিঃশব্দে hang করবে না।
+    try { window.__notifLog?.push?.(`[+?ms] _getLocalNotif(): window.Capacitor.Plugins.LocalNotifications পাওয়া যায়নি — dynamic import() চেষ্টা হচ্ছে`); } catch {}
     if (!Notif._importFailed) {
       try {
-        const { LocalNotifications } = await import("@capacitor/local-notifications");
+        const { LocalNotifications } = await Promise.race([
+          import("@capacitor/local-notifications"),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("dynamic import() — 3s এর মধ্যে সাড়া দেয়নি")), 3000)),
+        ]);
+        try { window.__notifLog?.push?.(`[+?ms] _getLocalNotif(): dynamic import() সফল`); } catch {}
         Notif._localNotif = LocalNotifications;
         return LocalNotifications;
       } catch (e) {
         Notif._importFailed = true;
+        try { window.__notifLog?.push?.(`[+?ms] _getLocalNotif(): dynamic import() ব্যর্থ/timeout — ${e?.message || e}`); } catch {}
         console.warn("Notif: @capacitor/local-notifications import failed —", e?.message || e);
       }
     }
