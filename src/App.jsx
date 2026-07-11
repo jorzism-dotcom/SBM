@@ -22611,6 +22611,30 @@ function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoic
             style={{ width:"100%", marginTop:8, background:"#f59e0b22", color:"#fcd34d", border:"1px dashed #f59e0b66", borderRadius:12, padding:"8px 0", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
             🧪 ডিবাগ ৩: App vs LocalNotifications ব্রিজ তুলনা করুন
           </button>
+          {/* 🔴 সাময়িক ডিবাগ বাটন ৪ — শুধু requestPermissions() টেস্ট, checkPermissions()
+              বাদ দিয়ে। এটা চাপার পর স্ক্রিনে সিস্টেম permission popup আসে কিনা সেটা
+              খেয়াল করে দেখতে হবে — popup আসলে Allow/Deny চাপুন, তারপর ফলাফল দেখুন। */}
+          <button onClick={async () => {
+              try {
+                const LN = window.Capacitor?.Plugins?.LocalNotifications;
+                if (!LN) { window.alert("প্লাগইন নেই!"); return; }
+                window.alert("⏳ এখন requestPermissions() কল হবে — এই OK চাপার পরপরই স্ক্রিনে কোনো সিস্টেম পপআপ (Allow/Deny) আসে কিনা ভালো করে খেয়াল করুন! পপআপ আসলে তাতে ট্যাপ করুন।");
+                const t0 = Date.now();
+                const result = await Promise.race([
+                  LN.requestPermissions().then(r => ({ ok:true, r })),
+                  new Promise(res => setTimeout(() => res({ ok:false }), 15000)),
+                ]);
+                const ms = Date.now() - t0;
+                window.alert(result.ok
+                  ? `✅ requestPermissions() সাড়া দিয়েছে (${ms}ms) — ${JSON.stringify(result.r)}`
+                  : `❌ ১৫ সেকেন্ডেও সাড়া দেয়নি (hang) — কোনো পপআপ দেখা গিয়েছিল কিনা মনে করুন`);
+              } catch(e) {
+                window.alert("এরর: " + (e?.message || e));
+              }
+            }}
+            style={{ width:"100%", marginTop:8, background:"#ec489922", color:"#f9a8d4", border:"1px dashed #ec489966", borderRadius:12, padding:"8px 0", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
+            🎯 ডিবাগ ৪: শুধু requestPermissions() টেস্ট (popup আসে কিনা দেখুন)
+          </button>
           <button onClick={async () => {
               // 🔴 ডিবাগ ফিক্স — আগে এখানে try/catch/timeout ছিল না, তাই hang
               // হলে বাটন চাপ দিয়ে কিছুই দেখা যেত না (সম্পূর্ণ silent)। এখন
