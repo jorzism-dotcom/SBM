@@ -4736,7 +4736,9 @@ const FSS = {
     const colRef = collection(this._db, name);
     const unsub = onSnapshot(colRef, (snap) => {
       const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      callback(arr);
+      // 🔴 ফিক্স (অপশন ১): snap.metadata.fromCache পাস করি, যাতে caller বুঝতে
+      // পারে এই স্ন্যাপশট লোকাল ক্যাশ থেকে এসেছে নাকি সার্ভার-কনফার্মড।
+      callback(arr, snap.metadata.fromCache);
     }, (err) => {
       // আগে silent ছিল ( () => {} ) — এখন caller কে জানানো হয়, বিশেষ করে
       // "users" (staff permission) collection-এ এটা জরুরি: কানেকশন সমস্যা
@@ -5026,7 +5028,15 @@ const pushCashLog = (entry) => {
 };
 
 function useFSSCollection(name, value, setValue, ready, opts = {}) {
-  const { instant = false, filterIncoming = null, onSync = null } = opts;
+  // 🔴 ফিক্স: syncDeletes=false দিলে local→remote diff কোনো রেকর্ড "মিসিং" পেলেও
+  // Firestore থেকে সেটা ডিলিট করবে না (শুধু bookkeeping করবে)। কারণ — Firestore-এর
+  // onSnapshot() প্রথমে স্টেল/অসম্পূর্ণ লোকাল ক্যাশ থেকে স্ন্যাপশট দিতে পারে (বিশেষত
+  // দীর্ঘক্ষণ ব্যাকগ্রাউন্ডে থাকা অ্যাপে/রিকানেক্টে), আর এই diff লজিক সেই অসম্পূর্ণ
+  // তালিকাকে "ইউজার মুছেছে" ধরে সরাসরি স্থায়ী ডিলিট পাঠিয়ে দিত — কোনো audit log
+  // বা নিশ্চিতকরণ ছাড়াই (দেখা গেছে: Ace 120mg/5ml ও A-Flox 500mg/vial পণ্য এভাবে
+  // অনিচ্ছাকৃতভাবে মুছে গিয়েছিল)। products-এর জন্য এখন ডিলিট শুধুই UI-এর ইচ্ছাকৃত
+  // "Delete" বাটন থেকে সরাসরি FSS.deleteRecord() কল করে হয় (দেখুন Products কম্পোনেন্ট)।
+  const { instant = false, filterIncoming = null, onSync = null, syncDeletes = true } = opts;
   const lastSynced  = useRef(null);
   const firstRemote = useRef(false);
   const valueRef    = useRef(value);
@@ -5038,7 +5048,15 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
     if (!ready) { firstRemote.current = false; return; }
     firstRemote.current = false;
     pending.current = new Map();
-    const unsub = FSS.subscribeCollection(name, (arr) => {
+    const unsub = FSS.subscribeCollection(name, (arr, fromCache) => {
+      // 🔴 ফিক্স (অপশন ১): এই listener-এর একদম প্রথম স্ন্যাপশট যদি লোকাল ক্যাশ
+      // থেকে আসে (fromCache === true), সেটাকে "সত্য" ধরে নিয়ে seed/diff-baseline
+      // হিসেবে ব্যবহার করি না — সার্ভার-কনফার্মড স্ন্যাপশটের অপেক্ষা করি। এতে
+      // দীর্ঘক্ষণ ব্যাকগ্রাউন্ড/রিকানেক্টের পর আসা অসম্পূর্ণ ক্যাশড ডেটা ভুলবশত
+      // "সত্যিকার অবস্থা" হিসেবে গণ্য হয়ে diff-delete/সিঙ্ক ট্রিগার করে না। (শুধু
+      // প্রথম স্ন্যাপশটে প্রযোজ্য — পরবর্তীতে local write-এর optimistic echo
+      // fromCache হতে পারে, সেগুলো স্বাভাবিকভাবেই প্রসেস হবে।)
+      if (!firstRemote.current && fromCache) return;
       const incoming = filterIncoming ? filterIncoming(arr) : arr;
       if (!firstRemote.current) {
         firstRemote.current = true;
@@ -5141,7 +5159,10 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
         // মুছে ফেলা ঠেকাতে (merge-only restore, দেখুন applyBackupFields-এর কমেন্ট)।
         if (RestoreGuard.active) return;
         pending.current.delete(id);
-        FSS.deleteRecord(name, id);
+        // 🔴 ফিক্স: syncDeletes=false কালেকশনে (products) diff-ভিত্তিক অটো-ডিলিট
+        // বন্ধ — শুধু bookkeeping (pending/lastSynced) হালনাগাদ হয়, Firestore-এ
+        // কোনো ডিলিট পাঠানো হয় না। প্রকৃত ডিলিট এখন UI-এর বাটন থেকেই সরাসরি হয়।
+        if (syncDeletes) FSS.deleteRecord(name, id);
       });
       lastSynced.current = value;
     };
@@ -9875,13 +9896,21 @@ function SmartBusinessMgmt() {
   }, [loaded, firebaseEnabled, firebaseConfig]);
 
   // ── প্রতিটা collection — local array ↔ Firestore (record-level, real-time) ──
-  useFSSCollection("customers", customers, setCustomers, fssReady, { onSync: setSyncToast });
+  // 🔴 ফিক্স: customers-এও products-এর মতো একই bug ছিল — diff-ভিত্তিক অটো-ডিলিট
+  // sync layer আর এখানে বন্ধ, শুধু Customers পেজের ইচ্ছাকৃত Delete বাটন থেকে
+  // সরাসরি FSS.deleteRecord("customers", id) কল হয়।
+  useFSSCollection("customers", customers, setCustomers, fssReady, { onSync: setSyncToast, syncDeletes: false });
   useFSSCollection("products", products, setProducts, fssReady, {
     onSync: setSyncToast,
     filterIncoming: (arr) => {
       const deletedIds = new Set((deletedProducts || []).map(p => p.id));
       return arr.filter(p => !deletedIds.has(p.id));
     },
+    // 🔴 ফিক্স: products-এ diff-ভিত্তিক অটো-ডিলিট বন্ধ — লোকাল তালিকা সাময়িকভাবে
+    // অসম্পূর্ণ/স্টেল হলেও (Firestore ক্যাশ রেসের কারণে) পণ্য আর ভুলবশত Firestore
+    // থেকে মুছে যাবে না। প্রকৃত ডিলিট এখন Products পেজের "🗑️ Delete" বাটন থেকে
+    // সরাসরি FSS.deleteRecord("products", id) কল করে হয়।
+    syncDeletes: false,
   });
 
   // ── Phase 1.2: Invoice Windowed Sync — শুধু শেষ ৩০ দিনের ইনভয়েস real-time ──
@@ -10006,11 +10035,15 @@ function SmartBusinessMgmt() {
 
     return () => unsub();
   }, [fssReady]); // eslint-disable-line react-hooks/exhaustive-deps
-  useFSSCollection("expenses", expenses, setExpenses, fssReady, { onSync: setSyncToast });
+  // 🔴 ফিক্স: expenses-এও একই প্যাটার্ন — auto-delete বন্ধ, ইচ্ছাকৃত ডিলিট এখন
+  // সরাসরি FSS.deleteRecord("expenses", id) কল করে (দেখুন Expenses পেজ)।
+  useFSSCollection("expenses", expenses, setExpenses, fssReady, { onSync: setSyncToast, syncDeletes: false });
   useFSSCollection("returns",  returns,  setReturns,  fssReady, { onSync: setSyncToast });
   useFSSCollection("auditLogs", auditLogs, setAuditLogs, fssReady, { onSync: setSyncToast });
   useFSSCollection("quotations", quotations, setQuotations, fssReady, { onSync: setSyncToast });
-  useFSSCollection("supplierPayments", supplierPayments, setSupplierPayments, fssReady, { onSync: setSyncToast });
+  // 🔴 ফিক্স: supplierPayments-এও একই প্যাটার্ন — auto-delete বন্ধ, ইচ্ছাকৃত ডিলিট
+  // এখন সরাসরি FSS.deleteRecord("supplierPayments", id) কল করে (দেখুন SupplierPayments পেজ)।
+  useFSSCollection("supplierPayments", supplierPayments, setSupplierPayments, fssReady, { onSync: setSyncToast, syncDeletes: false });
   useFSSCollection("paymentInvoices", paymentInvoices, setPaymentInvoices, fssReady, { onSync: setSyncToast });
   // 🗑️ Recycle Bin — এখন সব ডিভাইসে সিঙ্ক হয় (আগে শুধু লোকাল ছিল)
   useFSSCollection("deletedProducts", deletedProducts, setDeletedProducts, fssReady, { onSync: setSyncToast });
@@ -10019,9 +10052,13 @@ function SmartBusinessMgmt() {
   // write ব্যর্থ হলে (যেমন Firestore Rules ব্লক করলে) আগে সম্পূর্ণ নীরবে ব্যর্থ
   // হতো — অ্যাডমিন বুঝতেই পারতেন না কেন স্টাফের পারমিশন সিঙ্ক হচ্ছে না।
   // এখন ব্যর্থ হলে সরাসরি একটা লাল টোস্ট দেখানো হয়।
+  // 🔴 ফিক্স: users-এও একই প্যাটার্ন — auto-delete বন্ধ (স্টাফ অ্যাকাউন্ট ভুলবশত
+  // ক্যাশ-রেসে মুছে গেলে লগইনই ভেঙে যেত), ইচ্ছাকৃত ডিলিট এখন সরাসরি
+  // FSS.deleteRecord("users", id) কল করে (দেখুন Users পেজ)।
   useFSSCollection("users", users, setUsers, fssReady, {
     instant: true,
     onSync: (v) => { setSyncToast?.(v); if (v === "error") showToast?.("⚠️ স্টাফ/পারমিশন সিঙ্ক ব্যর্থ হয়েছে — Firestore Rules চেক করুন", "#ef4444"); },
+    syncDeletes: false,
   });
   useFSSSettings(fssReady, shopName, setShopName, smsTemplates, setSmsTemplates, smsGateway, setSmsGateway, googleDriveToken, setGoogleDriveToken);
 
@@ -18594,6 +18631,10 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
     }
     setDeletedCustomers(prev => [{ ...c, _deletedAt: Date.now() }, ...prev]);
     setCustomers(prev => prev.filter(x => x.id !== id));
+    // 🔴 ফিক্স: customers-এ এখন sync layer আর diff দেখে অটো-ডিলিট করে না
+    // (দেখুন useFSSCollection("customers",...)-এর syncDeletes:false) — তাই
+    // ইচ্ছাকৃত ডিলিটের সময় এখানেই সরাসরি Firestore থেকে মুছে ফেলা হয়।
+    if (FSS.isReady()) FSS.deleteRecord("customers", id);
     showToast("কাস্টমার সরানো হয়েছে", "#f59e0b");
     auditLog?.("CUSTOMER_DELETE", { customerId: id, customerName: c?.name || "অজানা", mobile: c?.mobile || "" });
     setConfirmId(null);
@@ -21332,6 +21373,10 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                       if(window.confirm(`${p.name} রিসাইকেল বিনে পাঠাবেন?`)) {
                         if (setDeletedProducts) setDeletedProducts(prev => [{ ...p, _deletedAt: Date.now() }, ...prev]);
                         setProducts(prev => prev.filter(x => x.id !== p.id));
+                        // 🔴 ফিক্স: products-এ এখন sync layer আর diff দেখে অটো-ডিলিট করে না
+                        // (দেখুন useFSSCollection("products",...)-এর syncDeletes:false) — তাই
+                        // ইচ্ছাকৃত ডিলিটের সময় এখানেই সরাসরি Firestore থেকে মুছে ফেলা হয়।
+                        if (FSS.isReady()) FSS.deleteRecord("products", p.id);
                         setEditId(null);
                         showToast(`${p.name} Recycle Bin-এ গেছে`, "#ef4444");
                         auditLog?.("PRODUCT_DELETE", { productId: p.id, productName: p.name, stock: p.stock || 0 });
@@ -21491,6 +21536,10 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
     // বাকি/পাওনার হিসাবকেও প্রভাবিত করে, তাই ভুল ক্লিক ঠেকাতে confirm যোগ করা হলো।
     if (!window.confirm("এই পেমেন্ট এন্ট্রি মুছবেন? এটা ফেরত আনা যাবে না এবং সাপ্লায়ারের বাকির হিসাব বদলে যাবে।")) return;
     setSupplierPayments(prev => prev.filter(p => p.id !== id));
+    // 🔴 ফিক্স: supplierPayments-এ এখন sync layer আর diff দেখে অটো-ডিলিট করে না
+    // (দেখুন useFSSCollection("supplierPayments",...)-এর syncDeletes:false) — তাই
+    // ইচ্ছাকৃত ডিলিটের সময় এখানেই সরাসরি Firestore থেকে মুছে ফেলা হয়।
+    if (FSS.isReady()) FSS.deleteRecord("supplierPayments", id);
     showToast("পেমেন্ট মুছে ফেলা হয়েছে", "#f59e0b");
   }, [setSupplierPayments, showToast]);
 
@@ -22380,6 +22429,10 @@ function ExpenseTracker({ T, S, expenses = [], setExpenses, showToast, currentUs
     // নেই — ভুল ক্লিকে ডেটা হারানোর ঝুঁকি ছিল। কোটেশন ডিলিটের মতোই একটা confirm যোগ করা হলো।
     if (!window.confirm("এই খরচের এন্ট্রি মুছবেন? এটা ফেরত আনা যাবে না।")) return;
     setExpenses(prev => prev.filter(e => e.id !== id));
+    // 🔴 ফিক্স: expenses-এ এখন sync layer আর diff দেখে অটো-ডিলিট করে না
+    // (দেখুন useFSSCollection("expenses",...)-এর syncDeletes:false) — তাই
+    // ইচ্ছাকৃত ডিলিটের সময় এখানেই সরাসরি Firestore থেকে মুছে ফেলা হয়।
+    if (FSS.isReady()) FSS.deleteRecord("expenses", id);
     showToast("খরচ মুছে ফেলা হয়েছে", "#f59e0b");
   }, [setExpenses, showToast]);
 
@@ -23663,6 +23716,10 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast })
 
   const deleteUser = (id) => {
     setUsers(prev => prev.filter(u => u.id !== id));
+    // 🔴 ফিক্স: users-এ এখন sync layer আর diff দেখে অটো-ডিলিট করে না
+    // (দেখুন useFSSCollection("users",...)-এর syncDeletes:false) — তাই
+    // ইচ্ছাকৃত ডিলিটের সময় এখানেই সরাসরি Firestore থেকে মুছে ফেলা হয়।
+    if (FSS.isReady()) FSS.deleteRecord("users", id);
     showToast("স্টাফ অ্যাকাউন্ট মুছে ফেলা হয়েছে");
   };
 
