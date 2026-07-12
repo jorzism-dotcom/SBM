@@ -4205,6 +4205,20 @@ function _dateKeyOf(d) {
   return `${y}-${m}-${day}`;
 }
 function _monthKeyOf(d) { return _dateKeyOf(d).slice(0, 7); }     // YYYY-MM
+
+// 💰 ফিক্স: টাকার অংক আগে সব জায়গায় Math.round() দিয়ে রাউন্ড করা হতো, তাতে
+// ৩টি ভিন্ন জায়গায় ৩টি ভিন্ন fmt() থাকায় একই টাকা কোথাও ৳9,501.66 কোথাও
+// ৳9,502 দেখাতো। এখন সব জায়গা এই একটাই ফাংশন ব্যবহার করবে — আসল (একচুয়াল)
+// মান দেখাবে, দশমিক থাকলে সর্বোচ্চ ২ ঘর, দশমিক .00 হলে লুকিয়ে যাবে।
+function fmtMoney(n) {
+  const num = Number(n) || 0;
+  const rounded2 = Math.round(num * 100) / 100; // floating-point জাঞ্জাল এড়াতে ২ দশমিকে ক্লিন করা
+  const hasDecimals = Math.abs(rounded2 - Math.round(rounded2)) > 1e-9;
+  return rounded2.toLocaleString("en-US", {
+    minimumFractionDigits: hasDecimals ? 2 : 0,
+    maximumFractionDigits: 2,
+  });
+}
 function _isoWeekKeyOf(d) {
   // ISO week key — একই সপ্তাহের সব দিন একই key পায় (weekly thinning-এর জন্য)
   const dt = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
@@ -6861,7 +6875,7 @@ const SEED_USERS = [{ id: "u1", username: "admin", password: "", pin: "", name: 
 const uid      = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const todayStr = () => new Date().toLocaleDateString("en-US");
 const nowStr   = () => new Date().toLocaleString("en-US");
-const fmt      = (n) => Math.round(Number(n) || 0).toLocaleString("en-US");
+const fmt      = (n) => fmtMoney(n);
 
 // ─── 📱 WhatsApp Quick Share — Capacitor Browser দিয়ে wa.me link খোলে ────────
 // বাংলাদেশের মোবাইল নম্বর normalize করে — 01XXXXXXXXX → 8801XXXXXXXXX
@@ -7612,9 +7626,9 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
   // ── ফরম্যাটিং হেল্পার ──────────────────────────────────────────────────────
   const fmt = n => {
     if (!n && n !== 0) return "০";
-    return Number(Math.round(Number(n))).toLocaleString("en-US");
+    return fmtMoney(n);
   };
-  const fmtFull = n => Number(n || 0).toLocaleString("en-US");
+  const fmtFull = n => fmtMoney(n);
   const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
 
   // ── ডেটা কম্পিউটেশন ────────────────────────────────────────────────────────
@@ -7622,6 +7636,13 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
   const todayKey = now.toISOString().split("T")[0];
   const ms = ms => new Date(now - ms).toISOString().split("T")[0];
   const d7 = ms(7 * 86400000), d30 = ms(30 * 86400000), d60 = ms(60 * 86400000), d90 = ms(90 * 86400000);
+
+  // ── 📅 ক্যালেন্ডার মাস (ইংরেজি) — আগে "মাসিক" হিসাবগুলো লাস্ট-৩০-দিন রোলিং
+  // উইন্ডো দিয়ে চলতো, এখন থেকে চলতি ইংরেজি ক্যালেন্ডার মাসের ১ তারিখ থেকে আজ পর্যন্ত ─
+  const monthStartKey = _dateKeyOf(new Date(now.getFullYear(), now.getMonth(), 1));
+  const prevMonthStartKey = _dateKeyOf(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+  const currentMonthNameEn = now.toLocaleDateString("en-US", { month: "long" }); // যেমন "July"
+  const daysElapsedInMonth = now.getDate();
 
   // নিজের ব্যবহার (Personal Use) ইনভয়েস বিক্রয়/লাভ হিসাবে ধরা হবে না
   const invAll = (invoices || []).filter(i => !i.isSelfUse && i.status !== "voided");
@@ -7632,8 +7653,8 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
 
   const todayInvs = invAll.filter(i => i.dateKey === todayKey || (i.date && i.date.startsWith(todayKey)));
   const weekInvs = invAll.filter(i => (i.dateKey || i.date || "") >= d7);
-  const monthInvs = invAll.filter(i => (i.dateKey || i.date || "") >= d30);
-  const prevMonthInvs = invAll.filter(i => (i.dateKey || i.date || "") >= d60 && (i.dateKey || i.date || "") < d30);
+  const monthInvs = invAll.filter(i => (i.dateKey || i.date || "") >= monthStartKey);
+  const prevMonthInvs = invAll.filter(i => (i.dateKey || i.date || "") >= prevMonthStartKey && (i.dateKey || i.date || "") < monthStartKey);
 
   const todaySale = todayInvs.reduce((s, i) => s + (i.total || 0), 0);
   const weekSale = weekInvs.reduce((s, i) => s + (i.total || 0), 0);
@@ -7651,12 +7672,26 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
   const bakiCustomers = custAll.filter(c => (c.balance || 0) > 0).length;
   const stockValue = prodAll.reduce((s, p) => s + (p.costPrice || p.price || 0) * (p.stock || 0), 0);
   const lowStockItems = prodAll.filter(p => (p.stock || 0) > 0 && (p.stock || 0) <= (p.minStockAlert || 5));
+
+  // ── 💊 এই মাসে মেয়াদোত্তীর্ণ ব্যাচের (এখনো স্টকে থাকা, qty>0) মোট মূল্য (costPrice ভিত্তিক) ──
+  const monthExpiredValue = prodAll.reduce((s, p) => {
+    const batches = p.batches && p.batches.length > 0
+      ? p.batches
+      : (p.expiryDate ? [{ expiryDate: p.expiryDate, qty: p.stock || 0, costPrice: p.costPrice }] : []);
+    return s + batches.reduce((bs, b) => {
+      if (!b.expiryDate || (b.qty || 0) <= 0) return bs;
+      const ek = String(b.expiryDate).slice(0, 7); // "YYYY-MM"
+      if (ek !== monthStartKey.slice(0, 7)) return bs;
+      const cp = b.costPrice ?? p.costPrice ?? p.price ?? 0;
+      return bs + cp * (b.qty || 0);
+    }, 0);
+  }, 0);
   const outOfStock = prodAll.filter(p => (p.stock || 0) === 0).length;
-  const dailyAvg = monthSale / 30;
+  const dailyAvg = monthSale / daysElapsedInMonth;
 
   // ── নিজের ব্যবহার (মালিকের ড্রয়িং) — খরচমূল্যে এই মাসের মোট ─────────────────
   const monthSelfUseCost = selfUseInvs
-    .filter(i => (i.dateKey || i.date || "") >= d30)
+    .filter(i => (i.dateKey || i.date || "") >= monthStartKey)
     .reduce((s, inv) => s + (inv.items || []).reduce((cs, it) => {
       const p = prodMap.get(it.productId);
       const cp = it.costPrice || p?.costPrice || 0;
@@ -7665,7 +7700,7 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
 
   // ── নিজের ব্যবহার — আজকের মোট (খরচমূল্যে) + পণ্যের ব্রেকডাউন ───────────────
   const todaySelfUseInvs = selfUseInvs.filter(i => i.dateKey === todayKey || (i.date && i.date.startsWith(todayKey)));
-  const monthSelfUseInvs = selfUseInvs.filter(i => (i.dateKey || i.date || "") >= d30);
+  const monthSelfUseInvs = selfUseInvs.filter(i => (i.dateKey || i.date || "") >= monthStartKey);
   const selfUseCostOf = (invList) => invList.reduce((s, inv) => s + (inv.items || []).reduce((cs, it) => {
     const p = prodMap.get(it.productId);
     const cp = it.costPrice || p?.costPrice || 0;
@@ -7711,13 +7746,13 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
   const todayPurchases = purchaseOrdersAll.filter(p => p.dateKey === todayKey);
   const todayPurchaseCost = todayPurchases.reduce((s, p) => s + (p.totalCost || 0), 0);
   const todayPurchaseCount = todayPurchases.length;
-  const monthPurchaseCost = purchaseOrdersAll.filter(p => (p.dateKey || "") >= d30).reduce((s, p) => s + (p.totalCost || 0), 0);
+  const monthPurchaseCost = purchaseOrdersAll.filter(p => (p.dateKey || "") >= monthStartKey).reduce((s, p) => s + (p.totalCost || 0), 0);
 
   const currentCashDrawer = openingCashToday + todayCashSale + todayJoma - withdrawalToday - todayPurchaseCost;
 
   // ── খরচ (আজ/এই মাস) ─────────────────────────────────────────────────────
   const todayExpense = (expenses || []).filter(e => (e.dateKey || e.date) === todayKey).reduce((s, e) => s + (e.amount || 0), 0);
-  const monthExpense = (expenses || []).filter(e => (e.dateKey || e.date || "") >= d30).reduce((s, e) => s + (e.amount || 0), 0);
+  const monthExpense = (expenses || []).filter(e => (e.dateKey || e.date || "") >= monthStartKey).reduce((s, e) => s + (e.amount || 0), 0);
 
   // ── বিজনেস হেলথ স্কোর (০-১০০) ─────────────────────────────────────────────
   const healthScore = React.useMemo(() => {
@@ -8060,82 +8095,59 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
           {/* বিজনেস হেলথ মিটার */}
           <HealthMeter score={healthScore} label={healthLabel} T={T} activeColor={activeColor} growthPct={growthPct} />
 
-          {/* KPI গ্রিড — কম্প্যাক্ট, ৩-কলাম */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+          {/* KPI গ্রিড — ৫ কলাম x ৪ সারি = ২০টি কার্ড, স্ক্রল ছাড়াই */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 5 }}>
             {[
               { icon: "💰", val: `৳${fmt(todaySale)}`, label: "আজকের বিক্রয়", sub: `${todayInvs.length}টি ইনভয়েস`, color: "#22c55e" },
-              { icon: "💵", val: `৳${fmt(todayCashSale)}`, label: "নগদ বিক্রয়", sub: "নগদ+আংশিক", color: "#16a34a" },
-              { icon: "🟢", val: `৳${fmt(todayCashProfit)}`, label: "নগদে লাভ", sub: `মার্জিন ${pct(todayCashProfit, todayCashSale)}%`, color: "#22c55e" },
+              { icon: "💵", val: `৳${fmt(todayCashSale)}`, label: "আজকের নগদ বিক্রয়", sub: "নগদ+আংশিক", color: "#16a34a" },
+              { icon: "🟢", val: `৳${fmt(todayCashProfit)}`, label: "আজকের নগদ বিক্রয়ে লাভ", sub: `মার্জিন ${pct(todayCashProfit, todayCashSale)}%`, color: "#22c55e" },
               { icon: "📌", val: `৳${fmt(todayBakiIncurred)}`, label: "আজকের বাকি", sub: "নতুন বাকি বিক্রয়", color: "#f97316" },
               { icon: "⚡", val: `৳${fmt(todayProfit)}`, label: "আজকের লাভ", sub: `মার্জিন ${pct(todayProfit, todaySale)}%`, color: "#f59e0b" },
-              { icon: "🔴", val: `৳${fmt(totalBaki)}`, label: "মোট বকেয়া", sub: `${bakiCustomers}জনের কাছে`, color: "#ef4444" },
-              { icon: "📥", val: `৳${fmt(todayJoma)}`, label: "বাকি আদায়", sub: "আজ সংগৃহীত", color: "#3b82f6" },
-              { icon: "🏠", val: `৳${fmt(todaySelfUseCost)}`, label: "নিজের ব্যবহার", sub: "আজ", color: "#a78bfa" },
-              { icon: "🏡", val: `৳${fmt(monthSelfUseCost)}`, label: "নিজের ব্যবহার", sub: "এই মাস", color: "#a78bfa" },
-              { icon: "🪙", val: `৳${fmt(openingCashToday)}`, label: "ওপেনিং ক্যাশ", sub: "দোকান খোলার সময়", color: "#0ea5e9" },
-              { icon: "🏧", val: `৳${fmt(withdrawalToday)}`, label: "উইথড্রয়াল", sub: "আজকের", color: "#f43f5e" },
+              { icon: "🔴", val: `৳${fmt(totalBaki)}`, label: "মোট বাকি", sub: `${bakiCustomers}জনের কাছে`, color: "#ef4444" },
+              { icon: "📥", val: `৳${fmt(todayJoma)}`, label: "আজকের বাকি আদায়", sub: "আজ সংগৃহীত", color: "#3b82f6" },
+              { icon: "🏠", val: `৳${fmt(todaySelfUseCost)}`, label: "আজকের নিজের ব্যবহার", sub: "আজ", color: "#a78bfa" },
+              { icon: "🏡", val: `৳${fmt(monthSelfUseCost)}`, label: `এই মাসের নিজের ব্যবহার (${currentMonthNameEn})`, sub: `১–${daysElapsedInMonth} ${currentMonthNameEn}`, color: "#a78bfa" },
+              { icon: "🪙", val: `৳${fmt(openingCashToday)}`, label: "আজকের ওপেনিং ক্যাশ", sub: "দোকান খোলার সময়", color: "#0ea5e9" },
+              { icon: "🏧", val: `৳${fmt(withdrawalToday)}`, label: "আজকের উইথড্রয়াল", sub: "আজকের", color: "#f43f5e" },
               { icon: "🏦", val: `৳${fmt(currentCashDrawer)}`, label: "ক্যাশড্রয়ার", sub: "বর্তমান ক্যাশ", color: "#0ea5e9" },
               { icon: "🛒", val: `৳${fmt(todayPurchaseCost)}`, label: "আজকের ক্রয়", sub: `${todayPurchaseCount}টি এন্ট্রি`, color: "#8b5cf6" },
-              { icon: "📦", val: `৳${fmt(monthPurchaseCost)}`, label: "এই মাসের ক্রয়", sub: "গত ৩০ দিন", color: "#8b5cf6" },
+              { icon: "📦", val: `৳${fmt(monthPurchaseCost)}`, label: `এই মাসের ক্রয় (${currentMonthNameEn})`, sub: `১–${daysElapsedInMonth} ${currentMonthNameEn}`, color: "#8b5cf6" },
               { icon: "🧾", val: `৳${fmt(todayExpense)}`, label: "আজকের খরচ", sub: "মোট খরচ", color: "#ef4444" },
-              { icon: "🧮", val: `৳${fmt(monthExpense)}`, label: "এ মাসের খরচ", sub: "গত ৩০ দিন", color: "#ef4444" },
-              { icon: "📈", val: `৳${fmt(monthSale)}`, label: "মাসিক বিক্রয়", sub: growthPct !== null ? `${growthPct > 0 ? "▲" : "▼"} ${Math.abs(growthPct)}%` : "এ মাসে", color: "#3b82f6" },
-              { icon: "💎", val: `৳${fmt(monthProfit)}`, label: "মাসিক লাভ", sub: `মার্জিন ${monthMargin}%`, color: monthMargin >= 15 ? "#22c55e" : monthMargin >= 8 ? "#f59e0b" : "#ef4444" },
+              { icon: "🧮", val: `৳${fmt(monthExpense)}`, label: `এই মাসের খরচ (${currentMonthNameEn})`, sub: `১–${daysElapsedInMonth} ${currentMonthNameEn}`, color: "#ef4444" },
+              { icon: "📈", val: `৳${fmt(monthSale)}`, label: `এই মাসের বিক্রয় (${currentMonthNameEn})`, sub: growthPct !== null ? `${growthPct > 0 ? "▲" : "▼"} ${Math.abs(growthPct)}%` : currentMonthNameEn, color: "#3b82f6" },
+              { icon: "💎", val: `৳${fmt(monthProfit)}`, label: `এই মাসে লাভ (${currentMonthNameEn})`, sub: `মার্জিন ${monthMargin}%`, color: monthMargin >= 15 ? "#22c55e" : monthMargin >= 8 ? "#f59e0b" : "#ef4444" },
               { icon: "📦", val: `৳${fmt(stockValue)}`, label: "স্টক মূল্য", sub: `কম স্টক ${lowStockItems.length}টি`, color: "#ec4899" },
+              { icon: "⏳", val: `৳${fmt(monthExpiredValue)}`, label: `এই মাসের মেয়াদোত্তীর্ণ পণ্যের মূল্য (${currentMonthNameEn})`, sub: `১–${daysElapsedInMonth} ${currentMonthNameEn}`, color: "#dc2626" },
             ].map((item, i) => (
               <div key={i} style={{
-                background: `linear-gradient(160deg,${T.card},${item.color}0c)`, borderRadius: 10, padding: "7px 8px",
+                background: `linear-gradient(160deg,${T.card},${item.color}0c)`, borderRadius: 8, padding: "5px 5px",
                 border: `1px solid ${item.color}33`,
-                boxShadow: `0 0 10px ${item.color}12`,
+                boxShadow: `0 0 8px ${item.color}10`,
                 position: "relative", overflow: "hidden", minWidth: 0,
               }}>
-                <div style={{ display:"flex", alignItems:"center", gap: 4, marginBottom: 3 }}>
+                <div style={{ display:"flex", alignItems:"center", gap: 3, marginBottom: 2 }}>
                   <span style={{
-                    fontSize: 10, width: 16, height: 16, borderRadius: 5, flexShrink: 0,
+                    fontSize: 8.5, width: 13, height: 13, borderRadius: 4, flexShrink: 0,
                     display: "flex", alignItems: "center", justifyContent: "center",
                     background: `${item.color}22`, border: `1px solid ${item.color}44`,
                   }}>{item.icon}</span>
                   <div style={{
-                    color: T.text, fontWeight: 800, fontSize: 9, opacity: 0.8,
+                    color: T.text, fontWeight: 800, fontSize: 7.3, opacity: 0.8,
                     whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                   }}>{item.label}</div>
                 </div>
                 <div style={{
-                  color: item.color, fontWeight: 900, fontSize: 12.5,
+                  color: item.color, fontWeight: 900, fontSize: 10.5,
                   whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                  textShadow: `0 0 12px ${item.color}55`,
+                  textShadow: `0 0 10px ${item.color}55`,
                 }}>{item.val}</div>
                 <div style={{
-                  color: T.sub, fontSize: 8, marginTop: 1,
+                  color: T.sub, fontSize: 6.8, marginTop: 1,
                   whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                 }}>{item.sub}</div>
               </div>
             ))}
           </div>
-
-          {/* সতর্কতা */}
-          {smartActions.filter(a => a.priority === "high").length > 0 && (
-            <div style={{
-              background: "#ef444412", border: "1.5px solid #ef444433",
-              borderRadius: 12, padding: "8px 10px",
-            }}>
-              <div style={{ color: "#ef4444", fontWeight: 800, fontSize: 11.5, marginBottom: 6 }}>
-                🚨 জরুরি সতর্কতা
-              </div>
-              {smartActions.filter(a => a.priority === "high").map((a, i) => (
-                <div key={a.title || i} style={{
-                  display: "flex", gap: 6, alignItems: "flex-start",
-                  marginBottom: i < smartActions.filter(x => x.priority === "high").length - 1 ? 6 : 0,
-                }}>
-                  <span style={{ fontSize: 14 }}>{a.icon}</span>
-                  <div>
-                    <div style={{ color: T.text, fontWeight: 800, fontSize: 11.5 }}>{a.title}</div>
-                    <div style={{ color: T.sub, fontSize: 10 }}>{a.desc}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       )}
 
@@ -8767,7 +8779,7 @@ function ruleBasedAnswer(q, data) {
     healthScore, forecastData,
   } = data;
   const L = q.toLowerCase();
-  const fmt  = n => Math.round(n || 0).toLocaleString("en-US");
+  const fmt  = n => fmtMoney(n);
   const fmtK = n => { const a = Math.abs(Number(n||0)); return a>=100000?(a/100000).toFixed(1)+"লাখ":a>=1000?(a/1000).toFixed(1)+"K":String(Math.round(a)); };
   const has  = (...words) => words.some(w => L.includes(w));
   // 🔴 ফিক্স: এটা একটা সাধারণ (plain) ফাংশন — React কম্পোনেন্ট/হুক নয়, event handler থেকে
@@ -13374,9 +13386,9 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
               const payLabel = printInv.payType === "cash" ? "নগদ" : printInv.payType === "baki" ? "বাকি" : "আংশিক";
               let msg = `${shopName ? shopName + ": " : ""}${printInv.customerName || "প্রিয় কাস্টমার"}, আপনার ইনভয়েস তৈরি হয়েছে।\n`;
               msg += `পণ্য: ${itemLines}${more}\n`;
-              msg += `মোট: ৳${Math.round(printInv.total).toLocaleString("en-US")} (${payLabel})`;
+              msg += `মোট: ৳${fmtMoney(printInv.total)} (${payLabel})`;
               if (printInv.payType === "partial") {
-                msg += `\nনগদ: ৳${Math.round(printInv.paidAmount||0).toLocaleString("en-US")} · বাকি: ৳${Math.round(printInv.bakiAmount||0).toLocaleString("en-US")}`;
+                msg += `\nনগদ: ৳${fmtMoney(printInv.paidAmount||0)} · বাকি: ৳${fmtMoney(printInv.bakiAmount||0)}`;
               }
               msg += "\nধন্যবাদ।";
               shareViaWhatsApp(mobile, msg, showToast);
@@ -14143,10 +14155,10 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                               {lineDisc > 0 ? (
                                 <>
                                   <div style={{ color: T.sub, fontSize: 10, textDecoration: "line-through" }}>৳{fmt(lineSubtotal)}</div>
-                                  <div style={{ color: T.text, fontSize: 13.5, fontWeight: 900 }}>৳{fmt(lineNet)}</div>
-                                  <div style={{ color: "#22c55e", fontSize: 9.5, fontWeight: 800, background: "#22c55e1f", borderRadius: 6, padding: "1px 6px", marginTop: 3, display: "inline-block", whiteSpace: "nowrap" }}>
-                                    − ৳{fmt(lineDisc)}{pctDisplay > 0 ? ` (${pctDisplay}%)` : ""}
+                                  <div style={{ color: "#22c55e", fontSize: 9.5, fontWeight: 800, background: "#22c55e1f", borderRadius: 6, padding: "1px 6px", marginTop: 2, display: "inline-block", whiteSpace: "nowrap" }}>
+                                    − ৳{fmt(lineDisc)}{mode === "pct" && pctDisplay > 0 ? ` (${pctDisplay}%)` : ""}
                                   </div>
+                                  <div style={{ color: "#3b82f6", fontSize: 13.5, fontWeight: 900, marginTop: 2 }}>৳{fmt(lineNet)}</div>
                                 </>
                               ) : (
                                 <div style={{ color: T.text, fontSize: 13.5, fontWeight: 900 }}>৳{fmt(lineSubtotal)}</div>
@@ -14591,7 +14603,7 @@ function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [],
     return Object.values(map).sort((a, b) => b.total - a.total).slice(0, 5);
   }, [invoices]);
 
-  const fmt = n => Math.round(n || 0).toLocaleString("en-US");
+  const fmt = n => fmtMoney(n);
 
   // ── Gradient Bar Row ──────────────────────────────────────────────────────
   const BAR_GRADS = [
@@ -14856,7 +14868,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
     };
   }, [products]);
 
-  const fmt = n => Math.round(n || 0).toLocaleString("en-US");
+  const fmt = n => fmtMoney(n);
 
   const cards = [
     {
@@ -15039,7 +15051,7 @@ function ProfitStatementCard({ T, S, invoices, products, shopName, expenses = []
   const [range,    setRange]    = React.useState("month"); // today|week|month|3m|6m|year|all
   const [showDetail, setShowDetail] = React.useState(false);
 
-  const fmt  = n => Math.round(n || 0).toLocaleString("en-US");
+  const fmt  = n => fmtMoney(n);
   const fmtD = n => (n || 0).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 
   const prodMap = React.useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
@@ -15450,7 +15462,7 @@ function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements
       {/* আজকের ক্রয় সারাংশ — compact */}
       <div style={{ background:"#a78bfa15", border:"1px solid #a78bfa33", borderRadius:12, padding:"10px 14px", marginBottom:12, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
         <div style={{ color:T.sub, fontSize:12, fontWeight:700 }}>📦 মোট এন্ট্রি: <span style={{color:"#a78bfa"}}>{allEntries.length}</span></div>
-        <div style={{ color:"#22c55e", fontWeight:800, fontSize:13 }}>আজকের ক্রয়: ৳{Math.round(todayTotal).toLocaleString()}</div>
+        <div style={{ color:"#22c55e", fontWeight:800, fontSize:13 }}>আজকের ক্রয়: ৳{fmtMoney(todayTotal)}</div>
       </div>
 
       {/* ফর্ম */}
@@ -17181,7 +17193,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
         return dKey === purchaseDate;
       });
       const filteredTotal = filteredPurchases.reduce((s,p) => s + (p.totalCost||0), 0);
-      const fmt2 = n => Math.round(n||0).toLocaleString("en-US");
+      const fmt2 = n => fmtMoney(n);
 
       // Print HTML builder
       const buildPurchaseHtml = (entries, date) => {
@@ -17729,7 +17741,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
 
         {/* ══ Cash Flow Forecast (৭ দিন) ══ */}
         {cashFlow && (() => {
-          const fmt = n => Math.abs(Math.round(n || 0)).toLocaleString("en-US");
+          const fmt = n => fmtMoney(Math.abs(n || 0));
           const isPositive = cashFlow.totalNet >= 0;
           return (
             <div style={{ marginBottom:12, background:"linear-gradient(135deg,#0a1628,#0d2040)",
@@ -17962,7 +17974,7 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
   const confirmDelete = (id) => {
     const c = customers.find(x => x.id === id);
     if ((c?.balance || 0) > 0) {
-      showToast(`${c.name}-এর ৳${Math.round(c.balance).toLocaleString("en-US")} বাকি আছে — আগে পরিশোধ করুন`, "#ef4444");
+      showToast(`${c.name}-এর ৳${fmtMoney(c.balance)} বাকি আছে — আগে পরিশোধ করুন`, "#ef4444");
       setConfirmId(null);
       return;
     }
@@ -18106,10 +18118,10 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
             border:"1.5px solid #6366f133" }}>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
               {[
-                { label:"মোট LTV", value:`৳${Math.round(totalLTV).toLocaleString("en-US")}`, color:"#6366f1" },
+                { label:"মোট LTV", value:`৳${fmtMoney(totalLTV)}`, color:"#6366f1" },
                 { label:"গড় LTV",  value:`৳${avgLTV.toLocaleString("en-US")}`, color:"#a855f7" },
                 { label:"চ্যাম্পিয়ন", value:`${champions.length}জন`, color:"#22c55e" },
-                { label:"ঝুঁকিতে বাকি", value:`৳${Math.round(churnBaki).toLocaleString("en-US")}`, color:"#ef4444" },
+                { label:"ঝুঁকিতে বাকি", value:`৳${fmtMoney(churnBaki)}`, color:"#ef4444" },
               ].map(s => (
                 <div key={s.label} style={{ background:T.border+"44", borderRadius:10, padding:"8px 10px" }}>
                   <div style={{ color:s.color, fontWeight:900, fontSize:14 }}>{s.value}</div>
@@ -18299,7 +18311,7 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
     if (!customer.mobile) return;
     const balance = customer.balance || 0;
     const msg = balance > 0
-      ? `${shopName ? shopName + ": " : ""}${customer.name} ভাই, আপনার বর্তমান বাকি ৳${Math.round(balance).toLocaleString("en-US")}। সুবিধামতো পরিশোধ করার অনুরোধ রইলো। ধন্যবাদ।`
+      ? `${shopName ? shopName + ": " : ""}${customer.name} ভাই, আপনার বর্তমান বাকি ৳${fmtMoney(balance)}। সুবিধামতো পরিশোধ করার অনুরোধ রইলো। ধন্যবাদ।`
       : `${shopName ? shopName + ": " : ""}${customer.name} ভাই, আপনার কোনো বাকি নেই। ধন্যবাদ আমাদের সাথে থাকার জন্য।`;
     shareViaWhatsApp(customer.mobile, msg);
   };
@@ -18724,7 +18736,7 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
           <PaymentInvoiceReceipt T={T} S={S} inv={showInv} />
           <button
             onClick={() => {
-              const msg = `${shopName ? shopName + ": " : ""}${customer.name} ভাই, ৳${Math.round(showInv.amount).toLocaleString("en-US")} জমা নেওয়া হয়েছে। বর্তমান বাকি: ৳${Math.round(showInv.remainingBalance || 0).toLocaleString("en-US")}। ধন্যবাদ।`;
+              const msg = `${shopName ? shopName + ": " : ""}${customer.name} ভাই, ৳${fmtMoney(showInv.amount)} জমা নেওয়া হয়েছে। বর্তমান বাকি: ৳${fmtMoney(showInv.remainingBalance || 0)}। ধন্যবাদ।`;
               shareViaWhatsApp(customer.mobile, msg, showToast);
             }}
             style={{ ...S.saveBtn, width: "100%", marginTop: 10, background: "linear-gradient(135deg,#22c55e,#16a34a)",
@@ -18877,7 +18889,8 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
     const shopName = inv.shopName || "SBM";
     const itemRows = (inv.items||[]).map((item,i) => {
       const _g = item.qty*item.price, _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0,0), _g);
-      return `<tr><td class="serial">${i+1}</td><td>${item.name}</td><td class="num">${item.qty}</td><td class="num">৳${item.price}</td><td class="num" style="color:#16a34a;">${_d>0?`–৳${_d.toLocaleString("en-US")}`:"—"}</td><td class="amount">৳${(_g-_d).toLocaleString("en-US")}</td></tr>`;
+      const _p = _g > 0 ? Math.round((_d / _g) * 10000) / 100 : 0;
+      return `<tr><td class="serial">${i+1}</td><td>${item.name}</td><td class="num">${item.qty}</td><td class="num">৳${fmtMoney(item.price)}</td><td class="num" style="color:#16a34a;">${_d>0?`–৳${fmtMoney(_d)}${_p>0?` (${_p}%)`:""}`:"—"}</td><td class="amount" style="color:#3b82f6;">৳${fmtMoney(_g-_d)}</td></tr>`;
     }).join("");
     const content = `
       <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
@@ -18896,19 +18909,19 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
       </div>
       <table><thead><tr><th class="serial">#</th><th>পণ্য</th><th class="num">পরিমাণ</th><th class="num">দাম</th><th class="num">ছাড়</th><th class="num">মোট</th></tr></thead><tbody>${itemRows}</tbody></table>
       <div style="margin-top:14px;background:#0369a115;border-radius:10px;padding:12px 16px;">
-        <div class="info-row"><span class="info-label">সর্বমোট:</span><span class="info-val">৳${(inv.subtotal||inv.total||0).toLocaleString("en-US")}</span></div>
-        ${(inv.itemDiscount||0) > 0 ? `<div class="info-row"><span class="info-label" style="color:#22c55e;">পণ্যভিত্তিক ডিসকাউন্ট:</span><span class="info-val" style="color:#22c55e;">– ৳${(inv.itemDiscount||0).toLocaleString("en-US")}</span></div>` : ""}
-        ${(inv.discount||0) > 0 ? `<div class="info-row"><span class="info-label" style="color:#22c55e;">ডিসকাউন্ট:</span><span class="info-val" style="color:#22c55e;">– ৳${(inv.discount||0).toLocaleString("en-US")}</span></div>` : ""}
-        ${(inv.extraCharge||0) > 0 ? `<div class="info-row"><span class="info-label" style="color:#f59e0b;">অতিরিক্ত চার্জ:</span><span class="info-val" style="color:#f59e0b;">+ ৳${(inv.extraCharge||0).toLocaleString("en-US")}</span></div>` : ""}
-        <div class="info-row"><span class="info-label">মোট খরচ:</span><span class="info-val" style="font-size:18px;font-weight:800;">৳${(inv.total||0).toLocaleString("en-US")}</span></div>
+        <div class="info-row"><span class="info-label">সর্বমোট:</span><span class="info-val">৳${fmtMoney(inv.subtotal||inv.total||0)}</span></div>
+        ${(inv.itemDiscount||0) > 0 ? `<div class="info-row"><span class="info-label" style="color:#22c55e;">পণ্যভিত্তিক ডিসকাউন্ট:</span><span class="info-val" style="color:#22c55e;">– ৳${fmtMoney(inv.itemDiscount||0)}</span></div>` : ""}
+        ${(inv.discount||0) > 0 ? `<div class="info-row"><span class="info-label" style="color:#22c55e;">ডিসকাউন্ট:</span><span class="info-val" style="color:#22c55e;">– ৳${fmtMoney(inv.discount||0)}</span></div>` : ""}
+        ${(inv.extraCharge||0) > 0 ? `<div class="info-row"><span class="info-label" style="color:#f59e0b;">অতিরিক্ত চার্জ:</span><span class="info-val" style="color:#f59e0b;">+ ৳${fmtMoney(inv.extraCharge||0)}</span></div>` : ""}
+        <div class="info-row"><span class="info-label">মোট খরচ:</span><span class="info-val" style="font-size:18px;font-weight:800;">৳${fmtMoney(inv.total||0)}</span></div>
         ${inv.payType==="partial"?`
-          <div class="info-row"><span class="info-label">নগদ পেয়েছি:</span><span class="info-val" style="color:#22c55e;">৳${(inv.paidAmount||0).toLocaleString("en-US")}</span></div>
-          <div class="info-row"><span class="info-label">এই বাকি:</span><span class="info-val" style="color:#ef4444;">৳${(inv.bakiAmount||0).toLocaleString("en-US")}</span></div>
+          <div class="info-row"><span class="info-label">নগদ পেয়েছি:</span><span class="info-val" style="color:#22c55e;">৳${fmtMoney(inv.paidAmount||0)}</span></div>
+          <div class="info-row"><span class="info-label">এই বাকি:</span><span class="info-val" style="color:#ef4444;">৳${fmtMoney(inv.bakiAmount||0)}</span></div>
         `:""}
         <div class="info-row"><span class="info-label">পরিশোধ পদ্ধতি:</span><span class="info-val">${inv.payType==="baki"?"বাকি":inv.payType==="partial"?"আংশিক":"নগদ"}</span></div>
         ${(inv.payType !== "cash" || (inv.prevBalance||0) > 0) ? `
-        <div class="info-row" style="border-top:1px dashed #ccc;padding-top:8px;margin-top:8px;"><span class="info-label" style="color:#f59e0b;font-weight:700;">পূর্বের বাকি:</span><span class="info-val" style="color:#f59e0b;font-weight:700;">৳${(inv.prevBalance||0).toLocaleString("en-US")}</span></div>
-        <div class="info-row"><span class="info-label" style="color:#ef4444;font-weight:800;">বর্তমান বাকি:</span><span class="info-val" style="color:#ef4444;font-size:16px;font-weight:800;">৳${((inv.prevBalance||0)+(inv.bakiAmount||0)-(inv.overpayAmount||0)).toLocaleString("en-US")}</span></div>
+        <div class="info-row" style="border-top:1px dashed #ccc;padding-top:8px;margin-top:8px;"><span class="info-label" style="color:#f59e0b;font-weight:700;">পূর্বের বাকি:</span><span class="info-val" style="color:#f59e0b;font-weight:700;">৳${fmtMoney(inv.prevBalance||0)}</span></div>
+        <div class="info-row"><span class="info-label" style="color:#ef4444;font-weight:800;">বর্তমান বাকি:</span><span class="info-val" style="color:#ef4444;font-size:16px;font-weight:800;">৳${fmtMoney((inv.prevBalance||0)+(inv.bakiAmount||0)-(inv.overpayAmount||0))}</span></div>
         ` : ""}
         ${inv.redeemedPoints > 0 ? `<div class="info-row"><span class="info-label" style="color:#fbbf24;">পয়েন্ট ব্যবহার:</span><span class="info-val" style="color:#fbbf24;">${inv.redeemedPoints} পয়েন্ট (– ৳${inv.redeemedValue||0})</span></div>` : ""}
         ${inv.earnedPoints > 0 ? `<div class="info-row"><span class="info-label" style="color:#22c55e;">অর্জিত পয়েন্ট:</span><span class="info-val" style="color:#22c55e;">+${inv.earnedPoints}</span></div>` : ""}
@@ -18921,7 +18934,8 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
     const shopName = inv.shopName || "SBM";
     const itemRows = (inv.items||[]).map((item,i) => {
       const _g = item.qty*item.price, _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0,0), _g);
-      return `<tr><td class="serial">${i+1}</td><td>${item.name}</td><td class="num">${item.qty}</td><td class="amount">৳${item.price}</td><td class="num" style="color:#16a34a;">${_d>0?`–৳${_d.toLocaleString("en-US")}`:"—"}</td><td class="amount">৳${(_g-_d).toLocaleString("en-US")}</td></tr>`;
+      const _p = _g > 0 ? Math.round((_d / _g) * 10000) / 100 : 0;
+      return `<tr><td class="serial">${i+1}</td><td>${item.name}</td><td class="num">${item.qty}</td><td class="amount">৳${fmtMoney(item.price)}</td><td class="num" style="color:#16a34a;">${_d>0?`–৳${fmtMoney(_d)}${_p>0?` (${_p}%)`:""}`:"—"}</td><td class="amount" style="color:#3b82f6;">৳${fmtMoney(_g-_d)}</td></tr>`;
     }).join("");
     const content = `
       <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
@@ -18937,19 +18951,19 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
       </div>
       <table><thead><tr><th class="serial">#</th><th>পণ্য</th><th class="num">পরিমাণ</th><th class="num">দাম</th><th class="num">ছাড়</th><th class="num">মোট</th></tr></thead><tbody>${itemRows}</tbody></table>
       <div style="margin-top:14px;padding:12px 0;">
-        <div class="info-row"><span>সর্বমোট:</span><span>৳${(inv.subtotal||inv.total||0).toLocaleString("en-US")}</span></div>
-        ${(inv.itemDiscount||0) > 0 ? `<div class="info-row"><span style="color:#22c55e;">পণ্যভিত্তিক ডিসকাউন্ট:</span><span style="color:#22c55e;">– ৳${(inv.itemDiscount||0).toLocaleString("en-US")}</span></div>` : ""}
-        ${(inv.discount||0) > 0 ? `<div class="info-row"><span style="color:#22c55e;">ডিসকাউন্ট:</span><span style="color:#22c55e;">– ৳${(inv.discount||0).toLocaleString("en-US")}</span></div>` : ""}
-        ${(inv.extraCharge||0) > 0 ? `<div class="info-row"><span style="color:#f59e0b;">অতিরিক্ত চার্জ:</span><span style="color:#f59e0b;">+ ৳${(inv.extraCharge||0).toLocaleString("en-US")}</span></div>` : ""}
-        <div class="info-row"><span>মোট খরচ:</span><span style="font-weight:800;font-size:18px;">৳${(inv.total||0).toLocaleString("en-US")}</span></div>
+        <div class="info-row"><span>সর্বমোট:</span><span>৳${fmtMoney(inv.subtotal||inv.total||0)}</span></div>
+        ${(inv.itemDiscount||0) > 0 ? `<div class="info-row"><span style="color:#22c55e;">পণ্যভিত্তিক ডিসকাউন্ট:</span><span style="color:#22c55e;">– ৳${fmtMoney(inv.itemDiscount||0)}</span></div>` : ""}
+        ${(inv.discount||0) > 0 ? `<div class="info-row"><span style="color:#22c55e;">ডিসকাউন্ট:</span><span style="color:#22c55e;">– ৳${fmtMoney(inv.discount||0)}</span></div>` : ""}
+        ${(inv.extraCharge||0) > 0 ? `<div class="info-row"><span style="color:#f59e0b;">অতিরিক্ত চার্জ:</span><span style="color:#f59e0b;">+ ৳${fmtMoney(inv.extraCharge||0)}</span></div>` : ""}
+        <div class="info-row"><span>মোট খরচ:</span><span style="font-weight:800;font-size:18px;">৳${fmtMoney(inv.total||0)}</span></div>
         ${inv.payType==="partial"?`
-          <div class="info-row"><span>নগদ:</span><span style="color:#22c55e;font-weight:700;">৳${(inv.paidAmount||0).toLocaleString("en-US")}</span></div>
-          <div class="info-row"><span>এই বাকি:</span><span style="color:#ef4444;font-weight:700;">৳${(inv.bakiAmount||0).toLocaleString("en-US")}</span></div>
+          <div class="info-row"><span>নগদ:</span><span style="color:#22c55e;font-weight:700;">৳${fmtMoney(inv.paidAmount||0)}</span></div>
+          <div class="info-row"><span>এই বাকি:</span><span style="color:#ef4444;font-weight:700;">৳${fmtMoney(inv.bakiAmount||0)}</span></div>
         `:""}
         <div class="info-row"><span>পরিশোধ:</span><span>${inv.payType==="baki"?"বাকি":inv.payType==="partial"?"আংশিক":"নগদ"}</span></div>
         ${(inv.payType !== "cash" || (inv.prevBalance||0) > 0) ? `
-        <div class="info-row" style="border-top:1px dashed #ccc;padding-top:8px;margin-top:8px;"><span style="color:#f59e0b;font-weight:700;">পূর্বের বাকি:</span><span style="color:#f59e0b;font-weight:700;">৳${(inv.prevBalance||0).toLocaleString("en-US")}</span></div>
-        <div class="info-row"><span style="color:#ef4444;font-weight:800;">বর্তমান বাকি:</span><span style="color:#ef4444;font-size:16px;font-weight:800;">৳${((inv.prevBalance||0)+(inv.bakiAmount||0)-(inv.overpayAmount||0)).toLocaleString("en-US")}</span></div>
+        <div class="info-row" style="border-top:1px dashed #ccc;padding-top:8px;margin-top:8px;"><span style="color:#f59e0b;font-weight:700;">পূর্বের বাকি:</span><span style="color:#f59e0b;font-weight:700;">৳${fmtMoney(inv.prevBalance||0)}</span></div>
+        <div class="info-row"><span style="color:#ef4444;font-weight:800;">বর্তমান বাকি:</span><span style="color:#ef4444;font-size:16px;font-weight:800;">৳${fmtMoney((inv.prevBalance||0)+(inv.bakiAmount||0)-(inv.overpayAmount||0))}</span></div>
         ` : ""}
       </div>`;
     const html = buildPdfHtml(content, shopName, `${isBuyer?"ক্রেতার":"বিক্রেতার"} ইনভয়েস`);
@@ -18983,6 +18997,7 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
             const _gross = item.qty * item.price;
             const _disc = Math.min(Math.max(parseFloat(item.itemDiscount) || 0, 0), _gross);
             const _net = _gross - _disc;
+            const _pctDisplay = _gross > 0 ? Math.round((_disc / _gross) * 10000) / 100 : 0;
             return (
               <div key={item.productId || item.id} style={{
                 display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
@@ -19001,8 +19016,8 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
                   {_disc > 0 ? (
                     <>
                       <div style={{ color: T.sub, fontSize: 9.5, textDecoration: "line-through" }}>৳{fmt(_gross)}</div>
-                      <div style={{ color: T.text, fontSize: 12.5, fontWeight: 900 }}>৳{fmt(_net)}</div>
-                      <div style={{ color: "#22c55e", fontSize: 9, fontWeight: 800, background: "#22c55e1f", borderRadius: 5, padding: "0 5px", marginTop: 1, display: "inline-block" }}>−৳{fmt(_disc)}</div>
+                      <div style={{ color: "#22c55e", fontSize: 9, fontWeight: 800, background: "#22c55e1f", borderRadius: 5, padding: "0 5px", marginTop: 1, display: "inline-block" }}>−৳{fmt(_disc)}{_pctDisplay > 0 ? ` (${_pctDisplay}%)` : ""}</div>
+                      <div style={{ color: "#3b82f6", fontSize: 12.5, fontWeight: 900, marginTop: 1 }}>৳{fmt(_net)}</div>
                     </>
                   ) : (
                     <div style={{ color: T.text, fontSize: 12.5, fontWeight: 900 }}>৳{fmt(_gross)}</div>
@@ -19091,7 +19106,8 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
             const shopName = inv.shopName || "SBM";
             const itemRows = (inv.items||[]).map((item,i) => {
               const _g = item.qty*item.price, _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0,0), _g);
-              return `<tr><td>${i+1}</td><td>${item.name}${_d>0?` <span style="color:#16a34a;font-size:10px;">(–৳${_d})</span>`:""}</td><td class="right">${item.qty}</td><td class="right">৳${item.price}</td><td class="right">৳${(_g-_d).toLocaleString("en-US")}</td></tr>`;
+              const _p = _g > 0 ? Math.round((_d / _g) * 10000) / 100 : 0;
+              return `<tr><td>${i+1}</td><td>${item.name}${_d>0?` <span style="color:#16a34a;font-size:10px;">(–৳${fmtMoney(_d)}${_p>0?` ${_p}%`:""})</span>`:""}</td><td class="right">${item.qty}</td><td class="right">৳${fmtMoney(item.price)}</td><td class="right" style="color:#3b82f6;">৳${fmtMoney(_g-_d)}</td></tr>`;
             }).join("");
             const content = `<div class="info"><span class="info-l">কাস্টমার:</span><span class="info-r">${inv.customerName}</span></div>
               <div class="info"><span class="info-l">ইনভয়েস:</span><span class="info-r">#${(inv.id||"").toUpperCase()}</span></div>
@@ -19099,13 +19115,13 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer" }) {
               <hr class="dashed">
               <table><thead><tr><th>#</th><th>পণ্য</th><th class="right">পরি.</th><th class="right">দাম</th><th class="right">মোট</th></tr></thead><tbody>${itemRows}</tbody></table>
               <hr class="dashed">
-              <div class="info"><span>সর্বমোট:</span><span>৳${(inv.subtotal||inv.total||0).toLocaleString("en-US")}</span></div>
-              ${(inv.itemDiscount||0) > 0 ? `<div class="info"><span>পণ্যভিত্তিক ডিসকাউন্ট:</span><span>– ৳${(inv.itemDiscount||0).toLocaleString("en-US")}</span></div>` : ""}
-              ${(inv.discount||0) > 0 ? `<div class="info"><span>ডিসকাউন্ট:</span><span>– ৳${(inv.discount||0).toLocaleString("en-US")}</span></div>` : ""}
-              <div class="info total"><span>মোট খরচ:</span><span>৳${(inv.total||0).toLocaleString("en-US")}</span></div>
+              <div class="info"><span>সর্বমোট:</span><span>৳${fmtMoney(inv.subtotal||inv.total||0)}</span></div>
+              ${(inv.itemDiscount||0) > 0 ? `<div class="info"><span>পণ্যভিত্তিক ডিসকাউন্ট:</span><span>– ৳${fmtMoney(inv.itemDiscount||0)}</span></div>` : ""}
+              ${(inv.discount||0) > 0 ? `<div class="info"><span>ডিসকাউন্ট:</span><span>– ৳${fmtMoney(inv.discount||0)}</span></div>` : ""}
+              <div class="info total"><span>মোট খরচ:</span><span>৳${fmtMoney(inv.total||0)}</span></div>
               ${inv.payType==="baki"?`<div class="info"><span>পরিশোধ:</span><span>বাকি</span></div>`:""}
-              <div class="info"><span>পূর্বের বাকি:</span><span>৳${(inv.prevBalance||0).toLocaleString("en-US")}</span></div>
-              <div class="info"><span>বর্তমান বাকি:</span><span>৳${((inv.prevBalance||0)+(inv.bakiAmount||0)-(inv.overpayAmount||0)).toLocaleString("en-US")}</span></div>`;
+              <div class="info"><span>পূর্বের বাকি:</span><span>৳${fmtMoney(inv.prevBalance||0)}</span></div>
+              <div class="info"><span>বর্তমান বাকি:</span><span>৳${fmtMoney((inv.prevBalance||0)+(inv.bakiAmount||0)-(inv.overpayAmount||0))}</span></div>`;
             printThermalDirect(content, shopName, `${isBuyer?"ক্রেতার":"বিক্রেতার"} ইনভয়েস`);
           }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>
@@ -19142,8 +19158,9 @@ function InvoiceReceiptPrint({ inv, customer, type }) {
           {inv.items.map((item, i) => {
             const _g = item.qty * item.price;
             const _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0, 0), _g);
+            const _p = _g > 0 ? Math.round((_d / _g) * 10000) / 100 : 0;
             return (
-              <tr key={i}><td style={{ color: "#666", fontSize: 10 }}>{i+1}</td><td>{item.name}</td><td className="right">{item.qty}</td><td className="right">৳{item.price}</td><td className="right" style={{ color: "#16a34a" }}>{_d>0?`–৳${_d}`:"—"}</td><td className="right">৳{_g-_d}</td></tr>
+              <tr key={i}><td style={{ color: "#666", fontSize: 10 }}>{i+1}</td><td>{item.name}</td><td className="right">{item.qty}</td><td className="right">৳{fmtMoney(item.price)}</td><td className="right" style={{ color: "#16a34a" }}>{_d>0?`–৳${fmtMoney(_d)}${_p>0?` (${_p}%)`:""}`:"—"}</td><td className="right" style={{ color: "#3b82f6" }}>৳{fmtMoney(_g-_d)}</td></tr>
             );
           })}
         </tbody>
@@ -19151,20 +19168,20 @@ function InvoiceReceiptPrint({ inv, customer, type }) {
       <div className="line" />
       {((inv.discount||0) > 0 || (inv.itemDiscount||0) > 0) && (
         <>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}><span>সর্বমোট</span><span>৳{inv.subtotal ?? (inv.total + inv.discount)}</span></div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}><span>সর্বমোট</span><span>৳{fmtMoney(inv.subtotal ?? (inv.total + inv.discount))}</span></div>
           {(inv.itemDiscount||0) > 0 && (
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#22c55e" }}><span>পণ্যভিত্তিক ডিসকাউন্ট</span><span>– ৳{inv.itemDiscount}</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#22c55e" }}><span>পণ্যভিত্তিক ডিসকাউন্ট</span><span>– ৳{fmtMoney(inv.itemDiscount)}</span></div>
           )}
           {(inv.discount||0) > 0 && (
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#22c55e" }}><span>ডিসকাউন্ট</span><span>– ৳{inv.discount}</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#22c55e" }}><span>ডিসকাউন্ট</span><span>– ৳{fmtMoney(inv.discount)}</span></div>
           )}
         </>
       )}
-      <div style={{ display: "flex", justifyContent: "space-between" }} className="total"><span>মোট</span><span>৳{inv.total}</span></div>
+      <div style={{ display: "flex", justifyContent: "space-between" }} className="total"><span>মোট</span><span>৳{fmtMoney(inv.total)}</span></div>
       {inv.payType === "partial" && (
         <>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}><span>নগদ</span><span>৳{inv.paidAmount || 0}</span></div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}><span>বাকি</span><span>৳{inv.bakiAmount || 0}</span></div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}><span>নগদ</span><span>৳{fmtMoney(inv.paidAmount || 0)}</span></div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}><span>বাকি</span><span>৳{fmtMoney(inv.bakiAmount || 0)}</span></div>
         </>
       )}
       <div className="line" />
@@ -20253,8 +20270,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                       <td class="num" style="text-align:center;">${i+1}</td>
                       <td style="font-weight:600;">${e.productName||"—"}</td>
                       <td class="num" style="text-align:center;">${e.qty||0}${e.unit||""}</td>
-                      <td class="num">৳${Math.round(e.unitCost||0).toLocaleString("en-US")}</td>
-                      <td class="num" style="font-weight:700;">৳${Math.round(e.totalCost||0).toLocaleString("en-US")}</td>
+                      <td class="num">৳${fmtMoney(e.unitCost||0)}</td>
+                      <td class="num" style="font-weight:700;">৳${fmtMoney(e.totalCost||0)}</td>
                     </tr>`).join("");
                     const content = `
                       <p style="font-size:11px;color:#64748b;margin-bottom:12px;">তারিখ: ${dateLabel} | মোট এন্ট্রি: ${displayed.length}টি</p>
@@ -20263,7 +20280,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                           <th class="serial">#</th><th>পণ্য</th><th class="num" style="text-align:center;">পরিমাণ</th><th class="num">একক মূল্য</th><th class="num">মোট</th>
                         </tr></thead>
                         <tbody>${rows}</tbody>
-                        <tfoot><tr style="background:#f0fdf4;"><td colspan="4" style="padding:10px 16px;font-weight:800;">মোট</td><td class="num" style="font-weight:900;color:#15803d;">৳${Math.round(displayedTotal).toLocaleString("en-US")}</td></tr></tfoot>
+                        <tfoot><tr style="background:#f0fdf4;"><td colspan="4" style="padding:10px 16px;font-weight:800;">মোট</td><td class="num" style="font-weight:900;color:#15803d;">৳${fmtMoney(displayedTotal)}</td></tr></tfoot>
                       </table>`;
                     const html = buildPdfHtml(content, shopName || "SBM", `ক্রয় স্টেটমেন্ট — ${dateLabel}`);
                     openPrintWindow(html);
@@ -20274,8 +20291,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                   {/* WhatsApp */}
                   <button onClick={() => {
                     const dateLabel = peFilter==="today" ? todayKey : peHistDate;
-                    const lines = displayed.map((e,i) => `${i+1}. ${e.productName||"—"} — ${e.qty||0}${e.unit||""} — ৳${Math.round(e.totalCost||0).toLocaleString("en-US")}`).join("\n");
-                    const msg = encodeURIComponent(`ক্রয় স্টেটমেন্ট — ${shopName || "SBM"}\nতারিখ: ${dateLabel}\n\n${lines}\n\nমোট: ৳${Math.round(displayedTotal).toLocaleString("en-US")}`);
+                    const lines = displayed.map((e,i) => `${i+1}. ${e.productName||"—"} — ${e.qty||0}${e.unit||""} — ৳${fmtMoney(e.totalCost||0)}`).join("\n");
+                    const msg = encodeURIComponent(`ক্রয় স্টেটমেন্ট — ${shopName || "SBM"}\nতারিখ: ${dateLabel}\n\n${lines}\n\nমোট: ৳${fmtMoney(displayedTotal)}`);
                     window.open(`https://wa.me/?text=${msg}`, "_blank");
                   }} style={{ background:"linear-gradient(135deg,#065f46,#10b981)", border:"1px solid #34d39955", borderRadius:12, padding:"9px 16px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", gap:6, boxShadow:"0 4px 16px #22c55e55" }}>
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
@@ -20886,7 +20903,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
 function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
   supplierPayments = [], setSupplierPayments, showToast, currentUser, shopName }) {
 
-  const fmt = n => Math.round(n || 0).toLocaleString("en-US");
+  const fmt = n => fmtMoney(n);
   const todayKey = new Date().toISOString().split("T")[0];
 
   // ── Build supplier list from products + purchase orders ────────────────────
@@ -21240,7 +21257,7 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
 function ReturnModule({ T, S, invoices, products, customers, returns = [], setReturns,
   setProducts, setCustomers, setStockMovements, addTxn, showToast, currentUser, shopName }) {
 
-  const fmt     = n => Math.round(n || 0).toLocaleString("en-US");
+  const fmt     = n => fmtMoney(n);
   const todayKey = new Date().toISOString().split("T")[0];
 
   // ── State ─────────────────────────────────────────────────────────────────
@@ -21791,7 +21808,7 @@ function ExpenseTracker({ T, S, expenses = [], setExpenses, showToast, currentUs
     category: "অন্যান্য", amount: "", note: "", date: new Date().toISOString().split("T")[0],
   });
 
-  const fmt = n => Math.round(n || 0).toLocaleString("en-US");
+  const fmt = n => fmtMoney(n);
   const todayKey = new Date().toISOString().split("T")[0];
 
   // ── Date range filter ────────────────────────────────────────────────────────
@@ -22388,7 +22405,7 @@ function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoic
 
   // 📝 নোটিফিকেশনের body / largeBody তৈরি
   const buildNotifContent = (sum, extra = "") => {
-    const f = (n) => Math.round(n || 0).toLocaleString("en-US");
+    const f = (n) => fmtMoney(n);
     const profitVal = sum.totalProfit;
     const lossVal   = sum.totalLoss;
     return {
