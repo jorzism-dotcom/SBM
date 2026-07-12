@@ -5095,7 +5095,17 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
           // _updatedAt inject করো (নতুন বা পরিবর্তিত record-এ) — Master Sync merge-এর জন্য
           const recWithTs = rec._updatedAt ? rec : withTs(rec);
           pending.current.set(id, { rec: recWithTs, old: old || null, ts: Date.now() });
-          FSS.setRecord(name, id, recWithTs);
+          // 🔴 ফিক্স: setRecord()-এর রেজাল্ট আগে চেক না করেই fire-and-forget করা হতো —
+          // Firestore Rules বা নেটওয়ার্ক সমস্যায় write ব্যর্থ হলে কোনো এরর দেখা যেত না,
+          // pending map-এ ৫ সেকেন্ড পর নীরবে আবার remote ভার্সনে রিভার্ট হয়ে যেত (যেমন
+          // "স্টাফ পারমিশন সিঙ্ক হচ্ছে না" বাগ — অ্যাডমিন দেখতেও পেত না কেন)।
+          // এখন ব্যর্থ হলে onSync("error") + centralized error log দিয়ে দৃশ্যমান করা হয়।
+          FSS.setRecord(name, id, recWithTs).then(res => {
+            if (res && res.ok === false) {
+              onSync?.("error");
+              logErrorToCentral?.(`fss-write:${name}`, new Error(res.msg || "write failed"), { id });
+            }
+          });
           // #১৫ ফিল্ড-লেভেল চেঞ্জ লগ — শুধু বিদ্যমান রেকর্ড বদলালে (old থাকলে),
           // নতুন রেকর্ড তৈরি হলে না (তাহলে প্রতিটা ইনভয়েস তৈরিতেই তার সবগুলো
           // ফিল্ড "changed" হিসেবে লগ হতো, যা "creation" না "change" — শব্দার্থে ভুল
@@ -9876,8 +9886,14 @@ function SmartBusinessMgmt() {
   // 🗑️ Recycle Bin — এখন সব ডিভাইসে সিঙ্ক হয় (আগে শুধু লোকাল ছিল)
   useFSSCollection("deletedProducts", deletedProducts, setDeletedProducts, fssReady, { onSync: setSyncToast });
   useFSSCollection("deletedCustomers", deletedCustomers, setDeletedCustomers, fssReady, { onSync: setSyncToast });
-  // 🔑 users (permissions) — instant push/apply, debounce ছাড়া
-  useFSSCollection("users", users, setUsers, fssReady, { instant: true, onSync: setSyncToast });
+  // 🔑 users (permissions) — instant push/apply, debounce ছাড়া। এই কালেকশনের
+  // write ব্যর্থ হলে (যেমন Firestore Rules ব্লক করলে) আগে সম্পূর্ণ নীরবে ব্যর্থ
+  // হতো — অ্যাডমিন বুঝতেই পারতেন না কেন স্টাফের পারমিশন সিঙ্ক হচ্ছে না।
+  // এখন ব্যর্থ হলে সরাসরি একটা লাল টোস্ট দেখানো হয়।
+  useFSSCollection("users", users, setUsers, fssReady, {
+    instant: true,
+    onSync: (v) => { setSyncToast?.(v); if (v === "error") showToast?.("⚠️ স্টাফ/পারমিশন সিঙ্ক ব্যর্থ হয়েছে — Firestore Rules চেক করুন", "#ef4444"); },
+  });
   useFSSSettings(fssReady, shopName, setShopName, smsTemplates, setSmsTemplates, smsGateway, setSmsGateway, googleDriveToken, setGoogleDriveToken);
 
   // ── Phase 1.3: Stats doc real-time subscribe — Dashboard আজকের totals ───────
@@ -23895,7 +23911,11 @@ function Settings_({ T, S, shopName,
 
       try {
         const testId = `difftest_user_${Date.now()}`;
-        if (FSS.isReady()) FSS.setRecord("users", testId, withTs({ id: testId, name: "ডায়াগনস্টিক টেস্ট", role: "diagnostic-test" }));
+        // 🔴 ফিক্স: আগে role: "diagnostic-test" পাঠানো হতো, যেটা users কালেকশনের
+        // Firestore Rule-এর role enum validation (["admin","staff"]) ভঙ্গ করে
+        // rule-ই সঠিকভাবে লেখাটা প্রত্যাখ্যান করত — আসল write path ভাঙা ছিল না,
+        // টেস্ট-ডেটাই rule ভঙ্গ করছিল। এখন বৈধ role ব্যবহার করা হচ্ছে।
+        if (FSS.isReady()) FSS.setRecord("users", testId, withTs({ id: testId, name: "ডায়াগনস্টিক টেস্ট", role: "staff" }));
         await new Promise(r => setTimeout(r, 1500));
         const snap = await getDoc(doc(FSS._db, "users", testId));
         add("users/স্টাফ", "Write→Read লাইভ টেস্ট (instant push path)",
