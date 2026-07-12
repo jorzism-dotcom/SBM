@@ -6965,6 +6965,148 @@ const calcInvoiceProfit = (inv, prodMap) => {
   return itemsProfit + extraCharge;
 };
 
+// ── 🧪 Logic Test Suite — pure ফাংশন/সূত্রকে হাতে বানানো fixture দিয়ে চালিয়ে
+// "input X দিলে output Y হওয়া উচিত" যাচাই করে। কোনো নেটওয়ার্ক/Firestore/React
+// state লাগে না, তাই মিলিসেকেন্ডে চলে এবং প্রোডাকশনে কোনো সাইড-ইফেক্ট ফেলে না।
+// calcInvoiceProfit-এর মতো module-level pure ফাংশন এখানে সরাসরি কল করা হয়
+// (তাই আসল কোড বদলালে এখানেই রিগ্রেশন ধরা পড়বে)। কিন্তু voidInvoice/buildSummary-
+// এর মতো ফাংশনগুলো component-এর ভেতরে state-bound useCallback হিসেবে আছে,
+// এখান থেকে সরাসরি import করা যায় না — তাই ওগুলোর জন্য নিচে documented সূত্র
+// অনুযায়ী স্বতন্ত্র reference-implementation বানিয়ে টেস্ট করা হয়েছে। ⚠️ মনে
+// রাখবেন: ওই ফাংশনগুলোর ভেতরের আসল সূত্র বদলালে (যেমন voidInvoice-এর netChange
+// হিসাব), নিচের reference copy-ও হাতে করে মিলিয়ে আপডেট করতে হবে — নাহলে এই
+// টেস্ট একটা "পুরনো সূত্র ঠিক আছে কিনা" চেক করবে, আসল কোড নয়।
+const runLogicTests = () => {
+  const results = [];
+  const t = (suite, name, fn) => {
+    try {
+      const { pass, expected, actual } = fn();
+      results.push({ suite, name, status: pass ? "pass" : "fail",
+        detail: pass ? `✓ ফলাফল ${actual}` : `প্রত্যাশিত ${expected}, পাওয়া গেছে ${actual}` });
+    } catch (err) {
+      results.push({ suite, name, status: "fail", detail: `এরর/ক্র্যাশ: ${err?.message || err}` });
+    }
+  };
+  const approx = (a, b, eps = 0.01) => Math.abs(a - b) <= eps;
+
+  // ── calcInvoiceProfit — আসল module-level ফাংশন সরাসরি টেস্ট (রিগ্রেশন-সেফ) ──
+  t("লাভ হিসাব (calcInvoiceProfit)", "সাধারণ বিক্রয় — ডিসকাউন্ট/এক্সট্রা ছাড়া", () => {
+    const prodMap = new Map([["p1", { costPrice: 50 }]]);
+    const inv = { items: [{ productId: "p1", price: 100, qty: 2, costPrice: 50 }], discount: 0, extraCharge: 0 };
+    const actual = calcInvoiceProfit(inv, prodMap);
+    return { pass: approx(actual, 100), expected: 100, actual }; // (100-50)*2
+  });
+  t("লাভ হিসাব (calcInvoiceProfit)", "ডিসকাউন্ট অনুপাতে revenue কমা উচিত (cost না)", () => {
+    const prodMap = new Map([["p1", { costPrice: 50 }]]);
+    // subtotal=200, discount=20 → ratio=0.9 → revenue=180, cost=100 → profit=80
+    const inv = { items: [{ productId: "p1", price: 100, qty: 2, costPrice: 50 }], discount: 20, extraCharge: 0 };
+    const actual = calcInvoiceProfit(inv, prodMap);
+    return { pass: approx(actual, 80), expected: 80, actual };
+  });
+  t("লাভ হিসাব (calcInvoiceProfit)", "extraCharge পুরোটাই লাভ (কোনো cost নেই)", () => {
+    const prodMap = new Map([["p1", { costPrice: 50 }]]);
+    const inv = { items: [{ productId: "p1", price: 100, qty: 1, costPrice: 50 }], discount: 0, extraCharge: 30 };
+    const actual = calcInvoiceProfit(inv, prodMap);
+    return { pass: approx(actual, 80), expected: 80, actual }; // (100-50)+30
+  });
+  t("লাভ হিসাব (calcInvoiceProfit)", "সেবা (service) আইটেমের cost সবসময় ০ ধরা উচিত", () => {
+    const inv = { items: [{ productId: "s1", price: 500, qty: 1, productType: "service", costPrice: 999 }], discount: 0, extraCharge: 0 };
+    const actual = calcInvoiceProfit(inv, new Map());
+    return { pass: approx(actual, 500), expected: 500, actual };
+  });
+  t("লাভ হিসাব (calcInvoiceProfit)", "খালি items → profit ০ (crash নয়)", () => {
+    const actual = calcInvoiceProfit({ items: [], discount: 0, extraCharge: 0 }, new Map());
+    return { pass: actual === 0, expected: 0, actual };
+  });
+
+  // ── ইনভয়েস total সূত্র — createInvoice()-এ ব্যবহৃত সূত্রের reference-copy ──
+  const calcInvoiceTotal = (items, discount, extraCharge) => {
+    const subtotal = items.reduce((s, i) => s + i.qty * i.price, 0);
+    const itemDiscTotal = items.reduce((s, i) => s + Math.min(Math.max(i.itemDiscount || 0, 0), i.qty * i.price), 0);
+    const discAmt = Math.min(discount || 0, Math.max(0, subtotal - itemDiscTotal));
+    const extraAmt = Math.max(extraCharge || 0, 0);
+    return subtotal - itemDiscTotal - discAmt + extraAmt;
+  };
+  t("ইনভয়েস টোটাল সূত্র", "লাইন-আইটেম ডিসকাউন্ট সাবটোটাল ছাড়িয়ে যেতে পারবে না (clamp)", () => {
+    const actual = calcInvoiceTotal([{ price: 100, qty: 1, itemDiscount: 999 }], 0, 0);
+    return { pass: actual === 0, expected: 0, actual }; // negative total হওয়া উচিত না
+  });
+  t("ইনভয়েস টোটাল সূত্র", "গ্লোবাল discount সাবটোটালের বেশি হলেও total ০-এর নিচে নামা উচিত না", () => {
+    const actual = calcInvoiceTotal([{ price: 100, qty: 1, itemDiscount: 0 }], 500, 0);
+    return { pass: actual === 0, expected: 0, actual };
+  });
+  t("ইনভয়েস টোটাল সূত্র", "extraCharge নেগেটিভ দেওয়া হলেও ০ ধরা উচিত", () => {
+    const actual = calcInvoiceTotal([{ price: 100, qty: 1, itemDiscount: 0 }], 0, -50);
+    return { pass: actual === 100, expected: 100, actual };
+  });
+  t("ইনভয়েস টোটাল সূত্র", "স্বাভাবিক কেস — একাধিক আইটেম + itemDiscount + discount + extraCharge", () => {
+    const items = [{ price: 100, qty: 2, itemDiscount: 20 }, { price: 50, qty: 1, itemDiscount: 0 }];
+    // subtotal=250, itemDiscTotal=20, discAmt=min(10,230)=10, extraAmt=15 → total=250-20-10+15=235
+    const actual = calcInvoiceTotal(items, 10, 15);
+    return { pass: actual === 235, expected: 235, actual };
+  });
+
+  // ── ভয়েড-রিভার্সাল netChange সূত্র — voidInvoice()-এর হিসাবের reference-copy ──
+  const calcVoidNetChange = (inv) => (inv.payType === "baki" ? inv.total : (inv.bakiAmount || 0)) - (inv.overpayAmount || 0);
+  t("ভয়েড রিভার্সাল সূত্র", "পুরো বাকি (baki) ইনভয়েস ভয়েড হলে পুরো total-ই বিয়োগ হওয়া উচিত", () => {
+    const actual = calcVoidNetChange({ payType: "baki", total: 500, bakiAmount: 0, overpayAmount: 0 });
+    return { pass: actual === 500, expected: 500, actual };
+  });
+  t("ভয়েড রিভার্সাল সূত্র", "আংশিক বাকি (partial) ইনভয়েস — শুধু bakiAmount বিয়োগ হওয়া উচিত, পুরো total নয়", () => {
+    const actual = calcVoidNetChange({ payType: "partial", total: 500, bakiAmount: 200, overpayAmount: 0 });
+    return { pass: actual === 200, expected: 200, actual };
+  });
+  t("ভয়েড রিভার্সাল সূত্র", "Overpay ছিল এমন ইনভয়েস ভয়েড — নিট পরিবর্তনে overpay অংশ বাদ যাওয়া উচিত", () => {
+    const actual = calcVoidNetChange({ payType: "partial", total: 500, bakiAmount: 0, overpayAmount: 100 });
+    return { pass: actual === -100, expected: -100, actual }; // নেগেটিভ = কাস্টমারের বাকি উল্টো বেড়ে যাওয়া উচিত
+  });
+  t("ভয়েড রিভার্সাল সূত্র", "কোনো বাকি/overpay না থাকলে নিট পরিবর্তন ০ হওয়া উচিত (cash sale)", () => {
+    const actual = calcVoidNetChange({ payType: "cash", total: 500, bakiAmount: 0, overpayAmount: 0 });
+    return { pass: actual === 0, expected: 0, actual };
+  });
+  t("ব্যালেন্স ক্ল্যাম্প", "ভয়েড রিভার্সালে balance কখনো নেগেটিভ হয়ে যাওয়া উচিত না", () => {
+    const newBal = Math.max(0, 100 - 500); // serverBal=100, netChange=500
+    return { pass: newBal === 0, expected: 0, actual: newBal };
+  });
+
+  // ── ক্যাশ ড্রয়ার সূত্র — buildSummary()-এর হিসাবের reference-copy ──
+  const calcCashDrawer = (opening, cashSale, joma, withdrawal, purchaseCost) => opening + cashSale + joma - withdrawal - purchaseCost;
+  t("ক্যাশ ড্রয়ার সূত্র", "ওপেনিং+বিক্রি+আদায়−উত্তোলন−ক্রয় — স্বাভাবিক কেস", () => {
+    const actual = calcCashDrawer(1000, 5000, 800, 1200, 300);
+    return { pass: actual === 5300, expected: 5300, actual };
+  });
+  t("ক্যাশ ড্রয়ার সূত্র", "সব শূন্য হলে ফলাফলও শূন্য হওয়া উচিত", () => {
+    const actual = calcCashDrawer(0, 0, 0, 0, 0);
+    return { pass: actual === 0, expected: 0, actual };
+  });
+
+  // ── ব্যাচ-স্টক রিস্টোর — voidInvoice()-এর ব্যাচ-qty-ফেরত লজিকের reference-copy ──
+  const restoreBatchQty = (batches, batchNo, restoredQty, fallback = {}) => {
+    let updated = batches ? [...batches] : [];
+    const idx = updated.findIndex(b => b.batchNo === batchNo);
+    if (idx >= 0) updated[idx] = { ...updated[idx], qty: (updated[idx].qty || 0) + restoredQty };
+    else updated.push({ batchNo, qty: restoredQty, ...fallback });
+    return updated;
+  };
+  t("ব্যাচ রিস্টোর সূত্র", "বিদ্যমান ব্যাচে qty যোগ হওয়া উচিত (প্রতিস্থাপন নয়)", () => {
+    const result = restoreBatchQty([{ batchNo: "B1", qty: 5 }], "B1", 3);
+    const actual = result.find(b => b.batchNo === "B1")?.qty;
+    return { pass: actual === 8, expected: 8, actual };
+  });
+  t("ব্যাচ রিস্টোর সূত্র", "ব্যাচ ডিলিট হয়ে থাকলে নতুন করে তৈরি হওয়া উচিত (ডেটা হারানো নয়)", () => {
+    const result = restoreBatchQty([], "B2", 4, { costPrice: 20 });
+    const found = result.find(b => b.batchNo === "B2");
+    return { pass: !!found && found.qty === 4, expected: "B2 qty=4", actual: found ? `B2 qty=${found.qty}` : "পাওয়া যায়নি" };
+  });
+  t("ব্যাচ রিস্টোর সূত্র", "অন্য ব্যাচ অক্ষত থাকা উচিত, শুধু ম্যাচ করা ব্যাচেই বদল", () => {
+    const result = restoreBatchQty([{ batchNo: "B1", qty: 5 }, { batchNo: "B2", qty: 10 }], "B1", 3);
+    const b2 = result.find(b => b.batchNo === "B2")?.qty;
+    return { pass: b2 === 10, expected: 10, actual: b2 };
+  });
+
+  return results;
+};
+
 const calcProfitTotal = (invList, prodMap) =>
   invList.reduce((s, inv) => s + calcInvoiceProfit(inv, prodMap), 0);
 
@@ -23522,6 +23664,7 @@ function Settings_({ T, S, shopName,
   // Invoice History pagination) নিজে থেকেই চেক করে, ম্যানুয়ালি Firestore Console
   // ঘেঁটে স্ক্রিনশট নেওয়ার বদলে। প্রতিটা ফিচারের জন্য pass/fail/todo রিপোর্ট করে। ──
   const [syncDiag, setSyncDiag] = useState(null); // null | {running:true} | {ranAt, checks:[]}
+  const [logicTest, setLogicTest] = useState(null); // null | {ranAt, results:[]} — synchronous, তাই running স্টেট লাগে না
   const runSyncDiagnostics = async () => {
     setSyncDiag({ running: true });
     const checks = [];
@@ -23803,6 +23946,101 @@ function Settings_({ T, S, shopName,
         alerts.length ? alerts.map(a => a.msg).join("; ") : "কোনো সতর্কতা নেই");
     } catch (err) {
       add("ব্যাকআপ/হেলথ", "চেক ব্যর্থ হয়েছে", "fail", err?.message || "unknown error");
+    }
+
+    // ── ৯) হিসাব/লজিক সঠিকতা (Business logic sanity) — ডেটা "আছে কিনা" নয়,
+    // ডেটা "সঠিক কিনা" যাচাই করে। বাকি/ইনভয়েস/ক্যাশ/stats — প্রতিটার হিসাব
+    // independently recompute করে stored মান-এর সাথে মিলিয়ে দেখা হয় ──
+    try {
+      // ৯ক) কাস্টমার ব্যালেন্স recompute — প্রতিটা কাস্টমারের গত ৩০ দিনের
+      // সর্বশেষ txn.balanceAfter, স্টোর করা customer.balance-এর সাথে মেলা উচিত
+      const lastTxnByCust = new Map();
+      for (const t of (txns || [])) {
+        if (!t.customerId) continue;
+        const prev = lastTxnByCust.get(t.customerId);
+        if (!prev || (t.dateKey || "") > (prev.dateKey || "") ||
+            ((t.dateKey || "") === (prev.dateKey || "") && (t.time || "") >= (prev.time || ""))) {
+          lastTxnByCust.set(t.customerId, t);
+        }
+      }
+      const balMismatches = [];
+      let balChecked = 0;
+      for (const c of (customers || [])) {
+        const lastTxn = lastTxnByCust.get(c.id);
+        if (!lastTxn || lastTxn.balanceAfter === undefined) continue; // গত ৩০ দিনে txn নেই — এখান থেকে যাচাই সম্ভব না
+        balChecked++;
+        if (Math.abs((lastTxn.balanceAfter || 0) - (c.balance || 0)) > 1) {
+          balMismatches.push(`${c.name} — stored ৳${c.balance || 0}, শেষ txn অনুযায়ী ৳${lastTxn.balanceAfter}`);
+        }
+      }
+      add("হিসাব সঠিকতা", "কাস্টমার ব্যালেন্স recompute (সর্বশেষ txn.balanceAfter vs stored balance)",
+        balChecked === 0 ? "skip" : balMismatches.length === 0 ? "pass" : "fail",
+        balChecked === 0 ? "গত ৩০ দিনে txn আছে এমন কাস্টমার নেই — এখান থেকে যাচাই সম্ভব হয়নি" :
+        balMismatches.length === 0 ? `${balChecked}জন কাস্টমারের stored balance সর্বশেষ লেনদেনের সাথে হুবহু মিলছে` :
+        `${balMismatches.length}/${balChecked}জনের ব্যালেন্স মিলছে না: ${balMismatches.slice(0, 5).join("; ")}${balMismatches.length > 5 ? ` +আরও ${balMismatches.length - 5}জন` : ""}`);
+    } catch (err) {
+      add("হিসাব সঠিকতা", "কাস্টমার ব্যালেন্স recompute", "fail", err?.message || "unknown error");
+    }
+
+    try {
+      // ৯খ) ইনভয়েস line-item যোগফল vs stored total — subtotal - itemDiscount -
+      // discount + extraCharge = total, এই সূত্র প্রতিটা ইনভয়েসে হুবহু মেলা উচিত
+      const invLocal = (invoices || []).filter(i => i.status !== "voided" && !i.isSelfUse && Array.isArray(i.items) && i.items.length > 0);
+      const invMismatches = [];
+      for (const inv of invLocal) {
+        const lineSum = inv.items.reduce((s, it) => s + (it.qty || 0) * (it.price || 0), 0);
+        const expectedTotal = lineSum - (inv.itemDiscount || 0) - (inv.discount || 0) + (inv.extraCharge || 0);
+        if (Math.abs(expectedTotal - (inv.total || 0)) > 1) {
+          invMismatches.push(`${inv.customerName || "?"} (${inv.date || inv.dateKey || "?"}) — লাইন-আইটেম হিসাবে ৳${Math.round(expectedTotal)}, stored ৳${inv.total || 0}`);
+        }
+      }
+      add("হিসাব সঠিকতা", "ইনভয়েস line-item যোগফল vs stored total",
+        invLocal.length === 0 ? "skip" : invMismatches.length === 0 ? "pass" : "fail",
+        invLocal.length === 0 ? "যাচাই করার মতো ইনভয়েস (windowed তালিকায়) নেই" :
+        invMismatches.length === 0 ? `${invLocal.length}টি ইনভয়েসের total, line-item হিসাবের সাথে হুবহু মিলছে` :
+        `${invMismatches.length}/${invLocal.length}টি ইনভয়েসে অমিল: ${invMismatches.slice(0, 5).join("; ")}${invMismatches.length > 5 ? ` +আরও ${invMismatches.length - 5}টি` : ""}`);
+    } catch (err) {
+      add("হিসাব সঠিকতা", "ইনভয়েস line-item যোগফল", "fail", err?.message || "unknown error");
+    }
+
+    try {
+      // ৯গ) ক্যাশ ড্রয়ার হিসাব — ওপেনিং + নগদ বিক্রয় + বাকি আদায় − উত্তোলন − ক্রয়
+      // খরচ = প্রত্যাশিত ক্যাশ। এখানে কোনো দ্বিতীয় উৎস নেই (শারীরিক গণনার সাথেই
+      // মেলাতে হবে), তাই নেগেটিভ হলেই শুধু fail — নাহলে informational ব্রেকডাউন
+      const s = typeof buildSummary === "function" ? buildSummary() : null;
+      if (!s) {
+        add("হিসাব সঠিকতা", "ক্যাশ ড্রয়ার হিসাব", "skip", "buildSummary() পাওয়া যায়নি");
+      } else {
+        const detail = `ওপেনিং ৳${s.openingCash || 0} + নগদ বিক্রয় ৳${s.cashSale || 0} + বাকি আদায় ৳${s.jomaToday || 0} − উত্তোলন ৳${s.cashOutToday || 0} − ক্রয় খরচ ৳${s.todayPurchaseCost || 0} = প্রত্যাশিত ক্যাশ ৳${s.currentCashDrawer || 0} — এবার ড্রয়ারে সত্যিকারের ক্যাশ গুনে এই সংখ্যার সাথে মিলিয়ে দেখুন`;
+        add("হিসাব সঠিকতা", "ক্যাশ ড্রয়ার হিসাব (ওপেনিং+বিক্রি+আদায়−উত্তোলন−ক্রয়)",
+          (s.currentCashDrawer || 0) < 0 ? "fail" : "skip",
+          (s.currentCashDrawer || 0) < 0 ? `${detail} — ফলাফল নেগেটিভ, হিসাবের কোথাও ভুল আছে` : detail);
+      }
+    } catch (err) {
+      add("হিসাব সঠিকতা", "ক্যাশ ড্রয়ার হিসাব", "fail", err?.message || "unknown error");
+    }
+
+    try {
+      // ৯ঘ) আজকের Firestore stats doc vs লোকাল ইনভয়েস যোগফল — updateStats()
+      // silent-fail করে (catch{} দিয়ে গেলা), তাই stats doc নিঃশব্দে stale/ভুল
+      // হয়ে গেলে এটাই একমাত্র জায়গা যেখানে ধরা পড়বে
+      const todayKey = todayEn();
+      const stats = await FSS.getStats(todayKey);
+      const s2 = typeof buildSummary === "function" ? buildSummary() : null;
+      if (!stats) {
+        add("হিসাব সঠিকতা", "আজকের Firestore stats doc vs লোকাল ইনভয়েস যোগফল", "skip",
+          "আজকের stats doc এখনো তৈরি হয়নি (আজ কোনো বিক্রি হয়নি হতে পারে)");
+      } else if (!s2) {
+        add("হিসাব সঠিকতা", "আজকের Firestore stats doc vs লোকাল ইনভয়েস যোগফল", "skip", "লোকাল যোগফল বের করা যায়নি");
+      } else {
+        const diff = Math.abs((stats.totalSale || 0) - (s2.revenue || 0));
+        add("হিসাব সঠিকতা", "আজকের Firestore stats doc vs লোকাল ইনভয়েস যোগফল",
+          diff <= 1 ? "pass" : "fail",
+          diff <= 1 ? `stats doc ৳${stats.totalSale || 0} ও লোকাল ইনভয়েস যোগফল ৳${s2.revenue || 0} মিলছে` :
+          `stats doc-এ ৳${stats.totalSale || 0}, কিন্তু লোকাল ইনভয়েস যোগফল ৳${s2.revenue || 0} — ৳${diff} অমিল (updateStats() silent-fail হয়ে থাকতে পারে)`);
+      }
+    } catch (err) {
+      add("হিসাব সঠিকতা", "Firestore stats doc যাচাই", "fail", err?.code || err?.message || "unknown error");
     }
 
     setSyncDiag({ ranAt: new Date().toISOString(), checks });
@@ -24711,9 +24949,11 @@ function Settings_({ T, S, shopName,
               </div>
 
               {/* ── 🩺 ফুল অ্যাপ চেকআপ — কানেকশন, স্টাফ পারমিশন সিঙ্ক, ডেটা
-                  ইন্টেগ্রিটি, লোকাল স্টোরেজ, ব্যাকআপ/হেলথ ও পুরনো windowing
-                  ফিচারগুলো (stockMovements/txns/cashLogs/Invoice History)
-                  এক ক্লিকে নিজে থেকে যাচাই করে ── */}
+                  ইন্টেগ্রিটি, লোকাল স্টোরেজ, ব্যাকআপ/হেলথ, পুরনো windowing
+                  ফিচারগুলো (stockMovements/txns/cashLogs/Invoice History) এবং
+                  হিসাব/লজিক সঠিকতা (কাস্টমার ব্যালেন্স, ইনভয়েস total, ক্যাশ
+                  ড্রয়ার, Firestore stats doc) — সবকিছু এক ক্লিকে নিজে থেকে
+                  যাচাই করে ── */}
               <div style={{ marginBottom:10, borderRadius:10, border:"1px solid #38bdf844", background:"#38bdf80f", padding:"10px 11px" }}>
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
                   <div style={{ display:"flex", alignItems:"center", gap:6 }}>
@@ -24729,7 +24969,7 @@ function Settings_({ T, S, shopName,
                   </button>
                 </div>
                 {!syncDiag && (
-                  <div style={{ color:"#94a3b8", fontSize:9.5 }}>সিঙ্ক কানেকশন, স্টাফ পারমিশন, ডেটা ইন্টেগ্রিটি, লোকাল স্টোরেজ, ব্যাকআপ/হেলথ ও windowing ফিচার — সবকিছু এক ক্লিকে যাচাই করতে "ফুল চেকাপ চালান" চাপুন।</div>
+                  <div style={{ color:"#94a3b8", fontSize:9.5 }}>সিঙ্ক কানেকশন, স্টাফ পারমিশন, ডেটা ইন্টেগ্রিটি, লোকাল স্টোরেজ, ব্যাকআপ/হেলথ, windowing ফিচার ও হিসাব/লজিক সঠিকতা (বাকি/ইনভয়েস/ক্যাশ/stats) — সবকিছু এক ক্লিকে যাচাই করতে "ফুল চেকাপ চালান" চাপুন।</div>
                 )}
                 {syncDiag?.checks && (() => {
                   const groups = {};
@@ -24767,6 +25007,66 @@ function Settings_({ T, S, shopName,
                         </div>
                       ))}
                       <div style={{ color:"#64748b", fontSize:8, marginTop:2 }}>সর্বশেষ চালানো হয়েছে: {new Date(syncDiag.ranAt).toLocaleTimeString("bn-BD", { hour:"2-digit", minute:"2-digit" })}</div>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* ── 🧪 লজিক টেস্ট স্যুট — Firestore/নেটওয়ার্ক ছাড়াই, হাতে বানানো
+                  fixture দিয়ে লাভ/টোটাল/ভয়েড-রিভার্সাল/ক্যাশ-ড্রয়ার/ব্যাচ-রিস্টোরের
+                  মতো money-critical সূত্রগুলো "input দিলে ঠিক output আসে কিনা"
+                  যাচাই করে — উপরের ফুল চেকাপ ডেটা "আছে/সংযুক্ত কিনা" দেখে, এটা
+                  হিসাবের সূত্র নিজেই ঠিক আছে কিনা দেখে ── */}
+              <div style={{ marginBottom:10, borderRadius:10, border:"1px solid #a855f744", background:"#a855f70f", padding:"10px 11px" }}>
+                <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                    <span style={{ fontSize:13 }}>🧪</span>
+                    <span style={{ color:"#a855f7", fontWeight:800, fontSize:10.5 }}>লজিক টেস্ট স্যুট</span>
+                  </div>
+                  <button
+                    onClick={() => setLogicTest({ ranAt: new Date().toISOString(), results: runLogicTests() })}
+                    style={{ background:"#a855f722", border:"1px solid #a855f755", borderRadius:7, padding:"5px 11px", color:"#a855f7", fontSize:9.5, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}
+                  >
+                    ▶ টেস্ট চালান
+                  </button>
+                </div>
+                {!logicTest && (
+                  <div style={{ color:"#94a3b8", fontSize:9.5 }}>লাভ হিসাব, ইনভয়েস টোটাল, ভয়েড-রিভার্সাল, ক্যাশ ড্রয়ার ও ব্যাচ-রিস্টোরের সূত্র — হাতে বানানো টেস্ট কেস দিয়ে মিলিসেকেন্ডে যাচাই করতে "টেস্ট চালান" চাপুন। নেটওয়ার্ক লাগে না।</div>
+                )}
+                {logicTest?.results && (() => {
+                  const groups = {};
+                  logicTest.results.forEach(r => { (groups[r.suite] = groups[r.suite] || []).push(r); });
+                  const passCount = logicTest.results.filter(r => r.status === "pass").length;
+                  const failCount = logicTest.results.filter(r => r.status === "fail").length;
+                  const totalCount = logicTest.results.length;
+                  return (
+                    <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                      <div style={{
+                        display:"flex", alignItems:"center", justifyContent:"space-between",
+                        background: failCount > 0 ? "#ef444418" : "#22c55e18",
+                        border: `1px solid ${failCount > 0 ? "#ef444455" : "#22c55e55"}`,
+                        borderRadius:8, padding:"7px 10px", marginBottom:2,
+                      }}>
+                        <span style={{ color: failCount > 0 ? "#fca5a5" : "#86efac", fontWeight:800, fontSize:10.5 }}>
+                          {failCount > 0 ? `⚠️ ${failCount}টা টেস্ট ফেইল করেছে` : "✅ সব টেস্ট পাস"}
+                        </span>
+                        <span style={{ color:"#94a3b8", fontSize:9 }}>{passCount}/{totalCount} পাস</span>
+                      </div>
+                      {Object.keys(groups).map(suite => (
+                        <div key={suite}>
+                          <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:10, marginBottom:3 }}>{suite}</div>
+                          {groups[suite].map((r, i) => (
+                            <div key={i} style={{ display:"flex", gap:6, marginBottom:3, paddingLeft:6 }}>
+                              <span style={{ fontSize:10 }}>{r.status === "pass" ? "✅" : "❌"}</span>
+                              <div style={{ flex:1 }}>
+                                <div style={{ color: r.status === "pass" ? "#22c55e" : "#ef4444", fontSize:9.5, fontWeight:700 }}>{r.name}</div>
+                                <div style={{ color:"#94a3b8", fontSize:8.5 }}>{r.detail}</div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                      <div style={{ color:"#64748b", fontSize:8, marginTop:2 }}>সর্বশেষ চালানো হয়েছে: {new Date(logicTest.ranAt).toLocaleTimeString("bn-BD", { hour:"2-digit", minute:"2-digit" })}</div>
                     </div>
                   );
                 })()}
