@@ -6877,6 +6877,25 @@ const todayStr = () => new Date().toLocaleDateString("en-US");
 const nowStr   = () => new Date().toLocaleString("en-US");
 const fmt      = (n) => fmtMoney(n);
 
+// 🗓️ মেয়াদোত্তীর্ণ/মেয়াদের তারিখ — "X দিন আগে/বাকি" এর বদলে সরাসরি মাস ও সাল
+// আকারে দেখানোর জন্য (যেমন "ফেব্রুয়ারি ২০২৬")। অ্যাপের সব জায়গায় এই একটাই
+// ফাংশন ব্যবহার হবে যাতে ফরম্যাট সব জায়গায় একরকম থাকে।
+const MONTH_NAMES_BN = ["জানুয়ারি","ফেব্রুয়ারি","মার্চ","এপ্রিল","মে","জুন","জুলাই","আগস্ট","সেপ্টেম্বর","অক্টোবর","নভেম্বর","ডিসেম্বর"];
+function fmtExpiryMonth(dateStr) {
+  if (!dateStr) return "—";
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return "—";
+  return `${MONTH_NAMES_BN[d.getMonth()]} ${d.getFullYear()}`;
+}
+// পূর্ণ লেবেল সহ — মেয়াদ শেষ হয়ে গেছে নাকি এখনো বাকি আছে তা বোঝাতে
+function fmtExpiryLabel(dateStr, now = new Date()) {
+  if (!dateStr) return "—";
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return "—";
+  const monthYear = fmtExpiryMonth(dateStr);
+  return d < now ? `⚠️ মেয়াদ শেষ (${monthYear})` : `⏳ মেয়াদ: ${monthYear}`;
+}
+
 // ─── 📱 WhatsApp Quick Share — Capacitor Browser দিয়ে wa.me link খোলে ────────
 // বাংলাদেশের মোবাইল নম্বর normalize করে — 01XXXXXXXXX → 8801XXXXXXXXX
 function normalizeBDMobile(mobile) {
@@ -8095,8 +8114,8 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
           {/* বিজনেস হেলথ মিটার */}
           <HealthMeter score={healthScore} label={healthLabel} T={T} activeColor={activeColor} growthPct={growthPct} />
 
-          {/* KPI গ্রিড — ৫ কলাম x ৪ সারি = ২০টি কার্ড, স্ক্রল ছাড়াই */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 5 }}>
+          {/* KPI গ্রিড — ২ কলাম x ১০ সারি = ২০টি কার্ড, উপর-নিচ স্ক্রল */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 6 }}>
             {[
               { icon: "💰", val: `৳${fmt(todaySale)}`, label: "আজকের বিক্রয়", sub: `${todayInvs.length}টি ইনভয়েস`, color: "#22c55e" },
               { icon: "💵", val: `৳${fmt(todayCashSale)}`, label: "আজকের নগদ বিক্রয়", sub: "নগদ+আংশিক", color: "#16a34a" },
@@ -14909,8 +14928,8 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
 
         const buildExpHtml = (items, title, shopName_) => {
           const rows = items.map((p, i) => {
-            const days = Math.ceil((new Date(p.expiryDate) - now) / 86400000);
-            return `<tr><td class="serial">${i+1}</td><td>${p.name}</td><td class="num">${p.stock||0}${p.unit||""}</td><td class="num" style="color:${days<0?"#dc2626":"#d97706"}">${days<0?`${Math.abs(days)}দিন আগে`:`${days}দিন বাকি`}</td></tr>`;
+            const isPast = new Date(p.expiryDate) < now;
+            return `<tr><td class="serial">${i+1}</td><td>${p.name}</td><td class="num">${p.stock||0}${p.unit||""}</td><td class="num" style="color:${isPast?"#dc2626":"#d97706"}">${fmtExpiryMonth(p.expiryDate)}</td></tr>`;
           }).join("");
           return buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্য</th><th class="num">স্টক</th><th class="num">মেয়াদ</th></tr></thead><tbody>${rows}</tbody></table></div>`, shopName_||"SBM", title);
         };
@@ -16451,7 +16470,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
                     <span style={{ color: labelColor, fontWeight: 900, fontSize: 15 }}>{p.stock||0}</span>
                     {expDays !== null && (
                       <div style={{ color: expDays < 0 ? "#ef4444" : "#f59e0b", fontSize: 10, fontWeight: 700 }}>
-                        {expDays < 0 ? `⚠️ মেয়াদ শেষ` : `⏳ ${expDays}দিন বাকি`}
+                        {expDays < 0 ? `⚠️ মেয়াদোত্তীর্ণ (${fmtExpiryMonth(p.expiryDate)})` : `⏳ মেয়াদ: ${fmtExpiryMonth(p.expiryDate)}`}
                       </div>
                     )}
                   </div>
@@ -16483,6 +16502,116 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     const title   = baseInvKey==='all' ? "বর্তমান স্টক তালিকা" : baseInvKey==='critical' ? "ক্রিটিক্যাল স্টক তালিকা" : baseInvKey==='out' ? "স্টক আউট তালিকা" : baseInvKey==='expired' ? "মেয়াদোত্তীর্ণ পণ্য তালিকা" : "মেয়াদ শেষের কাছাকাছি পণ্য";
     const isExpiryModal = baseInvKey === 'expired' || baseInvKey === 'near-expiry';
 
+    // ── 🔴 মেয়াদোত্তীর্ণ পণ্য — সাপ্লায়ারভিত্তিক গ্রুপ না করে সরাসরি পণ্যভিত্তিক
+    // ফ্ল্যাট তালিকা দেখানো হয়, এবং লেআউট প্রিন্ট কপির টেবিল স্টাইলের সাথে মিলিয়ে
+    // রাখা হয়েছে। এই ব্লকটা baseInvKey==='expired' হলে বাকি সাপ্লায়ার-গ্রুপিং
+    // লজিকে না গিয়েই সরাসরি রিটার্ন করে দেয়।
+    if (baseInvKey === 'expired') {
+      const sortedItems = [...items].sort((a,b) => new Date(a.expiryDate) - new Date(b.expiryDate));
+      const buildExpiredPdfHtml = () => {
+        const rows = sortedItems.map((p,i) =>
+          `<tr><td class="serial">${i+1}</td><td>${p.name}</td><td>${p.company||p.category||"অজ্ঞাত"}</td><td class="num">${p.stock||0}${p.unit||""}</td><td class="num">${fmtExpiryMonth(p.expiryDate)}</td></tr>`
+        ).join("");
+        return buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্য</th><th>সাপ্লায়ার</th><th class="num">স্টক</th><th class="num">মেয়াদ</th></tr></thead><tbody>${rows}</tbody></table></div>`, shopName, title);
+      };
+      const suppliersInvolved = new Set(sortedItems.map(p => p.company || p.category || "অজ্ঞাত")).size;
+
+      return (
+        <div style={{ ...S.page, padding:"0 14px 16px" }}>
+          <button style={S.textBtn} onClick={() => setInvModal(null)}>← ড্যাশবোর্ডে ফিরুন</button>
+          {expRemoveToast && (
+            <div style={{ background: expRemoveToast.color === "#22c55e" ? "#14532d" : "#7f1d1d", border:`1px solid ${expRemoveToast.color}55`, borderRadius:12, padding:"10px 14px", marginBottom:10, color:"#fff", fontSize:12.5, fontWeight:700 }}>
+              {expRemoveToast.msg}
+            </div>
+          )}
+          <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:16, marginBottom:2 }}>{title}</div>
+          <div style={{ color:"#64748b", fontSize:12, marginBottom:10 }}>{sortedItems.length}টি পণ্য · {suppliersInvolved}টি সাপ্লায়ার</div>
+
+          {/* মাসিক মেয়াদোত্তীর্ণ হিসাব — শুধু এডমিন */}
+          {currentUser?.role !== "staff" && (
+            <button onClick={() => setInvModal('expired-monthly')}
+              style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"center", gap:7, background:"linear-gradient(135deg,#7c2d12,#dc2626)", border:"none", borderRadius:12, padding:"11px", color:"#fff", fontWeight:800, fontSize:12.5, cursor:"pointer", fontFamily:"inherit", marginBottom:12, boxShadow:"0 4px 14px rgba(220,38,38,0.3)" }}>
+              📊 মাসিক মেয়াদোত্তীর্ণ হিসাব দেখুন
+            </button>
+          )}
+
+          {/* Print/WA */}
+          {sortedItems.length > 0 && (
+            <div style={{ display:"flex", gap:8, marginBottom:14 }}>
+              <button onClick={() => openPrintWindow(buildExpiredPdfHtml())}
+                style={{ flex:1, background:"linear-gradient(135deg,#0369a1,#0ea5e9)", border:"none", borderRadius:12, padding:"10px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>
+                🖨️ Print
+              </button>
+              <button onClick={() => { const lines = sortedItems.map((p,i)=>`${i+1}. ${p.name} (${p.company||p.category||"অজ্ঞাত"}) — ${p.stock||0}${p.unit||""} — মেয়াদ: ${fmtExpiryMonth(p.expiryDate)}`).join("\n"); window.open(`https://wa.me/?text=${encodeURIComponent(title+"\n"+shopName+"\n\n"+lines)}`,"_blank"); }}
+                style={{ flex:1, background:"linear-gradient(135deg,#065f46,#10b981)", border:"none", borderRadius:12, padding:"10px", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
+                📤 WhatsApp
+              </button>
+            </div>
+          )}
+
+          {sortedItems.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো মেয়াদোত্তীর্ণ পণ্য নেই</div>}
+
+          {/* ── প্রিন্ট কপির স্টাইলে টেবিল ── */}
+          {sortedItems.length > 0 && (
+            <div style={{ background:"#fff", borderRadius:14, overflow:"hidden", boxShadow:"0 1px 4px rgba(0,0,0,0.08)", marginBottom:14 }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", fontFamily:"inherit" }}>
+                <thead>
+                  <tr style={{ background:"linear-gradient(135deg,#0369a1,#0284c7)" }}>
+                    <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"center", width:34 }}>#</th>
+                    <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"left" }}>পণ্য</th>
+                    <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"left" }}>সাপ্লায়ার</th>
+                    <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"right" }}>স্টক</th>
+                    <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"right" }}>মেয়াদ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedItems.map((p, i) => (
+                    <tr key={p.id} style={{ background: i % 2 === 1 ? "#f8faff" : "#fff" }}>
+                      <td style={{ padding:"9px 10px", fontSize:12, textAlign:"center", fontWeight:700, color:"#0369a1", borderBottom:"1px solid #f1f5f9" }}>{i+1}</td>
+                      <td style={{ padding:"9px 10px", fontSize:12.5, color:"#0f172a", borderBottom:"1px solid #f1f5f9" }}>{p.name}{p.unit ? <span style={{ color:"#94a3b8", fontSize:11 }}> ({p.unit})</span> : null}</td>
+                      <td style={{ padding:"9px 10px", fontSize:12, color:"#334155", borderBottom:"1px solid #f1f5f9" }}>{p.company || p.category || "অজ্ঞাত"}</td>
+                      <td style={{ padding:"9px 10px", fontSize:12.5, fontWeight:700, color:"#0f172a", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{p.stock||0}</td>
+                      <td style={{ padding:"9px 10px", fontSize:12, fontWeight:700, color:"#dc2626", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{fmtExpiryMonth(p.expiryDate)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* 🗑️ দোকান থেকে সরানো ব্যাচ — অ্যাপ থেকেও সরানোর অ্যাকশন (শুধু এডমিন) */}
+          {currentUser?.role !== "staff" && sortedItems.some(p => getExpiredBatchesOf(p, now).length > 0) && (
+            <div>
+              <div style={{ color:"#94a3b8", fontSize:11.5, fontWeight:700, marginBottom:8 }}>দোকান থেকে সরিয়ে ফেলেছেন? অ্যাপ থেকেও সরান —</div>
+              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                {sortedItems.map(p => {
+                  const expBatches = getExpiredBatchesOf(p, now);
+                  if (expBatches.length === 0) return null;
+                  return (
+                    <div key={p.id} style={{ background:"#071a0f", border:"1px solid #ef444422", borderRadius:12, padding:"10px 12px" }}>
+                      <div style={{ color:"#e2e8f0", fontWeight:700, fontSize:12.5, marginBottom:6 }}>{p.name}</div>
+                      <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+                        {expBatches.map((b, bi) => (
+                          <button key={bi}
+                            onClick={() => setExpRemoveConfirm({ product: p, batch: b })}
+                            style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:"#ef444414", border:"1px solid #ef444440", borderRadius:10, padding:"7px 10px", color:"#f87171", fontSize:11, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
+                            <span>🗑️ সরান {b.batchNo ? `(${b.batchNo})` : ""}</span>
+                            <span>{b.qty}{p.unit||""} · ৳{fmt(Math.round((b.qty||0)*(b.costPrice||0)))}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
     // ── সাপ্লায়ার-ভিত্তিক গ্রুপিং ──
     const supplierGroups = {};
     items.forEach(p => {
@@ -16507,8 +16636,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
 
       const buildSupPdfHtml = () => {
         const rows = supItems.map((p,i) => {
-          const expDays = p.expiryDate ? Math.ceil((new Date(p.expiryDate) - now) / 86400000) : null;
-          const expCell = expDays !== null ? (expDays < 0 ? `${Math.abs(expDays)}দিন আগে` : `${expDays}দিন বাকি`) : "";
+          const expCell = p.expiryDate ? fmtExpiryMonth(p.expiryDate) : "";
           return `<tr><td class="serial">${i+1}</td><td>${p.name}</td><td class="num">${p.stock||0}${p.unit||""}</td><td class="num">${p.costPrice||0}</td>${isExpiryModal ? `<td class="num">${expCell}</td>` : ""}</tr>`;
         }).join("");
         const headers = `<th class="serial">#</th><th>পণ্য</th><th class="num">স্টক</th><th class="num">ক্রয়মূল্য</th>${isExpiryModal ? `<th class="num">মেয়াদ</th>` : ""}`;
@@ -16563,7 +16691,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
                       <span style={{ color:labelColor, fontWeight:900, fontSize:15 }}>{p.stock||0}{p.unit||""}</span>
                       {expDays !== null && (
                         <div style={{ color: expDays < 0 ? "#ef4444" : "#f59e0b", fontSize:10, fontWeight:700 }}>
-                          {expDays < 0 ? `⚠️ ${Math.abs(expDays)}দিন আগে` : `⏳ ${expDays}দিন বাকি`}
+                          {expDays < 0 ? `⚠️ মেয়াদোত্তীর্ণ (${fmtExpiryMonth(p.expiryDate)})` : `⏳ মেয়াদ: ${fmtExpiryMonth(p.expiryDate)}`}
                         </div>
                       )}
                     </div>
@@ -16603,8 +16731,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     // ── Supplier list view (main page) ──
     const buildAllPdfHtml = () => {
       const rows = items.map((p,i) => {
-        const expDays = p.expiryDate ? Math.ceil((new Date(p.expiryDate) - now) / 86400000) : null;
-        const expCell = expDays !== null ? (expDays < 0 ? `${Math.abs(expDays)}দিন আগে` : `${expDays}দিন বাকি`) : "";
+        const expCell = p.expiryDate ? fmtExpiryMonth(p.expiryDate) : "";
         return `<tr><td class="serial">${i+1}</td><td>${p.name}</td><td>${p.company||p.category||"অজ্ঞাত"}</td><td class="num">${p.stock||0}${p.unit||""}</td>${isExpiryModal?`<td class="num">${expCell}</td>`:""}</tr>`;
       }).join("");
       return buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্য</th><th>সাপ্লায়ার</th><th class="num">স্টক</th>${isExpiryModal?`<th class="num">মেয়াদ</th>`:""}</tr></thead><tbody>${rows}</tbody></table></div>`, shopName, title);
@@ -16723,20 +16850,32 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
             </div>
           )}
           {sortedRows.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>এই মাসে কোনো মেয়াদোত্তীর্ণ পণ্য সরানো হয়নি</div>}
-          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-            {sortedRows.map((r, i) => (
-              <div key={r.id || i} style={{ background:"#071a0f", border:"1px solid #ef444422", borderRadius:14, padding:"11px 14px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                <div>
-                  <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:13.5 }}>{r.productName}</div>
-                  <div style={{ color:"#64748b", fontSize:10.5, marginTop:2 }}>{r.dateKey} {r.batchNo ? `· ${r.batchNo}` : ""}</div>
-                </div>
-                <div style={{ textAlign:"right" }}>
-                  <div style={{ color:"#f87171", fontWeight:900, fontSize:14 }}>৳{fmt(r.value||0)}</div>
-                  <div style={{ color:"#94a3b8", fontSize:10.5 }}>{r.qty}{r.unit||""}</div>
-                </div>
-              </div>
-            ))}
-          </div>
+          {sortedRows.length > 0 && (
+            <div style={{ background:"#fff", borderRadius:14, overflow:"hidden", boxShadow:"0 1px 4px rgba(0,0,0,0.08)" }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", fontFamily:"inherit" }}>
+                <thead>
+                  <tr style={{ background:"linear-gradient(135deg,#0369a1,#0284c7)" }}>
+                    <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"center", width:34 }}>#</th>
+                    <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"left" }}>পণ্য</th>
+                    <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"right" }}>পরিমাণ</th>
+                    <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"right" }}>মূল্য</th>
+                    <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"right" }}>তারিখ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedRows.map((r, i) => (
+                    <tr key={r.id || i} style={{ background: i % 2 === 1 ? "#f8faff" : "#fff" }}>
+                      <td style={{ padding:"9px 10px", fontSize:12, textAlign:"center", fontWeight:700, color:"#0369a1", borderBottom:"1px solid #f1f5f9" }}>{i+1}</td>
+                      <td style={{ padding:"9px 10px", fontSize:12.5, color:"#0f172a", borderBottom:"1px solid #f1f5f9" }}>{r.productName}{r.batchNo ? <span style={{ color:"#94a3b8", fontSize:11 }}> ({r.batchNo})</span> : null}</td>
+                      <td style={{ padding:"9px 10px", fontSize:12.5, color:"#334155", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{r.qty}{r.unit||""}</td>
+                      <td style={{ padding:"9px 10px", fontSize:12.5, fontWeight:700, color:"#0f172a", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>৳{fmt(r.value||0)}</td>
+                      <td style={{ padding:"9px 10px", fontSize:12, color:"#334155", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{r.dateKey}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       );
     }
@@ -18241,85 +18380,6 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
       )}
       {/* Scrollable customer cards box */}
 
-      {/* ── Analytics Summary bar ── */}
-      <div style={{ display:"flex", gap:5, marginBottom:8, overflowX:"auto" }}>
-        <button onClick={() => setShowAnalytics(v => !v)}
-          style={{ padding:"5px 10px", borderRadius:14, border:`1px solid ${T.border}`,
-            background:showAnalytics?T.accent+"22":T.card, color:showAnalytics?T.accent:T.sub,
-            fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit", flexShrink:0 }}>
-          📊 {showAnalytics?"লুকান":"Analytics"}
-        </button>
-        {Object.entries(SEGMENTS).map(([key, seg]) => {
-          const count = segmentCounts[key] || 0;
-          if (!count) return null;
-          return (
-            <button key={key} onClick={() => setSegFilter(segFilter === key ? "all" : key)}
-              style={{ padding:"5px 10px", borderRadius:14, fontFamily:"inherit", flexShrink:0,
-                border:`1.5px solid ${segFilter===key ? seg.color : T.border}`,
-                background:segFilter===key ? seg.color+"22" : T.card,
-                color:segFilter===key ? seg.color : T.sub,
-                fontSize:11, fontWeight:700, cursor:"pointer" }}>
-              {seg.icon} {seg.label} ({count})
-            </button>
-          );
-        })}
-        {segFilter !== "all" && (
-          <button onClick={() => setSegFilter("all")}
-            style={{ padding:"5px 10px", borderRadius:14, border:`1px solid ${T.border}`,
-              background:T.card, color:T.sub, fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
-            ✕ সব
-          </button>
-        )}
-      </div>
-
-      {/* Analytics panel */}
-      {showAnalytics && (() => {
-        const totalLTV   = rfmData.reduce((s, c) => s + c.ltv, 0);
-        const avgLTV     = rfmData.length ? Math.round(totalLTV / rfmData.length) : 0;
-        const atRisk     = rfmData.filter(c => c.segment === "at_risk");
-        const champions  = rfmData.filter(c => c.segment === "champion");
-        const churnBaki  = atRisk.reduce((s, c) => s + (c.balance || 0), 0);
-        return (
-          <div className="qc-gradient-card" style={{ ...S.card, marginBottom:8, padding:"12px 14px",
-            border:"1.5px solid #6366f133" }}>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
-              {[
-                { label:"মোট LTV", value:`৳${fmtMoney(totalLTV)}`, color:"#6366f1" },
-                { label:"গড় LTV",  value:`৳${avgLTV.toLocaleString("en-US")}`, color:"#a855f7" },
-                { label:"চ্যাম্পিয়ন", value:`${champions.length}জন`, color:"#22c55e" },
-                { label:"ঝুঁকিতে বাকি", value:`৳${fmtMoney(churnBaki)}`, color:"#ef4444" },
-              ].map(s => (
-                <div key={s.label} style={{ background:T.border+"44", borderRadius:10, padding:"8px 10px" }}>
-                  <div style={{ color:s.color, fontWeight:900, fontSize:14 }}>{s.value}</div>
-                  <div style={{ color:T.sub, fontSize:11 }}>{s.label}</div>
-                </div>
-              ))}
-            </div>
-            {/* Segment breakdown bar */}
-            <div style={{ height:8, borderRadius:8, overflow:"hidden", display:"flex" }}>
-              {Object.entries(SEGMENTS).map(([key, seg]) => {
-                const count = segmentCounts[key] || 0;
-                const pct   = rfmData.length ? count / rfmData.length * 100 : 0;
-                if (!pct) return null;
-                return <div key={key} style={{ width:`${pct}%`, background:seg.color, transition:"width 0.5s" }}
-                  title={`${seg.label}: ${count}জন`} />;
-              })}
-            </div>
-            <div style={{ display:"flex", gap:8, marginTop:6, flexWrap:"wrap" }}>
-              {Object.entries(SEGMENTS).map(([key, seg]) => {
-                const count = segmentCounts[key] || 0;
-                if (!count) return null;
-                return (
-                  <span key={key} style={{ color:seg.color, fontSize:10, fontWeight:700 }}>
-                    {seg.icon} {seg.label}: {count}
-                  </span>
-                );
-              })}
-            </div>
-          </div>
-        );
-      })()}
-
       {/* Virtuoso infinite scroll — filtered by search + segment */}
       {(() => {
         const filtered = filteredCustomers;
@@ -18377,11 +18437,6 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
                 <div style={{ background: c.balance > 0 ? "#ef444418" : "#22c55e18", color: c.balance > 0 ? "#f87171" : "#4ade80", fontSize: 11, fontWeight: 800, borderRadius:8, padding:"2px 8px", marginTop:4, border: `1px solid ${c.balance > 0 ? "#ef444433" : "#22c55e33"}` }}>
                   {c.balance > 0 ? "বাকি আছে" : "✓ পরিশোধ"}
                 </div>
-                {rfm && rfm.segment !== "active" && (
-                  <div style={{ marginTop:4, fontSize:10, fontWeight:800, color:SEGMENTS[rfm.segment]?.color }}>
-                    {SEGMENTS[rfm.segment]?.icon} {SEGMENTS[rfm.segment]?.label}
-                  </div>
-                )}
               </div>
             </div>
             {/* Action row */}
@@ -20468,7 +20523,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                           )}
                           {expDays !== null && (
                             <span style={{ background: expColor+"22", color: expColor, fontSize: 11, borderRadius: 6, padding: "2px 8px", fontWeight: 700 }}>
-                              {expDays < 0 ? "⚠️ মেয়াদ শেষ" : expDays <= 30 ? `⏳ ${expDays}দিন বাকি` : `📅 ${e.expiryDate}`}
+                              {expDays < 0 ? `⚠️ মেয়াদোত্তীর্ণ (${fmtExpiryMonth(e.expiryDate)})` : `⏳ মেয়াদ: ${fmtExpiryMonth(e.expiryDate)}`}
                             </span>
                           )}
                         </div>
