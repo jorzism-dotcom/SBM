@@ -22062,209 +22062,202 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 🔄 ReturnModule — পণ্য ফেরত ও রিফান্ড ব্যবস্থাপনা
+// 📜 ReturnModule — এখন "ইনভয়েস হিস্ট্রি ভিউয়ার" (পণ্য ফেরত ফিচার সম্পূর্ণ সরানো
+// হয়েছে — ভয়েড/বাতিল ব্যবস্থাপনা ইতোমধ্যে Dashboard-এ আছে)। এই মডিউলে এখন আছে:
+//   ১) যেকোনো ইনভয়েস নম্বর দিয়ে খুঁজে ফুল ডিটেইলস দেখা (মোডাল, প্রিন্ট+WhatsApp সহ)
+//   ২) ৩০ দিনের বাইরের পুরনো ইনভয়েস — Firestore থেকে পেজিনেটেড, সার্চ ফিল্টার সহ
+//      (কাস্টমার নাম/আইডি, দিন/মাস, পেমেন্ট টাইপ)
+//   ৩) বাতিলকৃত ইনভয়েস হিস্ট্রি — Firestore থেকে সব সময়ের ডেটা, দিন/মাস নেভিগেটর
+//      + প্রতিটার জন্য আলাদা প্রিন্ট বাটন
+//   ৪) এ মাসের বাতিলকৃত ইনভয়েস সংখ্যা ও তা থেকে মোট রিফান্ডের পরিমাণ — স্ট্যাট কার্ড
+//
+// 🔴 Firestore Composite Index প্রয়োজন (Firebase Console → Firestore → Indexes):
+//   • invoices: status ASC, dateKey ASC   (বাতিলকৃত ইনভয়েস — মাস-রেঞ্জ ব্রাউজ করতে)
+//   • invoices: status ASC, dateKey DESC, createdAt DESC   (বাতিলকৃত — দিন-ভিউ হলে ঐচ্ছিক,
+//     তবে status+dateKey(==)+orderBy(createdAt) কম্বিনেশনেও লাগতে পারে)
+//   • invoices: customerId ASC, dateKey DESC, createdAt DESC   (ইনভয়েস হিস্ট্রি — কাস্টমার ফিল্টার)
+//   • invoices: payType ASC, dateKey DESC, createdAt DESC      (ইনভয়েস হিস্ট্রি — পেমেন্ট ফিল্টার)
+//   • invoices: customerId ASC, payType ASC, dateKey DESC, createdAt DESC  (দুটো ফিল্টার একসাথে)
+//   কোনো ইনডেক্স না থাকলে Firestore এরর মেসেজে সরাসরি "Create Index" লিংক দেবে —
+//   সেই এরর নিচে লাল বক্সে দেখানো হবে, লিংকে ক্লিক করলেই ইনডেক্স তৈরি হয়ে যাবে।
 // ══════════════════════════════════════════════════════════════════════════════
 
-function ReturnModule({ T, S, invoices, products, customers, returns = [], setReturns,
-  setProducts, setCustomers, setStockMovements, addTxn, showToast, currentUser, shopName }) {
+const RH_MONTH_NAMES_BN = ["জানুয়ারি","ফেব্রুয়ারি","মার্চ","এপ্রিল","মে","জুন","জুলাই","আগস্ট","সেপ্টেম্বর","অক্টোবর","নভেম্বর","ডিসেম্বর"];
+const rhDayLabel   = (dk) => { const d = new Date(dk); if (isNaN(d.getTime())) return dk; return `${d.getDate()} ${RH_MONTH_NAMES_BN[d.getMonth()]}, ${d.getFullYear()}`; };
+const rhMonthLabel = (mk) => { const [y, m] = (mk || "").split("-"); return m ? `${RH_MONTH_NAMES_BN[parseInt(m, 10) - 1]} ${y}` : mk; };
 
-  const fmt     = n => fmtMoney(n);
+function ReturnModule({ T, S, invoices, customers, showToast, currentUser, shopName }) {
+
+  const fmt      = n => fmtMoney(n);
   const todayKey = _dateKeyOf(new Date());
+  const monthKeyNow = _monthKeyOf(new Date());
 
-  // ── State ─────────────────────────────────────────────────────────────────
-  const [step,         setStep]         = React.useState(1); // 1=search, 2=select items, 3=confirm
-  const [invSearch,    setInvSearch]    = React.useState("");
-  const [foundInv,     setFoundInv]     = React.useState(null);
-  const [returnItems,  setReturnItems]  = React.useState([]); // { productId, name, maxQty, returnQty, price, batchNo, returnType }
-  const [returnNote,   setReturnNote]   = React.useState("");
-  const [filterRange,  setFilterRange]  = React.useState("month");
+  const custMap = React.useMemo(() => new Map((customers||[]).map(c => [c.id, c])), [customers]);
 
-  const prodMap = React.useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
-  const custMap = React.useMemo(() => new Map(customers.map(c => [c.id, c])), [customers]);
+  // ── 🔍 ইনভয়েস খুঁজুন — যেকোনো ইনভয়েসের ফুল ডিটেইলস মোডালে দেখাবে (ফেরত-ফ্লো নেই) ──
+  const [invSearch, setInvSearch]   = React.useState("");
+  const [detailInv, setDetailInv]   = React.useState(null); // ফুল ডিটেইলস মোডাল — যেকোনো সোর্স থেকে ওপেন হয়
 
-  // ── 📜 ইনভয়েস হিস্ট্রি — Master Sync & Backup কার্ড থেকে এই ট্যাবে সরিয়ে
-  // আনা হয়েছে (আগে "ফেরত"), যাতে ফেরত দেওয়ার সময়ও ৩০ দিনের বাইরের পুরনো
-  // ইনভয়েস একই স্ক্রিন থেকে খুঁজে পাওয়া যায় — Firestore থেকে সরাসরি
-  // dateKey (desc) + createdAt (desc) অনুযায়ী পাতায়-পাতায় (৩০টা করে)
-  // cursor pagination দিয়ে। ────────────────────────────────────────────────
-  const [showInvHist,   setShowInvHist]   = React.useState(false);
-  const [invHistRows,   setInvHistRows]   = React.useState([]);
+  const searchInvoice = React.useCallback(() => {
+    const q = invSearch.trim().toUpperCase();
+    if (!q) { showToast("ইনভয়েস নম্বর দিন", "#ef4444"); return; }
+    const inv = (invoices||[]).find(i =>
+      (i.invoiceNo || i.id || "").toUpperCase().includes(q) ||
+      (i.id || "").toUpperCase().includes(q)
+    );
+    if (!inv) { showToast("ইনভয়েস পাওয়া যায়নি", "#ef4444"); return; }
+    setDetailInv(inv);
+  }, [invSearch, invoices, showToast]);
+
+  // ── 🖨️ থার্মাল প্রিন্ট — লিস্টের যেকোনো রো থেকে সরাসরি (মোডাল না খুলেই) ──
+  const printInvoiceThermal = React.useCallback((inv) => {
+    const itemRows = (inv.items||[]).map((item,i) => {
+      const _g = (item.qty||0)*(item.price||0), _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0,0), _g);
+      const _p = _g > 0 ? Math.round((_d / _g) * 10000) / 100 : 0;
+      return `<tr><td>${i+1}</td><td>${item.name}${_d>0?` <span style="color:#16a34a;font-size:10px;">(–৳${fmtMoney(_d)}${_p>0?` ${_p}%`:""})</span>`:""}</td><td class="right">${item.qty}</td><td class="right">৳${fmtMoney(item.price)}</td><td class="right" style="color:#3b82f6;">৳${fmtMoney(_g-_d)}</td></tr>`;
+    }).join("");
+    const cust = custMap.get(inv.customerId);
+    const content = `<div class="info"><span class="info-l">কাস্টমার:</span><span class="info-r">${inv.customerName || cust?.name || "হাঁটা কাস্টমার"}</span></div>
+      <div class="info"><span class="info-l">ইনভয়েস:</span><span class="info-r">#${(inv.invoiceNo || inv.id || "").toString().slice(-8).toUpperCase()}</span></div>
+      <div class="info"><span class="info-l">তারিখ:</span><span class="info-r">${inv.date || inv.dateKey || ""}</span></div>
+      ${inv.status === "voided" ? `<div class="info" style="color:#ef4444;"><span class="info-l">স্ট্যাটাস:</span><span class="info-r">❌ বাতিলকৃত${inv.voidReason ? ` — ${inv.voidReason}` : ""}</span></div>` : ""}
+      <hr class="dashed">
+      <table><thead><tr><th>#</th><th>পণ্য</th><th class="right">পরি.</th><th class="right">দাম</th><th class="right">মোট</th></tr></thead><tbody>${itemRows}</tbody></table>
+      <hr class="dashed">
+      <div class="info total"><span>মোট:</span><span>৳${fmtMoney(inv.total||0)}</span></div>
+      <div class="info"><span>পরিশোধ:</span><span>${inv.payType==="baki"?"বাকি":inv.payType==="partial"?"আংশিক":"নগদ"}</span></div>`;
+    printThermalDirect(content, inv.shopName || shopName || "SBM", "ইনভয়েস", null);
+  }, [custMap, shopName]);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 📜 ইনভয়েস হিস্ট্রি — ৩০ দিনের বাইরের পুরনো ইনভয়েস, Firestore থেকে পেজিনেটেড,
+  // এখন সার্চ ফিল্টার সহ (কাস্টমার/দিন/মাস/পেমেন্ট টাইপ)
+  // ══════════════════════════════════════════════════════════════════════════
+  const [showInvHist,    setShowInvHist]    = React.useState(false);
+  const [invHistRows,    setInvHistRows]    = React.useState([]);
   const [invHistLoading, setInvHistLoading] = React.useState(false);
-  const [invHistDone,   setInvHistDone]   = React.useState(false);
-  const [invHistError,  setInvHistError]  = React.useState(null);
+  const [invHistDone,    setInvHistDone]    = React.useState(false);
+  const [invHistError,   setInvHistError]   = React.useState(null);
   const invHistCursorRef = React.useRef(null);
   const INV_HIST_PAGE_SIZE = 30;
+
+  // ফিল্টার state
+  const [ihCustText,   setIhCustText]   = React.useState("");
+  const [ihCustId,     setIhCustId]     = React.useState("");
+  const [ihShowSuggest, setIhShowSuggest] = React.useState(false);
+  const [ihDate,       setIhDate]       = React.useState("");   // exact dateKey
+  const [ihMonth,      setIhMonth]      = React.useState("");   // YYYY-MM
+  const [ihPayType,    setIhPayType]    = React.useState("all"); // all|cash|baki|partial
+
+  const ihCustSuggestions = React.useMemo(() => {
+    const q = ihCustText.trim().toLowerCase();
+    if (!q || ihCustId) return [];
+    return (customers||[]).filter(c => (c.name||"").toLowerCase().includes(q)).slice(0, 8);
+  }, [ihCustText, ihCustId, customers]);
+
   const loadInvHistPage = React.useCallback(async (reset = false) => {
     if (!FSS.isReady()) { setInvHistError("Firestore প্রস্তুত না — ইন্টারনেট/কনফিগ চেক করুন"); return; }
     setInvHistLoading(true); setInvHistError(null);
     try {
       const colRef = collection(FSS._db, "invoices");
+      const clauses = [];
+      if (ihCustId)              clauses.push(where("customerId", "==", ihCustId));
+      if (ihPayType !== "all")   clauses.push(where("payType", "==", ihPayType));
+      let orderClauses;
+      if (ihDate) {
+        clauses.push(where("dateKey", "==", ihDate));
+        orderClauses = [orderBy("createdAt", "desc")];
+      } else if (ihMonth) {
+        clauses.push(where("dateKey", ">=", `${ihMonth}-01`), where("dateKey", "<=", `${ihMonth}-31`));
+        orderClauses = [orderBy("dateKey", "desc"), orderBy("createdAt", "desc")];
+      } else {
+        orderClauses = [orderBy("dateKey", "desc"), orderBy("createdAt", "desc")];
+      }
       const cursor = reset ? null : invHistCursorRef.current;
-      const q = cursor
-        ? query(colRef, orderBy("dateKey", "desc"), orderBy("createdAt", "desc"), startAfter(cursor), limit(INV_HIST_PAGE_SIZE))
-        : query(colRef, orderBy("dateKey", "desc"), orderBy("createdAt", "desc"), limit(INV_HIST_PAGE_SIZE));
+      const q = query(colRef, ...clauses, ...orderClauses, ...(cursor ? [startAfter(cursor)] : []), limit(INV_HIST_PAGE_SIZE));
       const snap = await getDocs(q);
       const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       invHistCursorRef.current = snap.docs.length ? snap.docs[snap.docs.length - 1] : cursor;
       setInvHistDone(snap.docs.length < INV_HIST_PAGE_SIZE);
       setInvHistRows(prev => reset ? rows : [...prev, ...rows]);
     } catch (err) {
-      setInvHistError(err?.code || err?.message || "লোড ব্যর্থ হয়েছে — Firestore index লাগতে পারে");
+      setInvHistError(err?.message || err?.code || "লোড ব্যর্থ হয়েছে — Firestore index লাগতে পারে");
     } finally {
       setInvHistLoading(false);
     }
-  }, []);
+  }, [ihCustId, ihPayType, ihDate, ihMonth]);
+
   const openInvHist = () => {
     invHistCursorRef.current = null;
     setInvHistRows([]); setInvHistDone(false); setInvHistError(null);
     setShowInvHist(true);
     loadInvHistPage(true);
   };
+  const applyInvHistFilter = () => {
+    invHistCursorRef.current = null;
+    setInvHistRows([]); setInvHistDone(false); setInvHistError(null);
+    loadInvHistPage(true);
+  };
+  const resetInvHistFilter = () => {
+    setIhCustText(""); setIhCustId(""); setIhDate(""); setIhMonth(""); setIhPayType("all");
+    invHistCursorRef.current = null;
+    setInvHistRows([]); setInvHistDone(false); setInvHistError(null);
+    if (showInvHist) loadInvHistPage(true);
+  };
+  const ihHasFilter = !!(ihCustId || ihDate || ihMonth || ihPayType !== "all");
 
-  // ── Search invoice ─────────────────────────────────────────────────────────
-  const searchInvoice = React.useCallback(() => {
-    const q = invSearch.trim().toUpperCase();
-    if (!q) { showToast("ইনভয়েস নম্বর দিন", "#ef4444"); return; }
-    const inv = invoices.find(i =>
-      (i.invoiceNo || i.id || "").toUpperCase().includes(q) ||
-      (i.id || "").toUpperCase().includes(q)
-    );
-    if (!inv) { showToast("ইনভয়েস পাওয়া যায়নি", "#ef4444"); return; }
-    if (inv.status === "voided") { showToast("এই ইনভয়েস বাতিল করা হয়েছে", "#ef4444"); return; }
+  // ══════════════════════════════════════════════════════════════════════════
+  // ❌ বাতিলকৃত ইনভয়েস হিস্ট্রি — Firestore থেকে সব সময়ের ডেটা, দিন/মাস নেভিগেটর
+  // ══════════════════════════════════════════════════════════════════════════
+  const [showVoidHist,   setShowVoidHist]   = React.useState(false);
+  const [vhViewMode,     setVhViewMode]     = React.useState("date"); // date|month
+  const [vhNavDate,      setVhNavDate]      = React.useState(todayKey);
+  const [vhNavMonth,     setVhNavMonth]     = React.useState(monthKeyNow);
+  const [vhRows,         setVhRows]         = React.useState([]);
+  const [vhLoading,      setVhLoading]      = React.useState(false);
+  const [vhError,        setVhError]        = React.useState(null);
 
-    // Check already returned items
-    const alreadyReturned = returns
-      .filter(r => r.originalInvoiceId === inv.id)
-      .flatMap(r => r.items || [])
-      .reduce((map, it) => {
-        map[it.productId] = (map[it.productId] || 0) + (it.returnQty || 0);
-        return map;
-      }, {});
-
-    const items = (inv.items || []).map(it => ({
-      productId:  it.productId,
-      name:       it.name || prodMap.get(it.productId)?.name || "অজানা",
-      maxQty:     (it.qty || 1) - (alreadyReturned[it.productId] || 0),
-      originalQty: it.qty || 1,
-      returnedQty: alreadyReturned[it.productId] || 0,
-      returnQty:  0,
-      price:      it.price || 0,
-      costPrice:  prodMap.get(it.productId)?.costPrice || it.costPrice || 0,
-      batchNo:    it.batchNo || "",
-      returnType: "ভালো", // "ভালো" | "নষ্ট"
-    })).filter(it => it.maxQty > 0);
-
-    if (items.length === 0) {
-      showToast("এই ইনভয়েসের সব পণ্য আগেই ফেরত দেওয়া হয়েছে", "#f59e0b");
-      return;
-    }
-    setFoundInv(inv);
-    setReturnItems(items);
-    setStep(2);
-  }, [invSearch, invoices, returns, prodMap, showToast]);
-
-  // ── Confirm return ─────────────────────────────────────────────────────────
-  const confirmReturn = React.useCallback(async () => {
-    const selectedItems = returnItems.filter(it => it.returnQty > 0);
-    if (selectedItems.length === 0) {
-      showToast("অন্তত একটি পণ্য নির্বাচন করুন", "#ef4444"); return;
-    }
-
-    const totalRefund = selectedItems.reduce((s, it) => s + it.price * it.returnQty, 0);
-    const customer    = custMap.get(foundInv.customerId);
-
-    // ── 1. Save return record ────────────────────────────────────────────────
-    const returnRecord = {
-      id:                uid(),
-      originalInvoiceId: foundInv.id,
-      originalInvoiceNo: foundInv.invoiceNo || foundInv.id,
-      customerId:        foundInv.customerId || null,
-      customerName:      foundInv.customerName || "হাঁটা কাস্টমার",
-      items:             selectedItems.map(it => ({
-        productId:  it.productId,
-        name:       it.name,
-        returnQty:  it.returnQty,
-        price:      it.price,
-        returnType: it.returnType,
-        batchNo:    it.batchNo,
-      })),
-      totalRefund,
-      note:      returnNote.trim(),
-      date:      todayKey,
-      dateKey:   todayKey,
-      addedBy:   currentUser?.name || "মালিক",
-      createdAt: new Date().toISOString(),
-    };
-    setReturns(prev => [returnRecord, ...prev]);
-
-    // ── 2. Stock restore (শুধু "ভালো" পণ্যের জন্য) ──────────────────────────
-    const goodItems = selectedItems.filter(it => it.returnType === "ভালো");
-    if (goodItems.length > 0) {
-      setProducts(prev => prev.map(p => {
-        const retItem = goodItems.find(it => it.productId === p.id);
-        if (!retItem) return p;
-        let updatedBatches = p.batches ? [...p.batches] : [];
-        if (retItem.batchNo) {
-          const bIdx = updatedBatches.findIndex(b => b.batchNo === retItem.batchNo);
-          if (bIdx >= 0) {
-            updatedBatches[bIdx] = { ...updatedBatches[bIdx], qty: (updatedBatches[bIdx].qty || 0) + retItem.returnQty };
-          } else {
-            updatedBatches.push({ batchNo: retItem.batchNo, qty: retItem.returnQty, costPrice: retItem.costPrice, expiryDate: "" });
-          }
-        }
-        return { ...p, stock: (p.stock || 0) + retItem.returnQty, batches: updatedBatches, lastUpdated: new Date().toISOString() };
-      }));
-
-      // Stock movement log
-      goodItems.forEach(it => {
-        const mvEntry = {
-          id: uid(), productId: it.productId, productName: it.name,
-          type: "return-in", qty: it.returnQty, note: `ফেরত: ${returnRecord.originalInvoiceNo}`,
-          date: todayKey, dateKey: todayKey, addedBy: currentUser?.name || "মালিক",
-          createdAt: new Date().toISOString(),
-        };
-        pushStockMovement(mvEntry);
-        setStockMovements(prev => [mvEntry, ...prev]);
-      });
-    }
-
-    // ── 3. Customer balance adjust (বাকি ইনভয়েস হলে কমাও) ──────────────────
-    if (customer && (foundInv.payType === "baki" || foundInv.payType === "partial")) {
-      // 🔴 Transaction fix — সার্ভারের বর্তমান balance থেকে atomically বিয়োগ,
-      // অন্য ডিভাইসের concurrent এডিট থাকলেও delta হারাবে না
-      const txBal = await FSS.transactionUpdateBalance(customer.id, (serverBal) => Math.max(0, serverBal - totalRefund));
-      const newBal = txBal !== null ? txBal : Math.max(0, (customer.balance || 0) - totalRefund);
-      setCustomers(prev => prev.map(c =>
-        c.id === customer.id ? { ...c, balance: newBal } : c
-      ));
-      if (totalRefund > 0) {
-        addTxn(customer.id, "joma", totalRefund, newBal, foundInv.id,
-          `পণ্য ফেরত: ${returnRecord.originalInvoiceNo}`, null, "return");
+  const loadVoidHist = React.useCallback(async () => {
+    if (!FSS.isReady()) { setVhError("Firestore প্রস্তুত না — ইন্টারনেট/কনফিগ চেক করুন"); return; }
+    setVhLoading(true); setVhError(null);
+    try {
+      const colRef = collection(FSS._db, "invoices");
+      let q;
+      if (vhViewMode === "date") {
+        q = query(colRef, where("status", "==", "voided"), where("dateKey", "==", vhNavDate), orderBy("createdAt", "desc"), limit(100));
+      } else {
+        q = query(colRef, where("status", "==", "voided"),
+          where("dateKey", ">=", `${vhNavMonth}-01`), where("dateKey", "<=", `${vhNavMonth}-31`),
+          orderBy("dateKey", "desc"), orderBy("createdAt", "desc"), limit(200));
       }
+      const snap = await getDocs(q);
+      setVhRows(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    } catch (err) {
+      setVhError(err?.message || err?.code || "লোড ব্যর্থ হয়েছে — Firestore index লাগতে পারে");
+    } finally {
+      setVhLoading(false);
     }
+  }, [vhViewMode, vhNavDate, vhNavMonth]);
 
-    showToast(`✅ ফেরত সম্পন্ন! ৳${fmt(totalRefund)} রিফান্ড`, "#22c55e");
-    setStep(1); setFoundInv(null); setReturnItems([]);
-    setInvSearch(""); setReturnNote("");
-  }, [returnItems, foundInv, custMap, returnNote, todayKey, currentUser,
-      setReturns, setProducts, setCustomers, setStockMovements, addTxn, showToast]);
+  const openVoidHist = () => {
+    setShowVoidHist(true);
+    loadVoidHist();
+  };
+  React.useEffect(() => { if (showVoidHist) loadVoidHist(); }, [vhViewMode, vhNavDate, vhNavMonth]); // eslint-disable-line
 
-  // ── Returns history filter ─────────────────────────────────────────────────
-  const filteredReturns = React.useMemo(() => {
-    const now = new Date();
-    let from = "";
-    if (filterRange === "today") from = todayKey;
-    else if (filterRange === "week") from = _dateKeyOf(new Date(now - 7*86400000));
-    else if (filterRange === "month") from = _monthKeyOf(now);
-    const list = filterRange === "all" ? [...returns]
-      : filterRange === "month"
-        ? returns.filter(r => (r.dateKey||"").startsWith(from))
-        : returns.filter(r => (r.dateKey||"") >= from);
-    return list.sort((a,b) => (b.createdAt||"").localeCompare(a.createdAt||""));
-  }, [returns, filterRange, todayKey]);
+  const vhShiftDay   = (delta) => setVhNavDate(prev => { const d = new Date(prev); d.setDate(d.getDate()+delta); return _dateKeyOf(d); });
+  const vhShiftMonth = (delta) => setVhNavMonth(prev => { const [y,m] = prev.split("-").map(Number); const d = new Date(y,(m-1)+delta,1); return _monthKeyOf(d); });
 
-  const totalRefundAmt = React.useMemo(() =>
-    filteredReturns.reduce((s,r) => s + (r.totalRefund||0), 0), [filteredReturns]);
+  const vhTotalRefund = React.useMemo(() => vhRows.reduce((s,i) => s + (i.total||0), 0), [vhRows]);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 📊 এ মাসের বাতিলকৃত ইনভয়েস — স্ট্যাট কার্ড (লোকাল invoices থেকে, তাৎক্ষণিক)
+  // ══════════════════════════════════════════════════════════════════════════
+  const monthVoided = React.useMemo(() =>
+    (invoices||[]).filter(i => i.status === "voided" && (i.dateKey||"").startsWith(monthKeyNow)),
+    [invoices, monthKeyNow]);
+  const monthVoidedCount  = monthVoided.length;
+  const monthVoidedRefund = React.useMemo(() => monthVoided.reduce((s,i) => s + (i.total||0), 0), [monthVoided]);
 
   return (
     <div style={{ ...S.page, paddingBottom: 100 }}>
@@ -22273,321 +22266,280 @@ function ReturnModule({ T, S, invoices, products, customers, returns = [], setRe
       <div style={{ ...S.header, marginBottom: 0 }}>
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
           <div style={{ width:4, height:22, borderRadius:2, background:"linear-gradient(180deg,#6366f1,#8b5cf6)" }} />
-          <span style={{ ...S.headerTitle, fontSize:17 }}>📜 ইনভয়েস হিস্ট্রি ও ফেরত</span>
+          <span style={{ ...S.headerTitle, fontSize:17 }}>📜 ইনভয়েস হিস্ট্রি</span>
         </div>
-        {step > 1 && (
-          <button onClick={() => { setStep(1); setFoundInv(null); setReturnItems([]); }}
-            style={{ ...S.cancelBtn, padding:"8px 14px", margin:0 }}>← ফিরে যান</button>
-        )}
       </div>
 
-      {/* ══ STEP 1: Invoice Search ══ */}
-      {step === 1 && (
-        <div style={{ marginTop:14 }}>
-          <div className="qc-gradient-card" style={{ ...S.card, padding:"16px 14px", marginBottom:14 }}>
-            <div style={{ color:T.text, fontWeight:900, fontSize:14, marginBottom:12 }}>🔍 ইনভয়েস খুঁজুন</div>
-            <div style={{ display:"flex", gap:8 }}>
-              <input
-                placeholder="ইনভয়েস নম্বর বা ID লিখুন..."
-                value={invSearch}
-                onChange={e => setInvSearch(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && searchInvoice()}
-                style={{ ...S.input, marginTop:0, flex:1 }}
-              />
-              <button onClick={searchInvoice}
-                style={{ ...S.saveBtn, flex:"none", padding:"0 18px", marginTop:0 }}>
-                খুঁজুন
-              </button>
+      <div style={{ marginTop:14 }}>
+
+        {/* ══ 🔍 ইনভয়েস খুঁজুন ══ */}
+        <div className="qc-gradient-card" style={{ ...S.card, padding:"16px 14px", marginBottom:14 }}>
+          <div style={{ color:T.text, fontWeight:900, fontSize:14, marginBottom:12 }}>🔍 ইনভয়েস খুঁজুন</div>
+          <div style={{ display:"flex", gap:8 }}>
+            <input
+              placeholder="ইনভয়েস নম্বর বা ID লিখুন..."
+              value={invSearch}
+              onChange={e => setInvSearch(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && searchInvoice()}
+              style={{ ...S.input, marginTop:0, flex:1 }}
+            />
+            <button onClick={searchInvoice}
+              style={{ ...S.saveBtn, flex:"none", padding:"0 18px", marginTop:0 }}>
+              খুঁজুন
+            </button>
+          </div>
+          <div style={{ color:T.sub, fontSize:11, marginTop:8 }}>
+            💡 ইনভয়েস নম্বরের শেষ কয়েকটি অক্ষর দিয়েও খুঁজতে পারবেন
+          </div>
+        </div>
+
+        {/* ══ 📜 ইনভয়েস হিস্ট্রি — ৩০ দিনের বাইরের পুরনো ইনভয়েস (ফিল্টার সহ) ══ */}
+        <div className="qc-gradient-card" style={{ ...S.card, padding:"14px 14px", marginBottom:14 }}>
+          <div onClick={() => { if (!showInvHist) openInvHist(); else setShowInvHist(false); }}
+            style={{ display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer", userSelect:"none" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <span style={{ fontSize:16 }}>📜</span>
+              <div>
+                <div style={{ color:T.text, fontWeight:900, fontSize:14 }}>ইনভয়েস হিস্ট্রি</div>
+                <div style={{ color:T.sub, fontSize:11, marginTop:1 }}>৩০ দিনের বেশি পুরনো ইনভয়েস খুঁজুন</div>
+              </div>
             </div>
-            <div style={{ color:T.sub, fontSize:11, marginTop:8 }}>
-              💡 ইনভয়েস নম্বরের শেষ কয়েকটি অক্ষর দিয়েও খুঁজতে পারবেন
-            </div>
+            <span style={{ color:T.sub, fontSize:12 }}>{showInvHist ? "▲" : "▼"}</span>
           </div>
 
-          {/* ══ 📜 ইনভয়েস হিস্ট্রি — ৩০ দিনের বাইরের পুরনো ইনভয়েস খুঁজুন ══ */}
-          <div className="qc-gradient-card" style={{ ...S.card, padding:"14px 14px", marginBottom:14 }}>
-            <div onClick={() => { if (!showInvHist) openInvHist(); else setShowInvHist(false); }}
-              style={{ display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer", userSelect:"none" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                <span style={{ fontSize:16 }}>📜</span>
-                <div>
-                  <div style={{ color:T.text, fontWeight:900, fontSize:14 }}>ইনভয়েস হিস্ট্রি</div>
-                  <div style={{ color:T.sub, fontSize:11, marginTop:1 }}>৩০ দিনের বেশি পুরনো ইনভয়েস খুঁজুন</div>
-                </div>
-              </div>
-              <span style={{ color:T.sub, fontSize:12 }}>{showInvHist ? "▲" : "▼"}</span>
-            </div>
+          {showInvHist && (
+            <div style={{ marginTop:12 }}>
 
-            {showInvHist && (() => {
-              const custMap2 = custMap;
-              return (
-                <div style={{ marginTop:12 }}>
-                  {invHistError && (
-                    <div style={{ background:"#ef444422", border:"1px solid #ef444455", borderRadius:12, padding:"10px 12px", color:"#fca5a5", fontSize:11.5, marginBottom:12 }}>
-                      ⚠️ {invHistError}
+              {/* ── ফিল্টার ── */}
+              <div style={{ background:T.bg, border:`1px solid ${T.border}`, borderRadius:12, padding:"10px 12px", marginBottom:12 }}>
+                <div style={{ position:"relative", marginBottom:8 }}>
+                  <input
+                    placeholder="👤 কাস্টমার নাম দিয়ে খুঁজুন..."
+                    value={ihCustText}
+                    onChange={e => { setIhCustText(e.target.value); setIhCustId(""); setIhShowSuggest(true); }}
+                    onFocus={() => setIhShowSuggest(true)}
+                    style={{ ...S.input, marginTop:0 }}
+                  />
+                  {ihCustId && (
+                    <div style={{ position:"absolute", right:10, top:"50%", transform:"translateY(-50%)", color:"#22c55e", fontSize:11, fontWeight:800 }}>✓ নির্বাচিত</div>
+                  )}
+                  {ihShowSuggest && ihCustSuggestions.length > 0 && (
+                    <div style={{ position:"absolute", top:"100%", left:0, right:0, zIndex:5, background:T.card, border:`1px solid ${T.border}`, borderRadius:10, marginTop:4, maxHeight:180, overflowY:"auto", boxShadow:"0 8px 20px #0006" }}>
+                      {ihCustSuggestions.map(c => (
+                        <div key={c.id}
+                          onClick={() => { setIhCustText(c.name); setIhCustId(c.id); setIhShowSuggest(false); }}
+                          style={{ padding:"9px 12px", fontSize:12.5, color:T.text, cursor:"pointer", borderBottom:`1px solid ${T.border}` }}>
+                          {c.name} {c.mobile ? <span style={{ color:T.sub, fontSize:11 }}>· {c.mobile}</span> : null}
+                        </div>
+                      ))}
                     </div>
                   )}
+                </div>
+
+                <div style={{ display:"flex", gap:8, marginBottom:8 }}>
+                  <input type="date" value={ihDate}
+                    onChange={e => { setIhDate(e.target.value); if (e.target.value) setIhMonth(""); }}
+                    style={{ ...S.input, marginTop:0, flex:1, fontSize:12 }} />
+                  <input type="month" value={ihMonth}
+                    onChange={e => { setIhMonth(e.target.value); if (e.target.value) setIhDate(""); }}
+                    style={{ ...S.input, marginTop:0, flex:1, fontSize:12 }} />
+                </div>
+
+                <div style={{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap" }}>
+                  {[["all","সব"],["cash","নগদ"],["baki","বাকি"],["partial","আংশিক"]].map(([k,l]) => (
+                    <button key={k} onClick={() => setIhPayType(k)}
+                      style={{ padding:"5px 12px", borderRadius:16,
+                        border:`1.5px solid ${ihPayType===k?"#6366f1":T.border}`,
+                        background: ihPayType===k?"#6366f122":"transparent",
+                        color: ihPayType===k?"#6366f1":T.sub,
+                        fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
+                      {l}
+                    </button>
+                  ))}
+                </div>
+
+                <div style={{ display:"flex", gap:8 }}>
+                  <button onClick={applyInvHistFilter}
+                    style={{ ...S.saveBtn, flex:2, marginTop:0, padding:"9px 0", fontSize:12.5 }}>🔍 ফিল্টার করুন</button>
+                  {ihHasFilter && (
+                    <button onClick={resetInvHistFilter}
+                      style={{ ...S.cancelBtn, flex:1, marginTop:0, padding:"9px 0", fontSize:12.5 }}>রিসেট</button>
+                  )}
+                </div>
+              </div>
+
+              {invHistError && (
+                <div style={{ background:"#ef444422", border:"1px solid #ef444455", borderRadius:12, padding:"10px 12px", color:"#fca5a5", fontSize:11.5, marginBottom:12, wordBreak:"break-word" }}>
+                  ⚠️ {invHistError}
+                </div>
+              )}
+              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                {invHistRows.map((inv, i) => {
+                  const cust = custMap.get(inv.customerId);
+                  const badge = inv.payType === "baki" ? { label:"বাকি", color:"#ef4444" } : inv.payType === "partial" ? { label:"আংশিক", color:"#f59e0b" } : { label:"নগদ", color:"#22c55e" };
+                  return (
+                    <div key={inv.id || i} onClick={() => setDetailInv(inv)}
+                      style={{ background: T.bg, border:`1px solid ${T.border}`, borderRadius:12, padding:"11px 13px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, cursor:"pointer" }}>
+                      <div style={{ minWidth:0 }}>
+                        <div style={{ color:T.text, fontWeight:800, fontSize:13, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{cust?.name || inv.customerName || "ওয়াক-ইন"}</div>
+                        <div style={{ color:T.sub, fontSize:10.5, marginTop:2 }}>{inv.date || inv.dateKey || "—"} · {inv.invoiceNo || inv.id}{inv.status==="voided" ? " · ❌ বাতিল" : ""}</div>
+                      </div>
+                      <div style={{ textAlign:"right", flexShrink:0 }}>
+                        <div style={{ color:T.text, fontWeight:900, fontSize:13 }}>৳{fmt(inv.total || 0)}</div>
+                        <div style={{ color: badge.color, fontSize:9.5, fontWeight:800, marginTop:2 }}>{badge.label}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {invHistRows.length === 0 && !invHistLoading && !invHistError && (
+                <div style={{ textAlign:"center", color:T.sub, fontSize:12, marginTop:16 }}>কোনো ইনভয়েস পাওয়া যায়নি</div>
+              )}
+
+              <div style={{ marginTop:14, textAlign:"center" }}>
+                {!invHistDone ? (
+                  <button
+                    onClick={() => loadInvHistPage(false)}
+                    disabled={invHistLoading}
+                    style={{ background:"rgba(167,139,250,0.12)", border:"1px solid rgba(167,139,250,0.35)", borderRadius:12, padding:"11px 20px", color:"#ddd6fe", fontWeight:800, fontSize:12.5, cursor: invHistLoading ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: invHistLoading ? 0.6 : 1 }}
+                  >
+                    {invHistLoading ? "⏳ লোড হচ্ছে..." : "আরও লোড করুন ↓"}
+                  </button>
+                ) : invHistRows.length > 0 ? (
+                  <div style={{ color:T.sub, fontSize:11 }}>— সব ইনভয়েস দেখানো হয়েছে —</div>
+                ) : null}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ══ ❌ বাতিলকৃত ইনভয়েস হিস্ট্রি — ইনভয়েস হিস্ট্রি কার্ডের ঠিক পরে ══ */}
+        <div className="qc-gradient-card" style={{ ...S.card, padding:"14px 14px", marginBottom:14 }}>
+          <div onClick={() => { if (!showVoidHist) openVoidHist(); else setShowVoidHist(false); }}
+            style={{ display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer", userSelect:"none" }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <span style={{ fontSize:16 }}>❌</span>
+              <div>
+                <div style={{ color:T.text, fontWeight:900, fontSize:14 }}>বাতিলকৃত ইনভয়েস হিস্ট্রি</div>
+                <div style={{ color:T.sub, fontSize:11, marginTop:1 }}>সব সময়ের বাতিলকৃত ইনভয়েস — দিন/মাস অনুযায়ী দেখুন</div>
+              </div>
+            </div>
+            <span style={{ color:T.sub, fontSize:12 }}>{showVoidHist ? "▲" : "▼"}</span>
+          </div>
+
+          {showVoidHist && (
+            <div style={{ marginTop:12 }}>
+
+              {/* দিন/মাস নেভিগেটর */}
+              <div style={{ display:"flex", justifyContent:"center", gap:6, marginBottom:10 }}>
+                {[["date","দিন"],["month","মাস"]].map(([k,l]) => (
+                  <button key={k} onClick={() => setVhViewMode(k)}
+                    style={{ padding:"5px 18px", borderRadius:16, border:`1.5px solid ${vhViewMode===k?"#ef4444":T.border}`,
+                      background: vhViewMode===k?"#ef444422":"transparent",
+                      color: vhViewMode===k?"#ef4444":T.sub,
+                      fontSize:12, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, marginBottom:12 }}>
+                <button onClick={() => vhViewMode==="date" ? vhShiftDay(-1) : vhShiftMonth(-1)}
+                  style={{ background:T.border, border:"none", borderRadius:8, width:32, height:32, flexShrink:0,
+                    color:T.text, fontSize:17, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>‹</button>
+                <div style={{ position:"relative", flex:1, textAlign:"center" }}>
+                  <div style={{ color:T.text, fontWeight:800, fontSize:13.5 }}>
+                    📅 {vhViewMode==="date" ? rhDayLabel(vhNavDate) : rhMonthLabel(vhNavMonth)}
+                  </div>
+                  <input
+                    type={vhViewMode==="date" ? "date" : "month"}
+                    value={vhViewMode==="date" ? vhNavDate : vhNavMonth}
+                    onChange={e => { if (!e.target.value) return; vhViewMode==="date" ? setVhNavDate(e.target.value) : setVhNavMonth(e.target.value); }}
+                    style={{ position:"absolute", inset:0, opacity:0, width:"100%", height:"100%", cursor:"pointer", border:"none" }}
+                  />
+                </div>
+                <button onClick={() => vhViewMode==="date" ? vhShiftDay(1) : vhShiftMonth(1)}
+                  style={{ background:T.border, border:"none", borderRadius:8, width:32, height:32, flexShrink:0,
+                    color:T.text, fontSize:17, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>›</button>
+              </div>
+
+              {vhError && (
+                <div style={{ background:"#ef444422", border:"1px solid #ef444455", borderRadius:12, padding:"10px 12px", color:"#fca5a5", fontSize:11.5, marginBottom:12, wordBreak:"break-word" }}>
+                  ⚠️ {vhError}
+                </div>
+              )}
+
+              {vhLoading && (
+                <div style={{ textAlign:"center", color:T.sub, fontSize:12, padding:"12px 0" }}>⏳ লোড হচ্ছে...</div>
+              )}
+
+              {!vhLoading && !vhError && vhRows.length === 0 && (
+                <div style={{ textAlign:"center", color:T.sub, fontSize:12, padding:"12px 0" }}>এই সময়ে কোনো বাতিলকৃত ইনভয়েস নেই</div>
+              )}
+
+              {vhRows.length > 0 && (
+                <>
+                  <div style={{ display:"flex", justifyContent:"space-between", background:"#ef444412", border:"1px solid #ef444430", borderRadius:10, padding:"8px 12px", marginBottom:10, fontSize:12 }}>
+                    <span style={{ color:T.sub }}>মোট {vhRows.length}টি বাতিলকৃত</span>
+                    <span style={{ color:"#ef4444", fontWeight:800 }}>৳{fmt(vhTotalRefund)}</span>
+                  </div>
                   <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-                    {invHistRows.map((inv, i) => {
-                      const cust = custMap2.get(inv.customerId);
-                      const badge = inv.payType === "baki" ? { label:"বাকি", color:"#ef4444" } : inv.payType === "partial" ? { label:"আংশিক", color:"#f59e0b" } : { label:"নগদ", color:"#22c55e" };
+                    {vhRows.map((inv, i) => {
+                      const cust = custMap.get(inv.customerId);
                       return (
-                        <div key={inv.id || i} style={{ background: T.bg, border:`1px solid ${T.border}`, borderRadius:12, padding:"11px 13px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10 }}>
-                          <div style={{ minWidth:0 }}>
+                        <div key={inv.id || i}
+                          style={{ background:T.bg, border:"1px solid #ef444433", borderRadius:12, padding:"11px 13px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
+                          <div onClick={() => setDetailInv(inv)} style={{ minWidth:0, flex:1, cursor:"pointer" }}>
                             <div style={{ color:T.text, fontWeight:800, fontSize:13, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{cust?.name || inv.customerName || "ওয়াক-ইন"}</div>
                             <div style={{ color:T.sub, fontSize:10.5, marginTop:2 }}>{inv.date || inv.dateKey || "—"} · {inv.invoiceNo || inv.id}</div>
+                            {inv.voidReason && <div style={{ color:"#f59e0b", fontSize:10.5, marginTop:2 }}>📝 {inv.voidReason}</div>}
                           </div>
-                          <div style={{ textAlign:"right", flexShrink:0 }}>
-                            <div style={{ color:T.text, fontWeight:900, fontSize:13 }}>৳{fmt(inv.total || 0)}</div>
-                            <div style={{ color: badge.color, fontSize:9.5, fontWeight:800, marginTop:2 }}>{badge.label}</div>
+                          <div style={{ textAlign:"right", flexShrink:0, display:"flex", alignItems:"center", gap:8 }}>
+                            <div style={{ color:"#ef4444", fontWeight:900, fontSize:13 }}>৳{fmt(inv.total || 0)}</div>
+                            <button onClick={(e) => { e.stopPropagation(); printInvoiceThermal(inv); }} title="প্রিন্ট"
+                              style={{ background:"#3b82f622", border:"1px solid #3b82f644", borderRadius:8, width:30, height:30, flexShrink:0,
+                                color:"#3b82f6", fontSize:14, cursor:"pointer", fontFamily:"inherit" }}>🖨️</button>
                           </div>
                         </div>
                       );
                     })}
                   </div>
-
-                  {invHistRows.length === 0 && !invHistLoading && !invHistError && (
-                    <div style={{ textAlign:"center", color:T.sub, fontSize:12, marginTop:16 }}>কোনো ইনভয়েস পাওয়া যায়নি</div>
-                  )}
-
-                  <div style={{ marginTop:14, textAlign:"center" }}>
-                    {!invHistDone ? (
-                      <button
-                        onClick={() => loadInvHistPage(false)}
-                        disabled={invHistLoading}
-                        style={{ background:"rgba(167,139,250,0.12)", border:"1px solid rgba(167,139,250,0.35)", borderRadius:12, padding:"11px 20px", color:"#ddd6fe", fontWeight:800, fontSize:12.5, cursor: invHistLoading ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: invHistLoading ? 0.6 : 1 }}
-                      >
-                        {invHistLoading ? "⏳ লোড হচ্ছে..." : "আরও লোড করুন ↓"}
-                      </button>
-                    ) : invHistRows.length > 0 ? (
-                      <div style={{ color:T.sub, fontSize:11 }}>— সব ইনভয়েস দেখানো হয়েছে —</div>
-                    ) : null}
-                  </div>
-                </div>
-              );
-            })()}
-          </div>
-
-          {/* Summary stats */}
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
-            <div className="qc-gradient-card" style={{ ...S.card, padding:"12px 14px" }}>
-              <div style={{ fontSize:20, marginBottom:4 }}>🔄</div>
-              <div style={{ color:"#6366f1", fontWeight:900, fontSize:15 }}>
-                {filteredReturns.length}টি
-              </div>
-              <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>মোট ফেরত</div>
-            </div>
-            <div className="qc-gradient-card" style={{ ...S.card, padding:"12px 14px" }}>
-              <div style={{ fontSize:20, marginBottom:4 }}>💸</div>
-              <div style={{ color:"#ef4444", fontWeight:900, fontSize:15 }}>৳{fmt(totalRefundAmt)}</div>
-              <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>মোট রিফান্ড</div>
-            </div>
-          </div>
-
-          {/* Filter */}
-          <div style={{ display:"flex", gap:6, marginBottom:10 }}>
-            {[["today","আজ"],["week","৭ দিন"],["month","এই মাস"],["all","সব"]].map(([k,l]) => (
-              <button key={k} onClick={() => setFilterRange(k)}
-                style={{ padding:"5px 12px", borderRadius:16,
-                  border:`1.5px solid ${filterRange===k?"#6366f1":T.border}`,
-                  background: filterRange===k?"#6366f122":T.card,
-                  color: filterRange===k?"#6366f1":T.sub,
-                  fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
-                {l}
-              </button>
-            ))}
-          </div>
-
-          {/* Returns history */}
-          {filteredReturns.length === 0 ? (
-            <div style={S.empty}>
-              <div style={{ fontSize:36, marginBottom:10 }}>🔄</div>
-              <div style={{ color:T.text, fontWeight:700 }}>কোনো ফেরত নেই</div>
-              <div style={{ color:T.sub, fontSize:13, marginTop:4 }}>উপরে ইনভয়েস খুঁজে ফেরত শুরু করুন</div>
-            </div>
-          ) : (
-            <Virtuoso
-              style={{ height:"calc(100dvh - 420px)", minHeight:200 }}
-              data={filteredReturns}
-              itemContent={(_, r) => (
-                <div style={{ paddingBottom:8 }}>
-                  <div className="qc-gradient-card list-item" style={{ ...S.card, padding:"12px 14px",
-                    borderLeft:"3px solid #6366f1", marginBottom:0 }}>
-                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:6 }}>
-                      <div>
-                        <div style={{ color:T.text, fontWeight:800, fontSize:13 }}>
-                          🔄 {r.customerName}
-                        </div>
-                        <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>
-                          ইনভয়েস: {r.originalInvoiceNo} · {r.dateKey}
-                        </div>
-                      </div>
-                      <div style={{ color:"#ef4444", fontWeight:900, fontSize:15 }}>
-                        -৳{fmt(r.totalRefund)}
-                      </div>
-                    </div>
-                    <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
-                      {(r.items||[]).map((it,i) => (
-                        <span key={i} style={{ background: it.returnType==="ভালো"?"#22c55e15":"#ef444415",
-                          border:`1px solid ${it.returnType==="ভালো"?"#22c55e30":"#ef444430"}`,
-                          borderRadius:8, padding:"2px 8px", fontSize:11, fontWeight:700,
-                          color: it.returnType==="ভালো"?"#22c55e":"#ef4444" }}>
-                          {it.name} ×{it.returnQty} ({it.returnType})
-                        </span>
-                      ))}
-                    </div>
-                    {r.note ? <div style={{ color:T.sub, fontSize:11, marginTop:6 }}>📝 {r.note}</div> : null}
-                  </div>
-                </div>
+                </>
               )}
-            />
+            </div>
           )}
         </div>
-      )}
 
-      {/* ══ STEP 2: Select Items ══ */}
-      {step === 2 && foundInv && (
-        <div style={{ marginTop:14 }}>
-          {/* Invoice summary card */}
-          <div className="qc-gradient-card" style={{ ...S.card, padding:"14px", marginBottom:14,
-            border:"1.5px solid #6366f133" }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-              <div>
-                <div style={{ color:T.text, fontWeight:900, fontSize:14 }}>
-                  📄 {foundInv.invoiceNo || foundInv.id.slice(-8).toUpperCase()}
-                </div>
-                <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>
-                  {foundInv.customerName || "হাঁটা কাস্টমার"} · {foundInv.dateKey}
-                </div>
-              </div>
-              <div style={{ textAlign:"right" }}>
-                <div style={{ color:"#22c55e", fontWeight:900, fontSize:16 }}>৳{fmt(foundInv.total)}</div>
-                <div style={{ color:T.sub, fontSize:11 }}>মোট বিক্রয়</div>
-              </div>
+        {/* ══ স্ট্যাট কার্ড — এ মাসের বাতিলকৃত ইনভয়েস ══ */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
+          <div className="qc-gradient-card" style={{ ...S.card, padding:"12px 14px" }}>
+            <div style={{ fontSize:20, marginBottom:4 }}>❌</div>
+            <div style={{ color:"#6366f1", fontWeight:900, fontSize:15 }}>
+              {monthVoidedCount}টি
             </div>
+            <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>এ মাসের মোট বাতিলকৃত ইনভয়েস</div>
           </div>
-
-          <div style={{ color:T.text, fontWeight:800, fontSize:13, marginBottom:10 }}>
-            ফেরতের পণ্য নির্বাচন করুন:
+          <div className="qc-gradient-card" style={{ ...S.card, padding:"12px 14px" }}>
+            <div style={{ fontSize:20, marginBottom:4 }}>💸</div>
+            <div style={{ color:"#ef4444", fontWeight:900, fontSize:15 }}>৳{fmt(monthVoidedRefund)}</div>
+            <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>এ মাসের বাতিলকৃত ইনভয়েস থেকে মোট রিফান্ড</div>
           </div>
+        </div>
 
-          {returnItems.map((item, idx) => (
-            <div key={item.productId} className="qc-gradient-card"
-              style={{ ...S.card, padding:"12px 14px", marginBottom:8,
-                border:`1.5px solid ${item.returnQty>0?"#6366f155":T.border}`,
-                opacity: item.maxQty===0?0.5:1 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
-                <div style={{ flex:1 }}>
-                  <div style={{ color:T.text, fontWeight:800, fontSize:13 }}>{item.name}</div>
-                  <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>
-                    ৳{fmt(item.price)} / টি · মূল: {item.originalQty}টি
-                    {item.returnedQty > 0 && <span style={{ color:"#f59e0b" }}> · আগে ফেরত: {item.returnedQty}টি</span>}
-                  </div>
-                </div>
-                {item.returnQty > 0 && (
-                  <div style={{ color:"#ef4444", fontWeight:900, fontSize:13 }}>
-                    -৳{fmt(item.price * item.returnQty)}
-                  </div>
-                )}
-              </div>
+      </div>
 
-              {/* Qty controls */}
-              <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom: item.returnQty>0?8:0 }}>
-                <div style={{ color:T.sub, fontSize:12, fontWeight:700 }}>ফেরত সংখ্যা:</div>
-                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                  <button
-                    onClick={() => setReturnItems(prev => prev.map((it,i) => i===idx ? {...it, returnQty: Math.max(0, it.returnQty-1)} : it))}
-                    style={{ width:34, height:34, borderRadius:10, border:`1px solid ${T.border}`,
-                      background:T.card, color:T.text, fontSize:20, cursor:"pointer", fontFamily:"inherit",
-                      display:"flex", alignItems:"center", justifyContent:"center" }}>−</button>
-                  <span style={{ color: item.returnQty>0?"#6366f1":T.text, fontWeight:900, fontSize:18, minWidth:28, textAlign:"center" }}>
-                    {item.returnQty}
-                  </span>
-                  <button
-                    onClick={() => setReturnItems(prev => prev.map((it,i) => i===idx ? {...it, returnQty: Math.min(it.maxQty, it.returnQty+1)} : it))}
-                    disabled={item.returnQty >= item.maxQty}
-                    style={{ width:34, height:34, borderRadius:10, border:`1px solid ${T.border}`,
-                      background: item.returnQty>=item.maxQty?"#1e293b":T.card,
-                      color: item.returnQty>=item.maxQty?"#475569":T.text,
-                      fontSize:20, cursor: item.returnQty>=item.maxQty?"not-allowed":"pointer",
-                      fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center" }}>+</button>
-                  <span style={{ color:T.sub, fontSize:11 }}>সর্বোচ্চ: {item.maxQty}টি</span>
-                </div>
-              </div>
-
-              {/* Return type (ভালো/নষ্ট) */}
-              {item.returnQty > 0 && (
-                <div style={{ display:"flex", gap:6 }}>
-                  {["ভালো", "নষ্ট"].map(type => (
-                    <button key={type}
-                      onClick={() => setReturnItems(prev => prev.map((it,i) => i===idx ? {...it, returnType:type} : it))}
-                      style={{ padding:"5px 14px", borderRadius:16, fontSize:12, fontWeight:800, cursor:"pointer", fontFamily:"inherit",
-                        border:`1.5px solid ${item.returnType===type ? (type==="ভালো"?"#22c55e":"#ef4444") : T.border}`,
-                        background: item.returnType===type ? (type==="ভালো"?"#22c55e22":"#ef444422") : "transparent",
-                        color: item.returnType===type ? (type==="ভালো"?"#22c55e":"#ef4444") : T.sub }}>
-                      {type==="ভালো" ? "✅ ভালো (স্টক বাড়বে)" : "❌ নষ্ট (স্টক বাড়বে না)"}
-                    </button>
-                  ))}
-                </div>
-              )}
+      {/* ══ ইনভয়েস ফুল ডিটেইলস মোডাল ══ */}
+      {detailInv && (
+        <div onClick={() => setDetailInv(null)}
+          style={{ position:"fixed", inset:0, background:"#000000cc", display:"flex", alignItems:"center", justifyContent:"center", zIndex:300, padding:16 }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background:T.card, borderRadius:20, padding:"18px 14px", maxWidth:420, width:"100%", maxHeight:"88vh", overflowY:"auto", boxShadow:"0 20px 60px #000a" }}>
+            <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:4 }}>
+              <button onClick={() => setDetailInv(null)}
+                style={{ background:T.border, border:"none", borderRadius:8, width:30, height:30, color:T.text, fontSize:16, cursor:"pointer", fontFamily:"inherit" }}>✕</button>
             </div>
-          ))}
-
-          {/* Note */}
-          <div style={{ marginBottom:12, marginTop:4 }}>
-            <input
-              placeholder="📝 ফেরতের কারণ লিখুন (ঐচ্ছিক)"
-              value={returnNote}
-              onChange={e => setReturnNote(e.target.value)}
-              style={{ ...S.input, marginTop:0 }}
-            />
+            <InvoiceReceipt T={T} S={S} inv={detailInv} customer={custMap.get(detailInv.customerId)} type="buyer" />
           </div>
-
-          {/* Total & Confirm */}
-          {(() => {
-            const selItems  = returnItems.filter(it => it.returnQty > 0);
-            const totalRef  = selItems.reduce((s,it) => s + it.price * it.returnQty, 0);
-            const customer  = custMap.get(foundInv.customerId);
-            const hasBaki   = foundInv.payType === "baki" || foundInv.payType === "partial";
-            return (
-              <div>
-                {selItems.length > 0 && (
-                  <div style={{ ...S.card, padding:"12px 14px", marginBottom:12,
-                    background:"#6366f110", border:"1px solid #6366f130", borderRadius:12 }}>
-                    <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
-                      <span style={{ color:T.sub, fontSize:13 }}>নির্বাচিত পণ্য:</span>
-                      <span style={{ color:T.text, fontWeight:700, fontSize:13 }}>{selItems.length}টি</span>
-                    </div>
-                    <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
-                      <span style={{ color:T.sub, fontSize:13 }}>মোট রিফান্ড:</span>
-                      <span style={{ color:"#ef4444", fontWeight:900, fontSize:16 }}>৳{fmt(totalRef)}</span>
-                    </div>
-                    {customer && hasBaki && totalRef > 0 && (
-                      <div style={{ color:"#f59e0b", fontSize:12, marginTop:6 }}>
-                        ⚠️ {customer.name}-এর বাকি ৳{fmt(customer.balance)} থেকে ৳{fmt(totalRef)} কমবে
-                      </div>
-                    )}
-                    {selItems.filter(it=>it.returnType==="ভালো").length > 0 && (
-                      <div style={{ color:"#22c55e", fontSize:12, marginTop:4 }}>
-                        ✅ {selItems.filter(it=>it.returnType==="ভালো").reduce((s,it)=>s+it.returnQty,0)}টি পণ্য স্টকে ফিরবে
-                      </div>
-                    )}
-                  </div>
-                )}
-                <div style={{ display:"flex", gap:8 }}>
-                  <button onClick={() => { setStep(1); setFoundInv(null); setReturnItems([]); }}
-                    style={{ ...S.cancelBtn, flex:1 }}>বাতিল</button>
-                  <button onClick={confirmReturn}
-                    disabled={selItems.length === 0}
-                    style={{ ...S.saveBtn, flex:2,
-                      background: selItems.length===0?"#1e293b":"linear-gradient(135deg,#6366f1,#8b5cf6)",
-                      opacity: selItems.length===0?0.5:1 }}>
-                    ✅ ফেরত নিশ্চিত করুন
-                  </button>
-                </div>
-              </div>
-            );
-          })()}
         </div>
       )}
     </div>
