@@ -263,8 +263,11 @@ function bnMonthYear(dateStr) {
 // একই মাসে একাধিক ক্রয়: B-2506-1, B-2506-2, ...
 function calcNextBatch(productId, products, purchaseOrders, purchaseDate) {
   const now = purchaseDate ? new Date(purchaseDate) : new Date();
-  const yy = String(now.getFullYear()).slice(2);
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  // 🔴 ফিক্স: আগে now.getFullYear()/getMonth() (ডিভাইসের local timezone) ব্যবহার
+  // হতো — এখন সবসময় GMT+6 (বাংলাদেশ) অনুযায়ী ব্যাচ-মাস নির্ধারিত হয়।
+  const { y: _by, m: _bm } = _bdParts(now);
+  const yy = String(_by).slice(2);
+  const mm = String(_bm + 1).padStart(2, "0");
   const prefix = `B-${yy}${mm}-`;
 
   const peEntries = (purchaseOrders || []).filter(e =>
@@ -4194,17 +4197,33 @@ const ArchiveDB = {
   },
 };
 
-// 🔴 ফিক্স #১২: আগে d.toISOString().split("T")[0] দিয়ে UTC তারিখ নেওয়া হতো।
-// বাংলাদেশ UTC+৬, তাই স্থানীয় রাত ১২টা থেকে ভোর ৬টা পর্যন্ত UTC তারিখ এখনো
-// "গতকাল" দেখায় — ফলে দিনের প্রথম ৬ ঘণ্টায় retention/WORM/auto-backup-এর
-// dateKey/মাসের-key ভুল (আগের দিনের/মাসের) হয়ে যেত। এখন ডিভাইসের local
-// calendar date (getFullYear/getMonth/getDate) থেকে key বানানো হয়, যেটা
-// দোকানের প্রকৃত স্থানীয় তারিখের সাথে মেলে।
+// 🔴 ফিক্স: আগে দুইভাবে dateKey বানানো হতো — কোথাও raw UTC
+// (d.toISOString().split("T")[0], যেটা বাংলাদেশ স্থানীয় রাত ১২টা থেকে ভোর ৬টা
+// পর্যন্ত "গতকাল" দেখাতো), কোথাও ডিভাইসের local calendar date
+// (getFullYear/getMonth/getDate, যেটা ডিভাইসের টাইমজোন বাংলাদেশ না হলে ভুল
+// হতে পারতো)। এখন সব জায়গায় একটাই নির্ভরযোগ্য পদ্ধতি — ডিভাইসের টাইমজোন সেটিং
+// যা-ই থাকুক না কেন, সবসময় fixed GMT+6 (বাংলাদেশ, DST নেই) অনুযায়ী তারিখ/মাস
+// গণনা হয়। BD_OFFSET_MS যোগ করে UTC getters ব্যবহার করাই এই ট্রিকের মূল কথা।
+const BD_OFFSET_MS = 6 * 60 * 60 * 1000;
+const MONTH_NAMES_EN = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+// d (যেকোনো real মুহূর্ত/Date) থেকে বাংলাদেশ সময় অনুযায়ী {y, m(0-indexed), day} বের করে
+function _bdParts(d = new Date()) {
+  const s = new Date(d.getTime() + BD_OFFSET_MS);
+  return { y: s.getUTCFullYear(), m: s.getUTCMonth(), day: s.getUTCDate() };
+}
 function _dateKeyOf(d) {
-  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0"), day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  const { y, m, day } = _bdParts(d);
+  return `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 function _monthKeyOf(d) { return _dateKeyOf(d).slice(0, 7); }     // YYYY-MM
+// d-এর বাংলাদেশ-ক্যালেন্ডার-তারিখ (y/m/day) অনুযায়ী একটা local midnight Date object
+// রিটার্ন করে — "এই মাসের শুরু"/"এই সপ্তাহের শুরু"/"এই বছরের শুরু" হিসাবের জন্য
+// (getDay/getMonth ইত্যাদি device-local getter ব্যবহার করা নিরাপদ, কারণ y/m/day
+// নিজেই আগে থেকে GMT+6 অনুযায়ী ঠিক করা)।
+function _bdLocalDate(d) {
+  const { y, m, day } = _bdParts(d);
+  return new Date(y, m, day);
+}
 
 // 💰 ফিক্স: টাকার অংক আগে সব জায়গায় Math.round() দিয়ে রাউন্ড করা হতো, তাতে
 // ৩টি ভিন্ন জায়গায় ৩টি ভিন্ন fmt() থাকায় একই টাকা কোথাও ৳9,501.66 কোথাও
@@ -4221,7 +4240,10 @@ function fmtMoney(n) {
 }
 function _isoWeekKeyOf(d) {
   // ISO week key — একই সপ্তাহের সব দিন একই key পায় (weekly thinning-এর জন্য)
-  const dt = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  // 🔴 ফিক্স: এখন device-local getFullYear/getMonth/getDate-এর বদলে _bdParts
+  // (fixed GMT+6) ব্যবহার করে, যাতে সপ্তাহের সীমানাও বাংলাদেশ সময় অনুযায়ী স্থির থাকে।
+  const { y: by, m: bm, day: bd } = _bdParts(d);
+  const dt = new Date(Date.UTC(by, bm, bd));
   const dayNum = (dt.getUTCDay() + 6) % 7; // সোমবার=0
   dt.setUTCDate(dt.getUTCDate() - dayNum + 3);
   const firstThursday = new Date(Date.UTC(dt.getUTCFullYear(), 0, 4));
@@ -6322,7 +6344,7 @@ function buildPdfHtml(content, shopName, title) {
     <div class="header">
       <div class="shop-name">${shopName || "SBM"}</div>
       <div class="doc-title">${title}</div>
-      <div class="doc-date">তারিখ: ${new Date().toLocaleDateString("en-US", {day:"numeric",month:"long",year:"numeric"})} • ${new Date().toLocaleTimeString("en-US", {hour:"2-digit",minute:"2-digit"})}</div>
+      <div class="doc-date">তারিখ: ${new Date().toLocaleDateString("en-US", {day:"numeric",month:"long",year:"numeric",timeZone:"Asia/Dhaka"})} • ${new Date().toLocaleTimeString("en-US", {hour:"2-digit",minute:"2-digit",timeZone:"Asia/Dhaka"})}</div>
     </div>
     ${content}
     <div class="footer">${shopName || "SBM"} • স্বয়ংক্রিয়ভাবে তৈরি<br/>এটি একটি কম্পিউটার-জেনারেটেড দলিল, স্বাক্ষরের প্রয়োজন নেই।</div>
@@ -6587,7 +6609,7 @@ function buildThermalPdfHtml(content, shopName, title = "রশিদ") {
   </head><body>
     <div class="shop">${shopName || "SBM"}</div>
     <div class="title">${title}</div>
-    <div class="date">${new Date().toLocaleDateString("en-US",{day:"numeric",month:"long",year:"numeric"})}</div>
+    <div class="date">${new Date().toLocaleDateString("en-US",{day:"numeric",month:"long",year:"numeric",timeZone:"Asia/Dhaka"})}</div>
     <hr class="dashed">
     ${content}
     <div class="footer">${shopName || "SBM"} অ্যাপ</div>
@@ -6706,11 +6728,9 @@ function useDashModalRange() {
   const [customDate, setCD]     = React.useState(() => todayEn());
 
   const todayKey = todayEn();
-  // BD time (UTC+6) থেকে রাত ২টার boundary বজায় রেখে dateKey বের করা
-  const toKey    = (d) => {
-    const bd = new Date(d.getTime() - 2 * 60 * 60 * 1000 + 6 * 60 * 60 * 1000);
-    return bd.toISOString().split("T")[0];
-  };
+  // 🔴 ফিক্স: রাত ২টার বিজনেস-রুল বাদ, এখন _dateKeyOf-এর (সরল GMT+6 মধ্যরাত)
+  // সাথে সিঙ্কড — বাকি অ্যাপের সব dateKey হিসাবের সাথে মিলবে।
+  const toKey = (d) => _dateKeyOf(d);
 
   let startKey, endKey, label;
   const now = new Date();
@@ -6720,12 +6740,17 @@ function useDashModalRange() {
     const y = new Date(now); y.setDate(y.getDate() - 1);
     startKey = endKey = toKey(y); label = "গতকালের";
   } else if (range === "week") {
-    const dow = now.getDay(); // 0=Sun
-    const mon = new Date(now); mon.setDate(now.getDate() - dow);
+    // 🔴 ফিক্স: now.getDay() ডিভাইসের local timezone-এর day-of-week দিতো — এখন
+    // _bdLocalDate দিয়ে বাংলাদেশ-ক্যালেন্ডার-তারিখ অনুযায়ী সপ্তাহের শুরু বের হয়।
+    const bdNow = _bdLocalDate(now);
+    const dow = bdNow.getDay(); // 0=Sun
+    const mon = new Date(bdNow); mon.setDate(bdNow.getDate() - dow);
     startKey = toKey(mon); endKey = todayKey; label = "এই সপ্তাহের";
   } else if (range === "month") {
-    const m = new Date(now.getFullYear(), now.getMonth(), 1);
-    startKey = toKey(m); endKey = todayKey; label = "এই মাসের";
+    // 🔴 ফিক্স: now.getFullYear()/getMonth() ডিভাইসের local timezone ব্যবহার করতো
+    const { y: _my, m: _mm } = _bdParts(now);
+    const monthStart = new Date(_my, _mm, 1);
+    startKey = toKey(monthStart); endKey = todayKey; label = "এই মাসের";
   } else {
     startKey = endKey = customDate || todayKey;
     const dateLabel = (() => {
@@ -7033,7 +7058,7 @@ const SEED_USERS = [{ id: "u1", username: "admin", password: "", pin: "", name: 
 
 // ─── Utils ────────────────────────────────────────────────────────────────────
 const uid      = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-const todayStr = () => new Date().toLocaleDateString("en-US");
+const todayStr = () => new Date().toLocaleDateString("en-US", { timeZone: "Asia/Dhaka" });
 const nowStr   = () => new Date().toLocaleString("en-US");
 const fmt      = (n) => fmtMoney(n);
 
@@ -7086,14 +7111,11 @@ async function shareViaWhatsApp(mobile, message, showToast) {
   }
 }
 
-// বাংলাদেশ সময় (UTC+6) অনুযায়ী dateKey — রাত ২টায় নতুন দিন শুরু হয়
-// রাত ২টার আগে (00:00–01:59 BD) আগের দিনের dateKey ব্যবহার হবে
-const todayEn = () => {
-  // BD time = UTC + 6h, কিন্তু দিন শুরু রাত ২টায়, তাই UTC+6 থেকে আরও 2h বাদ দিলে
-  // effective offset = UTC+4 (যখন BD রাত ২টা = UTC 20:00 আগের দিন)
-  const d = new Date(Date.now() - 2 * 60 * 60 * 1000 + 6 * 60 * 60 * 1000);
-  return d.toISOString().split("T")[0];
-};
+// বাংলাদেশ সময় (fixed GMT+6, ডিভাইসের টাইমজোন নির্বিশেষে) অনুযায়ী আজকের dateKey।
+// 🔴 ফিক্স: আগে "রাত ২টায় নতুন দিন শুরু" একটা বিশেষ বিজনেস-রুল ছিল এখানে, যা বাকি
+// অ্যাপের _dateKeyOf/_monthKeyOf-এর সাথে মেলেনি (ওগুলো মধ্যরাত ১২টাকে দিনের শুরু ধরে)।
+// এখন পুরো অ্যাপে একই নিয়ম — সরল GMT+6 মধ্যরাত — ব্যবহার হয়, _dateKeyOf-এর সাথে ১০০% সিঙ্কড।
+const todayEn = () => _dateKeyOf(new Date());
 
 // ─── Shared Profit Utilities ──────────────────────────────────────────────────
 // সব জায়গায় একই formula: cost = it.costPrice ?? p.costPrice ?? 0 (invoice-time দাম আগে)
@@ -7835,8 +7857,9 @@ function LiveDateTime({ themeColor = "#fde68a", accentColor = "#7dffc0", compact
     timer.current = setTimeout(tick, 60000 - (Date.now() % 60000));
     return () => clearTimeout(timer.current);
   }, []);
-  const time = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: compact ? undefined : "2-digit" });
-  const date = now.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  // 🔴 ফিক্স: লাইভ ঘড়ি এখন সবসময় GMT+6 (বাংলাদেশ) সময় দেখায়, ডিভাইসের টাইমজোন যা-ই থাকুক
+  const time = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: compact ? undefined : "2-digit", timeZone: "Asia/Dhaka" });
+  const date = now.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "Asia/Dhaka" });
   if (compact) {
     // ── কমপ্যাক্ট, এক-লাইন pill — সময় ও তারিখ পাশাপাশি, শপ নামের নিচে আলাদা লাইনে ──
     return (
@@ -7954,16 +7977,21 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
 
   // ── ডেটা কম্পিউটেশন ────────────────────────────────────────────────────────
   const now = new Date();
-  const todayKey = now.toISOString().split("T")[0];
-  const ms = ms => new Date(now - ms).toISOString().split("T")[0];
+  const todayKey = _dateKeyOf(now);
+  const ms = ms => _dateKeyOf(new Date(now - ms));
   const d7 = ms(7 * 86400000), d30 = ms(30 * 86400000), d60 = ms(60 * 86400000), d90 = ms(90 * 86400000);
 
   // ── 📅 ক্যালেন্ডার মাস (ইংরেজি) — আগে "মাসিক" হিসাবগুলো লাস্ট-৩০-দিন রোলিং
   // উইন্ডো দিয়ে চলতো, এখন থেকে চলতি ইংরেজি ক্যালেন্ডার মাসের ১ তারিখ থেকে আজ পর্যন্ত ─
-  const monthStartKey = _dateKeyOf(new Date(now.getFullYear(), now.getMonth(), 1));
-  const prevMonthStartKey = _dateKeyOf(new Date(now.getFullYear(), now.getMonth() - 1, 1));
-  const currentMonthNameEn = now.toLocaleDateString("en-US", { month: "long" }); // যেমন "July"
-  const daysElapsedInMonth = now.getDate();
+  // 🔴 ফিক্স: আগে now.getFullYear()/getMonth()/getDate() (ডিভাইসের local timezone)
+  // দিয়ে মাস/দিন বের করা হতো — ডিভাইসের টাইমজোন বাংলাদেশ না হলে "এই মাস"-এর
+  // হিসাব ভুল দিনে শুরু/শেষ হতে পারতো। এখন সবসময় fixed GMT+6 (_bdParts) থেকে বের করা হয়।
+  const { y: _bdY, m: _bdM, day: _bdD } = _bdParts(now);
+  const monthStartKey = `${_bdY}-${String(_bdM + 1).padStart(2, "0")}-01`;
+  const _prevBdY = _bdM === 0 ? _bdY - 1 : _bdY, _prevBdM = _bdM === 0 ? 11 : _bdM - 1;
+  const prevMonthStartKey = `${_prevBdY}-${String(_prevBdM + 1).padStart(2, "0")}-01`;
+  const currentMonthNameEn = MONTH_NAMES_EN[_bdM]; // যেমন "July" — ডিভাইস টাইমজোন-নির্বিশেষে
+  const daysElapsedInMonth = _bdD;
 
   // নিজের ব্যবহার (Personal Use) ইনভয়েস বিক্রয়/লাভ হিসাবে ধরা হবে না
   const invAll = (invoices || []).filter(i => !i.isSelfUse && i.status !== "voided");
@@ -9663,7 +9691,7 @@ function SmartBusinessMgmt() {
   // products/invoices/customers বদলালে Worker-এ পাঠান
   useEffect(() => {
     if (!workerRef.current || !invoices.length || !products.length) return;
-    const today = new Date().toISOString().split("T")[0];
+    const today = _dateKeyOf(new Date());
     workerRef.current.postMessage({
       type: "CALC_DASHBOARD",
       payload: { invoices, products, customers, txns, today }
@@ -9767,7 +9795,7 @@ function SmartBusinessMgmt() {
       const allInvoicesForBoot = rawInvoices || [];
       const invoiceCutoff90 = new Date();
       invoiceCutoff90.setDate(invoiceCutoff90.getDate() - 90);
-      const invoiceCutoff90Key = invoiceCutoff90.toISOString().split("T")[0];
+      const invoiceCutoff90Key = _dateKeyOf(invoiceCutoff90);
       const recentInvoicesForBoot = allInvoicesForBoot.length > 500
         ? allInvoicesForBoot.filter(i => !i.dateKey || i.dateKey >= invoiceCutoff90Key)
         : allInvoicesForBoot; // ছোট দোকানে (৫০০-এর কম ইনভয়েস) windowing-এর দরকারই নেই
@@ -9922,7 +9950,7 @@ function SmartBusinessMgmt() {
     if (!fssReady || !FSS._db) return;
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - 30);
-    const cutoff = cutoffDate.toISOString().split("T")[0]; // "YYYY-MM-DD"
+    const cutoff = _dateKeyOf(cutoffDate); // "YYYY-MM-DD"
 
     const colRef = collection(FSS._db, "invoices");
     const q = query(colRef, where("dateKey", ">=", cutoff), orderBy("dateKey", "desc"));
@@ -9945,7 +9973,7 @@ function SmartBusinessMgmt() {
     if (!fssReady || !FSS._db) return;
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - 30);
-    const cutoff = cutoffDate.toISOString().split("T")[0];
+    const cutoff = _dateKeyOf(cutoffDate);
 
     const colRef = collection(FSS._db, "txns");
     const q = query(colRef, where("dateKey", ">=", cutoff), orderBy("dateKey", "desc"));
@@ -10000,7 +10028,7 @@ function SmartBusinessMgmt() {
     if (!fssReady || !FSS._db) return;
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - 30);
-    const cutoff = cutoffDate.toISOString().split("T")[0];
+    const cutoff = _dateKeyOf(cutoffDate);
 
     const colRef = collection(FSS._db, "stockMovements");
     const q = query(colRef, where("dateKey", ">=", cutoff), orderBy("dateKey", "desc"));
@@ -10023,7 +10051,7 @@ function SmartBusinessMgmt() {
     if (!fssReady || !FSS._db) return;
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - 35);
-    const cutoff = cutoffDate.toISOString().split("T")[0];
+    const cutoff = _dateKeyOf(cutoffDate);
 
     const colRef = collection(FSS._db, "cashLogs");
     const q = query(colRef, where("dateKey", ">=", cutoff), orderBy("dateKey", "desc"));
@@ -10067,7 +10095,7 @@ function SmartBusinessMgmt() {
   // Invoice save/void-এ FSS.updateStats() call করলে এখানে auto-update আসবে।
   useEffect(() => {
     if (!fssReady || !FSS._db) return;
-    const todayKey = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+    const todayKey = _dateKeyOf(new Date()); // "YYYY-MM-DD"
     const unsub = FSS.subscribeStats(todayKey, (data) => {
       // stats data পেলে Zustand store-এ রাখা যায় অথবা Dashboard-এ prop হিসেবে পাঠানো যায়।
       // আপাতত: পরবর্তী phase-এ Dashboard-কে stats doc থেকে পড়তে হবে।
@@ -14756,7 +14784,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                   পরিশোধের তারিখ (ঐচ্ছিক)
                 </div>
                 <input type="date" style={{ ...S.input, color: dueDate?"#ef4444":undefined, fontWeight:dueDate?700:undefined }}
-                  value={dueDate} min={new Date().toISOString().split("T")[0]}
+                  value={dueDate} min={_dateKeyOf(new Date())}
                   onChange={e => setDueDate(e.target.value)} />
               </div>
             )}
@@ -14817,22 +14845,25 @@ function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [],
     if (period === "week") {
       for (let i = 6; i >= 0; i--) {
         const d = new Date(); d.setDate(d.getDate() - i);
-        const k = d.toISOString().split("T")[0];
-        labels.push({ key: k, label: d.toLocaleDateString("en-US", { weekday: "short" }) });
+        const k = _dateKeyOf(d);
+        // 🔴 ফিক্স: লেবেলও এখন key-এর মতোই GMT+6 অনুযায়ী দেখায় (timeZone override)
+        labels.push({ key: k, label: d.toLocaleDateString("en-US", { weekday: "short", timeZone: "Asia/Dhaka" }) });
         map[k] = { revenue: 0, profit: 0 };
       }
     } else if (period === "month") {
       for (let i = 29; i >= 0; i--) {
         const d = new Date(); d.setDate(d.getDate() - i);
-        const k = d.toISOString().split("T")[0];
-        labels.push({ key: k, label: (i % 5 === 0 || i === 0) ? d.getDate() + "/" + (d.getMonth()+1) : "" });
+        const k = _dateKeyOf(d);
+        // 🔴 ফিক্স: আগে d.getDate()/d.getMonth() (device-local) — এখন _bdParts (GMT+6)
+        const { m: _lm, day: _lday } = _bdParts(d);
+        labels.push({ key: k, label: (i % 5 === 0 || i === 0) ? _lday + "/" + (_lm + 1) : "" });
         map[k] = { revenue: 0, profit: 0 };
       }
     } else {
       for (let i = 11; i >= 0; i--) {
         const d = new Date(); d.setMonth(d.getMonth() - i);
-        const k = d.toISOString().slice(0, 7);
-        labels.push({ key: k, label: d.toLocaleDateString("en-US", { month: "short" }) });
+        const k = _monthKeyOf(d);
+        labels.push({ key: k, label: d.toLocaleDateString("en-US", { month: "short", timeZone: "Asia/Dhaka" }) });
         map[k] = { revenue: 0, profit: 0 };
       }
     }
@@ -14842,7 +14873,7 @@ function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [],
       const dateStr = inv.createdAt || inv.dateKey;
       const d = dateStr ? new Date(dateStr) : null;
       if (!d || isNaN(d.getTime()) || d < start || d > end) return;
-      const k = period === "year" ? d.toISOString().slice(0, 7) : d.toISOString().split("T")[0];
+      const k = period === "year" ? _monthKeyOf(d) : _dateKeyOf(d);
       if (!map[k]) return;
       map[k].revenue += (inv.total || 0);
       const cost = (inv.items || []).reduce((s, it) => {
@@ -15350,12 +15381,12 @@ function ProfitStatementCard({ T, S, invoices, products, shopName, expenses = []
   // ── Date range compute ────────────────────────────────────────────────────
   const { fromKey, label } = React.useMemo(() => {
     const now = new Date();
-    if (range === "today")  return { fromKey: now.toISOString().split("T")[0], label: "আজকের" };
-    if (range === "week")   return { fromKey: new Date(now - 7*86400000).toISOString().split("T")[0], label: "৭ দিনের" };
-    if (range === "month")  return { fromKey: now.toISOString().slice(0,7), label: "এই মাসের" };
-    if (range === "3m")     return { fromKey: new Date(now.setMonth(now.getMonth()-3)).toISOString().split("T")[0], label: "৩ মাসের" };
-    if (range === "6m")     return { fromKey: new Date(now.setMonth(now.getMonth()-3)).toISOString().split("T")[0], label: "৬ মাসের" };
-    if (range === "year")   return { fromKey: new Date().getFullYear() + "-01-01", label: "এই বছরের" };
+    if (range === "today")  return { fromKey: _dateKeyOf(now), label: "আজকের" };
+    if (range === "week")   return { fromKey: _dateKeyOf(new Date(now - 7*86400000)), label: "৭ দিনের" };
+    if (range === "month")  return { fromKey: _monthKeyOf(now), label: "এই মাসের" };
+    if (range === "3m")     return { fromKey: _dateKeyOf(new Date(now.setMonth(now.getMonth()-3))), label: "৩ মাসের" };
+    if (range === "6m")     return { fromKey: _dateKeyOf(new Date(now.setMonth(now.getMonth()-3))), label: "৬ মাসের" };
+    if (range === "year")   return { fromKey: _bdParts(new Date()).y + "-01-01", label: "এই বছরের" }; // 🔴 ফিক্স: BD বছর
     return { fromKey: "", label: "সব সময়ের" };
   }, [range]);
 
@@ -15642,7 +15673,7 @@ function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements
   };
 
   const allEntries = useMemo(() => purchaseOrders.filter(p => p._type === "pe"), [purchaseOrders]);
-  const todayKey   = new Date().toISOString().split("T")[0];
+  const todayKey   = _dateKeyOf(new Date());
   const knownSuppliers = useMemo(() => getKnownSuppliers(products, purchaseOrders), [products, purchaseOrders]);
 
   const getNextBatch = (productId) => calcNextBatch(productId, products, purchaseOrders);
@@ -16065,20 +16096,21 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     const isPeriodModeTop = cashHistoryDate.startsWith("period:");
     const activePeriodTop = isPeriodModeTop ? cashHistoryDate.replace("period:", "") : "custom";
     const customDateValTop = isPeriodModeTop ? todayKeyStr : cashHistoryDate;
-    const toKeyTop = (d) => { const bd = new Date(d.getTime() - 2 * 60 * 60 * 1000 + 6 * 60 * 60 * 1000); return bd.toISOString().split("T")[0]; };
+    const toKeyTop = (d) => _dateKeyOf(d); // 🔴 ফিক্স: রাত ২টার রুল বাদ, সরল GMT+6 মধ্যরাত
     const nowTop = new Date();
+    const bdNowTop = _bdLocalDate(nowTop); // 🔴 ফিক্স: device-local getDay/getFullYear/getMonth-এর বদলে BD ক্যালেন্ডার
     let hsKey, heKey;
     if (activePeriodTop === "today" || (activePeriodTop === "custom" && customDateValTop === todayKeyStr)) {
       hsKey = heKey = todayKeyStr;
     } else if (activePeriodTop === "yesterday") {
-      const y = new Date(nowTop); y.setDate(y.getDate() - 1); hsKey = heKey = toKeyTop(y);
+      const y = new Date(bdNowTop); y.setDate(y.getDate() - 1); hsKey = heKey = toKeyTop(y);
     } else if (activePeriodTop === "week") {
-      const dow = nowTop.getDay(); const mon = new Date(nowTop); mon.setDate(nowTop.getDate() - dow);
+      const dow = bdNowTop.getDay(); const mon = new Date(bdNowTop); mon.setDate(bdNowTop.getDate() - dow);
       hsKey = toKeyTop(mon); heKey = todayKeyStr;
     } else if (activePeriodTop === "month") {
-      const m = new Date(nowTop.getFullYear(), nowTop.getMonth(), 1); hsKey = toKeyTop(m); heKey = todayKeyStr;
+      const m = new Date(bdNowTop.getFullYear(), bdNowTop.getMonth(), 1); hsKey = toKeyTop(m); heKey = todayKeyStr;
     } else if (activePeriodTop === "year") {
-      const y = new Date(nowTop.getFullYear(), 0, 1); hsKey = toKeyTop(y); heKey = todayKeyStr;
+      const y = new Date(bdNowTop.getFullYear(), 0, 1); hsKey = toKeyTop(y); heKey = todayKeyStr;
     } else {
       hsKey = heKey = customDateValTop;
       if (activePeriodTop === "custom" && cashHistRangeMode) heKey = cashHistDateTo < customDateValTop ? customDateValTop : cashHistDateTo;
@@ -16154,9 +16186,12 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   };
 
 
-  // invModal 'order' থেকে বের হলে orderQtys রিসেট করো
+  // 🔴 ফিক্স: আগে invModal !== 'order' চেক করতো, তাই একটা সাপ্লায়ারের পণ্য সিলেক্ট করে
+  // আরেকটা সাপ্লায়ারে গেলেই (order:supplier:A → order:supplier:B) সিলেকশন মুছে যেত —
+  // মাল্টি-সাপ্লায়ার অর্ডার করাই সম্ভব ছিল না। এখন পুরো "order" ফ্লো (landing/all/
+  // suppliers/supplier-detail) ছেড়ে গেলেই শুধু রিসেট হয়।
   React.useEffect(() => {
-    if (invModal !== 'order') setOrderQtys({});
+    if (!invModal || !invModal.startsWith('order')) setOrderQtys({});
   }, [invModal]);
   // ড্যাশমোডাল বন্ধ হলে (ফিরুন বাটন/ফোনের ব্যাক/নেভিগেশন হোম) ভেতরের ইনভয়েস-ভিউও বন্ধ হবে
   React.useEffect(() => {
@@ -16276,7 +16311,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   let repStart, repEnd, repLabel;
   const isToday = reportRange === "today";
   {
-    const toKey = (d) => { const bd = new Date(d.getTime() - 2 * 60 * 60 * 1000 + 6 * 60 * 60 * 1000); return bd.toISOString().split("T")[0]; };
+    const toKey = (d) => _dateKeyOf(d); // 🔴 ফিক্স: রাত ২টার রুল বাদ, সরল GMT+6 মধ্যরাত
     const now = new Date();
     if (reportRange === "today") {
       repStart = repEnd = todayKeyStr; repLabel = "আজকের";
@@ -16285,7 +16320,9 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       repStart = repEnd = toKey(y); repLabel = "গতকালের";
     } else if (reportRange === "custom") {
       repStart = repEnd = reportCustomDate || todayKeyStr;
-      repLabel = repStart === todayKeyStr ? "আজকের" : `${new Date(repStart).toLocaleDateString("en-US", { day:"numeric", month:"long", year:"numeric" })} তারিখের`;
+      // 🔴 ফিক্স: repStart হলো "YYYY-MM-DD" — new Date(repStart) UTC মধ্যরাত হিসেবে
+      // পার্স হয়, তাই timeZone না দিলে ডিভাইসের টাইমজোন অনুযায়ী ভিন্ন দিন দেখাতে পারতো
+      repLabel = repStart === todayKeyStr ? "আজকের" : `${new Date(repStart).toLocaleDateString("en-US", { day:"numeric", month:"long", year:"numeric", timeZone: "Asia/Dhaka" })} তারিখের`;
     } else {
       const daysMap  = { "7d":7, "30d":30, "90d":90, "180d":180, "365d":365 };
       const labelMap = { "7d":"গত ৭ দিনের", "30d":"গত ১ মাসের", "90d":"গত ৩ মাসের", "180d":"গত ৬ মাসের", "365d":"গত ১ বছরের" };
@@ -16463,25 +16500,26 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     const customDateFrom = customDateVal;
     const customDateToVal = cashHistDateTo < customDateFrom ? customDateFrom : cashHistDateTo;
 
-    const toKey = (d) => { const bd = new Date(d.getTime() - 2 * 60 * 60 * 1000 + 6 * 60 * 60 * 1000); return bd.toISOString().split("T")[0]; };
+    const toKey = (d) => _dateKeyOf(d); // 🔴 ফিক্স: রাত ২টার রুল বাদ, সরল GMT+6 মধ্যরাত
     const now = new Date();
+    const bdNow = _bdLocalDate(now); // 🔴 ফিক্স: device-local getDay/getFullYear/getMonth-এর বদলে BD ক্যালেন্ডার
 
     // পিরিয়ড অনুযায়ী startKey–endKey নির্ধারণ
     let histStartKey, histEndKey;
     if (activePeriod === "today" || (activePeriod === "custom" && customDateVal === todayKeyStr)) {
       histStartKey = histEndKey = todayKeyStr;
     } else if (activePeriod === "yesterday") {
-      const y = new Date(now); y.setDate(y.getDate() - 1);
+      const y = new Date(bdNow); y.setDate(y.getDate() - 1);
       histStartKey = histEndKey = toKey(y);
     } else if (activePeriod === "week") {
-      const dow = now.getDay();
-      const mon = new Date(now); mon.setDate(now.getDate() - dow);
+      const dow = bdNow.getDay();
+      const mon = new Date(bdNow); mon.setDate(bdNow.getDate() - dow);
       histStartKey = toKey(mon); histEndKey = todayKeyStr;
     } else if (activePeriod === "month") {
-      const m = new Date(now.getFullYear(), now.getMonth(), 1);
+      const m = new Date(bdNow.getFullYear(), bdNow.getMonth(), 1);
       histStartKey = toKey(m); histEndKey = todayKeyStr;
     } else if (activePeriod === "year") {
-      const y = new Date(now.getFullYear(), 0, 1);
+      const y = new Date(bdNow.getFullYear(), 0, 1);
       histStartKey = toKey(y); histEndKey = todayKeyStr;
     } else {
       // custom single date
@@ -16510,8 +16548,8 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
 
     const histDateLabel = (() => {
       if (isRangeMode) {
-        const s = new Date(histStartKey + "T00:00:00").toLocaleDateString("bn-BD", { day: "numeric", month: "short" });
-        const e = new Date(histEndKey + "T00:00:00").toLocaleDateString("bn-BD", { day: "numeric", month: "short", year: "numeric" });
+        const s = new Date(histStartKey + "T00:00:00").toLocaleDateString("en-US", { day: "numeric", month: "short" });
+        const e = new Date(histEndKey + "T00:00:00").toLocaleDateString("en-US", { day: "numeric", month: "short", year: "numeric" });
         return `${s} – ${e}`;
       }
       try { return new Date(histStartKey + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", day: "numeric", month: "long", year: "numeric" }); }
@@ -16538,7 +16576,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       const periodLabel = activePeriod === "custom" ? histDateLabel : (CASH_HIST_PERIODS.find(p=>p.key===activePeriod)?.label || histDateLabel);
       const entryRows = histEntries.map((c, i) => {
         const meta = c.type === "opening" ? { label:"ওপেনিং ক্যাশ", icon:"🪙" } : (CASH_TYPE_META[c.cashType] || CASH_TYPE_META.other);
-        const timeStr = c.createdAt ? new Date(c.createdAt).toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit" }) : "";
+        const timeStr = c.createdAt ? new Date(c.createdAt).toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit", timeZone: "Asia/Dhaka" }) : "";
         return `<tr>
           <td class="serial">${i+1}</td>
           <td>${meta.label}${c.party ? ` — ${c.party}` : ""}</td>
@@ -16716,7 +16754,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
           <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
             {histEntries.map(c => {
               const meta = c.type === "opening" ? { label:"ওপেনিং ক্যাশ", icon:"🪙", color:"#0ea5e9" } : (CASH_TYPE_META[c.cashType] || CASH_TYPE_META.other);
-              const timeStr = c.createdAt ? new Date(c.createdAt).toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit" }) : "";
+              const timeStr = c.createdAt ? new Date(c.createdAt).toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit", timeZone: "Asia/Dhaka" }) : "";
               return (
                 <div key={c.id} style={{ display:"flex", alignItems:"center", gap:10, background:"rgba(255,255,255,0.03)", border:`1px solid ${meta.color}33`, borderRadius:12, padding:"10px 12px" }}>
                   <div style={{ width:34, height:34, borderRadius:10, background:`${meta.color}22`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, flexShrink:0 }}>{meta.icon}</div>
@@ -17253,17 +17291,24 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     );
   }
 
-  if (invModal === 'order' || (invModal && invModal.startsWith('order:supplier:'))) {
+  if (invModal === 'order' || invModal === 'order:all' || invModal === 'order:suppliers' || (invModal && invModal.startsWith('order:supplier:'))) {
     const isOrderSupplierDetail = invModal && invModal.startsWith('order:supplier:');
     const selectedOrderSupplier = isOrderSupplierDetail ? invModal.replace('order:supplier:', '') : null;
+
+    const supplierOf = (p) => p.company || p.category || "অজ্ঞাত";
+    // 🆕 কমন/আনকমন ব্যাজ — SmartInvoiceBuilder-এ ব্যবহৃত demandType ফিল্ড থেকে
+    const demandBadge = (p) => {
+      const isUncommon = (p.demandType || "common") === "uncommon";
+      return <span style={{ background: isUncommon?"#a78bfa22":"#22c55e18", color: isUncommon?"#a78bfa":"#22c55e", fontSize:9.5, fontWeight:800, borderRadius:6, padding:"2px 7px", border:`1px solid ${isUncommon?"#a78bfa44":"#22c55e33"}` }}>{isUncommon?"আনকমন":"কমন"}</span>;
+    };
 
     const orderItems = [...stockOut, ...criticalStock, ...allStock.filter(p => !criticalStock.find(c=>c.id===p.id))];
     const uniqueItems = orderItems.filter((p,i,a)=>a.findIndex(x=>x.id===p.id)===i);
 
-    // সাপ্লায়ার গ্রুপিং
+    // সাপ্লায়ার গ্রুপিং (সাপ্লায়ার-লিস্ট ফ্লো-এর জন্য)
     const orderSupplierGroups = {};
     uniqueItems.forEach(p => {
-      const key = p.company || p.category || "অজ্ঞাত";
+      const key = supplierOf(p);
       if (!orderSupplierGroups[key]) orderSupplierGroups[key] = { name: key, products: [] };
       orderSupplierGroups[key].products.push(p);
     });
@@ -17274,27 +17319,183 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       return urgB - urgA;
     });
 
+    // 🆕 "সকল পণ্য" ফ্লো-এর জন্য সিরিয়াল: স্টক-আউট → ক্রিটিক্যাল (স্টক কম→বেশি) → বাকি সব (স্টক কম→বেশি)
+    const allProductsSorted = [
+      ...[...stockOut].sort((a,b)=> (a.name||"").localeCompare(b.name||"")),
+      ...[...criticalStock].sort((a,b)=>(a.stock||0)-(b.stock||0)),
+      ...allStock.filter(p=>!criticalStock.find(c=>c.id===p.id)).sort((a,b)=>(a.stock||0)-(b.stock||0)),
+    ];
+
+    // 🆕 যেকোনো সাপ্লায়ার/পেজ থেকে সিলেক্ট করা সব পণ্য — মাল্টি-সাপ্লায়ার কম্বাইন্ড অর্ডারের জন্য
+    const allSelectedItems = products.filter(p => (orderQtys[p.id]||0) > 0);
+    const selectedSupplierCount = new Set(allSelectedItems.map(supplierOf)).size;
+
     const buildOrderHtml = (items, qtys, supName) => {
       const orderedItems = items.filter(p => (qtys[p.id]||0) > 0);
       const displayItems = orderedItems.length > 0 ? orderedItems : items;
       const rows = displayItems.map((p, i) => `<tr><td class="serial">${i+1}</td><td>${p.name}</td><td class="num">${p.stock||0}${p.unit||""}</td><td class="num">${qtys[p.id]||0}</td></tr>`).join('');
-      return buildPdfHtml(`<div class="section">${supName?`<h2>সাপ্লায়ার: ${supName}</h2>`:""}<table><thead><tr><th class="serial">#</th><th>পণ্যের নাম</th><th class="num">বর্তমান স্টক</th><th class="num">অর্ডার পরিমাণ</th></tr></thead><tbody>${rows}</tbody><tfoot><tr class="total-row"><td class="serial"></td><td colspan="2"><b>মোট পণ্য</b></td><td class="num">${displayItems.length}</td></tr></tfoot></table></div>`, shopName, `ক্রয় অর্ডার${supName?` — ${supName}`:""} — ${new Date().toLocaleDateString('en-US')}`);
+      return buildPdfHtml(`<div class="section">${supName?`<h2>সাপ্লায়ার: ${supName}</h2>`:""}<table><thead><tr><th class="serial">#</th><th>পণ্যের নাম</th><th class="num">বর্তমান স্টক</th><th class="num">অর্ডার পরিমাণ</th></tr></thead><tbody>${rows}</tbody><tfoot><tr class="total-row"><td class="serial"></td><td colspan="2"><b>মোট পণ্য</b></td><td class="num">${displayItems.length}</td></tr></tfoot></table></div>`, shopName, `ক্রয় অর্ডার${supName?` — ${supName}`:""} — ${new Date().toLocaleDateString('en-US', { timeZone: 'Asia/Dhaka' })}`);
     };
     const sendWhatsApp = (items, qtys, supName) => {
       const lines = items.map((p,i) => `${i+1}. ${p.name} — অর্ডার: ${qtys[p.id]||0} (স্টক: ${p.stock||0})`).join('\n');
-      window.open(`https://wa.me/?text=${encodeURIComponent(`ক্রয় অর্ডার${supName?` — ${supName}`:""}\n${shopName} · ${new Date().toLocaleDateString('en-US')}\n\n${lines}`)}`, '_blank');
+      window.open(`https://wa.me/?text=${encodeURIComponent(`ক্রয় অর্ডার${supName?` — ${supName}`:""}\n${shopName} · ${new Date().toLocaleDateString('en-US', { timeZone: 'Asia/Dhaka' })}\n\n${lines}`)}`, '_blank');
+    };
+    // 🆕 মাল্টি-সাপ্লায়ার কম্বাইন্ড অর্ডার — সাপ্লায়ার অনুযায়ী গ্রুপ করে একাধিক সেকশনে একই ডকুমেন্টে
+    const buildMultiSupplierOrderHtml = (items, qtys) => {
+      const groups = {};
+      items.forEach(p => { const k = supplierOf(p); (groups[k] = groups[k] || []).push(p); });
+      const sections = Object.entries(groups).map(([supName, prods]) => {
+        const rows = prods.map((p,i) => `<tr><td class="serial">${i+1}</td><td>${p.name}</td><td class="num">${p.stock||0}${p.unit||""}</td><td class="num">${qtys[p.id]||0}</td></tr>`).join('');
+        return `<div class="section"><h2>সাপ্লায়ার: ${supName}</h2><table><thead><tr><th class="serial">#</th><th>পণ্যের নাম</th><th class="num">বর্তমান স্টক</th><th class="num">অর্ডার পরিমাণ</th></tr></thead><tbody>${rows}</tbody><tfoot><tr class="total-row"><td class="serial"></td><td colspan="2"><b>মোট পণ্য</b></td><td class="num">${prods.length}</td></tr></tfoot></table></div>`;
+      }).join('');
+      return buildPdfHtml(sections, shopName, `ক্রয় অর্ডার — সম্মিলিত (${Object.keys(groups).length} সাপ্লায়ার) — ${new Date().toLocaleDateString('en-US', { timeZone: 'Asia/Dhaka' })}`);
+    };
+    const sendMultiSupplierWhatsApp = (items, qtys) => {
+      const groups = {};
+      items.forEach(p => { const k = supplierOf(p); (groups[k] = groups[k] || []).push(p); });
+      const lines = Object.entries(groups).map(([supName, prods]) =>
+        `*${supName}*\n` + prods.map((p,i)=>`${i+1}. ${p.name} — অর্ডার: ${qtys[p.id]||0} (স্টক: ${p.stock||0})`).join('\n')
+      ).join('\n\n');
+      window.open(`https://wa.me/?text=${encodeURIComponent(`ক্রয় অর্ডার — সম্মিলিত\n${shopName} · ${new Date().toLocaleDateString('en-US', { timeZone: 'Asia/Dhaka' })}\n\n${lines}`)}`, '_blank');
     };
 
-    // ── সাপ্লায়ার ডিটেইল: ক্রয় অর্ডার তৈরি ──
+    // 🆕 প্রোডাক্ট কার্ড (all-products ও supplier-detail — দুই ফ্লো-তেই ব্যবহৃত) — এখন প্রেসেট বাটন
+    // ছাড়াও ম্যানুয়াল সংখ্যা ইনপুট আছে (সবসময় এডিট করা যায়), কমন/আনকমন ব্যাজ, ও (showSupplier হলে) সাপ্লায়ারের নাম।
+    const renderOrderProductCard = (p, idx, showSupplier) => {
+      const isOut = (p.stock||0)===0;
+      const isCrit = !isOut && (p.stock||0)<=(p.minStockAlert||5);
+      const accentC = isOut ? "#ef4444" : isCrit ? "#f59e0b" : "#22c55e";
+      const accentGlow = isOut ? "#ef444433" : isCrit ? "#f59e0b33" : "#22c55e22";
+      const qty = orderQtys[p.id]||0;
+      const isOrdered = qty > 0;
+      return (
+        <div key={p.id} style={{ position:"relative", background: isOrdered ? `linear-gradient(135deg,${accentGlow},#071a0f 60%)` : "linear-gradient(135deg,#0a1f12,#071a0f)", border:`1px solid ${isOrdered ? accentC+"66" : "#1a3a2488"}`, borderRadius:16, padding:"13px 14px", overflow:"hidden", boxShadow: isOrdered ? `0 0 18px ${accentC}18, 0 2px 8px #00000044` : "0 2px 8px #00000033", transition:"all 0.2s ease" }}>
+          <div style={{ position:"absolute", top:0, left:0, right:0, height:2, background: isOrdered ? `linear-gradient(90deg,transparent,${accentC}88,transparent)` : "linear-gradient(90deg,transparent,#1fd15e22,transparent)", borderRadius:"16px 16px 0 0" }}/>
+          <div style={{ position:"absolute", top:10, right:12, color:"#ffffff18", fontWeight:900, fontSize:22, fontFamily:"monospace", lineHeight:1, userSelect:"none" }}>{String(idx+1).padStart(2,"0")}</div>
+          <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:6, paddingRight:36 }}>
+            <span style={{ color:"#f1f5f9", fontWeight:800, fontSize:14 }}>
+              {p.name}{p.unit && <span style={{ color:"#475569", fontSize:11, fontWeight:600 }}> ({p.unit})</span>}
+            </span>
+            {demandBadge(p)}
+            <span style={{ background: isOut ? "#ef444420" : isCrit ? "#f59e0b20" : "#22c55e15", color: accentC, fontSize:10, fontWeight:800, borderRadius:6, padding:"2px 8px", border:`1px solid ${accentC}33` }}>
+              {isOut ? "● স্টক শেষ" : isCrit ? `⚠ ক্রিটিক্যাল · স্টক ${p.stock}` : `স্টক: ${p.stock}`}
+            </span>
+          </div>
+          {showSupplier && (
+            <div style={{ color:"#64748b", fontSize:11, fontWeight:700, marginBottom:9, display:"flex", alignItems:"center", gap:4 }}>
+              <span style={{ fontSize:11 }}>🏭</span>{supplierOf(p)}
+            </div>
+          )}
+          <div style={{ display:"flex", alignItems:"center", gap:7, flexWrap:"wrap" }}>
+            {[5,10,25,50,100].map(n => (
+              <button key={n} onClick={()=>setOrderQtys(q=>({...q,[p.id]:(q[p.id]||0)+n}))}
+                style={{ background: isOrdered ? `linear-gradient(135deg,${accentC}25,${accentC}12)` : "linear-gradient(135deg,#ffffff10,#ffffff06)", border:`1px solid ${isOrdered ? accentC+"55" : "#ffffff18"}`, borderRadius:10, color: isOrdered ? accentC : "#94a3b8", fontSize:12, fontWeight:800, padding:"6px 14px", cursor:"pointer", fontFamily:"inherit", letterSpacing:0.3, transition:"all 0.15s ease" }}>+{n}</button>
+            ))}
+            {/* 🆕 ম্যানুয়াল সংখ্যা ইনপুট — সবসময় সরাসরি টাইপ/এডিট করা যায় */}
+            <input type="number" inputMode="numeric" min="0" value={qty || ""} placeholder="সংখ্যা"
+              onChange={(e)=>{ const v = parseInt(e.target.value,10); setOrderQtys(q=>({...q,[p.id]: (isNaN(v)||v<0) ? 0 : v})); }}
+              onClick={(e)=>e.target.select()}
+              style={{ width:70, background: isOrdered ? `linear-gradient(135deg,${accentC}22,${accentC}10)` : "#ffffff0d", border:`1px solid ${isOrdered ? accentC+"66" : "#ffffff18"}`, borderRadius:10, color: isOrdered ? accentC : "#f1f5f9", fontSize:14, fontWeight:900, padding:"9px 6px", textAlign:"center", fontFamily:"inherit" }} />
+            {qty > 0 && (
+              <button onClick={()=>setOrderQtys(q=>({...q,[p.id]:0}))} style={{ background:"linear-gradient(135deg,#ef444420,#ef444410)", border:"1px solid #ef444444", borderRadius:10, color:"#ef4444", fontSize:12, fontWeight:800, padding:"6px 12px", cursor:"pointer", fontFamily:"inherit" }}>✕ রিসেট</button>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    // 🆕 কম্বাইন্ড (মাল্টি-সাপ্লায়ার) স্টিকি বটম বার — order:all ও order:suppliers দুই পেজেই দেখাবে
+    const renderCombinedStickyBar = () => (
+      <div style={{ position:"sticky", bottom:0, zIndex:50, background:"linear-gradient(0deg,#020d06 85%,transparent)", padding:"10px 14px 14px" }}>
+        {allSelectedItems.length > 0 && (
+          <div style={{ textAlign:"center", color:"#a78bfa", fontSize:11.5, fontWeight:700, marginBottom:8 }}>
+            {allSelectedItems.length}টি পণ্য সিলেক্ট করা হয়েছে · {selectedSupplierCount}টি সাপ্লায়ার
+          </div>
+        )}
+        <div style={{ display:"flex", gap:10 }}>
+          <button disabled={allSelectedItems.length===0} onClick={()=>{ openPrintWindow(buildMultiSupplierOrderHtml(allSelectedItems, orderQtys)); }}
+            style={{ flex:1, background: allSelectedItems.length===0 ? "#334155" : "linear-gradient(135deg,#0369a1,#0ea5e9)", opacity: allSelectedItems.length===0?0.5:1, border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:15, padding:"13px 0", cursor: allSelectedItems.length===0?"not-allowed":"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8, fontFamily:"inherit", boxShadow: allSelectedItems.length===0?"none":"0 2px 12px #0ea5e933" }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+            প্রিন্ট (সম্মিলিত)
+          </button>
+          <button disabled={allSelectedItems.length===0} onClick={()=>sendMultiSupplierWhatsApp(allSelectedItems, orderQtys)}
+            style={{ flex:1, background: allSelectedItems.length===0 ? "#334155" : "linear-gradient(135deg,#15803d,#22c55e)", opacity: allSelectedItems.length===0?0.5:1, border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:15, padding:"13px 0", cursor: allSelectedItems.length===0?"not-allowed":"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8, fontFamily:"inherit", boxShadow: allSelectedItems.length===0?"none":"0 2px 12px #22c55e33" }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413Z"/></svg>
+            WhatsApp (সম্মিলিত)
+          </button>
+        </div>
+      </div>
+    );
+
+    // ═══ 🆕 ল্যান্ডিং পেজ: ২টা অপশন ═══════════════════════════════════════
+    if (invModal === 'order') {
+      return (
+        <div style={{ ...S.page, padding:"0 14px 16px" }}>
+          <button style={S.textBtn} onClick={() => { setInvModal(null); setOrderQtys({}); }}>← ড্যাশবোর্ডে ফিরুন</button>
+          <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:17, marginBottom:2 }}>ক্রয় অর্ডার তৈরি করুন</div>
+          <div style={{ color:"#64748b", fontSize:12, marginBottom:18 }}>কীভাবে ক্রয় অর্ডার তৈরি করতে চান বেছে নিন</div>
+
+          <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+            <div className="tap-card" onClick={()=>setInvModal('order:all')}
+              style={{ background:"linear-gradient(135deg,#0ea5e91a,#071a0f)", border:"1.5px solid #0ea5e944", borderRadius:18, padding:"18px 18px", cursor:"pointer" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:14 }}>
+                <div style={{ width:48, height:48, borderRadius:14, background:"#0ea5e922", border:"1px solid #0ea5e944", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:22 }}>📦</div>
+                <div style={{ flex:1 }}>
+                  <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:15 }}>সকল পণ্য থেকে ক্রয় অর্ডার</div>
+                  <div style={{ color:"#64748b", fontSize:12, marginTop:3 }}>স্টক-আউট → ক্রিটিক্যাল → বাকি সব — একটাই তালিকায়</div>
+                </div>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0ea5e9" strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+              </div>
+            </div>
+            <div className="tap-card" onClick={()=>setInvModal('order:suppliers')}
+              style={{ background:"linear-gradient(135deg,#22c55e1a,#071a0f)", border:"1.5px solid #22c55e44", borderRadius:18, padding:"18px 18px", cursor:"pointer" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:14 }}>
+                <div style={{ width:48, height:48, borderRadius:14, background:"#22c55e22", border:"1px solid #22c55e44", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, fontSize:22 }}>🏭</div>
+                <div style={{ flex:1 }}>
+                  <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:15 }}>সাপ্লায়ার থেকে ক্রয় অর্ডার</div>
+                  <div style={{ color:"#64748b", fontSize:12, marginTop:3 }}>একাধিক সাপ্লায়ার বেছে বেছে পণ্য অর্ডার করুন</div>
+                </div>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ═══ 🆕 ফ্লো ১: সকল পণ্য থেকে ক্রয় অর্ডার ═══════════════════════════════
+    if (invModal === 'order:all') {
+      return (
+        <div style={{ ...S.page, padding:"0", display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
+          <div style={{ position:"sticky", top:0, zIndex:50, background:"linear-gradient(180deg,#020d06 0%,#041208 80%,#041208ee 100%)", borderBottom:"1px solid #1fd15e33", padding:"12px 14px 10px", backdropFilter:"blur(12px)", WebkitBackdropFilter:"blur(12px)" }}>
+            <button style={S.textBtn} onClick={() => setInvModal('order')}>← ফিরুন</button>
+            <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:16, marginTop:6 }}>সকল পণ্য থেকে ক্রয় অর্ডার</div>
+            <div style={{ color:"#64748b", fontSize:12, marginTop:2 }}>
+              <span style={{ color:"#1fd15e", fontWeight:700 }}>{allProductsSorted.length}</span>টি পণ্য
+              {allSelectedItems.length > 0 && <span style={{ color:"#a78bfa", fontWeight:700, marginLeft:8 }}>· {allSelectedItems.length}টি সিলেক্ট</span>}
+            </div>
+          </div>
+          <div style={{ flex:1, overflowY:"auto", padding:"12px 14px 16px" }}>
+            {allProductsSorted.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো পণ্য নেই</div>}
+            <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+              {allProductsSorted.map((p, idx) => renderOrderProductCard(p, idx, true))}
+            </div>
+          </div>
+          {renderCombinedStickyBar()}
+        </div>
+      );
+    }
+
+    // ── সাপ্লায়ার ডিটেইল: ক্রয় অর্ডার তৈরি (ফ্লো ২-এর অংশ) ──
     if (isOrderSupplierDetail) {
-      const supProducts = uniqueItems.filter(p => (p.company || p.category || "অজ্ঞাত") === selectedOrderSupplier);
+      const supProducts = uniqueItems.filter(p => supplierOf(p) === selectedOrderSupplier);
       const supOrderedCount = supProducts.filter(p=>(orderQtys[p.id]||0)>0).length;
 
       return (
         <div style={{ ...S.page, padding:"0", display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
           {/* STICKY HEADER */}
           <div style={{ position:"sticky", top:0, zIndex:50, background:"linear-gradient(180deg,#020d06 0%,#041208 80%,#041208ee 100%)", borderBottom:"1px solid #1fd15e33", padding:"12px 14px 10px", backdropFilter:"blur(12px)", WebkitBackdropFilter:"blur(12px)" }}>
-            <button style={S.textBtn} onClick={() => setInvModal('order')}>← সাপ্লায়ার তালিকায় ফিরুন</button>
+            <button style={S.textBtn} onClick={() => setInvModal('order:suppliers')}>← সাপ্লায়ার তালিকায় ফিরুন</button>
             <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginTop:6 }}>
               <div>
                 <div style={{ display:"flex", alignItems:"center", gap:8 }}>
@@ -17306,9 +17507,9 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
                   {supOrderedCount > 0 && <span style={{ color:"#a78bfa", fontWeight:700, marginLeft:8 }}>· {supOrderedCount}টি অর্ডার করা হয়েছে</span>}
                 </div>
               </div>
-              {supOrderedCount > 0 && (
-                <div style={{ background:"linear-gradient(135deg,#1fd15e22,#1fd15e11)", border:"1px solid #1fd15e44", borderRadius:10, padding:"4px 10px", color:"#1fd15e", fontWeight:800, fontSize:12 }}>
-                  {supOrderedCount}টি সিলেক্ট
+              {allSelectedItems.length > 0 && (
+                <div style={{ background:"linear-gradient(135deg,#1fd15e22,#1fd15e11)", border:"1px solid #1fd15e44", borderRadius:10, padding:"4px 10px", color:"#1fd15e", fontWeight:800, fontSize:12, textAlign:"center" }}>
+                  মোট {allSelectedItems.length}টি<br/><span style={{ fontSize:9.5, fontWeight:700 }}>{selectedSupplierCount} সাপ্লায়ার</span>
                 </div>
               )}
             </div>
@@ -17317,106 +17518,94 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
           {/* SCROLLABLE CARDS */}
           <div style={{ flex:1, overflowY:"auto", padding:"12px 14px 16px" }}>
             <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-              {supProducts.map((p, idx) => {
-                const isOut = (p.stock||0)===0;
-                const isCrit = !isOut && (p.stock||0)<=(p.minStockAlert||5);
-                const accentC = isOut ? "#ef4444" : isCrit ? "#f59e0b" : "#22c55e";
-                const accentGlow = isOut ? "#ef444433" : isCrit ? "#f59e0b33" : "#22c55e22";
-                const isOrdered = (orderQtys[p.id]||0) > 0;
-                const qty = orderQtys[p.id]||0;
-                return (
-                  <div key={p.id} style={{ position:"relative", background: isOrdered ? `linear-gradient(135deg,${accentGlow},#071a0f 60%)` : "linear-gradient(135deg,#0a1f12,#071a0f)", border:`1px solid ${isOrdered ? accentC+"66" : "#1a3a2488"}`, borderRadius:16, padding:"13px 14px", overflow:"hidden", boxShadow: isOrdered ? `0 0 18px ${accentC}18, 0 2px 8px #00000044` : "0 2px 8px #00000033", transition:"all 0.2s ease" }}>
-                    <div style={{ position:"absolute", top:0, left:0, right:0, height:2, background: isOrdered ? `linear-gradient(90deg,transparent,${accentC}88,transparent)` : "linear-gradient(90deg,transparent,#1fd15e22,transparent)", borderRadius:"16px 16px 0 0" }}/>
-                    <div style={{ position:"absolute", top:10, right:12, color:"#ffffff18", fontWeight:900, fontSize:22, fontFamily:"monospace", lineHeight:1, userSelect:"none" }}>{String(idx+1).padStart(2,"0")}</div>
-                    <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:9, paddingRight:36 }}>
-                      <span style={{ color:"#f1f5f9", fontWeight:800, fontSize:14 }}>
-                        {p.name}{p.unit && <span style={{ color:"#475569", fontSize:11, fontWeight:600 }}> ({p.unit})</span>}
-                      </span>
-                      <span style={{ background: isOut ? "#ef444420" : isCrit ? "#f59e0b20" : "#22c55e15", color: accentC, fontSize:10, fontWeight:800, borderRadius:6, padding:"2px 8px", border:`1px solid ${accentC}33` }}>
-                        {isOut ? "● স্টক শেষ" : isCrit ? "⚠ ক্রিটিক্যাল" : `স্টক: ${p.stock}`}
-                      </span>
-                    </div>
-                    <div style={{ display:"flex", alignItems:"center", gap:7, flexWrap:"wrap" }}>
-                      {[5,10,25,50,100].map(n => (
-                        <button key={n} onClick={()=>setOrderQtys(q=>({...q,[p.id]:(q[p.id]||0)+n}))}
-                          style={{ background: isOrdered ? `linear-gradient(135deg,${accentC}25,${accentC}12)` : "linear-gradient(135deg,#ffffff10,#ffffff06)", border:`1px solid ${isOrdered ? accentC+"55" : "#ffffff18"}`, borderRadius:10, color: isOrdered ? accentC : "#94a3b8", fontSize:12, fontWeight:800, padding:"6px 14px", cursor:"pointer", fontFamily:"inherit", letterSpacing:0.3, transition:"all 0.15s ease" }}>+{n}</button>
-                      ))}
-                      {qty > 0 && (
-                        <button onClick={()=>setOrderQtys(q=>({...q,[p.id]:0}))} style={{ background:"linear-gradient(135deg,#ef444420,#ef444410)", border:"1px solid #ef444444", borderRadius:10, color:"#ef4444", fontSize:12, fontWeight:800, padding:"6px 12px", cursor:"pointer", fontFamily:"inherit" }}>✕ রিসেট</button>
-                      )}
-                      {isOrdered && (
-                        <div style={{ marginLeft:"auto", background:"linear-gradient(135deg,#7c3aed,#5b21b6)", border:"1px solid #a78bfa55", borderRadius:12, padding:"10px 22px", color:"#fff", fontWeight:900, fontSize:20, minWidth:72, textAlign:"center", boxShadow:"0 4px 16px #7c3aed55", letterSpacing:1, flexShrink:0, lineHeight:1 }}>{qty}</div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+              {supProducts.map((p, idx) => renderOrderProductCard(p, idx, false))}
             </div>
           </div>
 
-          {/* STICKY BOTTOM */}
-          <div style={{ position:"sticky", bottom:0, zIndex:50, background:"linear-gradient(0deg,#020d06 70%,transparent)", padding:"10px 14px 14px" }}>
-            <div style={{ display:"flex", gap:10 }}>
+          {/* STICKY BOTTOM — এই সাপ্লায়ারের দ্রুত অর্ডার + সব সাপ্লায়ার মিলিয়ে কম্বাইন্ড অর্ডার */}
+          <div style={{ position:"sticky", bottom:0, zIndex:50, background:"linear-gradient(0deg,#020d06 85%,transparent)", padding:"10px 14px 14px" }}>
+            <div style={{ display:"flex", gap:10, marginBottom: allSelectedItems.length>0 ? 8 : 0 }}>
               <button onClick={()=>{ openPrintWindow(buildOrderHtml(supProducts, orderQtys, selectedOrderSupplier)); }}
-                style={{ flex:1, background:"linear-gradient(135deg,#0369a1,#0ea5e9)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:15, padding:"13px 0", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8, fontFamily:"inherit", boxShadow:"0 2px 12px #0ea5e933" }}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-                প্রিন্ট
+                style={{ flex:1, background:"linear-gradient(135deg,#0369a1,#0ea5e9)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:14, padding:"12px 0", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6, fontFamily:"inherit", boxShadow:"0 2px 12px #0ea5e933" }}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                শুধু এই সাপ্লায়ার
               </button>
               <button onClick={()=>sendWhatsApp(supProducts, orderQtys, selectedOrderSupplier)}
-                style={{ flex:1, background:"linear-gradient(135deg,#15803d,#22c55e)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:15, padding:"13px 0", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:8, fontFamily:"inherit", boxShadow:"0 2px 12px #22c55e33" }}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413Z"/></svg>
-                WhatsApp
+                style={{ flex:1, background:"linear-gradient(135deg,#15803d,#22c55e)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:14, padding:"12px 0", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6, fontFamily:"inherit", boxShadow:"0 2px 12px #22c55e33" }}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413Z"/></svg>
+                শুধু এই সাপ্লায়ার
               </button>
             </div>
+            {allSelectedItems.length > 0 && (
+              <>
+                <div style={{ textAlign:"center", color:"#a78bfa", fontSize:11, fontWeight:700, marginBottom:6 }}>— অথবা সব সাপ্লায়ার মিলিয়ে ({selectedSupplierCount}টি) একসাথে —</div>
+                <div style={{ display:"flex", gap:10 }}>
+                  <button onClick={()=>{ openPrintWindow(buildMultiSupplierOrderHtml(allSelectedItems, orderQtys)); }}
+                    style={{ flex:1, background:"linear-gradient(135deg,#7c3aed,#5b21b6)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:13.5, padding:"11px 0", cursor:"pointer", fontFamily:"inherit", boxShadow:"0 2px 12px #7c3aed33" }}>
+                    🖨️ সম্মিলিত প্রিন্ট
+                  </button>
+                  <button onClick={()=>sendMultiSupplierWhatsApp(allSelectedItems, orderQtys)}
+                    style={{ flex:1, background:"linear-gradient(135deg,#7c3aed,#5b21b6)", border:"none", borderRadius:14, color:"#fff", fontWeight:800, fontSize:13.5, padding:"11px 0", cursor:"pointer", fontFamily:"inherit", boxShadow:"0 2px 12px #7c3aed33" }}>
+                    💬 সম্মিলিত WhatsApp
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       );
     }
 
-    // ── সাপ্লায়ার তালিকা (order main page) ──
+    // ═══ 🆕 ফ্লো ২: সাপ্লায়ার তালিকা (একাধিক সাপ্লায়ার বেছে বেছে একসাথে অর্ডার) ═══
     return (
-      <div style={{ ...S.page, padding:"0 14px 16px" }}>
-        <button style={S.textBtn} onClick={() => { setInvModal(null); setOrderQtys({}); }}>← ড্যাশবোর্ডে ফিরুন</button>
-        <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:17, marginBottom:2 }}>ক্রয় অর্ডার তৈরি করুন</div>
-        <div style={{ color:"#64748b", fontSize:12, marginBottom:14 }}>
-          <span style={{ color:"#1fd15e", fontWeight:700 }}>{orderSupplierList.length}</span>টি সাপ্লায়ার · {uniqueItems.length}টি পণ্য
+      <div style={{ ...S.page, padding:"0", display:"flex", flexDirection:"column", height:"100%", overflow:"hidden" }}>
+        <div style={{ padding:"0 14px" }}>
+          <button style={S.textBtn} onClick={() => setInvModal('order')}>← ফিরুন</button>
+          <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:17, marginBottom:2 }}>সাপ্লায়ার থেকে ক্রয় অর্ডার</div>
+          <div style={{ color:"#64748b", fontSize:12, marginBottom:14 }}>
+            <span style={{ color:"#1fd15e", fontWeight:700 }}>{orderSupplierList.length}</span>টি সাপ্লায়ার · {uniqueItems.length}টি পণ্য
+            {allSelectedItems.length > 0 && <span style={{ color:"#a78bfa", fontWeight:700, marginLeft:8 }}>· {allSelectedItems.length}টি সিলেক্ট ({selectedSupplierCount} সাপ্লায়ার)</span>}
+          </div>
         </div>
 
-        {uniqueItems.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো পণ্য নেই</div>}
-
-        <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-          {orderSupplierList.map(sup => {
-            const supOrdered = sup.products.filter(p=>(orderQtys[p.id]||0)>0).length;
-            const outCount = sup.products.filter(p=>(p.stock||0)===0).length;
-            const critCount = sup.products.filter(p=>(p.stock||0)>0&&(p.stock||0)<=(p.minStockAlert||5)).length;
-            const urgency = outCount > 0 ? "#ef4444" : critCount > 0 ? "#f59e0b" : "#1fd15e";
-            return (
-              <div key={sup.name} className="tap-card"
-                onClick={() => setInvModal(`order:supplier:${sup.name}`)}
-                style={{ background:`linear-gradient(135deg,${urgency}0d,#071a0f)`, border:`1.5px solid ${supOrdered>0?"#a78bfa66":urgency+"33"}`, borderRadius:16, padding:"14px 16px", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
-                {supOrdered > 0 && (
-                  <div style={{ position:"absolute", top:10, right:12, background:"linear-gradient(135deg,#7c3aed,#5b21b6)", borderRadius:8, padding:"3px 10px", color:"#fff", fontWeight:800, fontSize:11 }}>
-                    {supOrdered}টি অর্ডার ✓
-                  </div>
-                )}
-                <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-                  <div style={{ width:42, height:42, borderRadius:12, background:`${urgency}22`, border:`1px solid ${urgency}44`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                    <span style={{ fontSize:19 }}>🏭</span>
-                  </div>
-                  <div style={{ flex:1, minWidth:0, paddingRight: supOrdered>0 ? 80 : 0 }}>
-                    <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:14 }}>{sup.name}</div>
-                    <div style={{ display:"flex", gap:8, marginTop:4, flexWrap:"wrap" }}>
-                      <span style={{ color:urgency, fontSize:11, fontWeight:700 }}>{sup.products.length}টি পণ্য</span>
-                      {outCount > 0 && <span style={{ color:"#ef4444", fontSize:11, fontWeight:700 }}>🚫 {outCount}টি স্টক শেষ</span>}
-                      {critCount > 0 && <span style={{ color:"#f59e0b", fontSize:11, fontWeight:700 }}>⚠️ {critCount}টি ক্রিটিক্যাল</span>}
+        <div style={{ flex:1, overflowY:"auto", padding:"0 14px 16px" }}>
+          {uniqueItems.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো পণ্য নেই</div>}
+          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+            {orderSupplierList.map(sup => {
+              const supOrdered = sup.products.filter(p=>(orderQtys[p.id]||0)>0).length;
+              const outCount = sup.products.filter(p=>(p.stock||0)===0).length;
+              const critCount = sup.products.filter(p=>(p.stock||0)>0&&(p.stock||0)<=(p.minStockAlert||5)).length;
+              const urgency = outCount > 0 ? "#ef4444" : critCount > 0 ? "#f59e0b" : "#1fd15e";
+              return (
+                <div key={sup.name} className="tap-card"
+                  onClick={() => setInvModal(`order:supplier:${sup.name}`)}
+                  style={{ background:`linear-gradient(135deg,${urgency}0d,#071a0f)`, border:`1.5px solid ${supOrdered>0?"#a78bfa66":urgency+"33"}`, borderRadius:16, padding:"14px 16px", cursor:"pointer", position:"relative", transition:"all 0.2s" }}>
+                  {supOrdered > 0 && (
+                    <div style={{ position:"absolute", top:10, right:12, background:"linear-gradient(135deg,#7c3aed,#5b21b6)", borderRadius:8, padding:"3px 10px", color:"#fff", fontWeight:800, fontSize:11 }}>
+                      {supOrdered}টি অর্ডার ✓
                     </div>
+                  )}
+                  <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+                    <div style={{ width:42, height:42, borderRadius:12, background:`${urgency}22`, border:`1px solid ${urgency}44`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                      <span style={{ fontSize:19 }}>🏭</span>
+                    </div>
+                    <div style={{ flex:1, minWidth:0, paddingRight: supOrdered>0 ? 80 : 0 }}>
+                      <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:14 }}>{sup.name}</div>
+                      <div style={{ display:"flex", gap:8, marginTop:4, flexWrap:"wrap" }}>
+                        <span style={{ color:urgency, fontSize:11, fontWeight:700 }}>{sup.products.length}টি পণ্য</span>
+                        {outCount > 0 && <span style={{ color:"#ef4444", fontSize:11, fontWeight:700 }}>🚫 {outCount}টি স্টক শেষ</span>}
+                        {critCount > 0 && <span style={{ color:"#f59e0b", fontSize:11, fontWeight:700 }}>⚠️ {critCount}টি ক্রিটিক্যাল</span>}
+                      </div>
+                    </div>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={urgency} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
                   </div>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={urgency} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
+        {/* 🆕 একাধিক সাপ্লায়ার থেকে সিলেক্ট করা থাকলে এখান থেকেই একসাথে কম্বাইন্ড অর্ডার তৈরি করা যাবে */}
+        {renderCombinedStickyBar()}
       </div>
     );
   }
@@ -18544,7 +18733,7 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
 
   const rfmData = useMemo(() => {
     const now = Date.now();
-    const d30 = new Date(now - 30 * 86400000).toISOString().split("T")[0];
+    const d30 = _dateKeyOf(new Date(now - 30 * 86400000));
     const totalSales = invoices.reduce((s, i) => s + (i.total || 0), 0);
     const monthSale  = invoices.filter(i => (i.dateKey || "") >= d30).reduce((s, i) => s + (i.total || 0), 0);
 
@@ -19861,7 +20050,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     peForm.productId ? calcNextBatch(peForm.productId, products, purchaseOrders) : "—"
   ), [peForm.productId, products, purchaseOrders]);
   const peDisplayed = useMemo(() => {
-    const todayKey = new Date().toISOString().split("T")[0];
+    const todayKey = _dateKeyOf(new Date());
     return peAllEntries
       .filter(e => {
         if (peFilter === "today") return e.dateKey === todayKey;
@@ -19872,7 +20061,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   }, [peAllEntries, peFilter, peHistDate, peSearch]);
   const peDisplayedTotal = useMemo(() => peDisplayed.reduce((s, e) => s + (e.totalCost || 0), 0), [peDisplayed]);
   const retailTodayPurchases = useMemo(() => {
-    const todayKey2 = new Date().toISOString().split("T")[0];
+    const todayKey2 = _dateKeyOf(new Date());
     return peAllEntries.filter(p => p.dateKey === todayKey2 || (p.createdAt && p.createdAt.startsWith(todayKey2)));
   }, [peAllEntries]);
   const retailTodayPurchaseTotal = useMemo(() => retailTodayPurchases.reduce((s, p) => s + (p.totalCost || 0), 0), [retailTodayPurchases]);
@@ -20146,7 +20335,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       {activeTab === "purchase" && (() => {
         // ── ক্রয় এন্ট্রি সেভ (Weighted Average Cost) ───────────────────────
         const allEntries = peAllEntries;
-        const todayKey   = new Date().toISOString().split("T")[0];
+        const todayKey   = _dateKeyOf(new Date());
 
         // ── পণ্য-ভিত্তিক Auto Batch Number — global helper ব্যবহার ─────────
         const getNextBatch = (productId) => calcNextBatch(productId, products, purchaseOrders);
@@ -21446,7 +21635,7 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
   supplierPayments = [], setSupplierPayments, showToast, currentUser, shopName }) {
 
   const fmt = n => fmtMoney(n);
-  const todayKey = new Date().toISOString().split("T")[0];
+  const todayKey = _dateKeyOf(new Date());
 
   // ── Build supplier list from products + purchase orders ────────────────────
   const suppliers = useMemo(() => {
@@ -21804,7 +21993,7 @@ function ReturnModule({ T, S, invoices, products, customers, returns = [], setRe
   setProducts, setCustomers, setStockMovements, addTxn, showToast, currentUser, shopName }) {
 
   const fmt     = n => fmtMoney(n);
-  const todayKey = new Date().toISOString().split("T")[0];
+  const todayKey = _dateKeyOf(new Date());
 
   // ── State ─────────────────────────────────────────────────────────────────
   const [step,         setStep]         = React.useState(1); // 1=search, 2=select items, 3=confirm
@@ -21989,8 +22178,8 @@ function ReturnModule({ T, S, invoices, products, customers, returns = [], setRe
     const now = new Date();
     let from = "";
     if (filterRange === "today") from = todayKey;
-    else if (filterRange === "week") from = new Date(now - 7*86400000).toISOString().split("T")[0];
-    else if (filterRange === "month") from = now.toISOString().slice(0,7);
+    else if (filterRange === "week") from = _dateKeyOf(new Date(now - 7*86400000));
+    else if (filterRange === "month") from = _monthKeyOf(now);
     const list = filterRange === "all" ? [...returns]
       : filterRange === "month"
         ? returns.filter(r => (r.dateKey||"").startsWith(from))
@@ -22351,19 +22540,19 @@ function ExpenseTracker({ T, S, expenses = [], setExpenses, showToast, currentUs
   const [filterCat,   setFilterCat]   = React.useState("সব");
   const [filterRange, setFilterRange] = React.useState("month"); // today | week | month | all
   const [form,        setForm]        = React.useState({
-    category: "অন্যান্য", amount: "", note: "", date: new Date().toISOString().split("T")[0],
+    category: "অন্যান্য", amount: "", note: "", date: _dateKeyOf(new Date()),
   });
 
   const fmt = n => fmtMoney(n);
-  const todayKey = new Date().toISOString().split("T")[0];
+  const todayKey = _dateKeyOf(new Date());
 
   // ── Date range filter ────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     const now = new Date();
     let from = "";
     if (filterRange === "today") from = todayKey;
-    else if (filterRange === "week") from = new Date(now - 7 * 86400000).toISOString().split("T")[0];
-    else if (filterRange === "month") from = now.toISOString().slice(0, 7); // "2026-06"
+    else if (filterRange === "week") from = _dateKeyOf(new Date(now - 7 * 86400000));
+    else if (filterRange === "month") from = _monthKeyOf(now); // "2026-06"
 
     let list = filterRange === "all" ? [...expenses]
       : filterRange === "month"
@@ -22378,7 +22567,7 @@ function ExpenseTracker({ T, S, expenses = [], setExpenses, showToast, currentUs
   const stats = useMemo(() => {
     const total    = filtered.reduce((s, e) => s + (e.amount || 0), 0);
     const todayAmt = expenses.filter(e => e.date === todayKey).reduce((s, e) => s + (e.amount || 0), 0);
-    const monthKey = new Date().toISOString().slice(0, 7);
+    const monthKey = _monthKeyOf(new Date());
     const monthAmt = expenses.filter(e => (e.date || "").startsWith(monthKey)).reduce((s, e) => s + (e.amount || 0), 0);
     const byCat    = {};
     filtered.forEach(e => { byCat[e.category] = (byCat[e.category] || 0) + (e.amount || 0); });
@@ -23790,7 +23979,7 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast })
                   <div style={{ color: T.sub, fontSize: 10 }}>ইউজারনেম: {u.username}</div>
                   {activePurchasePerm && (
                     <div style={{ color:"#a78bfa", fontSize:10, fontWeight:700, marginTop:2 }}>
-                      🔑 ক্রয় এন্ট্রি — {new Date(activePurchasePerm.expiresAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})} পর্যন্ত
+                      🔑 ক্রয় এন্ট্রি — {new Date(activePurchasePerm.expiresAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",timeZone:"Asia/Dhaka"})} পর্যন্ত
                     </div>
                   )}
                 </div>
@@ -23946,7 +24135,7 @@ function Settings_({ T, S, shopName,
     const checks = [];
     const add = (feature, name, status, detail) => checks.push({ feature, name, status, detail });
     const cutoffDate = new Date(); cutoffDate.setDate(cutoffDate.getDate() - 30);
-    const cutoff = cutoffDate.toISOString().split("T")[0];
+    const cutoff = _dateKeyOf(cutoffDate);
 
     if (!fssReady || !FSS._db) {
       add("সাধারণ", "Firestore সংযোগ", "fail", "FSS প্রস্তুত না — ইন্টারনেট/কনফিগ চেক করুন");
@@ -23982,7 +24171,7 @@ function Settings_({ T, S, shopName,
         pushStockMovement({
           id: testId, productId: "diag-test", productName: "ডায়াগনস্টিক টেস্ট এন্ট্রি",
           stock: 0, prevStock: 0, delta: 0, at: new Date().toISOString(),
-          dateKey: new Date().toISOString().split("T")[0], source: "diagnostic-test",
+          dateKey: _dateKeyOf(new Date()), source: "diagnostic-test",
         });
         await new Promise(r => setTimeout(r, 1500));
         const snap = await getDoc(doc(FSS._db, "stockMovements", testId));
@@ -24034,7 +24223,7 @@ function Settings_({ T, S, shopName,
           FSS.setRecord("txns", testId, withTs({
             id: testId, customerId: "diag-test", type: "joma", amount: 0, balanceAfter: 0,
             invoiceId: null, note: "ডায়াগনস্টিক টেস্ট এন্ট্রি", source: "diagnostic-test",
-            date: new Date().toISOString(), dateKey: new Date().toISOString().split("T")[0],
+            date: new Date().toISOString(), dateKey: _dateKeyOf(new Date()),
           }));
         }
         await new Promise(r => setTimeout(r, 1500));
@@ -24053,7 +24242,7 @@ function Settings_({ T, S, shopName,
     // ── ৩) cashLogs windowing ──
     try {
       const cutoffCash = new Date(); cutoffCash.setDate(cutoffCash.getDate() - 35);
-      const cutoffCashKey = cutoffCash.toISOString().split("T")[0];
+      const cutoffCashKey = _dateKeyOf(cutoffCash);
       const localCount = (cashLogs || []).length;
       const outOfWindow = (cashLogs || []).filter(c => (c.dateKey || "") < cutoffCashKey).length;
       add("cashLogs", "Windowed তালিকা শুধু গত ৩৫ দিনের কিনা",
@@ -24061,7 +24250,7 @@ function Settings_({ T, S, shopName,
         outOfWindow === 0 ? `${localCount}টি এন্ট্রি, সবই ৩৫ দিনের মধ্যে` : `${outOfWindow}টি এন্ট্রি ৩৫ দিনের বাইরে চলে এসেছে — windowing কাজ করছে না`);
 
       try {
-        const q = query(collection(FSS._db, "cashLogs"), where("dateKey", ">=", cutoffCashKey), where("dateKey", "<=", new Date().toISOString().split("T")[0]), orderBy("dateKey", "desc"), limit(1));
+        const q = query(collection(FSS._db, "cashLogs"), where("dateKey", ">=", cutoffCashKey), where("dateKey", "<=", _dateKeyOf(new Date())), orderBy("dateKey", "desc"), limit(1));
         const snap = await getDocs(q);
         add("cashLogs", "History রিপোর্ট on-demand রেঞ্জ-কোয়েরি", "pass", `সফল — কোনো এরর ছাড়া কোয়েরি চলেছে (${snap.size} রেকর্ড)`);
       } catch (err) {
@@ -24081,7 +24270,7 @@ function Settings_({ T, S, shopName,
         const testId = `difftest_cash_${Date.now()}`;
         pushCashLog({
           id: testId, type: "opening", amount: 0, note: "ডায়াগনস্টিক টেস্ট এন্ট্রি",
-          date: new Date().toISOString(), dateKey: new Date().toISOString().split("T")[0],
+          date: new Date().toISOString(), dateKey: _dateKeyOf(new Date()),
           createdAt: new Date().toISOString(), by: "diagnostic-test",
         });
         await new Promise(r => setTimeout(r, 1500));
@@ -25286,7 +25475,7 @@ function Settings_({ T, S, shopName,
                           ))}
                         </div>
                       ))}
-                      <div style={{ color:"#64748b", fontSize:8, marginTop:2 }}>সর্বশেষ চালানো হয়েছে: {new Date(syncDiag.ranAt).toLocaleTimeString("bn-BD", { hour:"2-digit", minute:"2-digit" })}</div>
+                      <div style={{ color:"#64748b", fontSize:8, marginTop:2 }}>সর্বশেষ চালানো হয়েছে: {new Date(syncDiag.ranAt).toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit", timeZone: "Asia/Dhaka" })}</div>
                     </div>
                   );
                 })()}
@@ -25346,7 +25535,7 @@ function Settings_({ T, S, shopName,
                           ))}
                         </div>
                       ))}
-                      <div style={{ color:"#64748b", fontSize:8, marginTop:2 }}>সর্বশেষ চালানো হয়েছে: {new Date(logicTest.ranAt).toLocaleTimeString("bn-BD", { hour:"2-digit", minute:"2-digit" })}</div>
+                      <div style={{ color:"#64748b", fontSize:8, marginTop:2 }}>সর্বশেষ চালানো হয়েছে: {new Date(logicTest.ranAt).toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit", timeZone: "Asia/Dhaka" })}</div>
                     </div>
                   );
                 })()}
@@ -27089,7 +27278,7 @@ function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken }
             {backupInfo?.modifiedTime && (
               <BRS_InfoChip
                 icon="📅"
-                text={new Date(backupInfo.modifiedTime).toLocaleDateString("en-US")}
+                text={new Date(backupInfo.modifiedTime).toLocaleDateString("en-US", { timeZone: "Asia/Dhaka" })}
                 color="#94a3b8"
               />
             )}
@@ -29333,7 +29522,7 @@ function BRS_BackupTimestamp({ iso, label, color }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color }}>
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-      {label}: {d.toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit" })} · {ago}
+      {label}: {d.toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Dhaka" })} · {ago}
     </div>
   );
 }
