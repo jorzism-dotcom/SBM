@@ -441,6 +441,43 @@ const getKnownSuppliers = (products = [], purchaseOrders = []) => {
   return Array.from(set);
 };
 
+// ── 🏭 computeSupplierDueMap — সাপ্লায়ার-ভিত্তিক মোট ক্রয়/পরিশোধ/বাকি হিসাব ──
+// একটাই কেন্দ্রীয় হিসাব — SupplierPaymentModule (সাপ্লায়ার পেজ) ও Dashboard-এর
+// ক্যাশ উইথড্রয়াল (সাপ্লায়ারকে পেমেন্ট) — দুই জায়গাতেই এই একই ফাংশন ব্যবহার হয়
+// যাতে "বর্তমান বাকি" সবখানে সবসময় সিঙ্ক থাকে। supplierPayments-এর প্রতিটি এন্ট্রি
+// সাধারণত একটি পরিশোধ (type omitted/"payment" → paid বাড়ে); type:"due" হলে সেটা
+// ম্যানুয়ালি যোগ করা বাড়তি বাকি (paid কমে, ফলে due বাড়ে)।
+function computeSupplierDueMap(products = [], purchaseOrders = [], supplierPayments = []) {
+  const map = {};
+  const ensure = (name) => {
+    if (!map[name]) map[name] = { name, productCount: 0, totalStock: 0, totalPurchased: 0, paid: 0, due: 0 };
+    return map[name];
+  };
+  (products || []).forEach(p => {
+    const name = (p.company || p.supplier || "").trim();
+    if (!name) return;
+    const row = ensure(name);
+    row.productCount++;
+    row.totalStock += (p.stock || 0);
+  });
+  (purchaseOrders || []).forEach(po => {
+    const name = (po.supplier || po.company || "").trim();
+    if (!name) return;
+    const row = ensure(name);
+    const amt = (po.items || []).reduce((s, it) => s + (it.qty || 0) * (it.costPrice || it.price || 0), 0);
+    row.totalPurchased += amt;
+  });
+  (supplierPayments || []).forEach(p => {
+    const name = (p.supplierName || "").trim();
+    if (!name) return;
+    const row = ensure(name);
+    const signed = p.type === "due" ? -(p.amount || 0) : (p.amount || 0);
+    row.paid += signed;
+  });
+  Object.values(map).forEach(row => { row.due = Math.max(0, row.totalPurchased - row.paid); });
+  return map;
+}
+
 // ─── SearchBar — reusable smart search input component ───────────────────────
 function SearchBar({ placeholder, value, onChange, onClear, color = "#22c55e", T, S, style, voiceColor, showCount, count, accentBorder, autoFocus }) {
   const [focused, setFocused] = React.useState(false);
@@ -12000,6 +12037,8 @@ function SmartBusinessMgmt() {
               expenses={expenses}
               cashFlow={cashFlow}
               fssReady={fssReady}
+              supplierPayments={supplierPayments}
+              setSupplierPayments={setSupplierPayments}
               onGoToPurchaseEntry={() => { setDashModal({ type: "purchase-entry" }); }}
             />
           </ErrorBoundary>
@@ -16308,7 +16347,7 @@ function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements
 }
 
 // ── Dashboard ──────────────────────────────────────────────────────────────────
-function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, currentUser, onGoToPurchaseEntry, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false }) {
+function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, currentUser, onGoToPurchaseEntry, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, supplierPayments = [], setSupplierPayments }) {
   const [viewInv,    setViewInv]    = useState(null);
   const [viewPayInv, setViewPayInv] = useState(null);
   const [listDate,   setListDate]   = useState(() => todayEn()); // YYYY-MM-DD
@@ -16423,6 +16462,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   const [cashNote,    setCashNote]    = useState("");
   const [cashType,    setCashType]    = useState("owner"); // "owner" | "supplier" | "expense" | "other"
   const [cashParty,   setCashParty]   = useState(""); // কোম্পানি/পক্ষের নাম (supplier/other এর জন্য)
+  const [cashPartyOpen, setCashPartyOpen] = useState(false); // 🆕 সাপ্লায়ার নাম অটো-সাজেস্ট ড্রপডাউন খোলা/বন্ধ
   const [cashHistoryDate, setCashHistoryDate] = useState(() => todayEn()); // হিস্ট্রি পেজের সিলেক্টেড তারিখ
   const [cashHistDateTo,  setCashHistDateTo]  = useState(() => todayEn()); // কাস্টম রেঞ্জ end date
   const [cashHistRangeMode, setCashHistRangeMode] = useState(false); // true = date range mode
@@ -16440,6 +16480,24 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
   };
 
   const todayKeyStr = todayEn();
+
+  // ── 🆕 সাপ্লায়ারকে পেমেন্ট (উইথড্রয়াল) — সাপ্লায়ার নাম সার্চ/অটো-সাজেস্ট + বর্তমান বাকি অটো-শো ──
+  // একই computeSupplierDueMap ব্যবহার করা হয় যা সাপ্লায়ার পেজেও (SupplierPaymentModule) ব্যবহৃত হয়,
+  // ফলে এখানে দেখানো বাকি সবসময় সাপ্লায়ার পেজের সাথে সিঙ্ক থাকে।
+  const dashSupplierDueMap = useMemo(() =>
+    computeSupplierDueMap(products, purchaseOrders, supplierPayments),
+    [products, purchaseOrders, supplierPayments]
+  );
+  const dashSupplierNames = useMemo(() =>
+    Object.values(dashSupplierDueMap).sort((a, b) => b.due - a.due).map(s => s.name),
+    [dashSupplierDueMap]
+  );
+  const cashPartyFiltered = useMemo(() => {
+    const q = cashParty.trim().toLowerCase();
+    if (!q) return dashSupplierNames.slice(0, 20);
+    return dashSupplierNames.filter(n => n.toLowerCase().includes(q)).slice(0, 20);
+  }, [cashParty, dashSupplierNames]);
+  const cashPartyDue = cashType === "supplier" ? (dashSupplierDueMap[cashParty.trim()]?.due || 0) : 0;
 
   // ── 💰 cashLogs windowing — লোকাল cashLogs state এখন Firestore-এ শুধু ৩৫ দিনের
   // windowed real-time sync (দেখুন উপরের useEffect)। History রিপোর্টে
@@ -16538,7 +16596,23 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     // state-এর পাশাপাশি সরাসরি Firestore-এ push করতে হয় (stockMovements-এর মতো)।
     pushCashLog(entry);
     setCashLogs(prev => [entry, ...(prev || [])]);
-    setCashAmount(""); setCashNote(""); setCashParty(""); setCashType("owner"); setCashModal(null);
+    // 🆕 "সাপ্লায়ারকে দেওয়া" উইথড্রয়াল হলে supplierPayments-এও একটা পেমেন্ট এন্ট্রি যোগ হবে,
+    // যাতে সাপ্লায়ার পেজে/সবখানে ওই সাপ্লায়ারের বাকির হিসাব তৎক্ষণাৎ আপডেট হয়ে যায়।
+    if (type === "withdrawal" && cashType === "supplier" && cashParty.trim() && typeof setSupplierPayments === "function") {
+      const payEntry = {
+        id: uid(),
+        supplierName: cashParty.trim(),
+        amount: amt,
+        method: "নগদ",
+        type: "payment",
+        note: cashNote.trim() || "ক্যাশ ড্রয়ার থেকে উইথড্রয়াল",
+        dateKey: todayKeyStr,
+        addedBy: currentUser?.name || "মালিক",
+        createdAt: new Date().toISOString(),
+      };
+      setSupplierPayments(prev => [payEntry, ...(prev || [])]);
+    }
+    setCashAmount(""); setCashNote(""); setCashParty(""); setCashType("owner"); setCashModal(null); setCashPartyOpen(false);
   };
 
 
@@ -16750,7 +16824,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
     const isOpening = cashModal === "opening";
     return (
       <div style={{ ...S.page, minHeight:"100%", background:"linear-gradient(160deg,#150f30,#1e1042 45%,#150f30)" }}>
-        <button style={S.textBtn} onClick={() => { setCashModal(null); setCashAmount(""); setCashNote(""); setCashParty(""); setCashType("owner"); }}>← ড্যাশবোর্ডে ফিরুন</button>
+        <button style={S.textBtn} onClick={() => { setCashModal(null); setCashAmount(""); setCashNote(""); setCashParty(""); setCashType("owner"); setCashPartyOpen(false); }}>← ড্যাশবোর্ডে ফিরুন</button>
 
         <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:20 }}>
           <div style={{ width:46, height:46, borderRadius:14, display:"flex", alignItems:"center", justifyContent:"center", fontSize:22,
@@ -16787,10 +16861,59 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
           </>
         )}
 
-        {!isOpening && (cashType === "supplier" || cashType === "other") && (
+        {!isOpening && cashType === "supplier" && (
           <div style={{ marginBottom:14 }}>
             <div style={{ color:"#94a3b8", fontSize:11.5, fontWeight:800, marginBottom:6, letterSpacing:0.5 }}>
-              {cashType === "supplier" ? "সাপ্লায়ারের নাম" : "কার নাম / কোথায়"}
+              সাপ্লায়ারের নাম
+            </div>
+            <div style={{ position:"relative" }}>
+              <input type="text" placeholder="🔍 সাপ্লায়ার খুঁজুন..." value={cashParty}
+                onChange={e => { setCashParty(e.target.value); setCashPartyOpen(true); }}
+                onFocus={() => setCashPartyOpen(true)}
+                onBlur={() => setTimeout(() => setCashPartyOpen(false), 200)}
+                autoComplete="off"
+                style={{ width:"100%", background:"rgba(255,255,255,0.04)", border:"1px solid rgba(167,139,250,0.25)", borderRadius:14, padding:"14px 16px", color:"#fff", fontSize:14, fontFamily:"inherit", boxSizing:"border-box" }} />
+              {cashPartyOpen && cashPartyFiltered.length > 0 && (
+                <div style={{ position:"absolute", top:"100%", left:0, right:0, marginTop:4, zIndex:50,
+                  background:"#1e1042", border:"1px solid rgba(167,139,250,0.3)", borderRadius:14,
+                  maxHeight:220, overflowY:"auto", boxShadow:"0 12px 28px rgba(0,0,0,0.5)" }}>
+                  {cashPartyFiltered.map(name => {
+                    const d = dashSupplierDueMap[name]?.due || 0;
+                    return (
+                      <div key={name} onMouseDown={() => { setCashParty(name); setCashPartyOpen(false); }}
+                        style={{ padding:"11px 14px", cursor:"pointer", borderBottom:"1px solid rgba(167,139,250,0.15)",
+                          display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                        <span style={{ color:"#f1edff", fontSize:13, fontWeight:700 }}>{name}</span>
+                        <span style={{ color: d>0 ? "#f87171" : "#4ade80", fontSize:12, fontWeight:800 }}>
+                          {d>0 ? `বাকি ৳${fmtMoney(d)}` : "✓ পরিশোধ"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            {/* 🆕 সিলেক্ট করা সাপ্লায়ারের বর্তমান বাকি অটো-শো — ক্লিক করলে পুরো বাকি টাকাটাই পরিমাণে বসে যাবে */}
+            {cashParty.trim() && (
+              <div onClick={() => { if (cashPartyDue > 0) setCashAmount(String(cashPartyDue)); }}
+                style={{ marginTop:8, padding:"9px 12px", borderRadius:12,
+                  background: cashPartyDue>0 ? "rgba(239,68,68,0.12)" : "rgba(34,197,94,0.12)",
+                  border: `1px solid ${cashPartyDue>0 ? "rgba(239,68,68,0.3)" : "rgba(34,197,94,0.3)"}`,
+                  display:"flex", justifyContent:"space-between", alignItems:"center",
+                  cursor: cashPartyDue>0 ? "pointer" : "default" }}>
+                <span style={{ color:"#cbd5e1", fontSize:12, fontWeight:700 }}>বর্তমান বাকি</span>
+                <span style={{ color: cashPartyDue>0 ? "#f87171" : "#4ade80", fontSize:14, fontWeight:900 }}>
+                  {cashPartyDue>0 ? `৳${fmtMoney(cashPartyDue)}` : "✓ পরিশোধ"}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {!isOpening && cashType === "other" && (
+          <div style={{ marginBottom:14 }}>
+            <div style={{ color:"#94a3b8", fontSize:11.5, fontWeight:800, marginBottom:6, letterSpacing:0.5 }}>
+              কার নাম / কোথায়
             </div>
             <input type="text" placeholder="" value={cashParty} onChange={e => setCashParty(e.target.value)}
               style={{ width:"100%", background:"rgba(255,255,255,0.04)", border:"1px solid rgba(167,139,250,0.25)", borderRadius:14, padding:"14px 16px", color:"#fff", fontSize:14, fontFamily:"inherit", boxSizing:"border-box" }} />
@@ -16813,7 +16936,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
         </div>
 
         <div style={{ display:"flex", gap:10 }}>
-          <button onClick={() => { setCashModal(null); setCashAmount(""); setCashNote(""); setCashParty(""); setCashType("owner"); }}
+          <button onClick={() => { setCashModal(null); setCashAmount(""); setCashNote(""); setCashParty(""); setCashType("owner"); setCashPartyOpen(false); }}
             style={{ flex:1, background:"rgba(255,255,255,0.06)", color:"#cbd5e1", border:"1px solid rgba(255,255,255,0.1)", borderRadius:14, padding:"14px", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:"inherit" }}>
             বাতিল
           </button>
@@ -22330,40 +22453,28 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
   const fmt = n => fmtMoney(n);
   const todayKey = _dateKeyOf(new Date());
 
-  // ── Build supplier list from products + purchase orders ────────────────────
-  const suppliers = useMemo(() => {
-    const map = {};
-    // Products থেকে company/supplier নাম extract
-    products.forEach(p => {
-      const name = (p.company || p.supplier || "").trim();
-      if (!name) return;
-      if (!map[name]) map[name] = { name, productCount: 0, totalStock: 0, totalPurchased: 0 };
-      map[name].productCount++;
-      map[name].totalStock += (p.stock || 0);
-    });
-    // Purchase Orders থেকে total purchased amount calculate
-    purchaseOrders.forEach(po => {
-      const name = (po.supplier || po.company || "").trim();
-      if (!name || !map[name]) return;
-      const amt = (po.items || []).reduce((s, it) => s + (it.qty || 0) * (it.costPrice || it.price || 0), 0);
-      map[name].totalPurchased += amt;
-    });
-    return Object.values(map).sort((a, b) => b.totalPurchased - a.totalPurchased);
-  }, [products, purchaseOrders]);
-
-  // ── Per-supplier payment summary ───────────────────────────────────────────
+  // ── Build supplier due-map (কেন্দ্রীয় হিসাব — Dashboard-এর ক্যাশ উইথড্রয়ালের সাথেও শেয়ার করা) ──
+  const supplierDueMap = useMemo(() =>
+    computeSupplierDueMap(products, purchaseOrders, supplierPayments),
+    [products, purchaseOrders, supplierPayments]
+  );
+  const suppliers = useMemo(() =>
+    Object.values(supplierDueMap).sort((a, b) => b.totalPurchased - a.totalPurchased),
+    [supplierDueMap]
+  );
+  // ── Per-supplier পেমেন্ট সামারি (lastPaid/count — শুধু ইতিহাস তালিকায় দেখানোর জন্য) ──
   const paymentSummary = useMemo(() => {
     const summary = {};
     supplierPayments.forEach(p => {
-      if (!summary[p.supplierName]) summary[p.supplierName] = { paid: 0, count: 0, lastPaid: "" };
-      summary[p.supplierName].paid += p.amount || 0;
-      summary[p.supplierName].count++;
-      if (p.dateKey > (summary[p.supplierName].lastPaid || "")) {
-        summary[p.supplierName].lastPaid = p.dateKey;
-      }
+      const name = (p.supplierName || "").trim();
+      if (!name) return;
+      if (!summary[name]) summary[name] = { paid: 0, count: 0, lastPaid: "" };
+      summary[name].paid = supplierDueMap[name]?.paid || 0;
+      summary[name].count++;
+      if (p.dateKey > (summary[name].lastPaid || "")) summary[name].lastPaid = p.dateKey;
     });
     return summary;
-  }, [supplierPayments]);
+  }, [supplierPayments, supplierDueMap]);
 
   // ── State ─────────────────────────────────────────────────────────────────
   const [selectedSupplier, setSelectedSupplier] = React.useState(null);
@@ -22373,6 +22484,11 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
   const [payDate, setPayDate]             = React.useState(todayKey);
   const [payMethod, setPayMethod]         = React.useState("নগদ");
   const [search, setSearch]              = React.useState("");
+  // 🆕 ম্যানুয়ালি বাকি যোগ করার ফর্ম (সাপ্লায়ার আমার কাছে যে টাকা পাবে তা সরাসরি এন্ট্রি)
+  const [showDueForm, setShowDueForm]     = React.useState(false);
+  const [dueAmount, setDueAmount]         = React.useState("");
+  const [dueNote, setDueNote]             = React.useState("");
+  const [dueDate, setDueDate]             = React.useState(todayKey);
 
   const PAY_METHODS = ["নগদ", "ব্যাংক ট্রান্সফার", "চেক", "bKash", "Nagad", "অন্যান্য"];
 
@@ -22384,8 +22500,9 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
   }, [suppliers, search]);
 
   // ── Selected supplier data ─────────────────────────────────────────────────
+  const selInfo = selectedSupplier ? (supplierDueMap[selectedSupplier.name] || selectedSupplier) : null;
   const selSummary = selectedSupplier ? (paymentSummary[selectedSupplier.name] || { paid: 0, count: 0 }) : null;
-  const selDue = selectedSupplier ? Math.max(0, (selectedSupplier.totalPurchased || 0) - (selSummary?.paid || 0)) : 0;
+  const selDue = selInfo?.due || 0;
   const selPayments = useMemo(() =>
     supplierPayments.filter(p => p.supplierName === selectedSupplier?.name)
       .sort((a, b) => (b.dateKey || "").localeCompare(a.dateKey || "")),
@@ -22401,6 +22518,7 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
       supplierName: selectedSupplier.name,
       amount: amt,
       method: payMethod,
+      type: "payment",
       note: payNote.trim(),
       dateKey: payDate || todayKey,
       addedBy: currentUser?.name || "মালিক",
@@ -22412,48 +22530,65 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
   }, [payAmount, payMethod, payNote, payDate, selectedSupplier, currentUser, todayKey,
       setSupplierPayments, showToast]);
 
+  // ── 🆕 Save manual due (সাপ্লায়ার আমার কাছে যে টাকা পাবে তা ম্যানুয়ালি যোগ) ──────
+  const saveManualDue = React.useCallback(() => {
+    const amt = parseFloat(dueAmount);
+    if (!amt || amt <= 0) { showToast("সঠিক পরিমাণ দিন", "#ef4444"); return; }
+    const entry = {
+      id: uid(),
+      supplierName: selectedSupplier.name,
+      amount: amt,
+      type: "due",
+      note: dueNote.trim(),
+      dateKey: dueDate || todayKey,
+      addedBy: currentUser?.name || "মালিক",
+      createdAt: new Date().toISOString(),
+    };
+    setSupplierPayments(prev => [entry, ...prev]);
+    showToast(`✅ ৳${fmt(amt)} বাকি যোগ হয়েছে`, "#f59e0b");
+    setDueAmount(""); setDueNote(""); setDueDate(todayKey); setShowDueForm(false);
+  }, [dueAmount, dueNote, dueDate, selectedSupplier, currentUser, todayKey,
+      setSupplierPayments, showToast]);
+
   // ── Delete payment ─────────────────────────────────────────────────────────
   const deletePayment = React.useCallback((id) => {
     // 🆕 ফিক্স: আগে কোনো কনফার্মেশন ছাড়াই সরাসরি স্থায়ীভাবে মুছে যেত — এটা সাপ্লায়ারের
     // বাকি/পাওনার হিসাবকেও প্রভাবিত করে, তাই ভুল ক্লিক ঠেকাতে confirm যোগ করা হলো।
-    if (!window.confirm("এই পেমেন্ট এন্ট্রি মুছবেন? এটা ফেরত আনা যাবে না এবং সাপ্লায়ারের বাকির হিসাব বদলে যাবে।")) return;
+    if (!window.confirm("এই এন্ট্রি মুছবেন? এটা ফেরত আনা যাবে না এবং সাপ্লায়ারের বাকির হিসাব বদলে যাবে।")) return;
     setSupplierPayments(prev => prev.filter(p => p.id !== id));
     // 🔴 ফিক্স: supplierPayments-এ এখন sync layer আর diff দেখে অটো-ডিলিট করে না
     // (দেখুন useFSSCollection("supplierPayments",...)-এর syncDeletes:false) — তাই
     // ইচ্ছাকৃত ডিলিটের সময় এখানেই সরাসরি Firestore থেকে মুছে ফেলা হয়।
     if (FSS.isReady()) FSS.deleteRecord("supplierPayments", id);
-    showToast("পেমেন্ট মুছে ফেলা হয়েছে", "#f59e0b");
+    showToast("এন্ট্রি মুছে ফেলা হয়েছে", "#f59e0b");
   }, [setSupplierPayments, showToast]);
 
   // ── Total stats ────────────────────────────────────────────────────────────
   const totalPurchased = suppliers.reduce((s, sup) => s + sup.totalPurchased, 0);
-  const totalPaid = Object.values(paymentSummary).reduce((s, p) => s + p.paid, 0);
+  const totalPaid = Object.values(supplierDueMap).reduce((s, sup) => s + sup.paid, 0);
   const totalDue = Math.max(0, totalPurchased - totalPaid);
+  // 🆕 আজকের পরিশোধ — আজ যত টাকা প্রকৃত পরিশোধ হয়েছে (ম্যানুয়াল বাকি-যোগ এর মধ্যে ধরা হয়নি)
+  const todayPaidTotal = useMemo(() =>
+    supplierPayments
+      .filter(p => p.dateKey === todayKey && p.type !== "due")
+      .reduce((s, p) => s + (p.amount || 0), 0),
+    [supplierPayments, todayKey]
+  );
 
   return (
     <div style={{ ...S.page, paddingBottom: 100 }}>
 
       {/* ── Header ── */}
       <div style={{ ...S.header, marginBottom: 0 }}>
-        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent: selectedSupplier ? "flex-start" : "center", gap:10, position:"relative" }}>
           {selectedSupplier ? (
-            <button onClick={() => { setSelectedSupplier(null); setShowPayForm(false); }}
+            <button onClick={() => { setSelectedSupplier(null); setShowPayForm(false); setShowDueForm(false); }}
               style={{ background:"none", border:"none", color:T.accent, cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700, padding:0 }}>← সব</button>
           ) : (
-            <>
-              <div style={{ width:4, height:22, borderRadius:2, background:"linear-gradient(180deg,#f59e0b,#d97706)" }} />
-              <span style={{ ...S.headerTitle, fontSize:17 }}>🏭 সাপ্লায়ার</span>
-            </>
+            <span style={{ ...S.headerTitle, fontSize:22, fontWeight:900, textAlign:"center", letterSpacing:0.3,
+              textShadow:"0 1px 6px rgba(0,0,0,0.35)" }}>🏭 সাপ্লায়ার</span>
           )}
         </div>
-        {selectedSupplier && (
-          <button onClick={() => setShowPayForm(v => !v)}
-            style={{ ...S.addBtn, width:"auto", padding:"8px 16px", margin:0,
-              background:"linear-gradient(135deg,#d97706,#f59e0b)",
-              display:"flex", alignItems:"center", gap:6 }}>
-            <IcPlus /><span style={{ fontSize:13, fontWeight:800 }}>পেমেন্ট যোগ</span>
-          </button>
-        )}
       </div>
 
       {/* ══ SUPPLIER LIST ══ */}
@@ -22461,15 +22596,14 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
         <div style={{ marginTop:14 }}>
 
           {/* Summary cards */}
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:12 }}>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:12 }}>
             {[
-              { label:"মোট ক্রয়",   value:`৳${fmt(totalPurchased)}`, color:"#6366f1" },
-              { label:"মোট পরিশোধ", value:`৳${fmt(totalPaid)}`,     color:"#22c55e" },
-              { label:"মোট বাকি",   value:`৳${fmt(totalDue)}`,     color: totalDue>0?"#ef4444":"#22c55e" },
+              { label:"বর্তমান বাকি",   value:`৳${fmt(totalDue)}`,      color: totalDue>0?"#ef4444":"#22c55e" },
+              { label:"আজকের পরিশোধ",  value:`৳${fmt(todayPaidTotal)}`, color:"#22c55e" },
             ].map(s => (
-              <div key={s.label} className="qc-gradient-card" style={{ ...S.card, padding:"10px 12px" }}>
-                <div style={{ color:s.color, fontWeight:900, fontSize:15 }}>{s.value}</div>
-                <div style={{ color:T.sub, fontSize:10, marginTop:2 }}>{s.label}</div>
+              <div key={s.label} className="qc-gradient-card" style={{ ...S.card, padding:"12px 14px" }}>
+                <div style={{ color:s.color, fontWeight:900, fontSize:18 }}>{s.value}</div>
+                <div style={{ color:T.sub, fontSize:11, marginTop:3 }}>{s.label}</div>
               </div>
             ))}
           </div>
@@ -22544,45 +22678,75 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
       {selectedSupplier && (
         <div style={{ marginTop:14 }}>
 
-          {/* Summary */}
-          <div className="qc-gradient-card" style={{ ...S.card, padding:"14px 16px", marginBottom:12,
+          {/* Summary — শুধু "বর্তমান বাকি" */}
+          <div className="qc-gradient-card" style={{ ...S.card, padding:"16px 18px", marginBottom:12,
             border:`1.5px solid ${selDue>0?"#ef444433":"#22c55e33"}` }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
               <div>
                 <div style={{ color:T.text, fontWeight:900, fontSize:16 }}>{selectedSupplier.name}</div>
                 <div style={{ color:T.sub, fontSize:11, marginTop:2 }}>
-                  {selectedSupplier.productCount}টি পণ্য · {selPayments.length}টি পেমেন্ট
+                  {selectedSupplier.productCount}টি পণ্য · {selPayments.length}টি এন্ট্রি
                 </div>
               </div>
               <div style={{ textAlign:"right" }}>
-                <div style={{ color:selDue>0?"#ef4444":"#22c55e", fontWeight:900, fontSize:18 }}>
-                  {selDue>0?`৳${fmt(selDue)} বাকি`:"✓ পরিশোধ"}
+                <div style={{ color:T.sub, fontSize:11, marginBottom:2 }}>বর্তমান বাকি</div>
+                <div style={{ color:selDue>0?"#ef4444":"#22c55e", fontWeight:900, fontSize:22 }}>
+                  {selDue>0?`৳${fmt(selDue)}`:"✓ পরিশোধ"}
                 </div>
               </div>
             </div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
-              {[
-                { label:"মোট ক্রয়", value:`৳${fmt(selectedSupplier.totalPurchased)}`, color:"#6366f1" },
-                { label:"পরিশোধ",   value:`৳${fmt(selSummary?.paid||0)}`, color:"#22c55e" },
-                { label:"বাকি",     value:`৳${fmt(selDue)}`, color:selDue>0?"#ef4444":"#22c55e" },
-              ].map(s => (
-                <div key={s.label} style={{ background:T.border+"44", borderRadius:10, padding:"8px 10px", textAlign:"center" }}>
-                  <div style={{ color:s.color, fontWeight:800, fontSize:13 }}>{s.value}</div>
-                  <div style={{ color:T.sub, fontSize:10 }}>{s.label}</div>
-                </div>
-              ))}
-            </div>
-            {/* Progress */}
-            {selectedSupplier.totalPurchased > 0 && (
-              <div style={{ marginTop:10 }}>
-                <div style={{ height:6, borderRadius:6, background:T.border }}>
-                  <div style={{ height:"100%", borderRadius:6, transition:"width 0.6s ease",
-                    width:`${Math.min(100,(selSummary?.paid||0)/selectedSupplier.totalPurchased*100)}%`,
-                    background: selDue===0?"#22c55e":selSummary?.paid>=selectedSupplier.totalPurchased/2?"#f59e0b":"#ef4444" }} />
-                </div>
-              </div>
-            )}
           </div>
+
+          {/* Action buttons — বাকি যোগ / পেমেন্ট যোগ */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:12 }}>
+            <button onClick={() => { setShowDueForm(v => !v); setShowPayForm(false); }}
+              style={{ ...S.addBtn, width:"100%", margin:0, padding:"10px 12px",
+                background: showDueForm ? "linear-gradient(135deg,#b91c1c,#7f1d1d)" : "linear-gradient(135deg,#ef4444,#b91c1c)",
+                display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+              <IcPlus /><span style={{ fontSize:13, fontWeight:800 }}>বাকি যোগ</span>
+            </button>
+            <button onClick={() => { setShowPayForm(v => !v); setShowDueForm(false); }}
+              style={{ ...S.addBtn, width:"100%", margin:0, padding:"10px 12px",
+                background: showPayForm ? "linear-gradient(135deg,#b45309,#78350f)" : "linear-gradient(135deg,#d97706,#f59e0b)",
+                display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+              <IcPlus /><span style={{ fontSize:13, fontWeight:800 }}>পেমেন্ট যোগ</span>
+            </button>
+          </div>
+
+          {/* 🆕 ম্যানুয়াল বাকি যোগ ফর্ম — সাপ্লায়ার আমার কাছে যে টাকা পাবে তা সরাসরি এন্ট্রি (পেমেন্ট পদ্ধতি নেই) */}
+          {showDueForm && (
+            <div className="qc-gradient-card" style={{ ...S.card, padding:"14px 16px", marginBottom:12,
+              border:"1.5px solid #ef444444" }}>
+              <div style={{ color:T.text, fontWeight:800, fontSize:13, marginBottom:12 }}>➕ বাকি যোগ করুন</div>
+
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}>
+                <div>
+                  <div style={{ color:T.sub, fontSize:11, fontWeight:700, marginBottom:4 }}>পরিমাণ (৳)</div>
+                  <input type="number" inputMode="numeric" placeholder="০"
+                    value={dueAmount} onChange={e => setDueAmount(e.target.value)}
+                    style={{ ...S.input, marginTop:0, fontSize:18, fontWeight:800, color:"#ef4444" }} />
+                </div>
+                <div>
+                  <div style={{ color:T.sub, fontSize:11, fontWeight:700, marginBottom:4 }}>তারিখ</div>
+                  <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)}
+                    style={{ ...S.input, marginTop:0, fontSize:13 }} />
+                </div>
+              </div>
+
+              <input placeholder="নোট (ঐচ্ছিক)" value={dueNote}
+                onChange={e => setDueNote(e.target.value)}
+                style={{ ...S.input, marginTop:0, marginBottom:12 }} />
+
+              <div style={{ display:"flex", gap:8 }}>
+                <button onClick={() => { setShowDueForm(false); setDueAmount(""); setDueNote(""); }}
+                  style={{ ...S.cancelBtn, flex:1 }}>বাতিল</button>
+                <button onClick={saveManualDue}
+                  style={{ ...S.saveBtn, flex:2, background:"linear-gradient(135deg,#b91c1c,#ef4444)" }}>
+                  ✓ বাকি সেভ
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Payment form */}
           {showPayForm && (
@@ -22635,26 +22799,30 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
             </div>
           )}
 
-          {/* Payment history */}
-          <div style={{ color:T.sub, fontSize:12, fontWeight:700, marginBottom:8 }}>📋 পেমেন্ট ইতিহাস</div>
+          {/* এন্ট্রি ইতিহাস — পেমেন্ট ও ম্যানুয়াল বাকি-যোগ দুটোই */}
+          <div style={{ color:T.sub, fontSize:12, fontWeight:700, marginBottom:8 }}>📋 লেনদেন ইতিহাস</div>
           {selPayments.length === 0 ? (
             <div style={{ textAlign:"center", padding:"24px 0", color:T.sub, fontSize:13 }}>
-              কোনো পেমেন্ট নেই — উপরের "পেমেন্ট যোগ" বাটন ব্যবহার করুন
+              কোনো এন্ট্রি নেই — উপরের বাটন ব্যবহার করুন
             </div>
           ) : (
             <Virtuoso
               style={{ height:"calc(100dvh - 480px)", minHeight:150 }}
               data={selPayments}
-              itemContent={(_, p) => (
+              itemContent={(_, p) => {
+                const isDue = p.type === "due";
+                return (
                 <div style={{ paddingBottom:8 }}>
                   <div className="qc-gradient-card list-item" style={{ ...S.card, padding:"11px 14px",
-                    borderLeft:"3px solid #22c55e", marginBottom:0 }}>
+                    borderLeft:`3px solid ${isDue ? "#ef4444" : "#22c55e"}`, marginBottom:0 }}>
                     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
                       <div>
                         <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-                          <span style={{ color:"#22c55e", fontWeight:900, fontSize:14 }}>৳{fmt(p.amount)}</span>
+                          <span style={{ color:isDue?"#ef4444":"#22c55e", fontWeight:900, fontSize:14 }}>
+                            {isDue ? "+" : ""}৳{fmt(p.amount)}
+                          </span>
                           <span style={{ background:T.border, borderRadius:8, padding:"2px 7px",
-                            color:T.sub, fontSize:10, fontWeight:700 }}>{p.method}</span>
+                            color:T.sub, fontSize:10, fontWeight:700 }}>{isDue ? "বাকি যোগ" : p.method}</span>
                         </div>
                         <div style={{ color:T.sub, fontSize:11, marginTop:3 }}>
                           {p.dateKey} · {p.addedBy}
@@ -22669,7 +22837,8 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
                     </div>
                   </div>
                 </div>
-              )}
+                );
+              }}
             />
           )}
         </div>
