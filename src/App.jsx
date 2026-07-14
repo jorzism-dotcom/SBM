@@ -6,7 +6,7 @@ import {
   getFirestore, doc, getDoc, getDocFromServer, updateDoc, setDoc, deleteDoc,
   collection, onSnapshot, getDocs, enableIndexedDbPersistence,
   query, where, orderBy, limit, startAfter, increment, runTransaction,
-  writeBatch,
+  writeBatch, serverTimestamp,
 } from "firebase/firestore";
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
@@ -4532,7 +4532,7 @@ const FIELD_CHANGE_LOG_COLLECTIONS = [
   "cashLogs", "suppliers", "expenses", "returns", "quotations",
   "supplierPayments", "paymentInvoices",
 ];
-const FIELD_CHANGE_LOG_IGNORED_KEYS = new Set(["id", "_updatedAt", "_savedAt", "_slot", "slot"]);
+const FIELD_CHANGE_LOG_IGNORED_KEYS = new Set(["id", "_updatedAt", "_savedAt", "_slot", "slot", "_serverTs"]);
 const FIELD_CHANGE_LOG_MAX_ENTRIES = 5000; // prune-এর সীমা — স্টোরেজ সীমিত রাখতে (#১৩-এর সাথে সাংঘর্ষিক না হতে)
 
 function fclTruncate(v) {
@@ -4943,7 +4943,16 @@ const FSS = {
     this.unsubscribe(name);
     const colRef = collection(this._db, name);
     const unsub = onSnapshot(colRef, (snap) => {
-      const arr = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      // 🔴 ফিক্স: _serverTs আসে Firestore Timestamp অবজেক্ট হিসেবে (অথবা নিজের
+      // pending write-এ null, ack না হওয়া পর্যন্ত) — সেটাকে সাথে সাথে plain
+      // millisecond সংখ্যায় বদলে দেওয়া হচ্ছে, নাহলে JSON.stringify (diff/echo/
+      // outbox persist সব জায়গায় ব্যবহৃত) ভেঙে যেত বা silently ফেইল করত।
+      const arr = snap.docs.map(d => {
+        const data = d.data();
+        const rawTs = data._serverTs;
+        const serverTs = rawTs && typeof rawTs.toMillis === "function" ? rawTs.toMillis() : (typeof rawTs === "number" ? rawTs : null);
+        return { id: d.id, ...data, _serverTs: serverTs };
+      });
       // 🔴 ফিক্স (অপশন ১): snap.metadata.fromCache পাস করি, যাতে caller বুঝতে
       // পারে এই স্ন্যাপশট লোকাল ক্যাশ থেকে এসেছে নাকি সার্ভার-কনফার্মড।
       callback(arr, snap.metadata.fromCache);
@@ -5020,10 +5029,18 @@ const FSS = {
     }
   },
 
+  // 🔴 ফিক্স (এন্টারপ্রাইজ-লেভেল conflict resolution): _updatedAt ক্লায়েন্ট-সাইড
+  // Date.now() — অ্যাডমিন ও স্টাফ ফোনের ঘড়িতে সামান্য পার্থক্য থাকলেও ভুল
+  // ডিভাইসের রেকর্ড "নতুন" হিসেবে জিতে যেতে পারত (Master Sync merge-এ)। এখন
+  // প্রতিটা write-এ Firestore-এর নিজস্ব serverTimestamp()-ও লেখা হয় (`_serverTs`)
+  // — এটা সার্ভার ঘড়ি দিয়ে সেট হয়, তাই সব ডিভাইসের জন্য একই নিরপেক্ষ রেফারেন্স।
+  // _updatedAt বাদ দেওয়া হয়নি (legacy রেকর্ড/অফলাইন fallback-এর জন্য দরকার) —
+  // দুটোই থাকে, merge লজিক _serverTs থাকলে সেটাকেই অগ্রাধিকার দেয় (দেখুন
+  // effectiveTs() ও performMasterSync)।
   async setRecord(coll, id, data) {
     if (!this._db || id === undefined || id === null || id === "") return { ok: false, msg: "Firestore সংযুক্ত নেই" };
     try {
-      await setDoc(doc(this._db, coll, String(id)), data);
+      await setDoc(doc(this._db, coll, String(id)), { ...data, _serverTs: serverTimestamp() });
       return { ok: true };
     } catch (e) {
       return { ok: false, msg: e.message || "Firestore write ব্যর্থ" };
@@ -5190,7 +5207,32 @@ const FSS = {
     }, () => {});
     return unsub;
   },
+
+  // 🔴 ফিক্স (multi-device data-resurrection bug): "meta/resetMarker" ইচ্ছাকৃতভাবে
+  // FSS_COLLECTIONS-এর বাইরে রাখা হয়েছে — তাই Master Reset-এর clearAllData()
+  // এটা কখনো মোছে না, এবং এটা সব ডিভাইসে রিয়েল-টাইমে সিঙ্ক হয় (localStorage-এর
+  // মতো শুধু একটা ডিভাইসে আটকে থাকে না)। যে কোনো ডিভাইস Master Reset চালালে
+  // এই doc আপডেট হয়, আর প্রতিটা ডিভাইসের useFSSCollection সেটা সাবস্ক্রাইব করে
+  // রাখে — ফলে রিসেট করার সময় অন্য কোনো ডিভাইসে (যেমন স্টাফ ফোন) অ্যাপ খোলা
+  // থাকলেও, সে নিজের পুরনো local ডেটা "নতুন/খালি কালেকশন" ভেবে আবার Firestore-এ
+  // push করে reset পূর্বাবস্থায় ফিরিয়ে দেবে না।
+  async setResetMarker() {
+    if (!this._db) return;
+    try { await setDoc(doc(this._db, "meta", "resetMarker"), { at: Date.now() }); } catch {}
+  },
+  subscribeResetMarker(callback) {
+    if (!this._db) return () => {};
+    const unsub = onSnapshot(doc(this._db, "meta", "resetMarker"), (snap) => {
+      callback(snap.exists() ? (snap.data()?.at || 0) : 0);
+    }, () => {});
+    return unsub;
+  },
 };
+
+// 🔴 ফিক্স: module-level (component re-render/unmount নির্বিশেষে বেঁচে থাকে) —
+// useFSSCollection component-এর বাইরে সংজ্ঞায়িত, তাই এখানে সরাসরি এই ভ্যারিয়েবল
+// পড়ে; App()-এর একটা useEffect (subscribeResetMarker দিয়ে) এটা আপডেট রাখে।
+let GLOBAL_RESET_MARKER_AT = 0;
 
 
 // ─── useFSSCollection — local array state ↔ Firestore collection (record-level) ─
@@ -5218,6 +5260,17 @@ const FSS = {
 
 // ── withTs: record-এ _updatedAt timestamp যোগ করে (Master Sync merge-এর জন্য) ──
 const withTs = (rec) => ({ ...rec, _updatedAt: Date.now() });
+// 🔴 ফিক্স: FSS.setRecord() প্রতিটা write-এ সার্ভার-সাইড _serverTs যোগ করে, যেটা
+// শুধু Firestore-কনফার্মড কপিতেই থাকে (fresh local edit-এ কখনো থাকে না, কারণ
+// এটা write-এর সময় সার্ভার নিজে বসায়)। তাই local-vs-remote সমতা (echo/diff)
+// যাচাইয়ে এই ফিল্ডটা বাদ দিয়ে তুলনা করা দরকার — নাহলে প্রতিটা রেকর্ডই "এখনো
+// আলাদা" মনে হয়ে অকারণে বারবার re-sync/pending থেকে যাবে।
+const stripServerTs = (rec) => { if (!rec || rec._serverTs === undefined) return rec; const { _serverTs, ...rest } = rec; return rest; };
+// 🔴 ফিক্স (ক্লক-স্কিউ প্রুফ merge ordering): দুইটা রেকর্ডের মধ্যে কোনটা "নতুন"
+// তা ঠিক করতে _serverTs (Firestore সার্ভার ঘড়ি — সব ডিভাইসের জন্য একই নিরপেক্ষ
+// রেফারেন্স) অগ্রাধিকার পায়; সেটা না থাকলে (এখনো sync হয়নি এমন নিজের-ডিভাইসের
+// সদ্য এডিট, বা পুরনো legacy রেকর্ড) client-side _updatedAt-এ fallback করে।
+const effectiveTs = (rec) => (rec?._serverTs != null ? rec._serverTs : (rec?._updatedAt || 0));
 
 // ── stockMovements এখন windowed real-time sync (invoices-এর মতো) — তাই
 // useFSSCollection আর local→remote push করে না। প্রতিটা নতুন movement তৈরির
@@ -5257,7 +5310,18 @@ function _initGlobalResyncListenersOnce() {
   if (typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.()) {
     import("@capacitor/app").then(({ App }) => { App.addListener("resume", _bumpGlobalResync); }).catch(() => {});
   }
-  setInterval(() => { if (document.visibilityState === "visible") _bumpGlobalResync(); }, 120000); // ২ মিনিট heartbeat
+  // 🔴 ফিক্স (রিয়েল-টাইম সিঙ্ক delay — এন্টারপ্রাইজ হার্ডেনিং): আগে এই heartbeat
+  // ছিল ২ মিনিটে একবার। Android WebView-তে অ্যাপ ফোরগ্রাউন্ড+স্ক্রিন-অন থাকা
+  // অবস্থাতেও onSnapshot listener-এর underlying নেটওয়ার্ক কানেকশন (gRPC stream)
+  // মাঝেমধ্যে নীরবে মরে যায় — কোনো "offline" ইভেন্ট ছাড়াই, তাই online/
+  // visibilitychange trigger-ও ফায়ার হয় না। সেক্ষেত্রে recovery-র একমাত্র উপায়
+  // ছিল এই heartbeat — মানে listener মরে যাওয়ার পর থেকে পরের heartbeat না আসা
+  // পর্যন্ত (worst-case প্রায় ২ মিনিট) কোনো আপডেটই আসত না। এখন ২০ সেকেন্ডে
+  // নামিয়ে আনা হলো — worst-case delay-ও একই অনুপাতে কমে আসবে। প্রতিটা resync
+  // শুধু listener re-attach করে (Firestore নিজের persistent cache ব্যবহার করে,
+  // তাই পুরো ডেটা আবার ডাউনলোড হয় না) — তাই এই ফ্রিকোয়েন্সিতেও খরচ/পারফরম্যান্স
+  // ঝুঁকি নগণ্য।
+  setInterval(() => { if (document.visibilityState === "visible") _bumpGlobalResync(); }, 20000); // ২০ সেকেন্ড heartbeat (আগে ২ মিনিট ছিল)
 }
 function useResyncTick() {
   const [tick, setTick] = useState(_resyncTickGlobal);
@@ -5269,6 +5333,84 @@ function useResyncTick() {
   }, []);
   return tick;
 }
+
+// ─── 🔴 SyncOutbox — durable offline write queue (এন্টারপ্রাইজ-লেভেল ফিক্স) ──
+// সমস্যা: আগে pending local write শুধু in-memory `pending` Map-এ ট্র্যাক হতো।
+// স্টাফ ফোনে (যেখানে ৯৯% ইনপুট হয়) অফলাইন অবস্থায় Android OS হঠাৎ অ্যাপ kill
+// করে ফেললে, সেই মুহূর্তের এডিট Firestore-এ পাঠানোর আগেই in-memory ট্র্যাকিং
+// হারিয়ে যেত — পরের বুটে `pending.current = new Map()` দিয়ে একদম ফ্রেশ শুরু হতো।
+// এখন প্রতিটা লোকাল এডিট সাথে সাথে এই IndexedDB store-এ persist হয় (আলাদা
+// ডাটাবেস — Master Reset-এর clearAllData/LocalBackup এখানে হাত দেয় না, শুধু
+// runDeleteAllBackups স্পষ্টভাবে clearAll() কল করে), আর অ্যাপ যেকোনো বুট/resume/
+// online-এ (useResyncTick) এই outbox থেকে এখনো-সফল-না-হওয়া এন্ট্রি আবার পাঠায়।
+const SyncOutbox = {
+  DB_NAME: "hg_sync_outbox",
+  VERSION: 1,
+  STORE: "outbox",
+  _db: null,
+  async open() {
+    if (this._db) return this._db;
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(this.DB_NAME, this.VERSION);
+      req.onupgradeneeded = e => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(this.STORE)) {
+          const store = db.createObjectStore(this.STORE, { keyPath: "key" });
+          store.createIndex("byCollection", "collection", { unique: false });
+        }
+      };
+      req.onsuccess = e => { this._db = e.target.result; resolve(this._db); };
+      req.onerror   = () => reject(req.error);
+    });
+  },
+  async put(collection, recordId, rec) {
+    try {
+      const db = await this.open();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(this.STORE, "readwrite");
+        tx.objectStore(this.STORE).put({ key: `${collection}:${recordId}`, collection, recordId: String(recordId), rec, ts: Date.now() });
+        tx.oncomplete = resolve;
+        tx.onerror    = () => reject(tx.error);
+      });
+    } catch {}
+  },
+  async remove(collection, recordId) {
+    try {
+      const db = await this.open();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(this.STORE, "readwrite");
+        tx.objectStore(this.STORE).delete(`${collection}:${recordId}`);
+        tx.oncomplete = resolve;
+        tx.onerror    = () => reject(tx.error);
+      });
+    } catch {}
+  },
+  async getAll(collection) {
+    try {
+      const db = await this.open();
+      return await new Promise((resolve, reject) => {
+        const tx  = db.transaction(this.STORE, "readonly");
+        const req = tx.objectStore(this.STORE).index("byCollection").getAll(IDBKeyRange.only(collection));
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror   = () => reject(req.error);
+      });
+    } catch { return []; }
+  },
+  // ⚠️ Master Reset-এ কল হয় (দেখুন runDeleteAllBackups) — নাহলে রিসেটের আগের
+  // অ-পাঠানো আউটবক্স এন্ট্রি ফ্লাশ হয়ে রিসেট-করা ডেটা আবার ফিরিয়ে আনতে পারত।
+  async clearAll() {
+    try {
+      const db = await this.open();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(this.STORE, "readwrite");
+        tx.objectStore(this.STORE).clear();
+        tx.oncomplete = resolve;
+        tx.onerror    = () => reject(tx.error);
+      });
+      return true;
+    } catch { return false; }
+  },
+};
 
 function useFSSCollection(name, value, setValue, ready, opts = {}) {
   // 🔴 ফিক্স: syncDeletes=false দিলে local→remote diff কোনো রেকর্ড "মিসিং" পেলেও
@@ -5286,6 +5428,36 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
   const pending     = useRef(new Map()); // id(string) -> { rec, old, ts } — push হয়েছে, echo বাকি
   const resyncTick  = useResyncTick(); // 🔴 ফেজ ৩ ফিক্স — resume/online/heartbeat-এ re-subscribe
   useEffect(() => { valueRef.current = value; }, [value]);
+
+  // 🔴 ফিক্স (durable outbox flush): boot/resume/online/heartbeat-এ (ready বা
+  // resyncTick বদলালে) IndexedDB SyncOutbox-এ পড়ে থাকা এখনো-সফল-না-হওয়া
+  // এন্ট্রি আবার Firestore-এ পাঠানোর চেষ্টা করা হয় — in-memory `pending` Map
+  // অ্যাপ কিল/রিস্টার্টে হারিয়ে গেলেও এই ডিস্ক-ভিত্তিক কিউ থেকে রিকভার হয়।
+  useEffect(() => {
+    if (!ready) return;
+    let cancelled = false;
+    (async () => {
+      // অন্য কোনো ডিভাইসসহ সম্প্রতি Master Reset হয়ে থাকলে পুরনো আউটবক্স
+      // এন্ট্রি ফ্লাশ করে ডেটা ফিরিয়ে আনা যাবে না — একই ২-মিনিট গার্ড।
+      if (GLOBAL_RESET_MARKER_AT && (Date.now() - GLOBAL_RESET_MARKER_AT < 120000)) return;
+      const items = await SyncOutbox.getAll(name);
+      if (cancelled || !items.length) return;
+      items.forEach(it => {
+        pending.current.set(String(it.recordId), { rec: it.rec, old: null, ts: Date.now() });
+        FSS.setRecord(name, it.recordId, it.rec).then(res => {
+          if (res && res.ok === false) {
+            onSync?.("error");
+            logErrorToCentral?.(`fss-outbox-flush:${name}`, new Error(res.msg || "flush failed"), { id: it.recordId });
+            // ব্যর্থ হলে outbox-এ থেকেই যায় — পরের flush সাইকেলে আবার চেষ্টা হবে
+          } else {
+            SyncOutbox.remove(name, it.recordId);
+          }
+        });
+      });
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, resyncTick]);
 
   // remote → local
   useEffect(() => {
@@ -5312,6 +5484,15 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
           const t = localStorage.getItem("sbm_just_reset");
           justReset = t && (Date.now() - Number(t) < 120000);
         } catch {}
+        // 🔴 ফিক্স (multi-device): এই ডিভাইস নিজে রিসেট না চালালেও, অন্য কোনো
+        // ডিভাইস সম্প্রতি (২ মিনিটের মধ্যে) Master Reset চালিয়ে থাকলে
+        // GLOBAL_RESET_MARKER_AT আপডেট হয়ে যাবে (App()-এর subscribeResetMarker
+        // effect থেকে) — সেক্ষেত্রেও seed-on-empty বন্ধ থাকবে, নাহলে এই ডিভাইসের
+        // পুরনো local ডেটা (staff ফোনে যা তখনো মেমোরিতে আছে) আবার Firestore-এ
+        // push হয়ে reset পূর্বাবস্থায় ফিরিয়ে দিত।
+        if (!justReset && GLOBAL_RESET_MARKER_AT && (Date.now() - GLOBAL_RESET_MARKER_AT < 120000)) {
+          justReset = true;
+        }
         if (arr.length === 0 && valueRef.current?.length && !justReset) {
           // নতুন/খালি collection — এই ডিভাইসের বর্তমান data দিয়ে seed করি
           lastSynced.current = valueRef.current;
@@ -5332,7 +5513,7 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
           const key = String(rec.id);
           const p = pending.current.get(key);
           if (!p) return rec;
-          if (JSON.stringify(p.rec) === JSON.stringify(rec)) { pending.current.delete(key); return rec; } // echo confirmed
+          if (JSON.stringify(stripServerTs(p.rec)) === JSON.stringify(stripServerTs(rec))) { pending.current.delete(key); return rec; } // echo confirmed (_serverTs বাদ দিয়ে তুলনা)
           // #৬ কনফ্লিক্ট চেক — সার্ভারের রেকর্ড কি ঠিক সেই ফিল্ডগুলোতেও ভিন্ন মান
           // রাখে যেগুলো আমরা নিজেরাই এইমাত্র বদলেছিলাম? হলে এটা সত্যিকারের
           // concurrent-edit conflict (অন্য ডিভাইস একই মুহূর্তে একই ফিল্ড বদলেছে),
@@ -5370,7 +5551,22 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, resyncTick]);
 
-  // local → remote (diff by id — reference equality দিয়ে সস্তা, push শুধু বদলানো/নতুন/মুছা রেকর্ড)
+  // 🔴 ফিক্স (এন্টারপ্রাইজ-লেভেল সিঙ্ক স্ট্যাবিলিটি): আগে রেকর্ড বদলেছে কিনা বোঝা
+  // হতো object reference (`old !== rec`) দিয়ে — সস্তা কিন্তু বিপজ্জনক, কারণ এই
+  // ২৭,০০০+ লাইনের ফাইলে অ্যাপের অন্য কোনো জায়গায় (এখন বা ভবিষ্যতে) যদি কেউ
+  // কোনো record object সরাসরি mutate করে তারপর array spread করে (যেমন
+  // `p.stock -= qty; setProducts([...products])`), array reference বদলালেও সেই
+  // নির্দিষ্ট object-এর reference অপরিবর্তিতই থাকে — ফলে `old !== rec` false
+  // রয়ে যায়, পরিবর্তনটা Firestore-এ push-ই হয় না (নীরব ডেটা-লস), আর পরের
+  // remote snapshot এসে local-এর mutate করা মানটা আবার পুরনো server-ভ্যালু দিয়ে
+  // ওভাররাইট করে দেয়। content-based (JSON) তুলনা এই ঝুঁকি সম্পূর্ণ দূর করে —
+  // অ্যাপের অন্য কোনো অংশে object/array কীভাবে তৈরি বা mutate হচ্ছে তার ওপর
+  // সিঙ্কের সঠিকতা আর নির্ভর করে না।
+  const recEq = (a, b) => {
+    if (a === b) return true;
+    try { return JSON.stringify(stripServerTs(a)) === JSON.stringify(stripServerTs(b)); } catch { return false; }
+  };
+  // local → remote (diff by id — content-based, reference-নির্ভর নয়; push শুধু বদলানো/নতুন/মুছা রেকর্ড)
   useEffect(() => {
     if (!ready || !firstRemote.current) return;
     const prevArr = lastSynced.current || [];
@@ -5379,10 +5575,14 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
     const run = () => {
       nextMap.forEach((rec, id) => {
         const old = prevMap.get(id);
-        if (!old || old !== rec) {
+        if (!old || !recEq(old, rec)) {
           // _updatedAt inject করো (নতুন বা পরিবর্তিত record-এ) — Master Sync merge-এর জন্য
           const recWithTs = rec._updatedAt ? rec : withTs(rec);
           pending.current.set(id, { rec: recWithTs, old: old || null, ts: Date.now() });
+          // 🔴 ফিক্স (durable outbox): Firestore write-এর ফলাফলের অপেক্ষা না করেই
+          // সাথে সাথে IndexedDB-তে persist করা হচ্ছে — অ্যাপ এখনই kill হলেও এই
+          // এন্ট্রি ডিস্কে থেকে যাবে, পরের বুটে flush effect সেটা আবার পাঠাবে।
+          SyncOutbox.put(name, id, recWithTs);
           // 🔴 ফিক্স: setRecord()-এর রেজাল্ট আগে চেক না করেই fire-and-forget করা হতো —
           // Firestore Rules বা নেটওয়ার্ক সমস্যায় write ব্যর্থ হলে কোনো এরর দেখা যেত না,
           // pending map-এ ৫ সেকেন্ড পর নীরবে আবার remote ভার্সনে রিভার্ট হয়ে যেত (যেমন
@@ -5392,6 +5592,9 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
             if (res && res.ok === false) {
               onSync?.("error");
               logErrorToCentral?.(`fss-write:${name}`, new Error(res.msg || "write failed"), { id });
+              // ব্যর্থ — outbox এন্ট্রি থেকেই যায়, পরের resync/heartbeat-এ retry হবে
+            } else {
+              SyncOutbox.remove(name, id); // সফল — আর দরকার নেই
             }
           });
           // #১৫ ফিল্ড-লেভেল চেঞ্জ লগ — শুধু বিদ্যমান রেকর্ড বদলালে (old থাকলে),
@@ -5408,6 +5611,7 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
         // মুছে ফেলা ঠেকাতে (merge-only restore, দেখুন applyBackupFields-এর কমেন্ট)।
         if (RestoreGuard.active) return;
         pending.current.delete(id);
+        SyncOutbox.remove(name, id); // ইচ্ছাকৃত ডিলিট — outbox-এ পড়ে থাকা কোনো পুরনো এন্ট্রি থাকলে সেটাও সরিয়ে দাও
         // 🔴 ফিক্স: syncDeletes=false কালেকশনে (products) diff-ভিত্তিক অটো-ডিলিট
         // বন্ধ — শুধু bookkeeping (pending/lastSynced) হালনাগাদ হয়, Firestore-এ
         // কোনো ডিলিট পাঠানো হয় না। প্রকৃত ডিলিট এখন UI-এর বাটন থেকেই সরাসরি হয়।
@@ -10561,6 +10765,17 @@ function SmartBusinessMgmt() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, firebaseEnabled, firebaseConfig]);
 
+  // 🔴 ফিক্স (multi-device data-resurrection bug): অন্য কোনো ডিভাইস থেকে চালানো
+  // Master Reset-ও যেন এই ডিভাইসের useFSSCollection-গুলোর seed-on-empty চেকে
+  // ধরা পড়ে (আগে শুধু নিজের localStorage-এর "sbm_just_reset" চেক হতো, যেটা
+  // অন্য ডিভাইসে বসানো রিসেট বুঝতে পারত না — ফলে স্টাফ ফোন খোলা থাকলে reset-এর
+  // পরও পুরনো local ডেটা আবার Firestore-এ push হয়ে "রিসেট উল্টে যাওয়া" বাগ হতো)।
+  useEffect(() => {
+    if (!fssReady || !FSS._db) return;
+    const unsub = FSS.subscribeResetMarker((at) => { GLOBAL_RESET_MARKER_AT = at || 0; });
+    return () => unsub();
+  }, [fssReady]);
+
   // ── প্রতিটা collection — local array ↔ Firestore (record-level, real-time) ──
   // 🔴 ফিক্স: customers-এও products-এর মতো একই bug ছিল — diff-ভিত্তিক অটো-ডিলিট
   // sync layer আর এখানে বন্ধ, শুধু Customers পেজের ইচ্ছাকৃত Delete বাটন থেকে
@@ -11163,7 +11378,7 @@ function SmartBusinessMgmt() {
     }
   }, [buildBackupData, showToast, setBackupFailStreak, setLastBackupError, restoreTestAt, setRestoreTestAt, setRestoreTestOk, setRestoreTestDetail, setRestoreTestFailStreak]);
 
-  // ── Master Sync Engine: Firestore + Drive backup merge (_updatedAt দেখে নতুনটা জেতে) ──
+  // ── Master Sync Engine: Firestore + Drive backup merge (effectiveTs()/_serverTs দেখে নতুনটা জেতে) ──
   // Option B: merge করে, তারপর Drive-এও updated backup রাখে
   const [masterSyncStatus, setMasterSyncStatus] = React.useState(null); // null | "running" | "done" | "error"
   const [masterSyncDetail, setMasterSyncDetail] = React.useState("");
@@ -11171,6 +11386,17 @@ function SmartBusinessMgmt() {
   const performMasterSync = useCallback(async (opts = {}) => {
     const { auto = false } = opts;
     if (masterSyncStatus === "running") return;
+    // 🔴 ফিক্স (Master Reset-এর পর ভূত-ডেটা ফেরা): Master Reset নিজেই
+    // deletedProducts/deletedCustomers tombstone লিস্ট খালি করে দেয় (স্বাভাবিক —
+    // রিসেটের পর তো "মুছে ফেলা রেকর্ড" বলে কিছু থাকার কথা না), কিন্তু তার মানে
+    // এই সময় Master Sync চললে Google Drive-এর কোনো পুরনো/stale backup থেকে
+    // merge করার সময় tombstone protection সম্পূর্ণ অনুপস্থিত থাকে — ফলে ডিলিট
+    // করা সব ডেটা কোনো বাধা ছাড়াই Firestore-এ আবার push হয়ে যেতে পারে। তাই
+    // রিসেটের পর প্রথম ৫ মিনিট Master Sync (auto বা manual) সম্পূর্ণ বন্ধ থাকবে।
+    if (GLOBAL_RESET_MARKER_AT && (Date.now() - GLOBAL_RESET_MARKER_AT < 5 * 60 * 1000)) {
+      if (!auto) showToast?.("⏸️ সম্প্রতি Master Reset করা হয়েছে — নিরাপত্তার জন্য কিছুক্ষণ Master Sync বন্ধ থাকবে", "#f59e0b");
+      return;
+    }
     setMasterSyncStatus("running");
     setMasterSyncDetail("Firestore থেকে data নেওয়া হচ্ছে...");
     try {
@@ -11250,7 +11476,7 @@ function SmartBusinessMgmt() {
             const key = String(dr.id);
             if (tombstones?.has(key)) return; // ইচ্ছাকৃতভাবে মোছা — বাদ
             const existing = merged.get(key);
-            if (!existing || (dr._updatedAt || 0) > (existing._updatedAt || 0)) {
+            if (!existing || effectiveTs(dr) > effectiveTs(existing)) {
               merged.set(key, dr);
               anyChange = true;
             }
@@ -26381,6 +26607,19 @@ function Settings_({ T, S, shopName,
         try {
           setDelBkMsg("Firestore থেকে সব ডেটা মোছা হচ্ছে... (নেট স্লো হলে সময় লাগতে পারে, অ্যাপ বন্ধ করবেন না)");
           FSS.init(firebaseConfig);
+          // 🔴 ফিক্স (multi-device data-resurrection bug): clearAllData() শুরুর
+          // আগেই shared reset marker লিখে দেওয়া হচ্ছে — এই doc "meta/resetMarker"
+          // FSS_COLLECTIONS-এর বাইরে, তাই clearAllData() এটা মোছে না, এবং সব
+          // ডিভাইস এটা সাবস্ক্রাইব করে রাখে (দেখুন App()-এর subscribeResetMarker
+          // effect)। ফলে স্টাফ ফোনে অ্যাপ খোলা থাকলেও, কালেকশনগুলো খালি হওয়ার
+          // ঘটনা দেখার আগেই (বা প্রায় একই সময়ে) তার কাছে এই marker পৌঁছে যায়,
+          // আর সে তার নিজের পুরনো local ডেটা আর নতুন করে Firestore-এ push করে না।
+          await FSS.setResetMarker();
+          // 🔴 ফিক্স (durable outbox): রিসেটের আগে কোনো অ-পাঠানো outbox এন্ট্রি
+          // থেকে গেলে, ফ্লাশ effect সেটা রিসেটের পরও (GLOBAL_RESET_MARKER_AT-এর
+          // ২ মিনিট উইন্ডো পার হয়ে গেলে) পাঠানোর চেষ্টা করতে পারে — তাই এখানেই
+          // সম্পূর্ণ outbox খালি করে দেওয়া হচ্ছে।
+          await SyncOutbox.clearAll();
           // 🔴 ফিক্স: আগে এই কল করা হতো কিন্তু রিটার্ন ভ্যালু কখনো চেক হতো না —
           // ব্যর্থ/আংশিক হলেও নিঃশব্দে ধরে নেওয়া হতো সফল হয়েছে, তাই পুরনো ডেটা
           // Firestore-এ রয়ে যেত আর live listener সেটা আবার ফিরিয়ে আনত।
