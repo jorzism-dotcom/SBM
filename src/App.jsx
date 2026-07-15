@@ -42,6 +42,7 @@ const useAppStore = create(subscribeWithSelector((set) => ({
 
   // ── Shop / Auth ───────────────────────────────────────────────────────────
   shopName:          "SBM",
+  businessType:      "pharmacy", // "pharmacy" | "veterinary" — দোকানের ধরন, ডেটাসেট/লেবেল এটার উপর নির্ভর করে
   currentUser:       null,
   authSession:       null,
   devContact:        null,
@@ -438,10 +439,10 @@ function normalizeSupplierKey(name) {
 // ─── SupplierPicker — টাইপাহেড সার্চ-করে-বাছাই সাপ্লায়ার সিলেক্টর ───────────
 // BD_PHARMA_COMPANIES (MEDICINE_DATASET থেকে ডিরাইভ করা, ২১১টি) এর মধ্যে ফাজি সার্চ (smartMatch),
 // অথবা "নিজে লিখুন" কাস্টম মোড।
-function SupplierPicker({ value, onChange, error, T, S, autoFocus, extraSuppliers = [] }) {
+function SupplierPicker({ value, onChange, error, T, S, autoFocus, extraSuppliers = [], businessType = "pharmacy" }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const { companies: BD_PHARMA_COMPANIES } = useMedicineDataset(); // লেজি-লোড — এই পিকার খোলা হলেই ফেচ হয়
+  const { companies: BD_PHARMA_COMPANIES } = useMedicineDataset(businessType); // লেজি-লোড — এই পিকার খোলা হলেই ফেচ হয়
   // extraSuppliers = দোকানে আগে ম্যানুয়ালি লেখা কাস্টম সাপ্লায়ারের নাম (products/purchaseOrders থেকে) —
   // এগুলো তালিকায় যুক্ত হবে যাতে একবার লিখলে পরেরবার সাজেশনে দেখা যায় ("অটো-সেভ")
   // 🔴 ফিক্স: normalizeSupplierKey দিয়ে ডিডুপ্লিকেট — একই কোম্পানির একাধিক
@@ -4050,7 +4051,7 @@ const GDRIVE_REFRESH_ENDPOINT = "https://melodious-axolotl-00b2e7.netlify.app/.n
 const SK = {
   customers: "sbm-customers", products: "sbm-products", invoices: "sbm-invoices",
   smsLog: "sbm-smslog", txns: "sbm-txns", users: "sbm-users",
-  shopName: "sbm-shopname", darkMode: "sbm-darkmode", activeTheme: "sbm-active-theme", fontSize: "sbm-font-size", deletedCustomers: "sbm-deleted-customers", deletedProducts: "sbm-deleted-products",
+  shopName: "sbm-shopname", businessType: "sbm-business-type", darkMode: "sbm-darkmode", activeTheme: "sbm-active-theme", fontSize: "sbm-font-size", deletedCustomers: "sbm-deleted-customers", deletedProducts: "sbm-deleted-products",
   paymentInvoices: "sbm-payment-invoices", smsGateway: "sbm-sms-gateway",
   lastAutoBackup: "sbm-last-auto-backup", anthropicKey: "sbm-anthropic-key",
   lastLocalBackup: "sbm-last-local-backup",
@@ -8003,7 +8004,56 @@ let _medCompanies = null;
 const _medListeners = new Set();
 const EMPTY_MED_ARR = [];
 
-function ensureMedicineDataset() {
+// ─── 🐄 ভেটেরিনারি মোড — সেলফ-লার্নিং ডেটাসেট ──────────────────────────────
+// বাংলাদেশে পাবলিকলি উপলব্ধ কোনো ভেরিফায়েড ভেটেরিনারি মেডিসিন ব্র্যান্ড
+// ডেটাসেট পাওয়া যায়নি (Medex-ভিত্তিক ওপেন ডেটাসেটগুলো শুধু মানুষের ওষুধের)।
+// তাই প্রোডাক্টের নাম হাতে-বানানো/অনুমাননির্ভর না রেখে — দোকানদার যা যা
+// এন্ট্রি করবেন (নতুন পণ্য/পারচেজ) তা থেকেই ধীরে ধীরে সাজেশন লিস্ট গড়ে ওঠে
+// (localStorage-এ সেভ থাকে, ডিভাইসেই)। শুধু সাপ্লায়ার/কোম্পানির একটা সীড
+// লিস্ট দেওয়া আছে — বাংলাদেশের পরিচিত ভেটেরিনারি ওষুধ প্রস্তুতকারক কোম্পানি
+// (সোর্স: The Business Standard-এর প্রতিবেদন, AHCAB রেফারেন্স সহ), কোনো
+// নির্দিষ্ট প্রোডাক্ট/ব্র্যান্ড নাম নয় — সেগুলো সম্পূর্ণ সেলফ-লার্নড।
+const VET_SEED_COMPANIES = [
+  "এসিআই এনিমেল হেলথ", "রেনাটা এনিমেল হেলথ", "স্কয়ার ফার্মাসিউটিক্যালস (এনিমেল হেলথ)",
+  "এসকায়েফ (SK+F) এনিমেল হেলথ", "অপসোনিন ফার্মা", "নাভানা ফার্মাসিউটিক্যালস",
+  "পপুলার ফার্মাসিউটিক্যালস", "ইনসেপ্টা ফার্মাসিউটিক্যালস", "এসিএমই ল্যাবরেটরিজ (এগ্রোভেট)", "এল্যানকো বাংলাদেশ",
+];
+const VET_LEARNED_KEY = "sbm-vet-med-learned";
+let _vetLearned = null; // null = এখনো localStorage থেকে পড়া হয়নি
+function ensureVetLearnedLoaded() {
+  if (_vetLearned === null) {
+    try {
+      const raw = localStorage.getItem(VET_LEARNED_KEY);
+      _vetLearned = raw ? JSON.parse(raw) : [];
+    } catch { _vetLearned = []; }
+  }
+  return _vetLearned;
+}
+function saveVetLearned() {
+  try { localStorage.setItem(VET_LEARNED_KEY, JSON.stringify(_vetLearned || [])); } catch {}
+}
+// দোকানদার নতুন পণ্য/পারচেজ এন্ট্রি করলে এখান থেকে কল হয় — [নাম, একক, কোম্পানি]
+// আকারে সেভ হয়, পরের বার টাইপ করলেই সাজেশনে দেখাবে (কোনো ডুপ্লিকেট রাখা হয় না)
+function vetLearnEntry(name, unit, company) {
+  const n = String(name || "").trim();
+  if (!n) return;
+  const u = unit ? String(unit).trim() : "";
+  const c = company ? String(company).trim() : "";
+  const list = ensureVetLearnedLoaded();
+  const row = list.find(([en, eu]) => en === n && (eu || "") === u);
+  if (!row) {
+    list.unshift([n, u, c]);
+    if (list.length > 5000) list.length = 5000; // নিরাপত্তা সীমা
+    saveVetLearned();
+    _medListeners.forEach(fn => fn());
+  } else if (c && !row[2]) {
+    row[2] = c; // নাম আগে থেকেই আছে কিন্তু কোম্পানি ফাঁকা ছিল — এখন যোগ হলো
+    saveVetLearned();
+  }
+}
+
+function ensureMedicineDataset(businessType = "pharmacy") {
+  if (businessType === "veterinary") { ensureVetLearnedLoaded(); return; } // সিঙ্ক্রোনাস, প্রমিজ লাগে না
   if (_medDataset || _medPromise) return;
   _medPromise = import("./medicineDataset.json")
     .then(mod => {
@@ -8021,15 +8071,30 @@ function ensureMedicineDataset() {
     });
 }
 // কম্পোনেন্ট থেকে ব্যবহারের জন্য হুক — প্রথমবার কল হলেই লেজি-লোড ট্রিগার হয়, লোড শেষ হলে re-render
-function useMedicineDataset() {
+// businessType === "veterinary" হলে pharmacy JSON-এর বদলে সেলফ-লার্নড লোকাল ডেটাসেট ফেরত দেয়
+function useMedicineDataset(businessType = "pharmacy") {
   const [, force] = useState(0);
   useEffect(() => {
+    if (businessType === "veterinary") {
+      ensureVetLearnedLoaded();
+      const listener = () => force(v => v + 1);
+      _medListeners.add(listener);
+      return () => { _medListeners.delete(listener); };
+    }
     if (_medDataset) return;
-    ensureMedicineDataset();
+    ensureMedicineDataset(businessType);
     const listener = () => force(v => v + 1);
     _medListeners.add(listener);
     return () => { _medListeners.delete(listener); };
-  }, []);
+  }, [businessType]);
+
+  if (businessType === "veterinary") {
+    const learned = _vetLearned || EMPTY_MED_ARR;
+    const labelsLC = learned.map(([n, p]) => (p ? `${n} ${p}` : n).toLowerCase());
+    const learnedCompanies = [...new Set(learned.map(([, , c]) => c).filter(Boolean))];
+    const companies = [...new Set([...VET_SEED_COMPANIES, ...learnedCompanies])].sort((a, b) => a.localeCompare(b, "bn"));
+    return { dataset: learned, labelsLC, companies, ready: true };
+  }
   return {
     dataset:   _medDataset   || EMPTY_MED_ARR,
     labelsLC:  _medLabelsLC  || EMPTY_MED_ARR,
@@ -10700,6 +10765,7 @@ function SmartBusinessMgmt() {
   const deletedProducts  = useAppStore(s => s.deletedProducts);
   // Group B: Auth / shop
   const shopName         = useAppStore(s => s.shopName);
+  const businessType     = useAppStore(s => s.businessType);
   const currentUser      = useAppStore(s => s.currentUser);
   const authSession      = useAppStore(s => s.authSession);
   const devContact       = useAppStore(s => s.devContact);
@@ -10764,6 +10830,7 @@ function SmartBusinessMgmt() {
   const setSmsLog           = useCallback((v) => _set("smsLog",           v), [_set]);
   const setUsers            = useCallback((v) => _set("users",            v), [_set]);
   const setShopName         = useCallback((v) => _set("shopName",         v), [_set]);
+  const setBusinessType     = useCallback((v) => _set("businessType",     v), [_set]);
   const setLoaded           = useCallback((v) => _set("loaded",           v), [_set]);
   const setAuthChecked      = useCallback((v) => _set("authChecked",      v), [_set]);
   const setToast            = useCallback((v) => _set("toast",            v), [_set]);
@@ -11010,7 +11077,7 @@ function SmartBusinessMgmt() {
         SK.lastAutoBackup, SK.anthropicKey, SK.smsTemplates, SK.autoBackupEnabled,
         SK.lastMasterSync, SK.autoMasterSyncEnabled, SK.suppliers, SK.purchaseOrders,
         SK.stockMovements, SK.cashLogs, SK.expenses, SK.returns, SK.auditLogs,
-        SK.quotations, SK.supplierPayments,
+        SK.quotations, SK.supplierPayments, SK.businessType,
       ];
       const boot1 = await loadMany(CRITICAL_KEYS);
       const rawCustomers    = boot1[SK.customers];
@@ -11128,6 +11195,7 @@ function SmartBusinessMgmt() {
           auditLogs:             boot2[SK.auditLogs]            || [],
           quotations:            boot2[SK.quotations]           || [],
           supplierPayments:      boot2[SK.supplierPayments]     || [],
+          businessType:          boot2[SK.businessType]         || "pharmacy",
           settingsLoaded:        true, // 🔴 এখন থেকেই autoBackupEnabled/autoMasterSyncEnabled-এর real value store-এ বসলো — persistence effect চালু করা নিরাপদ
         });
       }, 0);
@@ -11560,6 +11628,7 @@ function SmartBusinessMgmt() {
   // (false) value দিয়ে disk-এর real saved (true) value ওভাররাইট হয়ে যেতে
   // পারত — এটাই ছিল "Auto Sync/Auto Backup টগল নিজে নিজে অফ হয়ে যাওয়া"র কারণ।
   useEffect(() => { if (settingsLoaded) save(SK.autoBackupEnabled, autoBackupEnabled); }, [autoBackupEnabled, settingsLoaded]);
+  useEffect(() => { if (settingsLoaded) save(SK.businessType, businessType); }, [businessType, settingsLoaded]);
   useEffect(() => { if (settingsLoaded) save(SK.autoMasterSyncEnabled, autoMasterSyncEnabled); }, [autoMasterSyncEnabled, settingsLoaded]);
   useEffect(() => { if (loaded && lastMasterSync) save(SK.lastMasterSync, lastMasterSync); }, [lastMasterSync, loaded]);
   useEffect(() => { if (loaded) save(SK.firebaseConfig,  firebaseConfig);  }, [firebaseConfig, loaded]);   // 🔥
@@ -13088,6 +13157,7 @@ function SmartBusinessMgmt() {
         {tab === "dashboard" && (
           <ErrorBoundary T={T}>
             <Dashboard T={T} S={S}
+              businessType={businessType}
               customers={customers} invoices={invoices} totalBaki={totalBaki}
               todayBaki={todayBaki} todayJoma={todayJoma} todayTotal={todayTotal}
               todayInvs={todayInvs} setTab={setTab} txns={txns}
@@ -13171,6 +13241,7 @@ function SmartBusinessMgmt() {
               initialTab={productInitTab}
               currentUser={currentUser} hasPerm={hasPerm}
               shopName={shopName}
+              businessType={businessType}
               auditLog={auditLog}
               anthropicKey={anthropicKey}
             />
@@ -13238,6 +13309,7 @@ function SmartBusinessMgmt() {
             <React.Suspense fallback={<div style={{ display:"flex", alignItems:"center", justifyContent:"center", height:"60vh", color: "var(--t-sub)", fontSize:14 }}>⚙️ লোড হচ্ছে...</div>}>
             <Settings T={T} S={S}
               shopName={shopName} setShopName={setShopName}
+              businessType={businessType} setBusinessType={setBusinessType}
               users={users} setUsers={setUsers}
               currentUser={currentUser} setCurrentUser={setCurrentUser}
               showToast={showToast}
@@ -17340,8 +17412,8 @@ function ProfitStatementCard({ T, S, invoices, products, shopName, expenses = []
 }
 
 // ── DashPurchaseEntryModal — হোম পেজ থেকে সরাসরি ক্রয় এন্ট্রি ──────────────
-function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements, purchaseOrders = [], setPurchaseOrders, suppliers = [], onBack }) {
-  const EMPTY_PE = { productId: "", productSearch: "", qty: "", unitCost: "", unitSell: "", expiryDate: "", supplier: "", note: "", isFreeStock: false };
+function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, setProducts, setStockMovements, purchaseOrders = [], setPurchaseOrders, suppliers = [], onBack }) {
+  const EMPTY_PE = { productId: "", productSearch: "", qty: "", unitCost: "", unitSell: "", spPrice: "", expiryDate: "", supplier: "", note: "", isFreeStock: false };
   const [peForm, setPeForm] = React.useState(EMPTY_PE);
   const [toast,  setToast]  = React.useState(null);
   const [searchOpen, setSearchOpen] = React.useState(false);
@@ -17552,7 +17624,7 @@ function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements
         {/* সাপ্লায়ার — পরিমাণ ও ক্রয়মূল্যের উপরে */}
         <div style={{ marginBottom: 12 }}>
           <label style={S.label}>🏭 সাপ্লায়ার</label>
-          <SupplierPicker T={T} S={S}
+          <SupplierPicker T={T} S={S} businessType={businessType}
             value={peForm.supplier}
             extraSuppliers={knownSuppliers}
             onChange={v => setPeForm(f => ({ ...f, supplier: v }))} />
@@ -17659,7 +17731,7 @@ function DashPurchaseEntryModal({ T, S, products, setProducts, setStockMovements
 }
 
 // ── Dashboard ──────────────────────────────────────────────────────────────────
-function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, currentUser, onGoToPurchaseEntry, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, supplierPayments = [], setSupplierPayments }) {
+function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, currentUser, onGoToPurchaseEntry, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, supplierPayments = [], setSupplierPayments }) {
   const [viewInv,    setViewInv]    = useState(null);
   const [viewPayInv, setViewPayInv] = useState(null);
   const [listDate,   setListDate]   = useState(() => todayEn()); // YYYY-MM-DD
@@ -18715,6 +18787,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
                   <div style={{ height: "100%", width: `${pct}%`, borderRadius: 999, background: grad, transition: "width 0.5s ease" }} />
                 </div>
                 <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+                  {p.spPrice > 0 && <span style={{ color: "#a78bfa", fontSize: 10 }}>SP: ৳{p.spPrice}</span>}
                   <span style={{ color: "#f59e0b", fontSize: 10 }}>ক্রয়: ৳{p.costPrice||0}</span>
                   <span style={{ color: "#1fd15e", fontSize: 10 }}>বিক্রয়: ৳{p.price||0}</span>
                   {(p.stock||0) === 0 && <span style={{ color: "#ef4444", fontSize: 10, fontWeight: 800 }}>🚫 স্টক আউট</span>}
@@ -18890,6 +18963,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
                     <div style={{ height:"100%", width:`${pct}%`, borderRadius:999, background:grad, transition:"width 0.5s ease" }} />
                   </div>
                   <div style={{ display:"flex", gap:10, marginTop:5 }}>
+                    {p.spPrice > 0 ? <span style={{ color:"#a78bfa", fontSize:10 }}>SP: ৳{p.spPrice}</span> : null}
                     {p.costPrice ? <span style={{ color:"#f59e0b", fontSize:10 }}>ক্রয়: ৳{p.costPrice}</span> : null}
                     {p.price ? <span style={{ color:"#1fd15e", fontSize:10 }}>বিক্রয়: ৳{p.price}</span> : null}
                   </div>
@@ -18989,6 +19063,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
                     <div style={{ height:"100%", width:`${pct}%`, borderRadius:999, background:grad, transition:"width 0.5s ease" }} />
                   </div>
                   <div style={{ display:"flex", gap:10, marginTop:5 }}>
+                    {p.spPrice > 0 ? <span style={{ color:"#a78bfa", fontSize:10 }}>SP: ৳{p.spPrice}</span> : null}
                     {p.costPrice ? <span style={{ color:"#f59e0b", fontSize:10 }}>ক্রয়: ৳{p.costPrice}</span> : null}
                     {p.price ? <span style={{ color:"#1fd15e", fontSize:10 }}>বিক্রয়: ৳{p.price}</span> : null}
                   </div>
@@ -20237,6 +20312,7 @@ function Dashboard({ T, S, customers, totalBaki, todayBaki, todayJoma, todayTota
       return (
         <DashPurchaseEntryModal
           T={T} S={S}
+          businessType={businessType}
           products={products}
           setProducts={setProducts}
           setStockMovements={setStockMovements}
@@ -22104,10 +22180,10 @@ function InvoiceReceiptPrint({ inv, customer, type }) {
 }
 
 // ── Products ───────────────────────────────────────────────────────────────────
-function Products({ T, S, products, setProducts, showToast, stockMovements = [], setStockMovements, purchaseOrders = [], setPurchaseOrders, deletedProducts = [], setDeletedProducts, initialTab, currentUser, hasPerm, shopName, auditLog, anthropicKey }) {
+function Products({ T, S, products, setProducts, showToast, stockMovements = [], setStockMovements, purchaseOrders = [], setPurchaseOrders, deletedProducts = [], setDeletedProducts, initialTab, currentUser, hasPerm, shopName, businessType = "pharmacy", auditLog, anthropicKey }) {
   const [showAdd,      setShowAdd]      = useState(false);
   const [editId,       setEditId]       = useState(null);
-  const [form,         setForm]         = useState({ name: "", price: "", stock: "", minStockAlert: "5", category: "অন্যান্য", company: "", productType: "product", costPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common" });
+  const [form,         setForm]         = useState({ name: "", price: "", stock: "", minStockAlert: "5", category: "অন্যান্য", company: "", productType: "product", costPrice: "", spPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common" });
   // ── #৪ মাল্টি-ব্যাচ এক্সপায়ারি — নতুন পণ্যে একই সাথে একাধিক আলাদা এক্সপায়ারির চালান যোগ করার জন্য ──
   // প্রাথমিক স্টক/মেয়াদ (form.stock/form.expiryDate) থাকে প্রথম ব্যাচ হিসেবে, extraBatches-এ বাকিগুলো
   const [extraBatches, setExtraBatches] = useState([]); // [{ id, qty, expiryDate }]
@@ -22189,7 +22265,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const [activeTab,    setActiveTab]    = useState(initialTab || "retail"); // "retail" | "purchase"
 
   // ── ক্রয় এন্ট্রি (Purchase Entry) ট্যাবের state — এই useState ব্লক আগে ভুলবশত মুছে গিয়েছিল ──
-  const EMPTY_PE = { productId: "", productSearch: "", qty: "", unitCost: "", unitSell: "", expiryDate: "", supplier: "", note: "", isFreeStock: false };
+  const EMPTY_PE = { productId: "", productSearch: "", qty: "", unitCost: "", unitSell: "", spPrice: "", expiryDate: "", supplier: "", note: "", isFreeStock: false };
   const [peForm,          setPeForm]          = useState(EMPTY_PE);
   const [peShowForm,      setPeShowForm]      = useState(false);
   const [peSearchOpen,    setPeSearchOpen]    = useState(false);
@@ -22254,7 +22330,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   // ── #১ নাম অটো-সাজেশন — MEDICINE_DATASET থেকে নাম+পাওয়ার সাজেস্ট, সিলেক্ট করলে সাপ্লায়ার অটো-ফিল ──
   const [nameSuggestOpen, setNameSuggestOpen] = useState(false);
   const nameInputRef = useRef(null);
-  const { dataset: MEDICINE_DATASET, labelsLC: MEDICINE_LABELS_LC, companies: BD_PHARMA_COMPANIES } = useMedicineDataset(); // লেজি-লোড — Products ট্যাব খুললেই ফেচ হয়, বুট ব্লক করে না
+  const { dataset: MEDICINE_DATASET, labelsLC: MEDICINE_LABELS_LC, companies: BD_PHARMA_COMPANIES } = useMedicineDataset(businessType); // লেজি-লোড — Products ট্যাব খুললেই ফেচ হয়, বুট ব্লক করে না
   const nameSuggestions = useMemo(() => {
     const raw = (form.name || "").trim();
     if (raw.length < 2 || MEDICINE_DATASET.length === 0) return [];
@@ -22369,6 +22445,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       lastUpdated: now,
       minStockAlert: parseInt(form.minStockAlert) || (() => { const u = (form.unit||"").toLowerCase(); return (u.includes("বোতল")||u.includes("সিরাপ")||u.includes("ড্রপ")||u.includes("সাসপেনশন")) ? 5 : 20; })(),
       costPrice: form.isFreeStock ? 0 : (parseFloat(form.costPrice) || 0),
+      spPrice: form.spPrice !== "" && form.spPrice !== undefined ? (parseFloat(form.spPrice) || 0) : undefined,
       expiryDate: form.expiryDate || "",
       barcode: form.barcode || "",
       unit: (form.unit === "__typing__" ? "" : form.unit) || "",
@@ -22477,6 +22554,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       });
       const prod = { ...prodFields, stock: totalStockVal, batches: initialBatches };
       setProducts(prev => [...prev, { id: newId, ...prod }]);
+      if (businessType === "veterinary") vetLearnEntry(form.name, form.unit === "__typing__" ? "" : form.unit, form.company); // 🐄 সেলফ-লার্নিং সাজেশন
       // নতুন পণ্যে initial stock লগ করো (delta = totalStockVal, prevStock = 0)
       if (totalStockVal > 0) {
         const mvNew = pushStockMovement({
@@ -22985,11 +23063,16 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                     {/* সাপ্লায়ার */}
                     <label style={S.label}>🏭 সাপ্লায়ার</label>
                     <div style={{ marginBottom: 8 }}>
-                      <SupplierPicker T={T} S={S}
+                      <SupplierPicker T={T} S={S} businessType={businessType}
                         value={peNewProduct.company}
                         extraSuppliers={knownSuppliers}
                         onChange={v => { setPeNewProduct(vv => ({ ...vv, company: v })); setPeForm(f => ({ ...f, supplier: v })); }} />
                     </div>
+
+                    {/* SP — শুধু রেফারেন্সের জন্য, ঐচ্ছিক */}
+                    <label style={S.label}>🏷️ SP (৳) <span style={{ color:T.sub, fontWeight:500, fontSize:11 }}>— ঐচ্ছিক</span></label>
+                    <input style={{ ...S.input, marginBottom:8 }} type="number" placeholder="" inputMode="numeric"
+                      value={peForm.spPrice || ""} onChange={e => setPeForm(f => ({ ...f, spPrice: e.target.value }))} />
 
                     {/* পরিমাণ + একক ক্রয়মূল্য */}
                     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
@@ -23070,7 +23153,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               {!peNewProduct && <>
                 <div>
                 <label style={S.label}>🏭 সাপ্লায়ার</label>
-                <SupplierPicker T={T} S={S}
+                <SupplierPicker T={T} S={S} businessType={businessType}
                   value={peForm.supplier}
                   extraSuppliers={knownSuppliers}
                   onChange={v => setPeForm(f => ({ ...f, supplier: v }))} />
@@ -23189,6 +23272,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                     setProducts(prev => [...prev, {
                       id: newId, name, unit: unitFinal,
                       price: unitSell, costPrice: unitCost,
+                      spPrice: peForm.spPrice !== "" && peForm.spPrice !== undefined ? (parseFloat(peForm.spPrice) || 0) : undefined,
                       stock: qty, minStockAlert: 5, category: "অন্যান্য", company,
                       productType: "product", expiryDate: peForm.expiryDate || "", barcode: "", lastUpdated: now,
                       batches: [firstBatch],
@@ -23199,6 +23283,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                       at: now, dateKey: todayK, source: "purchase",
                     });
                     setStockMovements(prev => [mvNewProd, ...prev]);
+                    if (businessType === "veterinary") vetLearnEntry(name, unitFinal, company); // 🐄 সেলফ-লার্নিং সাজেশন
                     setPurchaseOrders(prev => [{
                       id: uid(), _type: "pe",
                       productId: newId, productName: name, unit: unitFinal,
@@ -23609,7 +23694,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           {/* ── সাপ্লায়ার selector — শুধু পণ্যের জন্য ── */}
           {form.productType !== "service" && (<>
           <label style={S.label}>🏭 সাপ্লায়ার *</label>
-          <SupplierPicker key={editId || "new"} T={T} S={S}
+          <SupplierPicker key={editId || "new"} T={T} S={S} businessType={businessType}
             error={formErrors.company}
             value={form.company || ""}
             extraSuppliers={knownSuppliers}
@@ -23622,6 +23707,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             <input style={{ ...S.input, border: formErrors.price ? "1.5px solid #ef4444" : S.input.border }} placeholder="" type="number" value={form.price} onChange={e => { setForm({ ...form, price: e.target.value }); if (parseFloat(e.target.value) > 0) setFormErrors(er=>({...er,price:false})); }} inputMode="numeric" pattern="[0-9]*" />
             {formErrors.price && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ সার্ভিস চার্জ আবশ্যক</div>}
           </>) : (<>
+          <label style={S.label}>🏷️ SP (৳) <span style={{ color:T.sub, fontWeight:500, fontSize:11 }}>— শুধু রেফারেন্সের জন্য, ঐচ্ছিক</span></label>
+          <input style={{ ...S.input }} placeholder="" type="number" value={form.spPrice} onChange={e => setForm({ ...form, spPrice: e.target.value })} inputMode="numeric" pattern="[0-9]*" />
           <label style={S.label}>💵 ক্রয়মূল্য (৳) *</label>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
             <div>
@@ -23779,6 +23866,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                 </div>
                 {/* ── সারি ২: ক্রয়|বিক্রয়|স্টক|সাপ্লায়ার ── */}
                 <div style={{ display:"flex", gap:6, marginTop:3, flexWrap:"wrap", alignItems:"center" }}>
+                  {p.productType !== "service" && p.spPrice > 0 && <span style={{ color:"#a78bfa", fontWeight:700, fontSize:11 }}>SP: ৳{fmt(p.spPrice)}</span>}
                   {p.productType !== "service" && p.costPrice > 0 && <span style={{ color:"#f59e0b", fontWeight:700, fontSize:11 }}>ক্রয়: ৳{fmt(p.costPrice)}</span>}
                   <span style={{ color:"#22c55e", fontWeight:700, fontSize:11 }}>{p.productType === "service" ? "চার্জ" : "বিক্রয়"}: ৳{fmt(p.price)}</span>
                   {p.productType !== "service" && (
@@ -23834,7 +23922,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                   onClick={(e) => {
                     e.stopPropagation();
                     if (editId === p.id) { setEditId(null); setShowAdd(false); }
-                    else { setEditId(p.id); setForm({ name: p.name, price: String(p.price), stock: String(p.stock || 0), minStockAlert: String(p.minStockAlert || 5), category: p.category || "অন্যান্য", company: p.company || "", productType: (p.productType === "retail" ? "product" : p.productType) || "product", costPrice: String(p.costPrice || ""), expiryDate: p.expiryDate || "", barcode: p.barcode || "", unit: p.unit || "", demandType: p.demandType || "common" }); setExtraBatches([]); setShowAdd(false); setCompanyCustom(!!p.company && !BD_PHARMA_COMPANIES.includes(p.company)); }
+                    else { setEditId(p.id); setForm({ name: p.name, price: String(p.price), stock: String(p.stock || 0), minStockAlert: String(p.minStockAlert || 5), category: p.category || "অন্যান্য", company: p.company || "", productType: (p.productType === "retail" ? "product" : p.productType) || "product", costPrice: String(p.costPrice || ""), spPrice: p.spPrice !== undefined && p.spPrice !== null ? String(p.spPrice) : "", expiryDate: p.expiryDate || "", barcode: p.barcode || "", unit: p.unit || "", demandType: p.demandType || "common" }); setExtraBatches([]); setShowAdd(false); setCompanyCustom(!!p.company && !BD_PHARMA_COMPANIES.includes(p.company)); }
                   }}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
                 </button>}
@@ -27289,7 +27377,7 @@ function AppVersionCard({ T, S }) {
 }
 
 function Settings_({ T, S, shopName,
- setShopName, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, setGoogleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [] }) {
+ setShopName, businessType = "pharmacy", setBusinessType, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, setGoogleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [] }) {
   const [editName,    setEditName]    = useState(false);
   const [nameInput,   setNameInput]   = useState(shopName);
   const [showRecoveryExpanded, setShowRecoveryExpanded] = useState(false);
@@ -28423,6 +28511,27 @@ function Settings_({ T, S, shopName,
             </button>
           </div>
         )}
+      </div>
+
+      {/* ① Business Type — ফার্মেসি / ভেটেরিনারি */}
+      <div className="qc-gradient-card" style={{ ...S.card }}>
+        <div style={{ color: T.text, fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0ea5e9" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+          ব্যবসার ধরন
+        </div>
+        <div style={{ display:"flex", gap:10 }}>
+          <label style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:6, flex:1, padding:"11px 10px", borderRadius:10, border:`1.5px solid ${businessType === "pharmacy" ? "#0ea5e9" : T.border}`, background: businessType === "pharmacy" ? "#0ea5e915" : "transparent", cursor:"pointer" }}>
+            <input type="checkbox" checked={businessType === "pharmacy"} onChange={() => { setBusinessType?.("pharmacy"); showToast("ফার্মেসি মোড চালু হয়েছে"); }} style={{ width:16, height:16, accentColor:"#0ea5e9", cursor:"pointer" }} />
+            <span style={{ color: businessType === "pharmacy" ? "#0ea5e9" : T.sub, fontWeight:700, fontSize:13 }}>💊 ফার্মেসি</span>
+          </label>
+          <label style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:6, flex:1, padding:"11px 10px", borderRadius:10, border:`1.5px solid ${businessType === "veterinary" ? "#16a34a" : T.border}`, background: businessType === "veterinary" ? "#16a34a15" : "transparent", cursor:"pointer" }}>
+            <input type="checkbox" checked={businessType === "veterinary"} onChange={() => { setBusinessType?.("veterinary"); showToast("ভেটেরিনারি মোড চালু হয়েছে"); }} style={{ width:16, height:16, accentColor:"#16a34a", cursor:"pointer" }} />
+            <span style={{ color: businessType === "veterinary" ? "#16a34a" : T.sub, fontWeight:700, fontSize:13 }}>🐄 ভেটেরিনারি</span>
+          </label>
+        </div>
+        <div style={{ color:T.sub, fontSize:11, marginTop:8, lineHeight:1.5 }}>
+          এই সিলেকশন অনুযায়ী পণ্যের নাম-সাজেশন ডেটাসেট বদলে যাবে। ভেটেরিনারি মোডে আপনি যত পণ্য/সাপ্লায়ার যোগ করবেন, অ্যাপ নিজে থেকেই সেগুলো মনে রেখে ভবিষ্যতে সাজেশনে দেখাবে।
+        </div>
       </div>
 
       {/* ⑦ Bluetooth Printer */}
