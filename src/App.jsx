@@ -3,7 +3,7 @@ import ReactDOM from "react-dom";
 import { initializeApp, getApps, deleteApp } from "firebase/app";
 import { initializeAppCheck, ReCaptchaV3Provider } from "firebase/app-check";
 import {
-  getFirestore, doc, getDoc, getDocFromServer, updateDoc, setDoc, deleteDoc,
+  getFirestore, initializeFirestore, doc, getDoc, getDocFromServer, updateDoc, setDoc, deleteDoc,
   collection, onSnapshot, getDocs, enableIndexedDbPersistence,
   query, where, orderBy, limit, startAfter, increment, runTransaction,
   writeBatch, serverTimestamp,
@@ -5004,8 +5004,27 @@ const FSS = {
       // Firestore app-এর সাথে কখনো কলিশন করবে না
       const appName = "sbm-fss-" + (cfg.projectId || "default");
       const existing = getApps().find(a => a.name === appName);
+      const isNewApp = !existing;
       this._app = existing || initializeApp(cfg, appName);
-      this._db = getFirestore(this._app);
+      // 🔴 ফিক্স (ডিফেন্সিভ নেট): Firestore SDK ডিফল্টভাবে কোনো ফিল্ডে
+      // `undefined` ভ্যালু পেলে setDoc()-এ exception থ্রো করে পুরো write বাতিল
+      // করে দেয় — কোনো visible error ছাড়াই record চুপচাপ Firestore-এ পৌঁছায় না
+      // (দেখা গেছে: products-এ spPrice খালি রাখলে ঠিক এভাবেই write ব্যর্থ হতো,
+      // অথচ UI-তে "পণ্য যোগ হয়েছে" দেখাত কারণ local state ঠিকই আপডেট হয়)।
+      // ignoreUndefinedProperties: true দিলে Firestore নিজে থেকে undefined
+      // ফিল্ড বাদ দিয়ে বাকি ডেটা লিখে ফেলবে — ভবিষ্যতে কোথাও নতুন ফিল্ড যোগ
+      // করার সময় ভুলে undefined গেলেও পুরো record হারিয়ে যাবে না।
+      // initializeFirestore() একটা app-এ একবারই কল করা যায় (নাহলে থ্রো করে),
+      // তাই শুধু নতুন app instance-এর ক্ষেত্রে এটা ব্যবহার করা হচ্ছে — বিদ্যমান
+      // app পুনরায় ব্যবহার হলে (existing) সেটার Firestore ইতিমধ্যে init করা,
+      // তখন সাধারণ getFirestore() দিয়ে সেই একই instance আবার ধরা হয়।
+      try {
+        this._db = isNewApp
+          ? initializeFirestore(this._app, { ignoreUndefinedProperties: true })
+          : getFirestore(this._app);
+      } catch (e) {
+        this._db = getFirestore(this._app); // fallback — কোনো কারণে initializeFirestore ব্যর্থ হলেও অ্যাপ যেন বন্ধ না হয়ে যায়
+      }
       // 🔴 App Check — নিশ্চিত করে শুধু আসল অ্যাপ (আপনার signed build) Firestore-এ
       // read/write করতে পারবে, কেউ config কপি করে ভুয়া client বানালেও block হবে।
       // `cfg.appCheckSiteKey` না থাকলে এটা সম্পূর্ণ no-op (backward compatible) —
@@ -22445,7 +22464,12 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       lastUpdated: now,
       minStockAlert: parseInt(form.minStockAlert) || (() => { const u = (form.unit||"").toLowerCase(); return (u.includes("বোতল")||u.includes("সিরাপ")||u.includes("ড্রপ")||u.includes("সাসপেনশন")) ? 5 : 20; })(),
       costPrice: form.isFreeStock ? 0 : (parseFloat(form.costPrice) || 0),
-      spPrice: form.spPrice !== "" && form.spPrice !== undefined ? (parseFloat(form.spPrice) || 0) : undefined,
+      // 🔴 ফিক্স: আগে খালি রাখলে `undefined` বসত — Firestore SDK-এর setDoc()
+      // undefined ফিল্ড ভ্যালু মেনে নেয় না, সাথে সাথে exception থ্রো করত, ফলে
+      // পুরো products write silently ব্যর্থ হয়ে যেত (purchaseOrders ঠিকই সিঙ্ক
+      // হতো, কারণ ওই অবজেক্টে spPrice ফিল্ডটাই থাকে না)। null Firestore-এ বৈধ,
+      // আর নিচের সব display check (`p.spPrice > 0`) null-এও নিরাপদে false দেয়।
+      spPrice: form.spPrice !== "" && form.spPrice !== undefined ? (parseFloat(form.spPrice) || 0) : null,
       expiryDate: form.expiryDate || "",
       barcode: form.barcode || "",
       unit: (form.unit === "__typing__" ? "" : form.unit) || "",
@@ -23272,7 +23296,10 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                     setProducts(prev => [...prev, {
                       id: newId, name, unit: unitFinal,
                       price: unitSell, costPrice: unitCost,
-                      spPrice: peForm.spPrice !== "" && peForm.spPrice !== undefined ? (parseFloat(peForm.spPrice) || 0) : undefined,
+                      // 🔴 ফিক্স: undefined নয়, null — Firestore setDoc() undefined-এ
+                      // exception থ্রো করে products/purchaseOrders write ব্যর্থ করে দিত
+                      // (দেখুন নতুন-পণ্য ফর্মের একই ফিক্সের কমেন্ট)।
+                      spPrice: peForm.spPrice !== "" && peForm.spPrice !== undefined ? (parseFloat(peForm.spPrice) || 0) : null,
                       stock: qty, minStockAlert: 5, category: "অন্যান্য", company,
                       productType: "product", expiryDate: peForm.expiryDate || "", barcode: "", lastUpdated: now,
                       batches: [firstBatch],
