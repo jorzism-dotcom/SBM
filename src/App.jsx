@@ -2963,6 +2963,29 @@ function SubscriptionGate({ children }) {
       const d = snap.data();
       if (!isMounted()) return;
       DevPanelFlag.visible = !!d.devPanelVisible; // admin.html থেকে টগল করা ফ্ল্যাগ
+
+      // 🔥 ফিক্স (অটো Firebase Config): admin.html-এর "Firebase Deploy" ফিচার
+      // দিয়ে দোকানের জন্য নতুন Firebase project তৈরি হলে, config সরাসরি এই
+      // subscriptions/{phone} ডকুমেন্টের shopFirebaseConfig ফিল্ডে জমা থাকে।
+      // আগে এটা শুধু ম্যানুয়াল "রিকভারি" স্ক্রিনে (ফোন+PIN) পড়া হতো — এখন
+      // দোকানদার প্রথমবার শুধু ফোন নম্বর দিয়ে অ্যাপ খুললেই (কোনো কপি-পেস্ট
+      // ছাড়াই) config অটোমেটিক লোকাল স্টোরেজে বসে যায়। ডিভাইসে ইতিমধ্যে
+      // কোনো config থাকলে (ম্যানুয়ালি বসানো বা আগেই অটো-লোড হওয়া) এটা
+      // ওভাররাইট করা হয় না, যাতে সচেতনভাবে অন্য প্রজেক্টে connect থাকা কোনো
+      // ডিভাইসের config ভুলবশত বদলে না যায়।
+      if (d.shopFirebaseConfig && d.shopFirebaseConfig.apiKey) {
+        try {
+          const existingCfg = await getStorage(SK.firebaseConfig);
+          if (!existingCfg) {
+            await save(SK.firebaseConfig, d.shopFirebaseConfig);
+            await save(SK.firebaseEnabled, true);
+            // বাকি অ্যাপ (boot-টাইমে একবার লোড হওয়া state) নতুন config নিয়ে
+            // শুরু করার জন্য একটা রিলোড দরকার — ব্যবহারকারীকে বুঝতে না দিয়ে
+            // দ্রুতই (splash-এর আড়ালে) হয়ে যাবে।
+            setTimeout(() => { try { window.location.reload(); } catch {} }, 600);
+          }
+        } catch {}
+      }
       if (d.status === "blocked") { setStatus("expired"); if (typeof window.__hideSplash === "function") window.__hideSplash(); return; }
       const now = new Date();
       // 🔴 ফিক্স (টাইমজোন বাগ): expiryDate শুধু "YYYY-MM-DD" (date-only) স্ট্রিং হিসেবে
