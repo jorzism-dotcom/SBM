@@ -10706,7 +10706,7 @@ function SmartBusinessMgmt() {
 
   // ── tab setter — route guard সহ ───────────────────────────────────────────
   const setTab = (newTab) => {
-    const STAFF_RESTRICTED = ["sms", "ai"];
+    const STAFF_RESTRICTED = ["sms", "ai", "returns", "supplier"];
     if (currentUser?.role === "staff" && STAFF_RESTRICTED.includes(newTab)) {
       showToast?.("স্টাফ অ্যাকাউন্টে এই পেজ অ্যাক্সেস নেই", "error");
       return;
@@ -12403,7 +12403,8 @@ function SmartBusinessMgmt() {
       { id: "settings",  label: "সেটিং",   icon: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" },
     ];
     // Staff cannot see sms/ai/দৈনিক সারসংক্ষেপ/অডিট ট্রেইল/স্টাফ ব্যবস্থাপনা (settings এখন দেখবে — শুধু theme+font)
-    let visible = isStaff ? all.filter(n => !["sms", "ai", "dailySummary", "auditTrail", "staffMgmt"].includes(n.id)) : all;
+    // 🔴 ফিক্স: "ইনভয়েস হিস্ট্রি" (returns) ও "সাপ্লায়ার" (supplier) এখন থেকে শুধু admin/owner দেখবে — স্টাফের জন্য হাইড
+    let visible = isStaff ? all.filter(n => !["sms", "ai", "dailySummary", "auditTrail", "staffMgmt", "returns", "supplier"].includes(n.id)) : all;
     // "এক্সপেন্স ট্রেকার" শুধু Admin রোল দেখতে পাবে — অন্য কোনো রোল (staff/অজানা) দেখবে না
     if (currentUser?.role !== "admin" && currentUser?.role !== "owner") visible = visible.filter(n => n.id !== "expense");
     return visible;
@@ -27470,6 +27471,86 @@ function Settings_({ T, S, shopName,
   if (isStaffUser) {
     return (
       <div style={S.page}>
+        {/* ══ Read-only Sync Status (স্টাফ-ও দেখতে পারবে) ══ */}
+        {/* 🔴 ফিক্স: আগে এই ব্লকটা শুধু non-staff return পাথে ছিল — উপরের কমেন্টে
+            "সব role দেখতে পারে, staff-ও" লেখা থাকলেও isStaffUser early-return-এর
+            কারণে স্টাফ কখনো এই কোড পর্যন্ত পৌঁছাতোই না (dead code for staff)।
+            এখন staff branch-এও কপি করে দেওয়া হলো, যাতে স্টাফ নিজেই বুঝতে পারে
+            তার ডিভাইস Firestore-এ সংযুক্ত কিনা — মালিকের ওপর নির্ভর না করে। */}
+        <div style={{ display:"flex", alignItems:"center", gap:8, background: fssReady ? "#22c55e12" : "#64748b12", border:`1px solid ${fssReady ? "#22c55e30" : "#64748b30"}`, borderRadius:10, padding:"8px 12px", marginBottom:12 }}>
+          <span style={{ width:8, height:8, borderRadius:99, background: fssReady ? "#22c55e" : "#64748b", display:"inline-block", flexShrink:0 }} />
+          <span style={{ color: fssReady ? "#4ade80" : "#94a3b8", fontSize:11, fontWeight:700 }}>
+            Firestore: {fssReady ? "সংযুক্ত (real-time sync চলছে)" : "সংযুক্ত নেই — এই ডিভাইস শুধু local ডেটা নিয়ে চলছে"}
+          </span>
+        </div>
+
+        {/* ── 🩺 ফুল অ্যাপ চেকআপ — স্টাফ ফোনেও দেখানো হচ্ছে, যাতে স্টাফ নিজেই
+            নিজের ডিভাইসের Firestore Write→Read লাইভ টেস্ট চালিয়ে দেখতে পারে
+            সিঙ্ক আসলে কাজ করছে কিনা (আগে এটা শুধু owner/admin দেখতে পেত)। ── */}
+        <div style={{ marginBottom:10, borderRadius:10, border:"1px solid #38bdf844", background:"#38bdf80f", padding:"10px 11px" }}>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+              <span style={{ fontSize:13 }}>🩺</span>
+              <span style={{ color:"#38bdf8", fontWeight:800, fontSize:10.5 }}>ফুল অ্যাপ চেকআপ</span>
+            </div>
+            <button
+              onClick={runSyncDiagnostics}
+              disabled={syncDiag?.running}
+              style={{ background:"#38bdf822", border:"1px solid #38bdf855", borderRadius:7, padding:"5px 11px", color:"#38bdf8", fontSize:9.5, fontWeight:800, cursor: syncDiag?.running ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: syncDiag?.running ? 0.6 : 1 }}
+            >
+              {syncDiag?.running ? "চলছে..." : "▶ ফুল চেকাপ চালান"}
+            </button>
+          </div>
+          {!syncDiag && (
+            <div style={{ color:"#94a3b8", fontSize:9.5 }}>সিঙ্ক কানেকশন, স্টাফ পারমিশন, ডেটা ইন্টেগ্রিটি, লোকাল স্টোরেজ, ব্যাকআপ/হেলথ, windowing ফিচার ও হিসাব/লজিক সঠিকতা (বাকি/ইনভয়েস/ক্যাশ/stats) — সবকিছু এক ক্লিকে যাচাই করতে "ফুল চেকাপ চালান" চাপুন।</div>
+          )}
+          {syncDiag?.checks && (() => {
+            const groups = {};
+            syncDiag.checks.forEach(c => { (groups[c.feature] = groups[c.feature] || []).push(c); });
+            const iconFor = (s) => s === "pass" ? "✅" : s === "fail" ? "❌" : s === "todo" ? "⏳" : "⏭️";
+            const colorFor = (s) => s === "pass" ? "#22c55e" : s === "fail" ? "#ef4444" : s === "todo" ? "#94a3b8" : "#f59e0b";
+            const passCount = syncDiag.checks.filter(c => c.status === "pass").length;
+            const failCount = syncDiag.checks.filter(c => c.status === "fail").length;
+            const totalCount = syncDiag.checks.length;
+            return (
+              <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                <div style={{
+                  display:"flex", alignItems:"center", justifyContent:"space-between",
+                  background: failCount > 0 ? "#ef444418" : "#22c55e18",
+                  border: `1px solid ${failCount > 0 ? "#ef444455" : "#22c55e55"}`,
+                  borderRadius:8, padding:"7px 10px", marginBottom:2,
+                }}>
+                  <span style={{ color: failCount > 0 ? "#fca5a5" : "#86efac", fontWeight:800, fontSize:10.5 }}>
+                    {failCount > 0 ? `⚠️ ${failCount}টা সমস্যা পাওয়া গেছে` : "✅ সব ঠিক আছে"}
+                  </span>
+                  <span style={{ color:"#94a3b8", fontSize:9 }}>{passCount}/{totalCount} পাস</span>
+                </div>
+                {Object.keys(groups).map(feature => (
+                  <div key={feature}>
+                    <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:10, marginBottom:3 }}>{feature}</div>
+                    {groups[feature].map((c, i) => (
+                      <div key={i} style={{ display:"flex", gap:6, marginBottom:3, paddingLeft:6 }}>
+                        <span style={{ fontSize:10 }}>{iconFor(c.status)}</span>
+                        <div style={{ flex:1 }}>
+                          <div style={{ color:colorFor(c.status), fontSize:9.5, fontWeight:700 }}>{c.name}</div>
+                          <div style={{ color:"#94a3b8", fontSize:8.5 }}>{c.detail}</div>
+                          {c.status === "fail" && c.name === "আজকের Firestore stats doc vs লোকাল ইনভয়েস যোগফল" && (
+                            <button onClick={fixStatsDrift} disabled={statsFixing}
+                              style={{ marginTop:4, background:"#f59e0b22", border:"1px solid #f59e0b55", borderRadius:6, padding:"4px 9px", color:"#f59e0b", fontSize:8.5, fontWeight:800, cursor: statsFixing ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: statsFixing ? 0.6 : 1 }}>
+                              {statsFixing ? "ঠিক করা হচ্ছে..." : "🩹 এখনই রিক্যালকুলেট করে ঠিক করুন"}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+                <div style={{ color:"#64748b", fontSize:8, marginTop:2 }}>সর্বশেষ চালানো হয়েছে: {new Date(syncDiag.ranAt).toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit", timeZone: "Asia/Dhaka" })}</div>
+              </div>
+            );
+          })()}
+        </div>
+
         {/* ══ Theme Card ══ */}
         {(() => {
           return (
