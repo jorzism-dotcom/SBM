@@ -228,9 +228,13 @@ self.onmessage = ({ data }) => {
     });
   }
 
-};
-
   // ── ৬. Cash Flow Forecast — আগামী ৭ দিনের আনুমানিক ─────────────────────
+  // 🔴 ফিক্স (ESLint no-undef দিয়ে ধরা পড়া বাগ): এই ব্লকটা আগে ভুলবশত উপরের
+  // self.onmessage হ্যান্ডলারের বন্ধনী `};`-এর বাইরে বসানো ছিল — ফলে `data`
+  // undefined ছিল, worker load হওয়ার সময়েই ReferenceError থ্রো করত, আর পুরো
+  // "Cash Flow Forecast" ফিচারটা (App.jsx থেকে CASH_FLOW_FORECAST পাঠানো ও
+  // CASH_FLOW_RESULT-এর অপেক্ষা করা) কখনো কোনো ফলাফল পেত না — সম্পূর্ণ নিরব
+  // ব্যর্থতা, কোনো error UI-তে দেখা যেত না। এখন হ্যান্ডলারের ভেতরে আনা হলো।
   if (data.type === "CASH_FLOW_FORECAST") {
     const { invoices, customers, txns, expenses, purchaseOrders } = data.payload;
     const now = Date.now();
@@ -283,3 +287,5 @@ self.onmessage = ({ data }) => {
       payload: { forecast, totalInflow, totalOutflow, totalNet, overdueTotal, avgDailySales: Math.round(avgDailySales) }
     });
   }
+
+};

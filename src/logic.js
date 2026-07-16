@@ -1,3 +1,4 @@
+// @ts-check
 // ─── src/logic.js ────────────────────────────────────────────────────────────
 // এই ফাইলে থাকা প্রতিটি ফাংশন খাঁটি (pure): কোনো React state, Firebase, বা DOM
 // ছোঁয় না — শুধু ইনপুট নিয়ে হিসাব করে আউটপুট দেয়। এই কারণেই এগুলো এই আলাদা
@@ -54,9 +55,18 @@ export function calcNextBatch(productId, products, purchaseOrders, purchaseDate)
 
 // ─── isBatchExpired — একটা তারিখ আজকের হিসেবে মেয়াদোত্তীর্ণ কিনা ─────────────
 // date-only ("YYYY-MM-DD") হলে দিনের শেষ (23:59:59) পর্যন্ত সেইদিন এখনো বিক্রয়যোগ্য
+/**
+ * @param {string|null|undefined} expiryDate
+ * @returns {boolean}
+ */
 export function isBatchExpired(expiryDate) {
   if (!expiryDate) return false;
-  const exp = /T/.test(expiryDate) ? new Date(expiryDate) : new Date(`${expiryDate}T23:59:59`);
+  // date-only ইনপুট (যেমন "YYYY-MM-DD") হলে ফরম্যাট কড়াভাবে যাচাই করা হয় — কারণ
+  // native Date parsing বিভিন্ন garbage string ("0U" ইত্যাদি) কেও চুপচাপ কোনো একটা
+  // (ভুল) তারিখ হিসেবে মেনে নেয়, throw/NaN করে না (fuzz টেস্টে ধরা পড়া বাগ)।
+  const isDateOnly = !/T/.test(expiryDate);
+  if (isDateOnly && !/^\d{4}-\d{2}-\d{2}$/.test(expiryDate)) return false;
+  const exp = isDateOnly ? new Date(`${expiryDate}T23:59:59`) : new Date(expiryDate);
   if (isNaN(exp.getTime())) return false;
   return exp < new Date();
 }
@@ -69,10 +79,10 @@ export function getSortedActiveBatches(product) {
   return product.batches
     .filter(b => (b.qty || 0) > 0 && !isBatchExpired(b.expiryDate))
     .sort((a, b) => {
-      if (a.expiryDate && b.expiryDate) return new Date(a.expiryDate) - new Date(b.expiryDate);
+      if (a.expiryDate && b.expiryDate) return new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime();
       if (a.expiryDate) return -1;
       if (b.expiryDate) return 1;
-      return new Date(a.at || 0) - new Date(b.at || 0);
+      return new Date(a.at || 0).getTime() - new Date(b.at || 0).getTime();
     });
 }
 
@@ -169,25 +179,51 @@ export function calcProfitTotal(invList, prodMap) {
 // এই ফাংশন বদলালে App.jsx-এর আসল ইনভয়েস/ভয়েড/সামারি লজিকও একইসাথে বদলে যায় —
 // আলাদা করে App.jsx-এ হাতে মিলিয়ে আপডেট করার দরকার নেই।
 // ─── ইনভয়েস total সূত্র — createInvoice() সরাসরি এই ফাংশন কল করে ────────────
+/**
+ * @param {Array<{qty:number, price:number, itemDiscount?:number}>} items
+ * @param {number} discount
+ * @param {number} extraCharge
+ * @returns {number}
+ */
 export function calcInvoiceTotal(items, discount, extraCharge) {
   const subtotal = items.reduce((s, i) => s + i.qty * i.price, 0);
   const itemDiscTotal = items.reduce((s, i) => s + Math.min(Math.max(i.itemDiscount || 0, 0), i.qty * i.price), 0);
-  const discAmt = Math.min(discount || 0, Math.max(0, subtotal - itemDiscTotal));
-  const extraAmt = Math.max(extraCharge || 0, 0);
+  const safeDiscount = Number.isFinite(discount) ? discount : 0;
+  const safeExtraCharge = Number.isFinite(extraCharge) ? extraCharge : 0;
+  const discAmt = Math.min(Math.max(safeDiscount, 0), Math.max(0, subtotal - itemDiscTotal));
+  const extraAmt = Math.max(safeExtraCharge, 0);
   return subtotal - itemDiscTotal - discAmt + extraAmt;
 }
 
 // ─── ভয়েড-রিভার্সাল netChange সূত্র — voidInvoice() সরাসরি এই ফাংশন কল করে ────
+/**
+ * @param {{payType?:string, total?:number, bakiAmount?:number, overpayAmount?:number}} inv
+ * @returns {number}
+ */
 export function calcVoidNetChange(inv) {
   return (inv.payType === "baki" ? inv.total : (inv.bakiAmount || 0)) - (inv.overpayAmount || 0);
 }
 
 // ─── ক্যাশ ড্রয়ার সূত্র — buildDailySummaryData() সরাসরি এই ফাংশন কল করে ──────
+/**
+ * @param {number} opening
+ * @param {number} cashSale
+ * @param {number} joma
+ * @param {number} withdrawal
+ * @returns {number}
+ */
 export function calcCashDrawer(opening, cashSale, joma, withdrawal) {
   return opening + cashSale + joma - withdrawal;
 }
 
 // ─── ব্যাচ-স্টক রিস্টোর — voidInvoice() সরাসরি এই ফাংশন কল করে ────────────────
+/**
+ * @param {Array<{batchNo:string, qty:number}>} batches
+ * @param {string} batchNo
+ * @param {number} restoredQty
+ * @param {object} [fallback]
+ * @returns {Array<{batchNo:string, qty:number}>}
+ */
 export function restoreBatchQty(batches, batchNo, restoredQty, fallback = {}) {
   let updated = batches ? [...batches] : [];
   const idx = updated.findIndex(b => b.batchNo === batchNo);
