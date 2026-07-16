@@ -912,7 +912,12 @@ async function traceDebug(step, data = {}) {
       deviceId: (typeof DeviceID !== "undefined" && DeviceID.get) ? DeviceID.get() : "unknown",
       at: new Date().toISOString(),
     });
-  } catch { /* ট্রেস নিজেই fail করলে চুপচাপ ignore */ }
+  } catch (e) {
+    // 🔍 TEMP DEBUG: debug_trace write নিজেই ব্যর্থ হলে আগে চুপচাপ ignore হতো —
+    // এখন সেটা app_errors-এ visible করা হচ্ছে (যেটা কাজ করে বলে জানা গেছে),
+    // যাতে আসল কারণ (rules-deny/network/other) ধরা পড়ে।
+    try { logErrorToCentral?.("traceDebug:fail", e, { step }); } catch {}
+  }
 }
 
 // ─── Storage Helper ───────────────────────────────────────────────────────────
