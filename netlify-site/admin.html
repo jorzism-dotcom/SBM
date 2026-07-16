@@ -636,38 +636,11 @@
 
         <div id="fbWorkArea" style="display:none;margin-top:16px">
 
-          <div class="glass card" style="margin-bottom:16px;padding:14px;border-color:rgba(245,158,11,0.35)">
-            <div style="font-weight:700;margin-bottom:10px;color:var(--amber)">🏗️ নতুন দোকান — এক ক্লিকে সম্পূর্ণ Firebase Project তৈরি করুন</div>
-            <div class="form-group">
-              <label>দোকানের নাম</label>
-              <input id="fbNewShopName" placeholder="যেমন: রহিম স্টোর" oninput="fbAutoProjectId()">
-            </div>
-            <div class="form-group">
-              <label>নতুন Project ID (auto তৈরি হবে, চাইলে বদলাতে পারেন)</label>
-              <input id="fbNewProjectId" placeholder="rahim-store-a1b2c">
-              <div class="hint">শুধু ছোট হাতের ইংরেজি অক্ষর, সংখ্যা ও হাইফেন — ৬-৩০ ক্যারেক্টার, প্রথম অক্ষর দিয়ে শুরু</div>
-            </div>
-            <div class="form-group">
-              <label>Region</label>
-              <select id="fbNewRegion" style="width:100%;padding:10px;border-radius:10px;background:rgba(0,0,0,0.3);color:var(--text);border:1px solid var(--border)">
-                <option value="asia-southeast1">asia-southeast1 (Singapore)</option>
-                <option value="asia-south1">asia-south1 (Mumbai)</option>
-                <option value="us-central1">us-central1 (Iowa)</option>
-              </select>
-            </div>
-            <button class="btn-primary" style="background:linear-gradient(135deg,#f59e0b,#d97706)" onclick="fbCreateAndDeployAll()">
-              🏗️ নতুন Project তৈরি করে সব Deploy করুন
-            </button>
-            <div class="hint" style="margin-top:8px">এটা নতুন GCP Project + Firebase + Firestore Database + Realtime Database — সবকিছু একদম শূন্য থেকে তৈরি করবে। বিদ্যমান কোনো দোকানের প্রজেক্টে এই বাটন ব্যবহার করবেন না — শুধু একদম নতুন দোকানের জন্য।</div>
-          </div>
-
-          <div style="text-align:center;color:var(--sub2);font-size:12px;margin:14px 0">— অথবা বিদ্যমান প্রজেক্টে deploy করুন —</div>
-
           <div class="form-group">
             <label>Firebase Project ID *</label>
             <input id="fbProjectId" placeholder="যেমন: chiren-eff4c">
           </div>
-          <button class="btn-ghost" style="margin-bottom:14px" onclick="fbFetchConfig()">
+          <button class="btn-primary" style="margin-bottom:14px;background:linear-gradient(135deg,#0ea5e9,#0284c7)" onclick="fbFetchConfig()">
             🔍 Project থেকে Config খুঁজে বের করুন
           </button>
 
@@ -1529,21 +1502,48 @@ window.switchTab = function(tab) {
 };
 
 const FB_DEPLOY_CLIENT_ID = '359825185312-0df3s1j88lpalbi80m48sqbopfepli9t.apps.googleusercontent.com';
-const FB_DEPLOY_SCOPES = 'https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/firebase';
+// RTDB rules REST endpoint (/.settings/rules.json) আলাদাভাবে
+// 'firebase.database' scope চেক করে — শুধু broad 'firebase'/'cloud-platform'
+// scope থাকলেও "Unauthorized request" দেয়, তাই এটা আলাদা করে যোগ করা আছে।
+const FB_DEPLOY_SCOPES = 'https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/firebase https://www.googleapis.com/auth/firebase.database';
 
 const FB_DEFAULT_RULES = `rules_version = '2';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SBM (Smart Business Manager) — প্রতিটা দোকানের নিজস্ব Firebase project-এ বসবে
 // ═══════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ গুরুত্বপূর্ণ প্রেক্ষাপট (এই rules লেখার আগে জানা দরকার):
+// এই অ্যাপ Firebase Auth ব্যবহার করে না — PIN/login সম্পূর্ণ client-side (local),
+// Firebase নিজে কোনো ইউজার identity verify করে না। তাই \`request.auth\` দিয়ে
+// "কে" read/write করতে পারবে সেটা নিয়ন্ত্রণ করা এই architecture-এ সম্ভব না।
+//
+// এই rules তাই দুটো নির্দিষ্ট কাজ করে (যেটা সম্ভব, বাস্তবসম্মত):
+//   ১. Schema/shape validation — ভুল টাইপ বা অসম্ভব ভ্যালু (যেমন ঋণাত্মক balance,
+//      অসংজ্ঞায়িত status) ডাটাবেজ পর্যন্ত পৌঁছাতেই পারবে না, client-code-এ নতুন
+//      bug এলেও এটা শেষ প্রতিরক্ষা স্তর হিসেবে কাজ করবে।
+//   ২. read/write আগের মতোই খোলা থাকছে (\`if true\`) — বর্তমান আচরণ বদলাচ্ছি না,
+//      শুধু "কী লেখা যাবে" তার উপর কড়াকড়ি বসাচ্ছি।
+//
+// প্রকৃত "কে" নিয়ন্ত্রণ (কেউ APK reverse-engineer করে ভুয়া ক্লায়েন্ট দিয়ে লিখতে
+// না পারে) — সেটার জন্য Firebase App Check (আলাদাভাবে সেটআপ করা প্রয়োজন,
+// client-code-এ ইতিমধ্যে integration যোগ করা হয়েছে, দেখুন App Check নোট নিচে)।
+//
+// ── এই ফাইল কীভাবে বসাবেন ──
+// প্রতিটা দোকানের Firebase Console → Firestore Database → Rules ট্যাব → এই
+// পুরো কন্টেন্ট paste করে "Publish" চাপুন। ৫০০টা প্রজেক্টে ম্যানুয়ালি একই কাজ,
+// Firebase Management API script দিয়ে automate করা সম্ভব (আলাদা কাজ)।
+// ═══════════════════════════════════════════════════════════════════════════
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // ── সাধারণ helper ──
     function isNum(v)      { return v is int || v is float; }
     function isNonNegNum(v){ return isNum(v) && v >= 0; }
     function isStr(v)      { return v is string; }
 
+    // ── customers ── balance/loyaltyPoints ঋণাত্মক হতে পারবে না
     match /customers/{id} {
       allow read: if true;
       allow create, update: if
@@ -1553,6 +1553,7 @@ service cloud.firestore {
       allow delete: if true;
     }
 
+    // ── products ── stock ঋণাত্মক হতে পারবে না, price/costPrice সংখ্যা হতে হবে
     match /products/{id} {
       allow read: if true;
       allow create, update: if
@@ -1562,6 +1563,7 @@ service cloud.firestore {
       allow delete: if true;
     }
 
+    // ── invoices ── total/status অবশ্যই সঠিক shape-এ, status শুধু নির্দিষ্ট মান
     match /invoices/{id} {
       allow read: if true;
       allow create, update: if
@@ -1573,6 +1575,7 @@ service cloud.firestore {
       allow delete: if true;
     }
 
+    // ── txns ── amount ঋণাত্মক না, type সীমিত মানের মধ্যে
     match /txns/{id} {
       allow read: if true;
       allow create, update: if
@@ -1582,6 +1585,8 @@ service cloud.firestore {
       allow delete: if true;
     }
 
+    // ── purchaseOrders / stockMovements / cashLogs / paymentInvoices ──
+    // এখনো সাধারণ shape validation (amount/qty ঋণাত্মক না) — বিস্তারিত rule পরে বাড়ানো যায়
     match /purchaseOrders/{id} {
       allow read: if true;
       allow create, update: if !("totalAmount" in request.resource.data) || isNonNegNum(request.resource.data.totalAmount);
@@ -1603,6 +1608,7 @@ service cloud.firestore {
       allow delete: if true;
     }
 
+    // ── users (staff/admin permission) ── role সীমিত মানের মধ্যে
     match /users/{id} {
       allow read: if true;
       allow create, update: if !("role" in request.resource.data) ||
@@ -1610,6 +1616,22 @@ service cloud.firestore {
       allow delete: if true;
     }
 
+    // ── meta (resetMarker, businessConfig) ── কোনো Auth সম্ভব না (client-side PIN),
+    // তাই বাকি সব collection-এর মতোই read/write খোলা রাখা হলো। শুধু
+    // businessConfig ডকুমেন্টের জন্য হালকা shape validation — businessType শুধু
+    // "pharmacy"/"veterinary" আর businessTypeLocked শুধু boolean হতে পারবে,
+    // ভুল টাইপ/মান ডাটাবেজ পর্যন্ত পৌঁছাতে পারবে না।
+    match /meta/{id} {
+      allow read: if true;
+      allow write: if id != "businessConfig" ||
+        ((!("businessType" in request.resource.data) ||
+          request.resource.data.businessType in ["pharmacy", "veterinary"]) &&
+         (!("businessTypeLocked" in request.resource.data) ||
+          request.resource.data.businessTypeLocked is bool));
+    }
+
+    // ── বাকি সব collection (suppliers, smsLog, expenses, returns, auditLogs, settings) ──
+    // এখনো নির্দিষ্ট schema rule লেখা হয়নি — খোলা থাকছে, ভবিষ্যতে বাড়ানো যায়
     match /suppliers/{id}   { allow read, write: if true; }
     match /smsLog/{id}      { allow read, write: if true; }
     match /expenses/{id}    { allow read, write: if true; }
