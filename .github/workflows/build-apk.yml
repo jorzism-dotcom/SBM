@@ -25,7 +25,7 @@ jobs:
           distribution: 'temurin'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           # ডিফল্ট packages ('tools platform-tools')-এর মধ্যে legacy 'tools'
           # প্যাকেজ থাকে, যেটার ভেতর Android Emulator বান্ডল করা — APK বিল্ডে
