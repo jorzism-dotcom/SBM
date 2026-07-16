@@ -53,7 +53,14 @@ jobs:
           echo "✅ gsi-client.js bundled ($(wc -c < public/gsi-client.js) bytes)"
 
       - name: Build web assets
-        run: npm run build
+        run: |
+          # 🔴 App.jsx-এর APP_BUILD এই ভ্যালু import.meta.env.VITE_BUILD_ID
+          # থেকে পড়ে — প্রতি বিল্ডে UTC টাইমস্ট্যাম্প + কমিট SHA আলাদা হওয়ায়
+          # Settings-এ অ্যাপ ভার্সন কার্ডে স্বয়ংক্রিয়ভাবে নতুন মান দেখাবে,
+          # ম্যানুয়ালি v1-dbgN বাড়ানো লাগবে না।
+          export VITE_BUILD_ID="$(date -u +%Y%m%d-%H%M)-${GITHUB_SHA::7}-run${GITHUB_RUN_NUMBER}"
+          echo "VITE_BUILD_ID=$VITE_BUILD_ID"
+          npm run build
 
       - name: Copy gsi-client.js to dist (Vite public dir fix)
         run: |
