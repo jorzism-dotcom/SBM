@@ -899,6 +899,22 @@ async function logErrorToCentral(context, error, extra = {}) {
   } catch { /* central log নিজেই fail করলে চুপচাপ ignore — এটা secondary concern, মূল অ্যাপ কাজ চালিয়ে যাবে */ }
 }
 
+// ─── 🔍 TEMP DEBUG TRACE (products/customers sync ডায়াগনসিসের জন্য সাময়িক) ───
+// সমস্যা সমাধান হয়ে গেলে এই ফাংশন এবং এর সব কল-সাইট মুছে ফেলা উচিত।
+// কোনো rate-limit নেই ইচ্ছাকৃতভাবে (logErrorToCentral-এর ১০s লিমিটে যেন এই
+// ট্রেস চাপা না পড়ে) — তাই এটা শুধু সাময়িক ডায়াগনস্টিক সেশনের জন্য ব্যবহার করা উচিত।
+async function traceDebug(step, data = {}) {
+  try {
+    const ref = doc(collection(_db, "debug_trace"));
+    await setDoc(ref, {
+      step,
+      ...Object.fromEntries(Object.entries(data).map(([k, v]) => [k, typeof v === "object" ? JSON.stringify(v).slice(0, 300) : v])),
+      deviceId: (typeof DeviceID !== "undefined" && DeviceID.get) ? DeviceID.get() : "unknown",
+      at: new Date().toISOString(),
+    });
+  } catch { /* ট্রেস নিজেই fail করলে চুপচাপ ignore */ }
+}
+
 // ─── Storage Helper ───────────────────────────────────────────────────────────
 async function getStorage(key) {
   try {
@@ -5826,7 +5842,11 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
   const valueRef    = useRef(value);
   const pending     = useRef(new Map()); // id(string) -> { rec, old, ts } — push হয়েছে, echo বাকি
   const resyncTick  = useResyncTick(); // 🔴 ফেজ ৩ ফিক্স — resume/online/heartbeat-এ re-subscribe
+  // 🔍 TEMP DEBUG — শুধু products/customers-এর জন্য ট্রেস চালু (সমাধান হলে মুছে ফেলুন)
+  const DBG = name === "products" || name === "customers";
   useEffect(() => { valueRef.current = value; }, [value]);
+  const _dbgValueLen = (value || []).length;
+  useEffect(() => { if (DBG) traceDebug("hook_render", { name, ready, valueLen: _dbgValueLen }); }, [DBG, ready, _dbgValueLen]);
 
   // 🔴 ফিক্স (durable outbox flush): boot/resume/online/heartbeat-এ (ready বা
   // resyncTick বদলালে) IndexedDB SyncOutbox-এ পড়ে থাকা এখনো-সফল-না-হওয়া
@@ -5863,7 +5883,9 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
     if (!ready) { firstRemote.current = false; return; }
     firstRemote.current = false;
     pending.current = new Map();
+    if (DBG) traceDebug("subscribe_start", { name, ready, resyncTick, dbHasDb: !!FSS._db });
     const unsub = FSS.subscribeCollection(name, (arr, fromCache) => {
+      if (DBG) traceDebug("snapshot_received", { name, fromCache, arrLen: arr.length, firstRemoteWas: firstRemote.current, valueRefLen: (valueRef.current||[]).length });
       let incoming = filterIncoming ? filterIncoming(arr) : arr;
       // 🔴 ফিক্স (মাল্টি-ডিভাইস sync স্থায়ী ব্লকেজ — root cause of "স্টাফ থেকে
       // পণ্য/কাস্টমার অ্যাডমিনে যাচ্ছে না, উল্টো অ্যাডমিন থেকে যোগ করলে স্টাফের
@@ -5888,7 +5910,7 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
       // তাই এখন শুধু cache+খালি অবস্থাতেই স্কিপ করা হচ্ছে; cache+ভরা অবস্থাকে
       // বৈধ baseline হিসেবে গ্রহণ করা হচ্ছে, যাতে push effect অকারণে
       // চিরস্থায়ীভাবে আটকে না থাকে।
-      if (!firstRemote.current && fromCache && incoming.length === 0) return;
+      if (!firstRemote.current && fromCache && incoming.length === 0) { if (DBG) traceDebug("skip_cache_empty", { name }); return; }
       if (!firstRemote.current) {
         firstRemote.current = true;
         // 🔴 ফিক্স: Master Reset-এর পরের ২ মিনিটে seed-on-empty বন্ধ — নাহলে
@@ -5908,8 +5930,10 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
         if (!justReset && GLOBAL_RESET_MARKER_AT && (Date.now() - GLOBAL_RESET_MARKER_AT < 120000)) {
           justReset = true;
         }
+        if (DBG) traceDebug("first_remote_set", { name, arrLen: arr.length, valueRefLen: (valueRef.current||[]).length, justReset });
         if (arr.length === 0 && valueRef.current?.length && !justReset) {
           // নতুন/খালি collection — এই ডিভাইসের বর্তমান data দিয়ে seed করি
+          if (DBG) traceDebug("seed_on_empty", { name, count: valueRef.current.length });
           lastSynced.current = valueRef.current;
           valueRef.current.forEach(rec => { if (rec?.id != null) FSS.setRecord(name, rec.id, rec); });
           return;
@@ -5934,12 +5958,15 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
         if (!syncDeletes && !justReset) {
           const incomingIds = new Set(incoming.map(r => String(r.id)));
           const localOnly = (valueRef.current || []).filter(rec => rec?.id != null && !incomingIds.has(String(rec.id)));
+          if (DBG) traceDebug("local_only_check", { name, incomingCount: incoming.length, localOnlyCount: localOnly.length });
           if (localOnly.length) {
             const ts = Date.now();
             localOnly.forEach(rec => {
               pending.current.set(String(rec.id), { rec, old: null, ts });
               SyncOutbox.put(name, rec.id, rec);
+              if (DBG) traceDebug("local_only_setRecord_call", { name, id: rec.id });
               FSS.setRecord(name, rec.id, rec).then(res => {
+                if (DBG) traceDebug("local_only_setRecord_result", { name, id: rec.id, ok: !(res && res.ok === false), msg: res?.msg || "" });
                 if (res && res.ok === false) {
                   onSync?.("error");
                   logErrorToCentral?.(`fss-write:${name}`, new Error(res.msg || "write failed"), { id: rec.id });
@@ -6020,7 +6047,8 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
   };
   // local → remote (diff by id — content-based, reference-নির্ভর নয়; push শুধু বদলানো/নতুন/মুছা রেকর্ড)
   useEffect(() => {
-    if (!ready || !firstRemote.current) return;
+    if (!ready || !firstRemote.current) { if (DBG) traceDebug("push_effect_skip", { name, ready, firstRemote: firstRemote.current, valueLen: (value||[]).length }); return; }
+    if (DBG) traceDebug("push_effect_run", { name, valueLen: (value||[]).length, lastSyncedLen: (lastSynced.current||[]).length });
     const prevArr = lastSynced.current || [];
     const prevMap = new Map(prevArr.map(r => [String(r.id), r]));
     const nextMap = new Map((value || []).map(r => [String(r.id), r]));
@@ -6028,6 +6056,7 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
       nextMap.forEach((rec, id) => {
         const old = prevMap.get(id);
         if (!old || !recEq(old, rec)) {
+          if (DBG) traceDebug("push_record_setRecord_call", { name, id });
           // _updatedAt inject করো (নতুন বা পরিবর্তিত record-এ) — Master Sync merge-এর জন্য
           const recWithTs = rec._updatedAt ? rec : withTs(rec);
           pending.current.set(id, { rec: recWithTs, old: old || null, ts: Date.now() });
@@ -6041,6 +6070,7 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
           // "স্টাফ পারমিশন সিঙ্ক হচ্ছে না" বাগ — অ্যাডমিন দেখতেও পেত না কেন)।
           // এখন ব্যর্থ হলে onSync("error") + centralized error log দিয়ে দৃশ্যমান করা হয়।
           FSS.setRecord(name, id, recWithTs).then(res => {
+            if (DBG) traceDebug("push_record_setRecord_result", { name, id, ok: !(res && res.ok === false), msg: res?.msg || "" });
             if (res && res.ok === false) {
               onSync?.("error");
               logErrorToCentral?.(`fss-write:${name}`, new Error(res.msg || "write failed"), { id });
