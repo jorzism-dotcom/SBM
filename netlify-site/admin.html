@@ -1901,32 +1901,40 @@ async function fbDeployRtdbRules(databaseURL, rtdbJsonText) {
   if (!databaseURL) { fbLog('Database URL পাওয়া যায়নি, RTDB rules স্কিপ করা হলো।', 'warn'); return; }
   JSON.parse(rtdbJsonText); // validate
   const base = databaseURL.replace(/\/$/, '');
-  // নতুন regional RTDB instance (asia-southeast1 ইত্যাদি, .firebasedatabase.app ডোমেইন)
-  // access_token query parameter মানে না — Authorization: Bearer header লাগে।
-  // পুরোনো legacy (.firebaseio.com, us-central1) instance access_token মানে।
-  const isRegional = /\.firebasedatabase\.app$/i.test(new URL(base).hostname);
-  let res;
-  if (isRegional) {
-    res = await fetch(base + '/.settings/rules.json', {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + fbAccessToken
-      },
-      body: rtdbJsonText
-    });
-  } else {
-    res = await fetch(base + '/.settings/rules.json?access_token=' + encodeURIComponent(fbAccessToken), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: rtdbJsonText
-    });
-  }
-  if (!res.ok) {
-    const t = await res.text();
-    throw new Error('RTDB rules deploy ব্যর্থ: ' + t);
-  }
-  fbLog('Realtime Database Rules সফলভাবে deploy হয়েছে।', 'ok');
+
+  // ডায়াগনস্টিক: token-এ আসলে কোন scope আছে তা লগ করা (কারণ বের করতে সাহায্য করবে)
+  try {
+    const ti = await fetch('https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=' + encodeURIComponent(fbAccessToken));
+    const tiData = await ti.json();
+    if (tiData && tiData.scope) {
+      fbLog('Token scopes: ' + tiData.scope, 'warn');
+    } else if (tiData && tiData.error) {
+      fbLog('Token যাচাই ব্যর্থ: ' + (tiData.error_description || tiData.error), 'warn');
+    }
+  } catch (e) { /* ignore diagnostic failure */ }
+
+  // পদ্ধতি ১: Authorization header দিয়ে (regional/নতুন RTDB instance-এর জন্য সঠিক)
+  let res = await fetch(base + '/.settings/rules.json', {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + fbAccessToken
+    },
+    body: rtdbJsonText
+  });
+  if (res.ok) { fbLog('Realtime Database Rules সফলভাবে deploy হয়েছে।', 'ok'); return; }
+  const err1 = await res.text();
+
+  // পদ্ধতি ২: access_token query parameter দিয়ে (পুরোনো legacy instance-এর জন্য)
+  res = await fetch(base + '/.settings/rules.json?access_token=' + encodeURIComponent(fbAccessToken), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: rtdbJsonText
+  });
+  if (res.ok) { fbLog('Realtime Database Rules সফলভাবে deploy হয়েছে।', 'ok'); return; }
+  const err2 = await res.text();
+
+  throw new Error('RTDB rules deploy ব্যর্থ। Header পদ্ধতি: ' + err1 + ' | Query param পদ্ধতি: ' + err2);
 }
 
 async function fbRunDeploySteps(projectId) {
