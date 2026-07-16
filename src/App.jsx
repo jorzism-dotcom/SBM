@@ -4034,7 +4034,7 @@ const Haptic = {
 
 
 // ─── App Version ─────────────────────────────────────────────────────────────
-const APP_VERSION = "v1-dbg4"; // 🔍 TEMP DEBUG marker — Settings-এ দেখে build fresh কিনা যাচাই করা যাবে (firstRemoteEverSet ফিক্স সহ)
+const APP_VERSION = "v1-dbg5"; // 🔍 TEMP DEBUG marker — Settings-এ দেখে build fresh কিনা যাচাই করা যাবে (includeMetadataChanges root-cause ফিক্স সহ)
 const APP_BUILD   = "2026-07-11";
 
 // 🔴 সেমান্টিক ভার্সন (x.y.z) — Settings-এর নীরব AppVersionCard (দেখুন
@@ -5098,7 +5098,19 @@ const FSS = {
     if (!this._db) return () => {};
     this.unsubscribe(name);
     const colRef = collection(this._db, name);
-    const unsub = onSnapshot(colRef, (snap) => {
+    // 🔴 ফিক্স (আসল root cause — খালি products/customers কালেকশনে চিরকাল
+    // fromCache:true আটকে থাকা): আগে includeMetadataChanges অপশন ছাড়া
+    // onSnapshot কল করা হতো — Firestore SDK-এর ডিফল্ট আচরণে, ডেটা (ডকুমেন্ট
+    // কনটেন্ট) না বদলালে metadata-only পরিবর্তন (cache → server-confirmed)
+    // দ্বিতীয়বার callback ট্রিগার করে না। ফলে সত্যিকারের খালি কালেকশনে
+    // (কোনো ডকুমেন্টই নেই) প্রথম cached-empty snapshot-এর পর সার্ভার নিশ্চিত
+    // করলেও কোনো নতুন callback আসত না — firstRemote.current কখনো true হতো
+    // না, push effect চিরকাল push_effect_skip করত (deadlock: প্রথম রেকর্ড
+    // পুশ করতে server-confirmed snapshot লাগে, কিন্তু সেটা কখনো আসে না)।
+    // includeMetadataChanges:true দিলে fromCache true→false বদলালেই আলাদা
+    // callback আসে, ডেটা অপরিবর্তিত থাকলেও — তাই firstRemote.current ঠিকভাবে
+    // true হয়।
+    const unsub = onSnapshot(colRef, { includeMetadataChanges: true }, (snap) => {
       // 🔴 ফিক্স: _serverTs আসে Firestore Timestamp অবজেক্ট হিসেবে (অথবা নিজের
       // pending write-এ null, ack না হওয়া পর্যন্ত) — সেটাকে সাথে সাথে plain
       // millisecond সংখ্যায় বদলে দেওয়া হচ্ছে, নাহলে JSON.stringify (diff/echo/
