@@ -11022,7 +11022,6 @@ function SmartBusinessMgmt() {
   const shopName         = useAppStore(s => s.shopName);
   const businessType     = useAppStore(s => s.businessType);
   const businessTypeLocked = useAppStore(s => s.businessTypeLocked);
-  const businessTypeDevUnlockRef = useRef(false); // 🔧 dev-unlock করার পরপরই auto-relock effect বাইপাস করতে
   const currentUser      = useAppStore(s => s.currentUser);
   const authSession      = useAppStore(s => s.authSession);
   const devContact       = useAppStore(s => s.devContact);
@@ -11908,22 +11907,11 @@ function SmartBusinessMgmt() {
   useEffect(() => { if (settingsLoaded) save(SK.autoBackupEnabled, autoBackupEnabled); }, [autoBackupEnabled, settingsLoaded]);
   useEffect(() => { if (settingsLoaded) save(SK.businessType, businessType); }, [businessType, settingsLoaded]);
   useEffect(() => { if (settingsLoaded) save(SK.businessTypeLocked, businessTypeLocked); }, [businessTypeLocked, settingsLoaded]);
-  // 🔒 সুরক্ষা: ইতিমধ্যে পণ্য যোগ করা (অর্থাৎ ইতিমধ্যে ব্যবহৃত হচ্ছে এমন) দোকানে
-  // businessTypeLocked এখনো false থাকলে (পুরোনো/আগে থেকে চলা দোকান, এই ফিচার
-  // আসার আগে থেকেই ব্যবহার হচ্ছিল) — নিঃশব্দে বর্তমান মোডেই লক করে দেওয়া হয়,
-  // যাতে কেউ ভুল করে মোড পাল্টে পুরোনো পণ্য/ডেটাসেটের সাথে অন্য মোডের ডেটা মিশিয়ে না ফেলে।
-  // একদম নতুন (এখনো কোনো পণ্য নেই) দোকান প্রথমবার নিজে বেছে নেওয়ার সুযোগ পাবে।
-  // 🔧 FIX: dev-unlock (৭-ট্যাপ) বাটন চাপলে businessTypeLocked সাময়িকভাবে false হয়,
-  // কিন্তু products.length > 0 থাকায় এই effect সাথে সাথেই আবার true করে দিচ্ছিল —
-  // ফলে UI-তে unlock স্থায়ী হচ্ছিল না। businessTypeDevUnlockRef দিয়ে এই এক-বারের
-  // re-lock বাইপাস করা হচ্ছে, যাতে dev-unlock আসলেই আনলক থাকে যতক্ষণ না ইউজার
-  // নিজে নতুন মোড সিলেক্ট করেন (তখন checkbox onChange সরাসরি লক করে দেবে)।
-  useEffect(() => {
-    if (settingsLoaded && !businessTypeLocked && products.length > 0) {
-      if (businessTypeDevUnlockRef.current) { businessTypeDevUnlockRef.current = false; return; }
-      setBusinessTypeLocked(true);
-    }
-  }, [settingsLoaded, businessTypeLocked, products.length]);
+  // 🔧 বদল: আগে এখানে একটা auto-lock effect ছিল — দোকানে পণ্য থাকলে (products.length > 0)
+  // বর্তমান businessType-এ চুপচাপ লক করে দিত, এমনকি দোকানদার নিজে কখনো মোড
+  // সিলেক্ট না করলেও। এখন এটা সম্পূর্ণ বাদ — লক শুধুই ম্যানুয়াল, যখন দোকানদার
+  // Settings-এ গিয়ে সরাসরি "ফার্মেসি"/"ভেটেরিনারি" checkbox-এ ক্লিক করবেন
+  // (সেই onChange handler-ই সরাসরি setBusinessTypeLocked(true) করে)।
   useEffect(() => { if (settingsLoaded) save(SK.autoMasterSyncEnabled, autoMasterSyncEnabled); }, [autoMasterSyncEnabled, settingsLoaded]);
   useEffect(() => { if (loaded && lastMasterSync) save(SK.lastMasterSync, lastMasterSync); }, [lastMasterSync, loaded]);
   useEffect(() => { if (loaded) save(SK.firebaseConfig,  firebaseConfig);  }, [firebaseConfig, loaded]);   // 🔥
@@ -13612,7 +13600,6 @@ function SmartBusinessMgmt() {
               shopName={shopName} setShopName={setShopName}
               businessType={businessType} setBusinessType={setBusinessType}
               businessTypeLocked={businessTypeLocked} setBusinessTypeLocked={setBusinessTypeLocked}
-              businessTypeDevUnlockRef={businessTypeDevUnlockRef}
               users={users} setUsers={setUsers}
               currentUser={currentUser} setCurrentUser={setCurrentUser}
               showToast={showToast}
@@ -27766,7 +27753,7 @@ function AppVersionCard({ T, S }) {
 }
 
 function Settings_({ T, S, shopName,
- setShopName, businessType = "pharmacy", setBusinessType, businessTypeLocked = false, setBusinessTypeLocked, businessTypeDevUnlockRef, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, setGoogleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [] }) {
+ setShopName, businessType = "pharmacy", setBusinessType, businessTypeLocked = false, setBusinessTypeLocked, users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, setGoogleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [] }) {
   const [editName,    setEditName]    = useState(false);
   const [nameInput,   setNameInput]   = useState(shopName);
   // 🔧 DEV-ONLY: "ব্যবসার ধরন" হেডিং-এ ৭ বার দ্রুত ট্যাপ করলে (৩ সেকেন্ডের মধ্যে) হিডেন
@@ -27789,15 +27776,11 @@ function Settings_({ T, S, shopName,
     });
   }, []);
   const handleDevUnlockBusinessType = useCallback(async () => {
-    // 🔧 FIX: products.length > 0 থাকলে একটা auto-relock effect আছে যেটা লক আবার
-    // true করে দেয় — এই ref দিয়ে সেই effect-এর একটামাত্র রান বাইপাস করা হচ্ছে, যাতে
-    // dev-unlock আসলেই কার্যকর হয় এবং UI-তে unlock স্থায়ী থাকে।
-    if (businessTypeDevUnlockRef) businessTypeDevUnlockRef.current = true;
     setBusinessTypeLocked?.(false);
     if (FSS.isReady()) { try { await FSS.setBusinessConfig(businessType, false); } catch {} }
     setShowDevUnlock(false);
     showToast("🔧 DEV: ব্যবসার ধরন আনলক করা হলো — লোকাল ও Firestore দুই জায়গাতেই", "#f59e0b");
-  }, [businessType, setBusinessTypeLocked, businessTypeDevUnlockRef, showToast]);
+  }, [businessType, setBusinessTypeLocked, showToast]);
   const [showRecoveryExpanded, setShowRecoveryExpanded] = useState(false);
   const [showGateway, setShowGateway] = useState(false);
   const [showKey, setShowKey] = useState(false);             // 🔴 ফিক্স: আগে Claude AI কার্ডের IIFE-এর ভেতরে declare করা ছিল
