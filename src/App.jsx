@@ -20,6 +20,10 @@ import {
   computeSupplierDueMap, _itemCostPrice, calcInvoiceProfit, calcProfitTotal,
   calcInvoiceTotal, calcVoidNetChange, calcCashDrawer, restoreBatchQty,
 } from "./logic.js";
+// 🧪 Schema validation (zod) — Firestore write-এর আগে টাকা/স্টক-সংক্রান্ত
+// ফিল্ডে NaN/undefined ঢুকে যাচ্ছে কিনা যাচাই করে। দেখুন src/schemas.js-এর
+// শুরুর কমেন্ট — এটা এই মুহূর্তে "soft mode" (শুধু লগ করে, write আটকায় না)।
+import { validateRecord } from "./schemas.js";
 // 🔴 recharts — শুধু AI পেজের "Analytics & Report" ট্যাবে ব্যবহার হয় (ডিফল্ট স্ক্রিন নয়),
 // তাই স্ট্যাটিক import না রেখে নিচে lazy dynamic import() দিয়ে লোড করা হচ্ছে (useRecharts হুক) —
 // প্রতি অ্যাপ-ওপেনে এই চার্ট লাইব্রেরির parse/eval খরচ আর বহন করতে হবে না।
@@ -5292,6 +5296,13 @@ const FSS = {
   // effectiveTs() ও performMasterSync)।
   async setRecord(coll, id, data) {
     if (!this._db || id === undefined || id === null || id === "") return { ok: false, msg: "Firestore সংযুক্ত নেই" };
+    // 🧪 Schema validation (soft mode) — write আটকায় না, শুধু সমস্যা হলে লগ করে।
+    // দেখুন src/schemas.js-এর শুরুর কমেন্ট কেন hard-reject না করে soft mode বেছে নেওয়া হলো।
+    const { valid, errors } = validateRecord(coll, data);
+    if (!valid) {
+      console.warn(`⚠️ schema-validation failed for ${coll}/${id}:`, errors);
+      logErrorToCentral?.("schema:validationFailed", new Error(errors?.join("; ") || "invalid shape"), { coll, id: String(id) }).catch?.(() => {});
+    }
     try {
       await setDoc(doc(this._db, coll, String(id)), { ...data, _serverTs: serverTimestamp() });
       return { ok: true };

@@ -162,20 +162,13 @@ export function calcProfitTotal(invList, prodMap) {
   return invList.reduce((s, inv) => s + calcInvoiceProfit(inv, prodMap), 0);
 }
 
-// ⚠️⚠️ গুরুত্বপূর্ণ সতর্কতা — নিচের ৪টি ফাংশন এখনো "reference-copy":
-// এগুলো createInvoice() / voidInvoice() / buildSummary()-এর ভেতরে (component-এর
-// মধ্যে state-bound হিসেবে) যে আসল ফর্মুলা আছে, তার হাতে-লেখা প্রতিলিপি — সেই
-// আসল কোড এখনো এই ফাংশনগুলো import করে ব্যবহার করছে না (তারা আলাদা, নিজেদের
-// জায়গায় সরাসরি হিসাব করে)। তাই এই মুহূর্তে এই ৪টার টেস্ট শুধু "এই কপিটা এখনো
-// সঠিক কিনা" যাচাই করে — createInvoice/voidInvoice/buildSummary-এর আসল কোড
-// বদলে গেলে এই টেস্ট তা এখনই ধরতে পারবে না। এটা একটা পরিচিত, ইচ্ছাকৃতভাবে
-// এখনো-না-করা পরবর্তী ধাপ — createInvoice/voidInvoice/buildSummary-কে
-// আলাদাভাবে, সাবধানে রিফ্যাক্টর করে এই ফাংশনগুলো import করানো (আলাদা,
-// রিভিউ-করা পরিবর্তন হিসেবে — এই সেফটি-নেট বসানোর সাথে না মিশিয়ে)।
-// যতক্ষণ না সেই রিফ্যাক্টর হচ্ছে, এই ফাংশন বদলালে অবশ্যই
-// createInvoice/voidInvoice/buildSummary-এর ভেতরের আসল কোডও হাতে মিলিয়ে
-// আপডেট করুন।
-// ─── ইনভয়েস total সূত্র — createInvoice()-এর ফর্মুলার রেফারেন্স-কপি ──────────
+// ✅ আপডেট: নিচের ৪টি ফাংশন আর "reference-copy" না — এখন single-source-of-truth।
+// createInvoice() / voidInvoice() / buildDailySummaryData() (App.jsx) এখন এই
+// ফাংশনগুলো সরাসরি import করে কল করে, নিজেদের আলাদা কপি রাখে না (দেখুন
+// BUGFIX_LOG.md-এর "reference-copy ফাংশনগুলো আসল করা হলো" এন্ট্রি)। তাই এখন
+// এই ফাংশন বদলালে App.jsx-এর আসল ইনভয়েস/ভয়েড/সামারি লজিকও একইসাথে বদলে যায় —
+// আলাদা করে App.jsx-এ হাতে মিলিয়ে আপডেট করার দরকার নেই।
+// ─── ইনভয়েস total সূত্র — createInvoice() সরাসরি এই ফাংশন কল করে ────────────
 export function calcInvoiceTotal(items, discount, extraCharge) {
   const subtotal = items.reduce((s, i) => s + i.qty * i.price, 0);
   const itemDiscTotal = items.reduce((s, i) => s + Math.min(Math.max(i.itemDiscount || 0, 0), i.qty * i.price), 0);
@@ -184,17 +177,17 @@ export function calcInvoiceTotal(items, discount, extraCharge) {
   return subtotal - itemDiscTotal - discAmt + extraAmt;
 }
 
-// ─── ভয়েড-রিভার্সাল netChange সূত্র — voidInvoice()-এর হিসাবের রেফারেন্স-কপি ──
+// ─── ভয়েড-রিভার্সাল netChange সূত্র — voidInvoice() সরাসরি এই ফাংশন কল করে ────
 export function calcVoidNetChange(inv) {
   return (inv.payType === "baki" ? inv.total : (inv.bakiAmount || 0)) - (inv.overpayAmount || 0);
 }
 
-// ─── ক্যাশ ড্রয়ার সূত্র — buildSummary()-এর হিসাবের রেফারেন্স-কপি ──────────────
+// ─── ক্যাশ ড্রয়ার সূত্র — buildDailySummaryData() সরাসরি এই ফাংশন কল করে ──────
 export function calcCashDrawer(opening, cashSale, joma, withdrawal) {
   return opening + cashSale + joma - withdrawal;
 }
 
-// ─── ব্যাচ-স্টক রিস্টোর — voidInvoice()-এর ব্যাচ-qty-ফেরত লজিকের রেফারেন্স-কপি ──
+// ─── ব্যাচ-স্টক রিস্টোর — voidInvoice() সরাসরি এই ফাংশন কল করে ────────────────
 export function restoreBatchQty(batches, batchNo, restoredQty, fallback = {}) {
   let updated = batches ? [...batches] : [];
   const idx = updated.findIndex(b => b.batchNo === batchNo);
