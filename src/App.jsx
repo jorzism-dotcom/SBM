@@ -4034,8 +4034,15 @@ const Haptic = {
 
 
 // ─── App Version ─────────────────────────────────────────────────────────────
-const APP_VERSION = "v1-dbg5"; // 🔍 TEMP DEBUG marker — Settings-এ দেখে build fresh কিনা যাচাই করা যাবে (includeMetadataChanges root-cause ফিক্স সহ)
-const APP_BUILD   = "2026-07-11";
+const APP_VERSION = "v1"; // ম্যানুয়াল ডিবাগ সাফিক্স (dbg2/dbg3...) আর দরকার নেই — নিচের APP_BUILD এখন প্রতিটা GitHub Actions বিল্ডে automatically বদলাবে
+// 🔴 অটো বিল্ড আইডি: GitHub Actions workflow-এ `npm run build` এর আগে
+//   VITE_BUILD_ID=$(date -u +%Y%m%d-%H%M)-${GITHUB_SHA::7}
+// এভাবে env var সেট করলে Vite এটা build-time-এ এখানে বসিয়ে দেবে — প্রতি বিল্ডে
+// আলাদা মান, ম্যানুয়ালি v1-dbgN বাড়ানো লাগবে না। workflow-এ এখনো সেট করা না
+// থাকলে নিচের fallback ("2026-07-11") দেখাবে।
+const APP_BUILD = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_BUILD_ID)
+  ? import.meta.env.VITE_BUILD_ID
+  : "2026-07-11";
 
 // 🔴 সেমান্টিক ভার্সন (x.y.z) — Settings-এর নীরব AppVersionCard (দেখুন
 // Settings_-এর ঠিক আগের অংশ) এটার সাথে admin.html-এর প্রকাশিত ভার্সন
@@ -17753,6 +17760,15 @@ function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, set
             onChange={v => setPeForm(f => ({ ...f, supplier: v }))} />
         </div>
 
+        {/* SP — শুধু রেফারেন্সের জন্য, ঐচ্ছিক — শুধু ভেটেরিনারি মোডে দেখানো হয় */}
+        {businessType === "veterinary" && (
+          <div style={{ marginBottom: 12 }}>
+            <label style={S.label}>🏷️ SP (৳) <span style={{ color:T.sub, fontWeight:500, fontSize:11 }}>— শুধু রেফারেন্সের জন্য, ঐচ্ছিক</span></label>
+            <input style={{ ...S.input, marginBottom:0 }} type="number" placeholder="" inputMode="numeric"
+              value={peForm.spPrice || ""} onChange={e => setPeForm(f => ({ ...f, spPrice: e.target.value }))} />
+          </div>
+        )}
+
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
           <div>
             <label style={S.label}>📊 পরিমাণ *</label>
@@ -23197,10 +23213,12 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                         onChange={v => { setPeNewProduct(vv => ({ ...vv, company: v })); setPeForm(f => ({ ...f, supplier: v })); }} />
                     </div>
 
-                    {/* SP — শুধু রেফারেন্সের জন্য, ঐচ্ছিক */}
+                    {/* SP — শুধু রেফারেন্সের জন্য, ঐচ্ছিক — শুধু ভেটেরিনারি মোডে দেখানো হয় */}
+                    {businessType === "veterinary" && (<>
                     <label style={S.label}>🏷️ SP (৳) <span style={{ color:T.sub, fontWeight:500, fontSize:11 }}>— ঐচ্ছিক</span></label>
                     <input style={{ ...S.input, marginBottom:8 }} type="number" placeholder="" inputMode="numeric"
                       value={peForm.spPrice || ""} onChange={e => setPeForm(f => ({ ...f, spPrice: e.target.value }))} />
+                    </>)}
 
                     {/* পরিমাণ + একক ক্রয়মূল্য */}
                     <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
@@ -23838,11 +23856,13 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             <input style={{ ...S.input, border: formErrors.price ? "1.5px solid #ef4444" : S.input.border }} placeholder="" type="number" value={form.price} onChange={e => { setForm({ ...form, price: e.target.value }); if (parseFloat(e.target.value) > 0) setFormErrors(er=>({...er,price:false})); }} inputMode="numeric" pattern="[0-9]*" />
             {formErrors.price && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ সার্ভিস চার্জ আবশ্যক</div>}
           </>) : (<>
+          {businessType === "veterinary" && (<>
           <label style={S.label}>🏷️ SP (৳) <span style={{ color:T.sub, fontWeight:500, fontSize:11 }}>— শুধু রেফারেন্সের জন্য, ঐচ্ছিক</span></label>
           <input style={{ ...S.input }} placeholder="" type="number" value={form.spPrice} onChange={e => setForm({ ...form, spPrice: e.target.value })} inputMode="numeric" pattern="[0-9]*" />
-          <label style={S.label}>💵 ক্রয়মূল্য (৳) *</label>
+          </>)}
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
             <div>
+              <label style={{ ...S.label, fontSize:11, marginBottom:3 }}>💵 ক্রয়মূল্য (৳) *</label>
               <input style={{ ...S.input, marginBottom:0, border: formErrors.costPrice ? "1.5px solid #ef4444" : S.input.border }} placeholder="" type="number" value={form.costPrice} onChange={e => { setForm({ ...form, costPrice: e.target.value }); if (parseFloat(e.target.value) > 0) setFormErrors(er=>({...er,costPrice:false})); }} inputMode="numeric" pattern="[0-9]*" />
               {formErrors.costPrice && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ ক্রয়মূল্য আবশ্যক</div>}
             </div>
