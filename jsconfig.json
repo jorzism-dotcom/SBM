@@ -10,7 +10,8 @@
   },
   "include": [
     "src/logic.js",
-    "src/schemas.js"
+    "src/schemas.js",
+    "src/sync.js"
   ],
   "exclude": [
     "node_modules",

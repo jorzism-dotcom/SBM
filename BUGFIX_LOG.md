@@ -25,6 +25,50 @@
 
 ## এন্ট্রি
 
+### [পূরণ করুন] — #৮-এর এন্টারপ্রাইজ ধাপ: সিঙ্ক/ব্যাকআপ লজিক আলাদা করে টেস্টযোগ্য বানানো হলো (src/sync.js)
+- সমস্যা যা ছিল: সিঙ্ক/ব্যাকআপের পুরো লজিক (checksum, `pickBackupFields`,
+  `diffBackupFields`, Master Sync-এর মাল্টি-ডিভাইস merge/conflict-resolution)
+  App.jsx-এর ভেতরে React hooks/Firebase-এর সাথে জড়ানো ছিল — তাই
+  `tests/logic-tests.mjs`, fuzz test, `@ts-check` কোনোটাই এগুলো ছুঁতে পারত না।
+  এই এলাকায় এডিট করলে অন্য কোথাও ভাঙল কিনা ধরার কোনো অটোমেটেড উপায় ছিল না,
+  শুধু ডিভাইসে ম্যানুয়াল টেস্টই একমাত্র সেফটি-নেট ছিল।
+- কী করা হলো: pure অংশটুকু (React/Firebase নির্ভরতাবিহীন) `src/sync.js`-এ
+  বের করা হলো — `BACKUP_FIELDS` রেজিস্ট্রি, `pickBackupFields`,
+  `diffBackupFields`, hash ফাংশনগুলো (`hashString`/`hashRecord`/
+  `hashCollection`/`buildContentHashes`), `diffChangedFields`, `effectiveTs`।
+  App.jsx-এ এখন এগুলো import করা হয় (ডুপ্লিকেট সংজ্ঞা নেই)।
+- নতুন কী যোগ হলো: `mergeCollection()` — Master Sync-এর ভেতরে আগে inline
+  লেখা কনফ্লিক্ট-রেজোলিউশন লজিকটা (local vs remote, `effectiveTs` দিয়ে
+  last-write-wins, tombstone-protected — মুছে ফেলা রেকর্ড resurrect হবে না)
+  এখন একটা আলাদা pure ফাংশন। `performMasterSync()`-এর ভেতরের ২৫-লাইনের
+  inline merge loop এখন এই ফাংশনকেই কল করে — আচরণ অপরিবর্তিত, শুধু এখন
+  টেস্টযোগ্য।
+- নতুন টেস্ট: `tests/sync-tests.mjs` — ২৪টা কেস। বিশেষভাবে কভার করে:
+  দুই ডিভাইস অফলাইনে একই রেকর্ড এডিট করলে কী হয় (`_updatedAt` ও `_serverTs`
+  উভয় দিয়ে), tombstone-এ থাকা মোছা রেকর্ড পুরনো ব্যাকআপ থেকে resurrect হয়
+  না কিনা, শুধু-local/শুধু-remote রেকর্ড, id-null edge case, hash-এর
+  order-independence, delta-sync স্কিপ-লজিক, backup round-trip।
+- `package.json` — `npm test` চেইনে `tests/sync-tests.mjs` যোগ হলো, তাই
+  CI (build-apk.yml) ও husky pre-commit উভয়েই এখন এটা অটো চলে।
+- ব্লাস্ট রেডিয়াস: `applyBackupFields`, restore preview, Master Sync,
+  local/Drive auto-backup — সবগুলোই এই রেজিস্ট্রি/হ্যাশ/মার্জ ফাংশনগুলোর
+  ওপর নির্ভরশীল, তাই এই এক্সট্র্যাকশন এদের সবার জন্যই regression-নিরাপত্তা
+  বাড়ালো।
+- আচরণ বদলায়নি কিনা: হ্যাঁ, নিশ্চিত — শুধু কোড সরানো হয়েছে, লজিক হুবহু একই
+  (ব্যতিক্রম শুধু inline loop → ফাংশন কল, ফলাফল অভিন্ন)।
+- যাচাই: `node tests/sync-tests.mjs` (২৪/২৪ পাস), সব বিদ্যমান
+  `logic-tests.mjs`/`schema-tests.mjs`/`integration-tests.mjs` (৬৭/৬৭ পাস,
+  অপরিবর্তিত), esbuild দিয়ে পুরো App.jsx বান্ডল করে সিনট্যাক্স/রেফারেন্স
+  ভ্যালিডেট করা হয়েছে (কোনো error নেই) — এই সেশনে বাস্তবে চালিয়ে কনফার্ম।
+  **তবে ডিভাইসে গিয়ে Master Sync/Backup/Restore ফিচার বাস্তবে আগের মতোই
+  কাজ করছে কিনা — ডিপ্লয়ের পর একবার ম্যানুয়ালি চোখে দেখে নিন (behavior
+  বদলানোর উদ্দেশ্য ছিল না, কিন্তু বড় রিফ্যাক্টর তাই সতর্কতা হিসেবে)।**
+- এখনো বাকি (out-of-scope এই সেশনে): `applyBackupFields`-এর ভেতরের
+  setter-কলিং অংশ ও `RestoreSelfTest`/`RetentionDB`/`ArchiveDB` এখনো
+  App.jsx-এই আছে (IndexedDB/state-নির্ভর side-effect বেশি, pure করা কঠিন)।
+  চাইলে পরের ধাপে backup→restore-এর পুরো round-trip (real IndexedDB মক করে)
+  আলাদা integration test হিসেবে যোগ করা যায়।
+
 ### [পূরণ করুন] — ESLint যোগ করতেই ধরা পড়ল: "Cash Flow Forecast" ফিচার সম্পূর্ণ ভাঙা ছিল (src/worker.js)
 - উপসর্গ (Symptom): কোনো ইউজার-রিপোর্ট ছিল না — এটা "Static Analysis" (আইটেম #৮-এর
   বাকি অংশ, ESLint) যোগ করার সময় প্রথম রানেই ধরা পড়েছে।
