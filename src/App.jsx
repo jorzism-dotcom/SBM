@@ -5136,7 +5136,11 @@ const FSS = {
               batchNo: batchMeta.voidAdjBatchNo || `VOID-ADJ-${String(productId).slice(-6)}`,
               qty: restoreQty,
               costPrice: batchMeta.costPrice ?? serverProduct.avgCost ?? serverProduct.costPrice ?? 0,
-              expiryDate: null,
+              // 🔴 ফিক্স (ভয়েড করলে ফেরত আসা পণ্যে এক্সপায়ারি ডেট না দেখানো): আগে এখানে
+              // expiryDate সবসময় হার্ডকোড করে null বসানো হতো, batchMeta.expiryDate
+              // (বিক্রি হওয়া আইটেমের আসল এক্সপায়ারি) পাস করা সত্ত্বেও তা উপেক্ষা হতো।
+              // এখন সেটাই ব্যবহার হচ্ছে — আসলেই কোনো এক্সপায়ারি না থাকলে তবেই null।
+              expiryDate: batchMeta.expiryDate || null,
               addedAt: new Date().toISOString(),
               note: "voidInvoice legacy-item adjustment",
             },
@@ -8270,13 +8274,13 @@ const DOSAGE_FORM_CHIPS = ["Tablet", "Capsule", "Syrup", "Injection", "Cream", "
 function DosageBadge({ dosageForm, style }) {
   const ta = medTypeAbbr(dosageForm);
   if (!ta) return null;
-  return <span style={{ color: ta.color, fontWeight: 900, marginRight: 5, ...style }}>{ta.abbr}</span>;
+  return <span style={{ color: ta.color, fontWeight: 900, marginRight: 5, ...style }}>{ta.abbr}.</span>;
 }
 
 // ─── medBadgeHtmlStr — print/PDF/WhatsApp HTML স্ট্রিং টেমপ্লেটের জন্য একই ব্যাজের HTML ভার্সন ───
 function medBadgeHtmlStr(dosageForm) {
   const ta = medTypeAbbr(dosageForm);
-  return ta ? `<span style="color:${ta.color};font-weight:900;margin-right:4px;">${ta.abbr}</span> ` : "";
+  return ta ? `<span style="color:${ta.color};font-weight:900;margin-right:4px;">${ta.abbr}.</span> ` : "";
 }
 
 // ফার্মেসির জন্য প্রিসেট একক
@@ -12662,7 +12666,18 @@ function SmartBusinessMgmt() {
       const restoreResults = await Promise.all(sellableRestoreItems.map(async (soldItem) => {
         const restoredQty = soldItem.qty || 0;
         if (restoredQty <= 0) return null;
-        const localP = products.find(p => p.id === soldItem.productId);
+        // 🔴 ফিক্স (রুট কজ — "ভয়েড করলে স্টক একদমই বাড়ে না"): voidInvoice()
+        // useCallback()-এর dependency array-তে `products` নেই (নিচে দেখুন —
+        // শুধু setInvoices/setCustomers/setProducts/addTxn/showToast/auditLog)।
+        // ফলে এই ফাংশনটা মাউন্টের সময় (তখন `products` প্রায়ই খালি []) একবারই
+        // তৈরি হয়ে চিরস্থায়ীভাবে সেই stale/খালি closure ধরে রাখত — এখানে
+        // `products.find()` তাই সবসময় undefined পেত, `localP` কখনো পাওয়া যেত
+        // না, আর প্রতিটা আইটেমের জন্য এখানেই সাথে সাথে `return null` হয়ে যেত —
+        // FSS.transactionRestoreStock() পর্যন্ত কখনো পৌঁছাতই না। এখন এই
+        // ফাংশনেরই fallback-এ ব্যবহৃত same প্যাটার্নে সরাসরি Zustand store
+        // থেকে (getState()) সবচেয়ে সাম্প্রতিক products পড়া হচ্ছে, stale
+        // closure-এর বদলে।
+        const localP = useAppStore.getState().products.find(p => p.id === soldItem.productId);
         if (!localP) return null;
         const soldBatchNo = soldItem.batchNo || "";
         if (FSS.isReady()) {
@@ -12689,7 +12704,9 @@ function SmartBusinessMgmt() {
             })
           : restoreBatchQty(existingBatches, `VOID-ADJ-${inv.id.slice(-6)}`, restoredQty, {
               costPrice: soldItem.costPrice || freshP.avgCost || freshP.costPrice || 0,
-              expiryDate: null,
+              // 🔴 ফিক্স: soldItem.expiryDate থাকলে (বিক্রয়ের সময় সংরক্ষিত) সেটাই ব্যবহার করা হবে,
+              // আগে এখানেও হার্ডকোড null বসত।
+              expiryDate: soldItem.expiryDate || null,
               addedAt: new Date().toISOString(),
               note: "voidInvoice legacy-item adjustment",
             });
@@ -15407,6 +15424,25 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     // state আপডেট হয় (নিজের stale guess থেকে না) — ঠিক balance-এর প্যাটার্নেই।
     // Firebase বন্ধ/অফলাইন থাকলে (txResult === null) আগের মতো synchronous
     // local calculation-এ fallback করে।
+    // 🔴 ফিক্স (ইনভয়েস তৈরিতে দেরি — root cause): স্টক ডিডাকশন transaction(s)
+    // (পণ্যের ডকুমেন্ট) আর কাস্টমার balance transaction (নিচে বাকি/আংশিক
+    // পেমেন্টে) সম্পূর্ণ আলাদা Firestore ডকুমেন্টে কাজ করে, একে অপরের ফলাফলের
+    // উপর নির্ভর করে না। আগে এগুলো ধারাবাহিকভাবে (sequentially) await হতো —
+    // প্রতিটা runTransaction() একটা সম্পূর্ণ নেটওয়ার্ক রাউন্ড-ট্রিপ, তাই
+    // বাকি/আংশিক ইনভয়েসে সময় প্রায় দ্বিগুণ লাগত (স্লো নেটে/একাধিক পণ্যে আরও
+    // বেশি)। এখন balance transaction স্টক ডিডাকশনের ঠিক প্যারালালেই শুরু হয়ে
+    // যায় (promise-টা নিচে দরকার হলে await হয়) — দুটো নেটওয়ার্ক কল একসাথে
+    // চলে, ফলে মোট সময় সবচেয়ে ধীর কলটার সমান হয়, দুটোর যোগফল না।
+    const needsBalanceTx = !isWalkIn && !isSelfUse && (effectivePayType === "baki" || effectivePayType === "partial");
+    let balanceTxPromise = null, _overpayAmtEarly = 0, deltaEarly = 0;
+    if (needsBalanceTx) {
+      _overpayAmtEarly = (effectivePayType === "partial" && paidAmt > total) ? (paidAmt - total) : 0;
+      deltaEarly = bakiAmt - _overpayAmtEarly;
+      balanceTxPromise = FSS.isReady()
+        ? FSS.transactionUpdateBalance(selCust.id, (serverBal) => Math.max(0, serverBal + deltaEarly))
+        : Promise.resolve(null);
+    }
+
     const soldBatchMap = {};
     const sellableItems = items.filter(i => i.productType !== "service");
     const stockUpdates = await Promise.all(sellableItems.map(async (sold) => {
@@ -15456,9 +15492,9 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     if (!isWalkIn && !isSelfUse && (effectivePayType === "baki" || effectivePayType === "partial")) {
       // Overpayment: paid > total → অতিরিক্ত অংশ কাস্টমারের আগের বাকি থেকে বাদ যাবে (জমা)
       const _isOverpay = effectivePayType === "partial" && paidAmt > total;
-      const _overpayAmt = _isOverpay ? (paidAmt - total) : 0;
+      const _overpayAmt = _overpayAmtEarly; // উপরে স্টক ডিডাকশনের প্যারালালেই হিসাব করা হয়েছে
       inv.overpayAmount = _overpayAmt; // রিসিট/হিস্টোরিতে "বর্তমান বাকি" ঠিকভাবে দেখানোর জন্য সংরক্ষণ
-      const delta = bakiAmt - _overpayAmt;
+      const delta = deltaEarly;
       // 🔴 Transaction fix — সার্ভারের বর্তমান (সবচেয়ে up-to-date) balance থেকে
       // atomically delta apply করা হয় — অন্য ডিভাইস ঠিক এই মুহূর্তে balance
       // বদলালেও কোনো delta হারায় না। ব্যর্থ/local-only হলে local snapshot থেকে fallback।
@@ -15474,7 +15510,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       // অপেক্ষা করে না, তাই আগের setCustomers() কল ইতিমধ্যে যা বসিয়েছে সেটাই
       // পড়া যায়) নেওয়া হয়, তাই পরপর একাধিক অফলাইন বাকি ইনভয়েস আর একে অপরকে
       // হারায় না।
-      const txBal = await FSS.transactionUpdateBalance(selCust.id, (serverBal) => Math.max(0, serverBal + delta));
+      const txBal = await balanceTxPromise;
       const latestLocalBal = useAppStore.getState().customers.find(c => c.id === selCust.id)?.balance ?? (selCust.balance || 0);
       const newBal = txBal !== null ? txBal : Math.max(0, latestLocalBal + delta);
       setCustomers(prev => prev.map(c => c.id === selCust.id ? { ...c, balance: newBal } : c));
@@ -15504,10 +15540,19 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
           dueDate: inv.dueDate,
         });
       }
+      // 🔴 ফিক্স (ইনভয়েস তৈরিতে দেরি — root cause): sendSMS() এর ভেতরে
+      // generateSMS() Anthropic API কল করে (নেটওয়ার্ক রাউন্ড-ট্রিপ, কয়েক
+      // সেকেন্ড লাগতে পারে) আর তারপর sendRealSMS() গেটওয়েতে আরেকটা নেটওয়ার্ক
+      // কল করে। আগে এই পুরো চেইন `await` করে ইনভয়েস তৈরির ফ্লো (setPrintInv/
+      // setCreating(false)) আটকে রাখা হতো — অফলাইনে/স্লো নেটে ইনভয়েসই "তৈরি
+      // হচ্ছে..." স্পিনারে অনেকক্ষণ আটকে থাকত, যদিও ডেটা ইতিমধ্যে সেভ হয়ে
+      // গিয়েছিল। এখন SMS ফায়ার-অ্যান্ড-ফরগেট — ইনভয়েস সাথে সাথেই তৈরি/প্রিন্ট
+      // হয়ে যাবে, SMS ব্যাকগ্রাউন্ডে পাঠানো হবে (ব্যর্থ হলেও ইনভয়েস প্রভাবিত হবে না)।
       setSmsSending(true);
-      await sendSMS({ ...selCust, balance: newBal }, "baki", bakiAmt);
-      setSmsSending(false);
-      showToast("ইনভয়েস তৈরি ও SMS পাঠানো হয়েছে");
+      sendSMS({ ...selCust, balance: newBal }, "baki", bakiAmt)
+        .catch(err => logErrorToCentral?.("sendSMS:baki", err, { customerId: selCust.id }))
+        .finally(() => setSmsSending(false));
+      showToast("ইনভয়েস তৈরি হয়েছে — SMS পাঠানো হচ্ছে...");
     } else {
       await Haptic.success();
       // পূর্ণ নগদ বিক্রয় (registered কাস্টমার, walk-in/self-use নয়) — txn রেকর্ড করো যাতে
@@ -19590,7 +19635,8 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
 
     // 🆕 একবার কনফার্মে একটাই ইউনিফাইড রেকর্ড (সাপ্লায়ার-গ্রুপড নয়) — প্রতিটি আইটেমে নিজস্ব সাপ্লায়ার সংরক্ষিত থাকে
     const savePOFromSelection = (items, qtys) => {
-      const ordered = items.filter(p => (qtys[p.id]||0) > 0);
+      const qtyTotal = (id) => { const v = qtys[id]; return v ? (v.strip||0)+(v.box||0)+(v.pcs||0) : 0; };
+      const ordered = items.filter(p => qtyTotal(p.id) > 0);
       if (!ordered.length) return null;
       const now = new Date();
       const rec = {
@@ -19598,7 +19644,15 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
         _type: "purchase_order",
         dateKey: todayEn(),
         createdAt: now.toISOString(),
-        items: ordered.map(p => ({ productId: p.id, name: p.name, unit: p.unit||"", stock: p.stock||0, supplier: supplierOf(p), qty: qtys[p.id]||0 })),
+        // 🆕 stripQty/boxQty/pcsQty — ম্যানুয়াল স্ট্রিপ/বক্স/সংখ্যা ব্রেকডাউন সংরক্ষিত থাকে,
+        // qty (যোগফল) আগের মতোই থাকে যাতে পুরনো টোটাল/PDF কোড অপরিবর্তিত কাজ করে।
+        items: ordered.map(p => {
+          const v = qtys[p.id] || {};
+          return {
+            productId: p.id, name: p.name, unit: p.unit||"", stock: p.stock||0, supplier: supplierOf(p),
+            qty: qtyTotal(p.id), stripQty: v.strip||0, boxQty: v.box||0, pcsQty: v.pcs||0,
+          };
+        }),
       };
       setPurchaseOrders(prev => [rec, ...(prev||[])]);
       return rec;
@@ -19629,18 +19683,46 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       const merged = {};
       allPOOrders.filter(r => r.dateKey === dateKey).forEach(r => resolvedItems(r).forEach(it => {
         if (!merged[it.productId]) merged[it.productId] = { ...it };
-        else merged[it.productId].qty += (it.qty||0);
+        else {
+          merged[it.productId].qty += (it.qty||0);
+          // 🆕 একই দিনের একাধিক অর্ডারে একই পণ্য থাকলে স্ট্রিপ/বক্স/সংখ্যাও যোগ হবে
+          merged[it.productId].stripQty = (merged[it.productId].stripQty||0) + (it.stripQty||0);
+          merged[it.productId].boxQty   = (merged[it.productId].boxQty||0)   + (it.boxQty||0);
+          merged[it.productId].pcsQty   = (merged[it.productId].pcsQty||0)   + (it.pcsQty||0);
+        }
       }));
       // একই সাপ্লায়ারের পণ্যগুলো পাশাপাশি দেখানোর জন্য সাপ্লায়ার অনুযায়ী গ্রুপ করে সাজানো
       return Object.values(merged).sort((a, b) => (a.supplier || "").localeCompare(b.supplier || "", "bn"));
     };
     const buildDayOrderHtml = (dateKey) => {
       const items = mergeItemsForDay(dateKey);
-      const rows = items.map((p,i) => `<tr><td class="serial">${i+1}</td><td>${medBadgeHtmlStr(p.dosageForm)}${p.name}</td><td>${p.supplier}</td><td class="num">${p.qty}${p.unit||""}</td></tr>`).join('');
+      const rows = items.map((p,i) => `<tr><td class="serial">${i+1}</td><td>${medBadgeHtmlStr(p.dosageForm)}${p.name}</td><td>${p.supplier}</td><td class="num">${poItemQtyLabel(p)}</td></tr>`).join('');
       return buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্যের নাম</th><th>সাপ্লায়ার</th><th class="num">অর্ডার পরিমাণ</th></tr></thead><tbody>${rows}</tbody><tfoot><tr class="total-row"><td class="serial"></td><td colspan="2"><b>মোট পণ্য</b></td><td class="num">${items.length}</td></tr></tfoot></table></div>`, shopName, `ক্রয় অর্ডার — ${dayLabelPO(dateKey)}`);
     };
     const sendDayWhatsApp = (dateKey) => {
       sharePdfWhatsApp(buildDayOrderHtml(dateKey), `ক্রয় অর্ডার — ${dayLabelPO(dateKey)}`);
+    };
+
+    // 🆕 স্ট্রিপ/বক্স/সংখ্যা ম্যানুয়াল এন্ট্রি — আগে এখানে +5/+10/+25/+50/+100
+    // প্রিসেট বাটন ছিল, যেগুলো ওষুধ কেনার বাস্তব হিসাবের (স্ট্রিপ/বক্স ধরে অর্ডার)
+    // সাথে মেলে না। এখন orderQtysAll[p.id] একটা number-এর বদলে
+    // { strip, box, pcs } অবজেক্ট রাখে — প্রতিটা আলাদাভাবে ইচ্ছামতো সংখ্যা
+    // লেখা যায়। মোট qty (স্টক/PDF-এর "অর্ডার পরিমাণ" কলামের জন্য) তিনটার
+    // যোগফল হিসেবে গণনা হয়, আর ব্রেকডাউন লেবেল আলাদাভাবে সংরক্ষিত/দেখানো হয়।
+    const qtyBreakdownTotal = (v) => v ? (v.strip||0) + (v.box||0) + (v.pcs||0) : 0;
+    const qtyBreakdownLabel = (v) => {
+      if (!v) return "";
+      const parts = [];
+      if (v.strip) parts.push(`${v.strip} স্ট্রিপ`);
+      if (v.box) parts.push(`${v.box} বক্স`);
+      if (v.pcs) parts.push(`${v.pcs} সংখ্যা`);
+      return parts.join(" + ");
+    };
+    // পুরনো/PO আইটেম থেকে (stripQty/boxQty/pcsQty সংরক্ষিত থাকলে) ব্রেকডাউন লেবেল বানায় —
+    // না থাকলে (পুরনো রেকর্ড) শুধু সংখ্যা + ইউনিট দেখায়, ব্যাকওয়ার্ড-কম্প্যাটিবল।
+    const poItemQtyLabel = (it) => {
+      const label = qtyBreakdownLabel({ strip: it.stripQty, box: it.boxQty, pcs: it.pcsQty });
+      return label || `${it.qty}${it.unit||""}`;
     };
 
     // ── প্রোডাক্ট কার্ড (শুধু "তৈরি করুন" ফ্লো-তে ব্যবহৃত) ──────────────────────
@@ -19648,13 +19730,29 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       const isOut = (p.stock||0)===0;
       const isCrit = !isOut && (p.stock||0)<=(p.minStockAlert||5);
       const accentC = isOut ? PRINT.danger : isCrit ? PRINT.warn : PRINT.ok;
-      const qty = orderQtysAll[p.id]||0;
+      const qtyObj = orderQtysAll[p.id] || {};
+      const qty = qtyBreakdownTotal(qtyObj);
       const isOrdered = qty > 0;
+      const setQtyPart = (key, v) => setOrderQtysAll(q => ({ ...q, [p.id]: { ...(q[p.id]||{}), [key]: v } }));
+      const qtyInputStyle = {
+        width:60, background: isOrdered ? "#dbeafe" : "#f8fafc", border:`1px solid ${isOrdered ? PRINT.accent2+"88" : "#e2e8f0"}`,
+        borderRadius:10, color: isOrdered ? PRINT.accent : PRINT.textDark, fontSize:14, fontWeight:900, padding:"9px 4px",
+        textAlign:"center", fontFamily:"inherit",
+      };
+      const qtyField = (key, label) => (
+        <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:3 }}>
+          <input type="number" inputMode="numeric" min="0" value={qtyObj[key] || ""} placeholder="0"
+            onChange={(e)=>{ const v = parseInt(e.target.value,10); setQtyPart(key, (isNaN(v)||v<0) ? 0 : v); }}
+            onClick={(e)=>e.target.select()}
+            style={qtyInputStyle} />
+          <span style={{ fontSize:10, color:PRINT.textMuted, fontWeight:700 }}>{label}</span>
+        </div>
+      );
       return (
         <div key={p.id} style={{ position:"relative", background: isOrdered ? "#eff6ff" : "#ffffff", border:`1.5px solid ${isOrdered ? PRINT.accent2 : PRINT.headBorder}`, borderRadius:18, padding:"14px 15px", overflow:"hidden", boxShadow: isOrdered ? "0 1px 8px rgba(14,165,233,0.18)" : "0 1px 4px rgba(0,0,0,0.06)", transition:"all 0.2s ease" }}>
           {isOrdered && (
             <div style={{ position:"absolute", top:10, right:12, background:PRINT.thBg, borderRadius:8, padding:"3px 9px", color:"#fff", fontWeight:900, fontSize:10.5 }}>
-              ✓ {qty} যুক্ত
+              ✓ {qtyBreakdownLabel(qtyObj) || qty} যুক্ত
             </div>
           )}
           {!isOrdered && <div style={{ position:"absolute", top:10, right:12, color:"#e2e8f0", fontWeight:900, fontSize:22, fontFamily:"monospace", lineHeight:1, userSelect:"none" }}>{String(idx+1).padStart(2,"0")}</div>}
@@ -19670,17 +19768,13 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           <div style={{ color:PRINT.textMuted, fontSize:11, fontWeight:700, marginBottom:9, display:"flex", alignItems:"center", gap:4 }}>
             <span style={{ fontSize:11 }}>🏭</span>{supplierOf(p)}
           </div>
-          <div style={{ display:"flex", alignItems:"center", gap:7, flexWrap:"wrap" }}>
-            {[5,10,25,50,100].map(n => (
-              <button key={n} onClick={()=>setOrderQtysAll(q=>({...q,[p.id]:(q[p.id]||0)+n}))}
-                style={{ background: isOrdered ? `${accentC}18` : "#f8fafc", border:`1px solid ${isOrdered ? accentC+"55" : "#e2e8f0"}`, borderRadius:10, color: isOrdered ? accentC : PRINT.textMuted, fontSize:12, fontWeight:800, padding:"6px 14px", cursor:"pointer", fontFamily:"inherit", letterSpacing:0.3, transition:"all 0.15s ease" }}>+{n}</button>
-            ))}
-            <input type="number" inputMode="numeric" min="0" value={qty || ""} placeholder="সংখ্যা"
-              onChange={(e)=>{ const v = parseInt(e.target.value,10); setOrderQtysAll(q=>({...q,[p.id]: (isNaN(v)||v<0) ? 0 : v})); }}
-              onClick={(e)=>e.target.select()}
-              style={{ width:70, background: isOrdered ? "#dbeafe" : "#f8fafc", border:`1px solid ${isOrdered ? PRINT.accent2+"88" : "#e2e8f0"}`, borderRadius:10, color: isOrdered ? PRINT.accent : PRINT.textDark, fontSize:14, fontWeight:900, padding:"9px 6px", textAlign:"center", fontFamily:"inherit" }} />
+          <div style={{ display:"flex", alignItems:"flex-start", gap:10, flexWrap:"wrap" }}>
+            {qtyField("strip", "স্ট্রিপ")}
+            {qtyField("box", "বক্স")}
+            {qtyField("pcs", "সংখ্যা")}
             {qty > 0 && (
-              <button onClick={()=>setOrderQtysAll(q=>({...q,[p.id]:0}))} style={{ background:"#fef2f2", border:"1px solid #fecaca", borderRadius:10, color:"#dc2626", fontSize:12, fontWeight:800, padding:"6px 12px", cursor:"pointer", fontFamily:"inherit" }}>✕ রিসেট</button>
+              <button onClick={()=>setOrderQtysAll(q=>({...q,[p.id]:{strip:0,box:0,pcs:0}}))}
+                style={{ background:"#fef2f2", border:"1px solid #fecaca", borderRadius:10, color:"#dc2626", fontSize:12, fontWeight:800, padding:"9px 12px", cursor:"pointer", fontFamily:"inherit", alignSelf:"flex-start" }}>✕ রিসেট</button>
             )}
           </div>
         </div>
@@ -19907,7 +20001,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   <div style={{ width:24, color:PRINT.thText, fontWeight:700, fontSize:12, textAlign:"center", flexShrink:0 }}>#</div>
                   <div style={{ flex:1.3, color:PRINT.thText, fontWeight:700, fontSize:12 }}>পণ্যের নাম</div>
                   <div style={{ flex:1, color:PRINT.thText, fontWeight:700, fontSize:12 }}>সাপ্লায়ার</div>
-                  <div style={{ width:108, color:PRINT.thText, fontWeight:700, fontSize:12, textAlign:"right" }}>অর্ডার পরিমাণ</div>
+                  <div style={{ width:150, color:PRINT.thText, fontWeight:700, fontSize:12, textAlign:"right" }}>অর্ডার পরিমাণ</div>
                 </div>
                 {reviewItems.map((p, i) => (
                   <div key={p.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px", borderBottom: i<reviewItems.length-1 ? `1px solid ${PRINT.rowBorder}` : "none", background: i%2===1 ? PRINT.rowEven : "#fff" }}>
@@ -19916,13 +20010,18 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                       <DosageBadge dosageForm={p.dosageForm} />{p.name}{p.unit?<span style={{ color:PRINT.textMuted, fontSize:11 }}> ({p.unit})</span>:null}
                     </div>
                     <div style={{ flex:1, minWidth:0, color:PRINT.textDark, fontSize:12.5 }}>{supplierOf(p)}</div>
-                    <div style={{ width:108, display:"flex", alignItems:"center", gap:6, justifyContent:"flex-end", flexShrink:0 }}>
-                      <input type="number" inputMode="numeric" min="0" value={orderQtysAll[p.id] || ""} placeholder="0"
-                        onChange={(e)=>{ const v = parseInt(e.target.value,10); setOrderQtysAll(q=>({...q,[p.id]: (isNaN(v)||v<0) ? 0 : v})); }}
-                        onClick={(e)=>e.target.select()}
-                        style={{ width:60, background:"#f8fafc", border:`1px solid #cbd5e1`, borderRadius:8, color:PRINT.textDark, fontSize:13.5, fontWeight:800, padding:"6px 4px", textAlign:"center", fontFamily:"inherit" }} />
+                    <div style={{ width:150, display:"flex", alignItems:"center", gap:5, justifyContent:"flex-end", flexShrink:0 }}>
+                      {["strip","box","pcs"].map(key => (
+                        <div key={key} style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:1 }}>
+                          <input type="number" inputMode="numeric" min="0" value={(orderQtysAll[p.id]||{})[key] || ""} placeholder="0"
+                            onChange={(e)=>{ const v = parseInt(e.target.value,10); setOrderQtysAll(q=>({...q,[p.id]:{...(q[p.id]||{}),[key]:(isNaN(v)||v<0)?0:v}})); }}
+                            onClick={(e)=>e.target.select()}
+                            style={{ width:34, background:"#f8fafc", border:`1px solid #cbd5e1`, borderRadius:8, color:PRINT.textDark, fontSize:12.5, fontWeight:800, padding:"5px 2px", textAlign:"center", fontFamily:"inherit" }} />
+                          <span style={{ fontSize:8.5, color:PRINT.textMuted, fontWeight:700 }}>{key==="strip"?"স্ট্রি":key==="box"?"বক্স":"সংখ্যা"}</span>
+                        </div>
+                      ))}
                       <button onClick={()=>setOrderQtysAll(q=>{ const n={...q}; delete n[p.id]; return n; })}
-                        style={{ width:26, height:26, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background:"#fef2f2", border:"1px solid #fecaca", borderRadius:7, color:"#dc2626", fontSize:13, fontWeight:800, padding:0, cursor:"pointer", fontFamily:"inherit" }}>✕</button>
+                        style={{ width:22, height:22, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background:"#fef2f2", border:"1px solid #fecaca", borderRadius:7, color:"#dc2626", fontSize:12, fontWeight:800, padding:0, cursor:"pointer", fontFamily:"inherit" }}>✕</button>
                     </div>
                   </div>
                 ))}
@@ -19984,7 +20083,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                     <div style={{ width:24, color:PRINT.serial, fontWeight:700, fontSize:12.5, textAlign:"center", flexShrink:0 }}>{i+1}</div>
                     <div style={{ flex:1, minWidth:0, color:PRINT.textDark, fontWeight:700, fontSize:13 }}><DosageBadge dosageForm={it.dosageForm} />{it.name}{it.unit?<span style={{ color:PRINT.textMuted, fontSize:11 }}> ({it.unit})</span>:null}</div>
                     <div style={{ flex:1, minWidth:0, color:PRINT.textDark, fontSize:12.5 }}>{it.supplier}</div>
-                    <div style={{ flex:1, color:PRINT.textDark, fontWeight:800, fontSize:13.5, textAlign:"right" }}>{it.qty}</div>
+                    <div style={{ flex:1, color:PRINT.textDark, fontWeight:800, fontSize:13.5, textAlign:"right" }}>{poItemQtyLabel(it)}</div>
                   </div>
                 ))}
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 12px", background:PRINT.totalBg, borderTop:`2px solid ${PRINT.totalBorder}` }}>
@@ -20020,7 +20119,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       const poOrdersByCreated = [...allPOOrders].sort((a,b) => (a.createdAt||"").localeCompare(b.createdAt||""));
       const recSerial = poOrdersByCreated.findIndex(r => r.id === rec.id) + 1;
       const buildRecOrderHtml = () => {
-        const rows = items.map((it,i) => `<tr><td class="serial">${i+1}</td><td>${medBadgeHtmlStr(it.dosageForm)}${it.name}${it.unit?` (${it.unit})`:""}</td><td>${it.supplier}</td><td class="num">${it.qty}</td></tr>`).join('');
+        const rows = items.map((it,i) => `<tr><td class="serial">${i+1}</td><td>${medBadgeHtmlStr(it.dosageForm)}${it.name}${it.unit?` (${it.unit})`:""}</td><td>${it.supplier}</td><td class="num">${poItemQtyLabel(it)}</td></tr>`).join('');
         return buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্যের নাম</th><th>সাপ্লায়ার</th><th class="num">অর্ডার পরিমাণ</th></tr></thead><tbody>${rows}</tbody><tfoot><tr class="total-row"><td class="serial"></td><td colspan="2"><b>মোট পণ্য</b></td><td class="num">${items.length}</td></tr></tfoot></table></div>`, shopName, `ক্রয় অর্ডার-${recSerial} — ${dayLabelPO(rec.dateKey)}`);
       };
       const sendRecWhatsApp = () => {
@@ -20053,7 +20152,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                     <div style={{ width:24, color:PRINT.serial, fontWeight:700, fontSize:12.5, textAlign:"center", flexShrink:0 }}>{i+1}</div>
                     <div style={{ flex:1, minWidth:0, color:PRINT.textDark, fontWeight:700, fontSize:13 }}><DosageBadge dosageForm={it.dosageForm} />{it.name}{it.unit?<span style={{ color:PRINT.textMuted, fontSize:11 }}> ({it.unit})</span>:null}</div>
                     <div style={{ flex:1, minWidth:0, color:PRINT.textDark, fontSize:12.5 }}>{it.supplier}</div>
-                    <div style={{ flex:1, color:PRINT.textDark, fontWeight:800, fontSize:13.5, textAlign:"right" }}>{it.qty}</div>
+                    <div style={{ flex:1, color:PRINT.textDark, fontWeight:800, fontSize:13.5, textAlign:"right" }}>{poItemQtyLabel(it)}</div>
                   </div>
                 ))}
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 12px", background:PRINT.totalBg, borderTop:`2px solid ${PRINT.totalBorder}` }}>
@@ -21035,64 +21134,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
 
         {/* ══ আজকের খরচ সারসংক্ষেপ — ড্যাশবোর্ড থেকে সরানো হয়েছে (ব্যবহারকারীর অনুরোধে) ══ */}
 
-        {/* ══ Cash Flow Forecast (৭ দিন) ══ */}
-        {cashFlow && (() => {
-          const fmt = n => fmtMoney(Math.abs(n || 0));
-          const isPositive = cashFlow.totalNet >= 0;
-          return (
-            <div style={{ marginBottom:12, background:"linear-gradient(135deg,#0a1628,#0d2040)",
-              border:"1px solid #6366f133", borderRadius:14, padding:"12px 14px" }}
-              onClick={() => setTab && setTab("ai")}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
-                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                  <div style={{ width:4, height:20, borderRadius:2,
-                    background:`linear-gradient(180deg,${isPositive?"#22c55e":"#ef4444"},${isPositive?"#16a34a":"#dc2626"})` }} />
-                  <span style={{ color:"#c4b5fd", fontWeight:900, fontSize:13 }}>📈 ৭ দিনের ক্যাশ ফ্লো</span>
-                </div>
-                <div style={{ textAlign:"right" }}>
-                  <div style={{ color: isPositive?"#22c55e":"#ef4444", fontWeight:900, fontSize:15 }}>
-                    {isPositive?"+":"-"}৳{fmt(cashFlow.totalNet)}
-                  </div>
-                  <div style={{ color:"#64748b", fontSize:10 }}>আনুমানিক নেট</div>
-                </div>
-              </div>
-
-              {/* Mini bar chart */}
-              <div style={{ display:"flex", gap:3, alignItems:"flex-end", height:50, marginBottom:8 }}>
-                {(cashFlow.forecast || []).map((d, i) => {
-                  const maxVal = Math.max(...cashFlow.forecast.map(f => Math.max(f.inflow, f.outflow)), 1);
-                  const inH = Math.max(4, (d.inflow / maxVal) * 44);
-                  const outH = Math.max(4, (d.outflow / maxVal) * 44);
-                  return (
-                    <div key={i} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:1 }}>
-                      <div style={{ width:"100%", display:"flex", gap:1, alignItems:"flex-end", height:44 }}>
-                        <div style={{ flex:1, height:inH, background:"#22c55e88", borderRadius:"2px 2px 0 0" }} />
-                        <div style={{ flex:1, height:outH, background:"#ef444488", borderRadius:"2px 2px 0 0" }} />
-                      </div>
-                      <div style={{ color: d.isWeekend?"#f59e0b":"#64748b", fontSize:8, fontWeight:700 }}>
-                        {d.dayLabel.slice(0,2)}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Legend + summary */}
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}>
-                {[
-                  { label:"আনুমানিক আয়",    value:`৳${fmt(cashFlow.totalInflow)}`,  color:"#22c55e" },
-                  { label:"আনুমানিক ব্যয়",   value:`৳${fmt(cashFlow.totalOutflow)}`, color:"#ef4444" },
-                  { label:"বাকি সংগ্রহযোগ্য", value:`৳${fmt(cashFlow.overdueTotal)}`, color:"#f59e0b" },
-                ].map(s => (
-                  <div key={s.label} style={{ background:"rgba(255,255,255,0.04)", borderRadius:8, padding:"6px 8px", textAlign:"center" }}>
-                    <div style={{ color:s.color, fontWeight:800, fontSize:11 }}>{s.value}</div>
-                    <div style={{ color:"#64748b", fontSize:9, marginTop:1 }}>{s.label}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })()}
+        {/* ══ Cash Flow Forecast (৭ দিন) — ব্যবহারকারীর অনুরোধে ড্যাশবোর্ড থেকে সরানো হয়েছে ══ */}
 
         {/* ══ বাকি পরিসংখ্যান ══ */}
         <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12, padding:"10px 14px", background:"linear-gradient(135deg,#0d1f38,#0f2a50)", borderRadius:14, border:"1px solid #0ea5e922" }}>
@@ -21900,7 +21942,10 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
       });
     }
     await Haptic.heavy();
-    await sendSMS({ ...customer, balance: newBalance }, mode, amt);
+    // 🔴 ফিক্স (একই root cause — দেখুন createInvoice()-এর SMS ফিক্স): SMS
+    // পাঠানো ফায়ার-অ্যান্ড-ফরগেট, নাহলে বাকি/জমা মডাল বন্ধ হতে অকারণে দেরি হয়।
+    sendSMS({ ...customer, balance: newBalance }, mode, amt)
+      .catch(err => logErrorToCentral?.("sendSMS:collect", err, { customerId: customer.id }));
     if (mode !== "joma") { showToast(mode === "baki" ? "বাকি যোগ হয়েছে" : "জমা নেওয়া হয়েছে"); setSending(false); onClose(); }
     else setSending(false);
   };
@@ -23084,7 +23129,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                       onChange={e => setPeInvoiceItems(arr => arr.map((x,i) => i===idx ? { ...x, productId: e.target.value, include: !!e.target.value && x.include !== false ? true : x.include } : x))}
                       style={{ ...S.input, marginBottom:8, border: !it.productId && it.include ? "1.5px solid #ef4444" : S.input.border }}>
                       <option value="">— পণ্য বেছে নিন —</option>
-                      {products.map(p => { const ta = medTypeAbbr(p.dosageForm); return <option key={p.id} value={p.id}>{ta ? `${ta.abbr} ` : ""}{p.name}{p.unit ? ` (${p.unit})` : ""}</option>; })}
+                      {products.map(p => { const ta = medTypeAbbr(p.dosageForm); return <option key={p.id} value={p.id}>{ta ? `${ta.abbr}. ` : ""}{p.name}{p.unit ? ` (${p.unit})` : ""}</option>; })}
                     </select>
                     <div style={{ display:"flex", gap:8 }}>
                       <div style={{ flex:1 }}>
@@ -23151,7 +23196,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                       autoComplete="off"
                     />
                     {selProd && (() => { const ta = medTypeAbbr(selProd.dosageForm); return ta ? (
-                      <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color: ta.color, fontWeight:900, fontSize:11, background:`${ta.color}1a`, border:`1px solid ${ta.color}44`, borderRadius:6, padding:"1px 6px", pointerEvents:"none" }}>{ta.abbr}</span>
+                      <span style={{ position:"absolute", left:10, top:"50%", transform:"translateY(-50%)", color: ta.color, fontWeight:900, fontSize:11, background:`${ta.color}1a`, border:`1px solid ${ta.color}44`, borderRadius:6, padding:"1px 6px", pointerEvents:"none" }}>{ta.abbr}.</span>
                     ) : null; })()}
                     {selProd && (
                       <button onClick={() => setPeForm(f => ({ ...f, productId:"", productSearch:"" }))}
@@ -23179,7 +23224,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                             style={{ padding:"10px 14px", cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center", borderBottom:`1px solid ${T.border}` }}>
                             <div>
                               <div style={{ color:T.text, fontWeight:700, fontSize:13 }}>
-                                {(() => { const ta = medTypeAbbr(p.dosageForm); return ta ? <span style={{ color: ta.color, fontWeight: 900, marginRight: 5 }}>{ta.abbr}</span> : null; })()}
+                                {(() => { const ta = medTypeAbbr(p.dosageForm); return ta ? <span style={{ color: ta.color, fontWeight: 900, marginRight: 5 }}>{ta.abbr}.</span> : null; })()}
                                 {p.name}{p.unit ? <span style={{color:T.sub,fontSize:11}}> ({p.unit})</span> : null}
                               </div>
                               <div style={{ color:T.sub, fontSize:11 }}>স্টক: {p.stock||0} · ক্রয়: ৳{p.costPrice||0}</div>
@@ -23214,22 +23259,10 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                       <IcPlus /> পণ্য হিসেবে যোগ করুন + ক্রয় এন্ট্রি সেভ করুন
                     </div>
 
-                    {/* পণ্যের নাম + একক */}
+                    {/* পণ্যের নাম — 🔴 ফিক্স: পাশের একক-সিলেক্টর বক্সটি (ব্যবহারকারীর অনুরোধে) সরানো হলো */}
                     <label style={S.label}>🏷️ পণ্যের নাম *</label>
-                    <div style={{ display:"flex", gap:6, marginBottom:8 }}>
-                      <input style={{ ...S.input, flex:1, marginBottom:0 }} value={peNewProduct.name}
-                        onChange={e => setPeNewProduct(v => ({ ...v, name: e.target.value }))} autoComplete="off" />
-                      <select style={{ ...S.input, width:"auto", minWidth:80, marginBottom:0, flexShrink:0, padding:"10px 8px", fontSize:13 }}
-                        value={activeUnits.includes(peNewProduct.unit) ? peNewProduct.unit : "__custom__"}
-                        onChange={e => setPeNewProduct(v => ({ ...v, unit: e.target.value === "__custom__" ? "__typing__" : e.target.value }))}>
-                        {activeUnits.map(u => <option key={u} value={u}>{u === "" ? "একক" : u}</option>)}<option value="__custom__">✏️ নিজে লিখুন...</option>
-                      </select>
-                    </div>
-                    {(peNewProduct.unit === "__typing__" || (peNewProduct.unit && !PRESET_UNITS.filter(u => u !== "__custom__" && u !== "").includes(peNewProduct.unit))) && (
-                      <input style={{ ...S.input, marginTop:4, marginBottom:4 }} placeholder=""
-                        value={peNewProduct.unit === "__typing__" ? "" : peNewProduct.unit}
-                        onChange={e => setPeNewProduct(v => ({ ...v, unit: e.target.value || "__typing__" }))} autoFocus autoComplete="off" />
-                    )}
+                    <input style={{ ...S.input, marginBottom:8 }} value={peNewProduct.name}
+                      onChange={e => setPeNewProduct(v => ({ ...v, name: e.target.value }))} autoComplete="off" />
 
                     {/* ── ধরন (Tab/Cap/Syp) — এই নাম যেহেতু medicineDataset-এ পাওয়া যায়নি, তাই ম্যানুয়ালি বেছে নিন ── */}
                     <div style={{ marginBottom: 8 }}>
@@ -23240,6 +23273,14 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                           <button type="button" onClick={() => setPeNewProduct(v => ({ ...v, dosageForm: "" }))}
                             style={{ background:"none", border:"none", color:T.sub, fontSize:11, cursor:"pointer" }}>✕ বদলান</button>
                         </div>
+                      ) : peNewProduct.dosageFormCustomOpen ? (
+                        // 🆕 নিজে লিখুন — কাস্টম প্রিফিক্স টাইপ করার জন্য
+                        <input style={{ ...S.input, marginBottom:0 }} placeholder="যেমনঃ Sachet" autoFocus
+                          value={peNewProduct.dosageFormDraft || ""}
+                          onChange={e => setPeNewProduct(v => ({ ...v, dosageFormDraft: e.target.value }))}
+                          onBlur={() => setPeNewProduct(v => ({ ...v, dosageForm: (v.dosageFormDraft||"").trim(), dosageFormCustomOpen: false, dosageFormDraft: "" }))}
+                          onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+                          autoComplete="off" />
                       ) : (
                         <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
                           {DOSAGE_FORM_CHIPS.map(dfOpt => {
@@ -23251,6 +23292,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                               </button>
                             );
                           })}
+                          {/* 🆕 কাস্টম প্রিফিক্স — Powder-এর পাশে */}
+                          <button type="button" onClick={() => setPeNewProduct(v => ({ ...v, dosageFormCustomOpen: true }))}
+                            style={{ background:"#94a3b81a", border:"1px dashed #94a3b877", color:"#94a3b8", borderRadius:8, padding:"4px 9px", fontSize:11, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
+                            ✏️ নিজে লিখুন...
+                          </button>
                         </div>
                       )}
                     </div>
@@ -23904,7 +23950,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                   <div key={i} onMouseDown={() => pickNameSuggestion(entry)}
                     style={{ padding:"9px 14px", cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center", borderBottom:`1px solid ${T.border}` }}>
                     <span style={{ color:T.text, fontWeight:700, fontSize:13 }}>
-                      {ta && <span style={{ color: ta.color, fontWeight:900, marginRight:5 }}>{ta.abbr}</span>}
+                      {ta && <span style={{ color: ta.color, fontWeight:900, marginRight:5 }}>{ta.abbr}.</span>}
                       <HighlightText text={medDatasetLabel(entry)} query={form.name} highlightColor="#22c55e" />
                     </span>
                     <span style={{ color:T.sub, fontSize:10 }}>{entry[2].replace(/ (Ltd\.|Limited|PLC)$/, "")}</span>
@@ -23918,7 +23964,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               const ta = medTypeAbbr(form.dosageForm);
               return ta ? (
                 <div style={{ marginTop: 4, display:"flex", alignItems:"center", gap:5 }}>
-                  <span style={{ color: ta.color, fontWeight:900, fontSize:11, background:`${ta.color}1a`, border:`1px solid ${ta.color}44`, borderRadius:6, padding:"1px 7px" }}>{ta.abbr}</span>
+                  <span style={{ color: ta.color, fontWeight:900, fontSize:11, background:`${ta.color}1a`, border:`1px solid ${ta.color}44`, borderRadius:6, padding:"1px 7px" }}>{ta.abbr}.</span>
                   <span style={{ color:T.sub, fontSize:10.5 }}>{form.dosageForm}</span>
                   <button type="button" onClick={() => setForm(f => ({ ...f, dosageForm: "" }))}
                     style={{ background:"none", border:"none", color:T.sub, fontSize:11, cursor:"pointer", padding:0, marginLeft:2 }}>✕ বদলান</button>
@@ -23929,17 +23975,32 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             {!nameSuggestOpen && !form.dosageForm && form.productType !== "service" && form.name.trim().length >= 2 && nameSuggestions.length === 0 && (
               <div style={{ marginTop: 6 }}>
                 <div style={{ color:T.sub, fontSize:10.5, marginBottom:4 }}>ধরন (ঐচ্ছিক) — নামের আগে প্রিফিক্স হিসেবে বসবে:</div>
-                <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
-                  {DOSAGE_FORM_CHIPS.map(dfOpt => {
-                    const ta = medTypeAbbr(dfOpt);
-                    return (
-                      <button key={dfOpt} type="button" onClick={() => setForm(f => ({ ...f, dosageForm: dfOpt }))}
-                        style={{ background:`${ta.color}1a`, border:`1px solid ${ta.color}55`, color:ta.color, borderRadius:8, padding:"4px 9px", fontSize:11, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
-                        {ta.abbr}
-                      </button>
-                    );
-                  })}
-                </div>
+                {form.dosageFormCustomOpen ? (
+                  // 🆕 নিজে লিখুন — কাস্টম প্রিফিক্স টাইপ করার জন্য
+                  <input style={{ ...S.input, marginBottom:0 }} placeholder="যেমনঃ Sachet" autoFocus
+                    value={form.dosageFormDraft || ""}
+                    onChange={e => setForm(f => ({ ...f, dosageFormDraft: e.target.value }))}
+                    onBlur={() => setForm(f => ({ ...f, dosageForm: (f.dosageFormDraft||"").trim(), dosageFormCustomOpen: false, dosageFormDraft: "" }))}
+                    onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+                    autoComplete="off" />
+                ) : (
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:5 }}>
+                    {DOSAGE_FORM_CHIPS.map(dfOpt => {
+                      const ta = medTypeAbbr(dfOpt);
+                      return (
+                        <button key={dfOpt} type="button" onClick={() => setForm(f => ({ ...f, dosageForm: dfOpt }))}
+                          style={{ background:`${ta.color}1a`, border:`1px solid ${ta.color}55`, color:ta.color, borderRadius:8, padding:"4px 9px", fontSize:11, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
+                          {ta.abbr}
+                        </button>
+                      );
+                    })}
+                    {/* 🆕 কাস্টম প্রিফিক্স — Powder-এর পাশে */}
+                    <button type="button" onClick={() => setForm(f => ({ ...f, dosageFormCustomOpen: true }))}
+                      style={{ background:"#94a3b81a", border:"1px dashed #94a3b877", color:"#94a3b8", borderRadius:8, padding:"4px 9px", fontSize:11, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
+                      ✏️ নিজে লিখুন...
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -24120,7 +24181,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                 {/* ── সারি ১: নাম + সার্ভিস ব্যাজ + কমন/আনকমন ব্যাজ ── */}
                 <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
                   <span style={{ color: T.text, fontWeight: 700, fontSize: 14 }}>
-                    {(() => { const ta = medTypeAbbr(p.dosageForm); return ta ? <span style={{ color: ta.color, fontWeight: 900, marginRight: 5 }}>{ta.abbr}</span> : null; })()}
+                    {(() => { const ta = medTypeAbbr(p.dosageForm); return ta ? <span style={{ color: ta.color, fontWeight: 900, marginRight: 5 }}>{ta.abbr}.</span> : null; })()}
                     {p.name}{p.unit ? <span style={{ color: T.sub, fontWeight: 600, fontSize: 12, marginLeft: 4 }}>({p.unit})</span> : null}
                   </span>
                   {p.productType === "service" && <span style={{ background:"#0ea5e922", color:"#38bdf8", fontSize:10, borderRadius:6, padding:"1px 7px", fontWeight:800, border:"1px solid #38bdf844", flexShrink:0 }}>🔧 সার্ভিস</span>}
@@ -24153,26 +24214,26 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                       })
                     : prodBatchMap[p.id]?.batch ? [{ batchNo: prodBatchMap[p.id].batch, qty: p.stock||0, expiryDate: prodBatchMap[p.id].expiryDate || "" }] : [];
                   if (activeBatches.length === 0) return null;
-                  // ── #৬ ডুপ্লিকেট-এক্সপায়ারি সতর্কতা (একই পণ্যের একাধিক ব্যাচে হুবহু একই মেয়াদ) ──
-                  const expCount = {};
-                  activeBatches.forEach(b => { if (b.expiryDate) expCount[b.expiryDate] = (expCount[b.expiryDate]||0) + 1; });
+                  // 🔴 ফিক্স: আগে একই পণ্যের একাধিক ব্যাচে হুবহু একই মেয়াদ থাকলে ⚠️ "রিস্ক"
+                  // মার্ক দেখানো হতো — কিন্তু একই দিনে/একই চালানে কেনা ব্যাচের মেয়াদ
+                  // মিলে যাওয়া সম্পূর্ণ স্বাভাবিক, এটা কোনো প্রকৃত ঝুঁকি নির্দেশ করে না।
+                  // তাই এই ডুপ্লিকেট-এক্সপায়ারি সতর্কতা সরিয়ে ফেলা হলো — শুধু প্রকৃত
+                  // মেয়াদোত্তীর্ণ/কাছাকাছি-মেয়াদ সতর্কতা থাকবে।
                   return (
                     <div style={{ marginTop:5, display:"flex", flexWrap:"wrap", gap:4 }}>
                       {activeBatches.map((b, bi) => {
                         const daysLeft = b.expiryDate ? Math.ceil((new Date(b.expiryDate) - new Date()) / 86400000) : null;
                         const isExpired = daysLeft !== null && daysLeft < 0;
                         const isNear    = daysLeft !== null && daysLeft >= 0 && daysLeft <= 30;
-                        const isDup     = b.expiryDate && expCount[b.expiryDate] > 1;
                         const bColor    = isExpired ? "#ef4444" : isNear ? "#f59e0b" : "#a78bfa";
                         return (
-                          <span key={bi} style={{ display:"inline-flex", alignItems:"center", gap:4, background:bColor+"18", border:`1px solid ${isDup ? "#f59e0b" : bColor+"44"}`, borderRadius:6, padding:"2px 7px" }}>
+                          <span key={bi} style={{ display:"inline-flex", alignItems:"center", gap:4, background:bColor+"18", border:`1px solid ${bColor}44`, borderRadius:6, padding:"2px 7px" }}>
                             <span style={{ color:bColor, fontSize:10, fontWeight:700 }}>📦 {b.batchNo} ({b.qty})</span>
                             {b.expiryDate && (
                               <span style={{ color: isExpired?"#ef4444":isNear?"#f59e0b":"#94a3b8", fontSize:9, fontWeight:700 }}>
                                 {isExpired ? "⚠️মেয়াদ শেষ" : isNear ? `⏳${daysLeft}দিন` : `📅${b.expiryDate}`}
                               </span>
                             )}
-                            {isDup && <span title="একই মেয়াদের একাধিক ব্যাচ" style={{ fontSize:9 }}>⚠️</span>}
                           </span>
                         );
                       })}
