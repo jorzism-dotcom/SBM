@@ -242,6 +242,10 @@
   .recovery-row .rlabel{ font-size:11px; color:var(--sub); min-width:88px; flex-shrink:0; display:flex; align-items:center; gap:5px; }
   .recovery-row .rvalue{ flex:1; font-family:'Courier New',monospace; font-size:12px; word-break:break-all; }
   .recovery-row .rcopy{ background:rgba(34,211,238,0.1); border:1px solid rgba(34,211,238,0.3); color:var(--cyan); border-radius:8px; padding:5px 9px; cursor:pointer; font-size:11px; flex-shrink:0; }
+  .mini-act{ background:rgba(34,211,238,0.1); border:1px solid rgba(34,211,238,0.3); color:var(--cyan); border-radius:8px; padding:6px 11px; cursor:pointer; font-size:11.5px; font-weight:600; flex-shrink:0; white-space:nowrap; }
+  .mini-act:hover{ background:rgba(34,211,238,0.18); }
+  .mini-act.save{ background:rgba(52,211,153,0.1); border-color:rgba(52,211,153,0.3); color:#6ee7b7; }
+  .mini-act.save:hover{ background:rgba(52,211,153,0.18); }
   .gd-yes{ color:#6ee7b7; font-weight:700; } .gd-no{ color:var(--sub2); }
 
   /* ── settings ─────────────────────────────────────────────────────────── */
@@ -622,10 +626,6 @@
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2.2"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
           দোকানের Firebase-এ Rules/Indexes Deploy
         </h4>
-        <p style="font-size:12px;color:var(--sub);line-height:1.7;margin-bottom:14px">
-          দোকানদারের নিজের Google account দিয়ে sign-in করিয়ে (তার সামনে বসে বা screen share করে), তার Firebase project-এ এক ক্লিকে Firestore Database/Rules/Indexes বসিয়ে দিন। দোকানের ফোন নম্বর দিলে Deploy শেষে config নিজে থেকেই সেই দোকানের একাউন্টে সংরক্ষণ হয়ে যাবে (App.jsx প্রথম ওপেনে অটো-ডিটেক্ট করবে)। Realtime Database Rules Google-এর সীমাবদ্ধতার কারণে অটো-ডিপ্লয় হয় না — নিচে JSON কপি করে Console-এ একবার ম্যানুয়ালি বসাতে হবে। Google token কোথাও স্থায়ীভাবে সংরক্ষণ হয় না — session শেষে নিজে থেকেই অকেজো হয়ে যায়।
-        </p>
-
         <div id="fbAuthBox">
           <button class="btn-primary" id="fbConnectBtn" onclick="fbConnect()">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20z"/></svg>
@@ -641,8 +641,8 @@
             <input id="fbProjectId" placeholder="যেমন: chiren-eff4c">
           </div>
           <div class="form-group">
-            <label>দোকানের ফোন নম্বর (কনফিগ সংরক্ষণের জন্য, ঐচ্ছিক)</label>
-            <input id="fbShopPhone" placeholder="যেমন: 01712345678">
+            <label>দোকানের ফোন নম্বর (কনফিগ সংরক্ষণের জন্য) *</label>
+            <input id="fbShopPhone" required placeholder="যেমন: 01712345678">
           </div>
           <button class="btn-primary" style="margin-bottom:14px;background:linear-gradient(135deg,#0ea5e9,#0284c7)" onclick="fbFetchConfig()">
             🔍 Project থেকে Config খুঁজে বের করুন
@@ -654,27 +654,43 @@
             <div class="recovery-row"><span class="rlabel">📦 Project ID</span><span class="rvalue" id="fbc-pid">—</span><button class="rcopy" onclick="copyField('fbc-pid')">📋</button></div>
           </div>
 
-          <div class="form-section-title" style="margin-top:10px">Firestore Rules</div>
-          <textarea id="fbRulesText" rows="5" style="width:100%;font-family:monospace;font-size:11px;background:rgba(0,0,0,0.3);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:10px"></textarea>
-
-          <div class="form-section-title" style="margin-top:14px">Firestore Indexes (JSON)</div>
-          <textarea id="fbIndexesText" rows="5" style="width:100%;font-family:monospace;font-size:11px;background:rgba(0,0,0,0.3);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:10px"></textarea>
-
-          <button class="btn-primary" style="margin-top:16px;background:linear-gradient(135deg,#f59e0b,#d97706)" onclick="fbDeployAll()">
+          <button class="btn-primary" style="margin-bottom:18px;background:linear-gradient(135deg,#f59e0b,#d97706)" onclick="fbDeployAll()">
             🚀 Deploy করুন (Rules + Indexes)
           </button>
+
+          <div class="form-section-title" style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:8px">
+            <span>Firestore Rules <span style="font-weight:400;color:var(--sub2);font-size:11px">(এডিট করা যাবে)</span></span>
+            <span style="display:flex;gap:6px">
+              <button class="mini-act" onclick="fbCopyTextarea('fbRulesText','fbRulesMsg')">📋 কপি</button>
+              <button class="mini-act save" onclick="fbSaveTemplate('rules')">💾 সেভ</button>
+            </span>
+          </div>
+          <textarea id="fbRulesText" rows="16" style="width:100%;min-height:320px;font-family:monospace;font-size:13px;line-height:1.6;background:rgba(0,0,0,0.3);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:14px"></textarea>
+          <div id="fbRulesMsg" style="font-size:12px;color:#6ee7b7;margin-top:4px;min-height:16px"></div>
+
+          <div class="form-section-title" style="margin-top:14px;display:flex;align-items:center;justify-content:space-between;gap:8px">
+            <span>Firestore Indexes (JSON) <span style="font-weight:400;color:var(--sub2);font-size:11px">(এডিট করা যাবে)</span></span>
+            <span style="display:flex;gap:6px">
+              <button class="mini-act" onclick="fbCopyTextarea('fbIndexesText','fbIndexesMsg')">📋 কপি</button>
+              <button class="mini-act save" onclick="fbSaveTemplate('indexes')">💾 সেভ</button>
+            </span>
+          </div>
+          <textarea id="fbIndexesText" rows="16" style="width:100%;min-height:320px;font-family:monospace;font-size:13px;line-height:1.6;background:rgba(0,0,0,0.3);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:14px"></textarea>
+          <div id="fbIndexesMsg" style="font-size:12px;color:#6ee7b7;margin-top:4px;min-height:16px"></div>
 
           <div class="glass" style="margin-top:18px;padding:14px;border:1px solid rgba(252,211,77,0.35);border-radius:12px;background:rgba(252,211,77,0.06)">
             <div style="font-size:13px;font-weight:700;color:#fcd34d;margin-bottom:6px">
               ⚠️ Realtime Database Rules — ম্যানুয়ালি বসাতে হবে
             </div>
             <p style="font-size:12px;color:var(--sub);line-height:1.7;margin-bottom:10px">
-              RTDB Rules এই account দিয়ে অটো-ডিপ্লয় করা যায় না (Google-এর সীমাবদ্ধতা)। নিচের JSON কপি করে Firebase Console → Realtime Database → Rules ট্যাবে paste করে Publish করুন — প্রতি দোকানে মাত্র একবার লাগবে।
+              RTDB Rules এই account দিয়ে অটো-ডিপ্লয় করা যায় না (Google-এর সীমাবদ্ধতা)। নিচের JSON কপি করে Firebase Console → Realtime Database → Rules ট্যাবে paste করে Publish করুন — প্রতি দোকানে মাত্র একবার লাগবে। প্রয়োজনে নিচেই এডিটও করা যাবে।
             </p>
-            <div style="display:flex;gap:8px;align-items:flex-start">
-              <textarea id="fbRtdbText" rows="4" readonly style="flex:1;font-family:monospace;font-size:11px;background:rgba(0,0,0,0.3);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:10px"></textarea>
-              <button class="rcopy" style="flex-shrink:0" onclick="copyRtdbRules()">📋</button>
+            <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-bottom:6px">
+              <button class="mini-act" onclick="fbCopyTextarea('fbRtdbText','fbRtdbCopyMsg')">📋 কপি</button>
+              <button class="mini-act save" onclick="fbSaveTemplate('rtdb')">💾 সেভ</button>
             </div>
+            <textarea id="fbRtdbText" rows="10" style="width:100%;min-height:220px;font-family:monospace;font-size:13px;line-height:1.6;background:rgba(0,0,0,0.3);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:14px"></textarea>
+            <button class="btn" style="margin-top:10px;width:100%;background:linear-gradient(135deg,#10b981,#059669)" onclick="fbConfirmRtdbRules()">✅ RTDB Rules বসানো হয়ে গেছে — নিশ্চিত করুন</button>
             <div id="fbRtdbCopyMsg" style="font-size:12px;color:#6ee7b7;margin-top:6px;min-height:16px"></div>
             <a id="fbRtdbConsoleLink" href="#" target="_blank" style="display:inline-block;margin-top:4px;font-size:12px;color:#7dd3fc;text-decoration:underline">Firebase Console-এ RTDB Rules খুলুন →</a>
           </div>
@@ -683,7 +699,7 @@
             <div style="padding:10px 14px;background:rgba(255,255,255,0.04);border-bottom:1px solid var(--border);font-size:13px;font-weight:700;display:flex;align-items:center;gap:8px">
               📜 Deploy Log
             </div>
-            <div id="fbLog" style="font-family:monospace;font-size:13.5px;line-height:2.1;max-height:420px;overflow-y:auto;background:rgba(0,0,0,0.35);padding:16px;white-space:pre-wrap"></div>
+            <div id="fbLog" style="font-family:monospace;font-size:14px;line-height:2.1;min-height:200px;max-height:600px;overflow-y:auto;background:rgba(0,0,0,0.35);padding:16px;white-space:pre-wrap"></div>
           </div>
         </div>
       </div>
@@ -804,6 +820,36 @@
     <button class="btn" style="margin-top:12px;width:100%" id="dl-whatsapp-btn" onclick="openDeployWhatsApp()">📲 WhatsApp-এ পাঠান</button>
     <p id="dlModalMsg" style="font-size:12px;color:#6ee7b7;min-height:18px;text-align:center"></p>
     <button class="btn-ghost" style="margin-top:4px" onclick="closeDeployLinkModal()">বন্ধ করুন</button>
+  </div>
+</div>
+
+<!-- ── সংরক্ষিত Firebase কনফিগ দেখার মোডাল ── -->
+<div class="modal" id="fbConfigViewModal">
+  <div class="glass modal-box" style="max-width:460px">
+    <h3>✅ সংরক্ষিত Firebase কনফিগ</h3>
+    <div style="font-size:12.5px;color:var(--sub);margin-bottom:14px" id="fcvShop"></div>
+    <div class="recovery-row"><span class="rlabel">🔑 API Key</span><span class="rvalue" id="fcv-apikey">—</span><button class="rcopy" onclick="copyField('fcv-apikey')">📋</button></div>
+    <div class="recovery-row"><span class="rlabel">🔥 Database URL</span><span class="rvalue" id="fcv-dburl">—</span><button class="rcopy" onclick="copyField('fcv-dburl')">📋</button></div>
+    <div class="recovery-row"><span class="rlabel">📦 Project ID</span><span class="rvalue" id="fcv-pid">—</span><button class="rcopy" onclick="copyField('fcv-pid')">📋</button></div>
+    <div style="font-size:11px;color:var(--sub2);margin-top:8px;text-align:center" id="fcv-updated"></div>
+    <button class="btn" style="margin-top:14px;width:100%" id="fcv-sync-btn" onclick="closeFbConfigViewModal();jumpToFirebaseDeploy(document.getElementById('fbConfigViewModal').dataset.phone)">⚡ Rules/Index Sync ট্যাবে যান</button>
+    <button class="btn-ghost" style="margin-top:8px" onclick="closeFbConfigViewModal()">বন্ধ করুন</button>
+  </div>
+</div>
+
+<!-- ── Rules/Index Sync স্ট্যাটাস মোডাল ── -->
+<div class="modal" id="syncStatusModal">
+  <div class="glass modal-box" style="max-width:460px">
+    <h3>⚡ Rules/Index Sync স্ট্যাটাস</h3>
+    <div style="font-size:12.5px;color:var(--sub);margin-bottom:14px" id="ssShop"></div>
+    <div class="info-list">
+      <div class="row"><span id="ss-rules-icon">—</span><span>Firestore Rules</span></div>
+      <div class="row"><span id="ss-indexes-icon">—</span><span>Firestore Indexes</span></div>
+      <div class="row"><span id="ss-rtdb-icon">—</span><span>Realtime Database Rules</span></div>
+    </div>
+    <div style="font-size:11px;color:var(--sub2);margin-top:10px" id="ss-updated"></div>
+    <button class="btn" style="margin-top:14px;width:100%" onclick="closeSyncStatusModal();jumpToFirebaseDeploy(document.getElementById('syncStatusModal').dataset.phone)">🔄 রি-সিংক / রি-ডিপ্লয় করুন</button>
+    <button class="btn-ghost" style="margin-top:8px" onclick="closeSyncStatusModal()">বন্ধ করুন</button>
   </div>
 </div>
 
@@ -970,10 +1016,10 @@ window.renderUsers = function(search = '') {
         ${hasPin ? `<span class="tag-btn pin" onclick="viewPin('${u.phone}')">🔐 PIN দেখুন/রিসেট</span>` : `<span class="tag-warn">⚠️ PIN নেই — সম্পাদনা করুন</span>`}
         ${(u.recoveryPhone || u.shopFirebaseConfig) ? `<span class="tag-btn rec" onclick="viewRecovery('${u.phone}')">🔑 রিকভারি তথ্য</span>` : `<span class="tag-muted">রিকভারি তথ্য নেই</span>`}
         ${u.shopFirebaseConfig
-          ? `<span class="tag-btn rec" style="color:#6ee7b7" onclick="openDeployLinkModal('${u.phone}')">✅ Firebase সংযুক্ত (${u.shopFirebaseConfig.projectId || ''})</span>`
+          ? `<span class="tag-btn rec" style="color:#6ee7b7" onclick="viewFirebaseConfig('${u.phone}')">✅ Firebase সংযুক্ত (${u.shopFirebaseConfig.projectId || ''})</span>`
           : `<span class="tag-btn pin" onclick="openDeployLinkModal('${u.phone}')">🔥 Firebase Deploy লিংক</span>`}
         ${u.shopFirebaseConfig?.projectId
-          ? `<span class="tag-btn rec" style="color:#93c5fd" onclick="jumpToFirebaseDeploy('${u.phone}')">⚡ Rules/Index Sync</span>`
+          ? `<span class="tag-btn rec" style="color:#93c5fd" onclick="viewSyncStatus('${u.phone}')">⚡ Rules/Index Sync</span>`
           : ''}
       </div>
 
@@ -1082,6 +1128,45 @@ window.viewRecovery = function(phone) {
   document.getElementById('recoveryModal').classList.add('open');
 };
 window.closeRecoveryModal = function() { document.getElementById('recoveryModal').classList.remove('open'); };
+
+// ── সংরক্ষিত Firebase কনফিগ দেখা (ড্যাশবোর্ডের "✅ Firebase সংযুক্ত" ট্যাগে ক্লিক করলে) ──
+window.viewFirebaseConfig = function(phone) {
+  const u = users.find(x => x.phone === phone);
+  const cfg = u?.shopFirebaseConfig;
+  if (!cfg) { toast('এই দোকানের কোনো সংরক্ষিত Firebase কনফিগ নেই।', 'err'); return; }
+  document.getElementById('fcvShop').textContent = `📱 ${phone} · ${u?.shopName || u?.name || ''}`;
+  document.getElementById('fcv-apikey').textContent = cfg.apiKey || '—';
+  document.getElementById('fcv-dburl').textContent  = cfg.databaseURL || '—';
+  document.getElementById('fcv-pid').textContent    = cfg.projectId || '—';
+  const upd = u?.firebaseDeployedAt ? new Date(u.firebaseDeployedAt).toLocaleString('bn-BD') : '';
+  document.getElementById('fcv-updated').textContent = upd ? `সর্বশেষ Deploy: ${upd}` : '';
+  document.getElementById('fbConfigViewModal').dataset.phone = phone;
+  document.getElementById('fbConfigViewModal').classList.add('open');
+};
+window.closeFbConfigViewModal = function() { document.getElementById('fbConfigViewModal').classList.remove('open'); };
+
+// ── Rules/Index Sync স্ট্যাটাস দেখা (ড্যাশবোর্ডের "⚡ Rules/Index Sync" ট্যাগে ক্লিক করলে) ──
+// এখানে লাইভ Firebase API কল করা হয় না (তার জন্য দোকানদারের Google account
+// দিয়ে আবার sign-in লাগবে) — বরং সর্বশেষ Deploy-এর সময় সংরক্ষণ করা
+// ফ্ল্যাগগুলো (firestoreRulesDeployed/firestoreIndexesDeployed/rtdbRulesConfirmed)
+// দেখানো হয়। সঠিক লাইভ অবস্থা যাচাই করতে "রি-সিংক করুন" চেপে সংযুক্ত হতে হবে।
+window.viewSyncStatus = function(phone) {
+  const u = users.find(x => x.phone === phone);
+  if (!u?.shopFirebaseConfig?.projectId) { toast('এই দোকানের Firebase Project ID পাওয়া যায়নি।', 'err'); return; }
+  document.getElementById('ssShop').textContent = `📱 ${phone} · ${u.shopName || u.name || ''} · ${u.shopFirebaseConfig.projectId}`;
+  const mark = (ok) => ok ? '<span class="gd-yes">✅ সেট করা আছে</span>' : '<span class="gd-no">❌ এখনো নিশ্চিত না</span>';
+  document.getElementById('ss-rules-icon').innerHTML   = mark(!!u.firestoreRulesDeployed);
+  document.getElementById('ss-indexes-icon').innerHTML = mark(!!u.firestoreIndexesDeployed);
+  document.getElementById('ss-rtdb-icon').innerHTML    = mark(!!u.rtdbRulesConfirmed);
+  const stamps = [];
+  if (u.firestoreRulesDeployedAt)   stamps.push('Rules: ' + new Date(u.firestoreRulesDeployedAt).toLocaleString('bn-BD'));
+  if (u.firestoreIndexesDeployedAt) stamps.push('Indexes: ' + new Date(u.firestoreIndexesDeployedAt).toLocaleString('bn-BD'));
+  if (u.rtdbRulesConfirmedAt)       stamps.push('RTDB Rules: ' + new Date(u.rtdbRulesConfirmedAt).toLocaleString('bn-BD'));
+  document.getElementById('ss-updated').textContent = stamps.join(' · ');
+  document.getElementById('syncStatusModal').dataset.phone = phone;
+  document.getElementById('syncStatusModal').classList.add('open');
+};
+window.closeSyncStatusModal = function() { document.getElementById('syncStatusModal').classList.remove('open'); };
 
 // ── প্রতি-দোকান Firebase Deploy লিংক ─────────────────────────────────────────
 // deploy.html একই Netlify site-এর একই ফোল্ডারে থাকতে হবে (admin.html-এর পাশে)।
@@ -1749,12 +1834,23 @@ function fbLog(msg, type) {
   box.scrollTop = box.scrollHeight;
 }
 
-function fbInitTab() {
+async function fbInitTab() {
   if (!fbInited) {
     fbInited = true;
     document.getElementById('fbRulesText').value   = FB_DEFAULT_RULES;
     document.getElementById('fbIndexesText').value = FB_DEFAULT_INDEXES;
     document.getElementById('fbRtdbText').value    = FB_DEFAULT_RTDB;
+    // আগে কেউ "💾 সেভ" চেপে কাস্টম টেমপ্লেট রেখে থাকলে, hardcoded ডিফল্টের বদলে
+    // সেটাই লোড করা — সব অ্যাডমিনের জন্য কেন্দ্রীয়ভাবে (Firestore-এ) সংরক্ষিত।
+    try {
+      const snap = await getDoc(doc(db, 'admin_config', 'fbDeployTemplates'));
+      if (snap.exists()) {
+        const t = snap.data();
+        if (t.rulesText)   document.getElementById('fbRulesText').value   = t.rulesText;
+        if (t.indexesText) document.getElementById('fbIndexesText').value = t.indexesText;
+        if (t.rtdbText)    document.getElementById('fbRtdbText').value    = t.rtdbText;
+      }
+    } catch (e) { /* সেভ করা টেমপ্লেট না থাকলে/লোড ব্যর্থ হলে hardcoded ডিফল্টই থাকবে */ }
   }
   // কোনো দোকানের তালিকা থেকে "⚡ Rules/Index Sync" চেপে এসে থাকলে,
   // সেই দোকানের সংরক্ষিত shopFirebaseConfig থেকে Project ID আগে থেকেই বসিয়ে দেওয়া —
@@ -1847,7 +1943,9 @@ async function fbApiFetch(url, options) {
 // ── প্রজেক্ট থেকে apiKey/databaseURL/projectId খুঁজে বের করা ──
 window.fbFetchConfig = async function() {
   const projectId = document.getElementById('fbProjectId').value.trim();
+  const shopPhone  = document.getElementById('fbShopPhone').value.trim();
   if (!projectId) { fbLog('আগে Project ID লিখুন।', 'err'); return; }
+  if (!shopPhone) { fbLog('আগে দোকানের ফোন নম্বর লিখুন — এটি এখন বাধ্যতামূলক।', 'err'); document.getElementById('fbShopPhone').focus(); return; }
   if (!fbAccessToken) { fbLog('আগে Google account দিয়ে সংযুক্ত করুন।', 'err'); return; }
 
   document.getElementById('fbRtdbConsoleLink').href =
@@ -2048,15 +2146,95 @@ async function fbDeployIndexes(projectId, indexesJsonText) {
   fbLog('Indexes: ' + created + 'টা নতুন তৈরি হয়েছে, ' + skip + 'টা আগে থেকেই সেট আপ থাকায় স্কিপ হয়েছে।', 'ok');
 }
 
-// ── RTDB Rules কপি (অটো-ডিপ্লয় সম্ভব না — Google user-token RTDB legacy
-// endpoint-এ Unauthorized দেয়, তাই শুধু কপি-বাটন দেওয়া হলো) ──
-window.copyRtdbRules = function() {
-  const val = document.getElementById('fbRtdbText').value;
-  navigator.clipboard?.writeText(val).then(() => {
-    const msg = document.getElementById('fbRtdbCopyMsg');
-    msg.textContent = '✅ কপি হয়েছে! এখন Firebase Console-এ paste করে Publish করুন।';
+// ── Clipboard API (navigator.clipboard) মাঝেমধ্যে Chrome-এ "Document is not
+// focused" জাতীয় কারণে চুপচাপ ব্যর্থ হয় (বিশেষত readonly/লম্বা টেক্সট বা
+// ফোকাস হারানো অবস্থায়) — তাই আগে সেটা চেষ্টা করে, ব্যর্থ হলে পুরনো কিন্তু
+// সবচেয়ে নির্ভরযোগ্য execCommand('copy') ফলব্যাক ব্যবহার করা হয়। ──
+async function robustCopyText(text) {
+  if (!text) return false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) { /* নিচের ফলব্যাকে চেষ্টা করা হবে */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.style.top = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) {
+    return false;
+  }
+}
+
+// ── যেকোনো textarea-র মান কপি করা (Firestore Rules/Indexes/RTDB Rules — সব
+// কটাতেই একই ফাংশন ব্যবহার হয়) ──
+window.fbCopyTextarea = async function(textareaId, msgId) {
+  const val = document.getElementById(textareaId).value;
+  const msg = document.getElementById(msgId);
+  if (!val) { if (msg) { msg.textContent = '❌ কপি করার মতো কিছু নেই।'; setTimeout(() => msg.textContent = '', 2500); } return; }
+  const ok = await robustCopyText(val);
+  if (msg) {
+    msg.textContent = ok ? '✅ কপি হয়েছে!' : '❌ কপি করা যায়নি — ম্যানুয়ালি সিলেক্ট করে কপি করুন (Ctrl+C)।';
     setTimeout(() => msg.textContent = '', 3000);
-  });
+  }
+};
+
+// ── Firestore Rules/Indexes/RTDB টেক্সট এরিয়ায় করা এডিট "ডিফল্ট" হিসেবে
+// কেন্দ্রীয়ভাবে (সব অ্যাডমিনের জন্য) সংরক্ষণ করা — পরের বার ট্যাব খুললে
+// hardcoded ডিফল্টের বদলে এই সেভ করা ভার্সনটাই লোড হবে। ──
+window.fbSaveTemplate = async function(which) {
+  const map = {
+    rules:   { id: 'fbRulesText',   msgId: 'fbRulesMsg',    field: 'rulesText' },
+    indexes: { id: 'fbIndexesText', msgId: 'fbIndexesMsg',  field: 'indexesText' },
+    rtdb:    { id: 'fbRtdbText',    msgId: 'fbRtdbCopyMsg', field: 'rtdbText' }
+  };
+  const cfg = map[which];
+  if (!cfg) return;
+  const val = document.getElementById(cfg.id).value;
+  const msg = document.getElementById(cfg.msgId);
+  if (which === 'indexes') {
+    try { JSON.parse(val); } catch (e) {
+      if (msg) { msg.textContent = '❌ এটা সঠিক JSON না — সেভ করা হলো না: ' + e.message; setTimeout(() => msg.textContent = '', 4000); }
+      return;
+    }
+  }
+  try {
+    await setDoc(doc(db, 'admin_config', 'fbDeployTemplates'), {
+      [cfg.field]: val,
+      updatedAt: new Date().toISOString()
+    }, { merge: true });
+    if (msg) { msg.textContent = '💾 ডিফল্ট হিসেবে সেভ হয়েছে — পরের বার এই ট্যাব খুললে এটাই দেখাবে।'; setTimeout(() => msg.textContent = '', 3500); }
+  } catch (e) {
+    if (msg) { msg.textContent = '❌ সেভ ব্যর্থ: ' + e.message; setTimeout(() => msg.textContent = '', 4000); }
+  }
+};
+
+// ── RTDB Rules ম্যানুয়ালি Console-এ বসানোর পর অ্যাডমিন নিজে "নিশ্চিত করুন"
+// চাপলে তা এই দোকানের সাব্স্ক্রিপশন ডকুমেন্টে সংরক্ষণ হয় — এটাই পরে
+// "⚡ Rules/Index Sync" স্ট্যাটাস মোডালে ✅/❌ হিসেবে দেখানো হয়। ──
+window.fbConfirmRtdbRules = async function() {
+  const phone = document.getElementById('fbShopPhone').value.trim();
+  if (!phone) { fbLog('আগে দোকানের ফোন নম্বর লিখুন।', 'err'); return; }
+  try {
+    await setDoc(doc(db, 'subscriptions', phone), {
+      rtdbRulesConfirmed: true,
+      rtdbRulesConfirmedAt: new Date().toISOString()
+    }, { merge: true });
+    fbLog('✅ RTDB Rules নিশ্চিত করা হলো (' + phone + ') — এখন "Rules/Index Sync" স্ট্যাটাসে ✅ দেখাবে।', 'ok');
+    await loadUsers();
+  } catch (e) {
+    fbLog('RTDB Rules নিশ্চিত করা ব্যর্থ: ' + e.message, 'err');
+  }
 };
 
 // Google-এর "This API method requires billing to be enabled..." এররটা থেকে
@@ -2079,7 +2257,8 @@ function fbHandleBillingError(e) {
 // সংরক্ষণ করা — এটাই App.jsx first-open-এ অটো-ডিটেক্ট করে। এই তথ্য
 // admin.html-এর নিজস্ব (আগে থেকে sign-in করা) `db` ব্যবহার করে সেভ হয়,
 // দোকানদারের OAuth token দিয়ে না — কারণ central DB আলাদা project। ──
-async function fbSaveShopConfig(phone, projectId) {
+async function fbSaveShopConfig(phone, projectId, deployFlags) {
+  deployFlags = deployFlags || {};
   if (!phone) {
     fbLog('ফোন নম্বর দেওয়া হয়নি — কনফিগ কোনো দোকানের সাথে সংরক্ষণ করা হলো না। প্রয়োজনে "দোকানের ফোন নম্বর" ফিল্ডে বসিয়ে আবার Deploy করুন।', 'warn');
     return;
@@ -2093,10 +2272,14 @@ async function fbSaveShopConfig(phone, projectId) {
   }
   try {
     const shopFirebaseConfig = { apiKey, databaseURL: databaseURL === '—' ? '' : databaseURL, projectId: pid };
-    await setDoc(doc(db, 'subscriptions', phone), {
+    const payload = {
       shopFirebaseConfig,
       firebaseDeployedAt: new Date().toISOString()
-    }, { merge: true });
+    };
+    const now = new Date().toISOString();
+    if (deployFlags.rulesOk)   { payload.firestoreRulesDeployed = true;   payload.firestoreRulesDeployedAt = now; }
+    if (deployFlags.indexesOk) { payload.firestoreIndexesDeployed = true; payload.firestoreIndexesDeployedAt = now; }
+    await setDoc(doc(db, 'subscriptions', phone), payload, { merge: true });
     fbLog('✅ Config দোকানের একাউন্টে (' + phone + ') সংরক্ষণ হয়েছে — এখন App.jsx অটো-ডিটেক্ট করবে।', 'ok');
     await loadUsers();
   } catch (e) {
@@ -2128,31 +2311,37 @@ async function fbRunDeploySteps(projectId) {
     dbConfirmedExists = false;
   }
 
+  let rulesOk = false;
   try {
     await fbWithRetry(() => fbDeployFirestoreRules(projectId, rulesText, dbConfirmedExists), 'Firestore Rules deploy', 3, 8000);
+    rulesOk = true;
   } catch (e) {
     fbLog('Firestore Rules deploy ব্যর্থ: ' + e.message, 'err');
   }
 
+  let indexesOk = false;
   if (!dbConfirmedExists) {
     fbLog('Database এখনো তৈরি হয়নি বলে Indexes deploy আপাতত বাদ দেওয়া হলো — উপরের billing সমস্যা ঠিক করে আবার Deploy চাপুন।', 'warn');
   } else {
     try {
       await fbWithRetry(() => fbDeployIndexes(projectId, indexesText), 'Indexes deploy', 3, 8000);
+      indexesOk = true;
     } catch (e) {
       fbLog('Indexes deploy ব্যর্থ: ' + e.message, 'err');
     }
   }
 
-  fbLog('সম্পন্ন। RTDB Rules এখনো বাকি থাকলে উপরের কপি-বক্স থেকে JSON কপি করে Console-এ ম্যানুয়ালি বসান।', 'ok');
+  fbLog('সম্পন্ন। RTDB Rules এখনো বাকি থাকলে উপরের কপি-বক্স থেকে JSON কপি করে Console-এ ম্যানুয়ালি বসান, তারপর "✅ RTDB Rules বসানো হয়ে গেছে" বাটনে চাপ দিন।', 'ok');
 
   const shopPhone = document.getElementById('fbShopPhone').value.trim();
-  await fbSaveShopConfig(shopPhone, projectId);
+  await fbSaveShopConfig(shopPhone, projectId, { rulesOk, indexesOk });
 }
 
 window.fbDeployAll = async function() {
   const projectId = document.getElementById('fbProjectId').value.trim();
+  const shopPhone  = document.getElementById('fbShopPhone').value.trim();
   if (!projectId) { fbLog('আগে Project ID লিখুন।', 'err'); return; }
+  if (!shopPhone) { fbLog('আগে দোকানের ফোন নম্বর লিখুন — এটি এখন বাধ্যতামূলক।', 'err'); document.getElementById('fbShopPhone').focus(); return; }
   if (!fbAccessToken) { fbLog('আগে Google account দিয়ে সংযুক্ত করুন।', 'err'); return; }
 
   document.getElementById('fbLog').innerHTML = '';
