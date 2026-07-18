@@ -11376,6 +11376,21 @@ function SmartBusinessMgmt() {
   };
   const isDark = currentPreset.dark;
 
+  // 🆕 ধাপ ৩: multi-business শপে (enabledBusinessTypes.length > 1) active
+  // business অনুযায়ী শুধু accent elements (টপ বার হাইলাইট/active ট্যাব/প্রধান
+  // বাটন) registry-র রঙে বদলায় — ইউজারের personal theme (bg/card/text ইত্যাদি)
+  // অক্ষুণ্ণ থাকে। single-business শপে (বর্তমানে সবাই) এটা no-op।
+  const isMultiBusinessActive = Array.isArray(enabledBusinessTypes) && enabledBusinessTypes.length > 1;
+  const businessAccentColor = isMultiBusinessActive ? (BUSINESS_TYPE_REGISTRY[businessType]?.color || null) : null;
+  if (businessAccentColor) {
+    T.accent = businessAccentColor;
+    T.accentDark = businessAccentColor;
+    T.accentGlow = businessAccentColor + "33";
+    T.accentPill = businessAccentColor + "22";
+    T.navActive = businessAccentColor;
+    T.navPill = businessAccentColor + "18";
+  }
+
   // ── CSS Variables — 1,712 inline style → var(--t-*) ──────────────────────
   // T object-এর সব token একবারে :root-এ inject করা হয়।
   // component re-render না করেই theme switch হয়।
@@ -11416,7 +11431,7 @@ function SmartBusinessMgmt() {
     root.style.setProperty("--t-stripe",       T.stripe || T.bg);
     root.style.setProperty("--t-toast-bg",     T.toastBg || T.card);
     root.style.setProperty("--t-fs-base",      fontSize + "px");
-  }, [activeTheme, darkMode, fontSize]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeTheme, darkMode, fontSize, businessType, enabledBusinessTypes]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Web Worker Setup — ভারী calculation main thread-এ নয় ─────────────────
   const workerRef = useRef(null);
@@ -13249,6 +13264,24 @@ function SmartBusinessMgmt() {
   const moreNavItems    = React.useMemo(() => navItems.filter(n => !PRIMARY_NAV_IDS.includes(n.id)), [navItems]);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
 
+  // 🆕 ধাপ ৩: Business Switcher — enabledBusinessTypes.length >= 2 (multi-business
+  // শপ, এখনো কোনো শপে সেট হয় না, admin.html-এর checkbox UI ধাপ ৬-এ আসবে) হলেই
+  // দেখাবে; সিলেক্ট করলে activeBusinessType (= businessType) বদলায় ও পুরো অ্যাপ
+  // নতুন business-এর prefixed ডেটা দেখাবে (FSS.col()/doc() ইতিমধ্যে businessType
+  // অনুযায়ী prefix রিজলভ করে — ধাপ ১-২ থেকেই আছে)।
+  const [showBizSwitcherList, setShowBizSwitcherList] = useState(false);
+  const [switchingBusiness, setSwitchingBusiness] = useState(false);
+  const handleSwitchBusiness = useCallback((newType) => {
+    if (newType === businessType) { setShowBizSwitcherList(false); return; }
+    setShowBizSwitcherList(false);
+    setShowMoreMenu(false);
+    setSwitchingBusiness(true);
+    setBusinessType(newType);
+    if (FSS.isReady()) FSS.setBusinessConfig(newType, businessTypeLocked, enabledBusinessTypes);
+    // পুরনো cache-এর ডেটা মুহূর্তের জন্যও ভুলভাবে না দেখানোর জন্য সংক্ষিপ্ত লোডিং স্টেট
+    setTimeout(() => setSwitchingBusiness(false), 700);
+  }, [businessType, businessTypeLocked, enabledBusinessTypes, setBusinessType]);
+
   // Hide HTML splash screen once React is fully ready (data loaded + auth checked)
   useEffect(() => {
     if (loaded && authChecked && typeof window.__hideSplash === "function") window.__hideSplash();
@@ -13666,7 +13699,15 @@ function SmartBusinessMgmt() {
                 lineHeight: 1.2,
                 color: T.headingColor,
                 textShadow: `0 0 14px ${T.headingColor}77, 0 1px 8px rgba(0,0,0,0.4)`,
-              }}>{shopName}</span>
+              }}>
+                {shopName}
+                {/* 🆕 ধাপ ৩: multi-business শপে শুধু — active business ব্র্যাকেটে, registry রঙে */}
+                {isMultiBusinessActive && (
+                  <span style={{ color: businessAccentColor, fontSize: 15, fontWeight: 800, marginLeft: 6, letterSpacing: 0.2 }}>
+                    ({BUSINESS_TYPE_REGISTRY[businessType]?.label || businessType})
+                  </span>
+                )}
+              </span>
               {/* Live clock — থিম headingColor/accent, শপ নামের ঠিক নিচে আলাদা লাইনে */}
               <MemoLiveDateTime themeColor={T.headingColor} accentColor={T.accent} compact />
             </div>
@@ -13782,6 +13823,7 @@ function SmartBusinessMgmt() {
               setTab={setTab}
               purchaseOrders={purchaseOrders}
               currentUser={currentUser}
+              businessType={businessType}
               onDone={() => { setPreselectedCust(null); setPreselectedType(null); }}
             />
           </ErrorBoundary>
@@ -14078,6 +14120,35 @@ function SmartBusinessMgmt() {
             overflowY:"auto",
           }}>
             <div style={{ color:T.headingColor, fontWeight:900, fontSize:15, padding:"4px 8px 14px" }}>অন্যান্য মডিউল</div>
+            {/* 🆕 ধাপ ৩: Business Switcher — শুধু multi-business শপে (enabledBusinessTypes.length >= 2), staff দেখবে না */}
+            {!isStaff && isMultiBusinessActive && (
+              <div style={{ marginBottom: 6 }}>
+                <button
+                  onClick={() => setShowBizSwitcherList(v => !v)}
+                  style={{
+                    display:"flex", alignItems:"center", gap:10, width:"100%",
+                    background: `${businessAccentColor}1a`, border:`1.5px solid ${businessAccentColor}66`,
+                    borderRadius:12, padding:"11px 12px", cursor:"pointer", fontFamily:"inherit", textAlign:"left",
+                  }}>
+                  <span style={{ fontSize:16 }}>🔀</span>
+                  <div style={{ flex:1 }}>
+                    <div style={{ color:businessAccentColor, fontWeight:800, fontSize:12.5 }}>সক্রিয় বিজনেস</div>
+                    <div style={{ color:T.headingColor, fontWeight:700, fontSize:13.5 }}>{BUSINESS_TYPE_REGISTRY[businessType]?.label || businessType}</div>
+                  </div>
+                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={businessAccentColor} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" style={{ transform: showBizSwitcherList ? "rotate(180deg)" : "none", transition:"transform 0.2s" }}><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                {showBizSwitcherList && (
+                  <div style={{ marginTop:6, display:"flex", flexDirection:"column", gap:4, paddingLeft:4 }}>
+                    {enabledBusinessTypes.filter(bt => bt !== businessType).map(bt => (
+                      <button key={bt} onClick={() => handleSwitchBusiness(bt)}
+                        style={{ display:"flex", alignItems:"center", gap:10, background:"transparent", border:`1px solid ${T.border}`, borderRadius:10, padding:"9px 12px", cursor:"pointer", fontFamily:"inherit", textAlign:"left", color:`${T.headingColor}cc` }}>
+                        <span style={{ fontSize:13.5, fontWeight:600 }}>{BUSINESS_TYPE_REGISTRY[bt]?.label || bt}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             {moreNavItems.map(n => {
               const isActive = tab === n.id && !showDetail;
               return (
@@ -14127,6 +14198,15 @@ function SmartBusinessMgmt() {
               <span style={{ fontSize:13.5, fontWeight:700 }}>এক্সিট</span>
             </button>
           </div>
+        </div>
+      )}
+
+      {/* 🆕 ধাপ ৩: Business Switcher — সংক্ষিপ্ত লোডিং স্টেট, যাতে পুরনো cache-এর
+          ডেটা মুহূর্তের জন্যও ভুলভাবে না দেখায় (প্ল্যান ৫.২ / ৯.২) */}
+      {switchingBusiness && (
+        <div style={{ position:"fixed", inset:0, zIndex:9998, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:14, background: T.bg }}>
+          <div style={{ width:40, height:40, borderRadius:"50%", border:`3px solid ${businessAccentColor || T.accent}33`, borderTopColor: businessAccentColor || T.accent, animation:"spin 0.8s linear infinite" }} />
+          <div style={{ color:T.headingColor, fontWeight:700, fontSize:13.5 }}>বিজনেস পরিবর্তন হচ্ছে…</div>
         </div>
       )}
 
@@ -15313,7 +15393,10 @@ function invoiceReducer(state, action) {
   }
 }
 
-function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoices, setProducts, sendSMS, showToast, addTxn, shopName, btConnected, btDevice, onConnectBluetooth, createPaymentInvoice, preselectedCustomer, preselectedType, setTab, onDone, purchaseOrders = [], currentUser }) {
+function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoices, setProducts, sendSMS, showToast, addTxn, shopName, btConnected, btDevice, onConnectBluetooth, createPaymentInvoice, preselectedCustomer, preselectedType, setTab, onDone, purchaseOrders = [], currentUser, businessType = "pharmacy" }) {
+  // 🆕 ধাপ ৪: semen business-এ ইনভয়েস স্টেপ ২ প্রোডাক্ট কার্ডে ক্রয়মূল্য হাইড
+  // (registry hiddenFields.invoiceCard: "purchasePrice")
+  const hideCostPrice = (BUSINESS_TYPE_REGISTRY[businessType]?.hiddenFields?.invoiceCard || []).includes("purchasePrice");
   const [step,       setStep]       = useState(preselectedCustomer ? 2 : 1);
   const [selCust,    setSelCust]    = useState(preselectedCustomer || null);
   const [custSearch, setCustSearch] = useState("");
@@ -16668,12 +16751,14 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                       </div>
                     </div>
                   ) : (
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 2, marginTop: 2 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: hideCostPrice ? "1fr 1fr" : "1fr 1fr 1fr", gap: 2, marginTop: 2 }}>
+                    {!hideCostPrice && (
                     <div style={{ textAlign: "center" }}>
                       <div style={{ color: T.sub, fontSize: 9, fontWeight: 600 }}>ক্রয়</div>
                       <div style={{ color: "#f59e0b", fontWeight: 800, fontSize: 11 }}>৳{fmt(p.costPrice || 0)}</div>
                     </div>
-                    <div style={{ textAlign: "center", borderLeft: `1px solid ${T.border}`, borderRight: `1px solid ${T.border}` }}>
+                    )}
+                    <div style={{ textAlign: "center", borderLeft: hideCostPrice ? "none" : `1px solid ${T.border}`, borderRight: `1px solid ${T.border}` }}>
                       <div style={{ color: T.sub, fontSize: 9, fontWeight: 600 }}>বিক্রয়</div>
                       <div style={{ color: T.accent, fontWeight: 800, fontSize: 11 }}>৳{fmt(p.price)}</div>
                     </div>
@@ -22796,6 +22881,12 @@ function InvoiceReceiptPrint({ inv, customer, type }) {
 
 // ── Products ───────────────────────────────────────────────────────────────────
 function Products({ T, S, products, setProducts, showToast, stockMovements = [], setStockMovements, purchaseOrders = [], setPurchaseOrders, deletedProducts = [], setDeletedProducts, initialTab, currentUser, hasPerm, shopName, businessType = "pharmacy", auditLog, anthropicKey }) {
+  // 🆕 ধাপ ৪: Semen business-স্পেসিফিক ফিল্ড হাইড/রেস্ট্রিকশন — সম্পূর্ণ
+  // registry-চালিত (BUSINESS_TYPE_REGISTRY[businessType].hiddenFields), তাই
+  // ভবিষ্যতে নতুন business type যোগ হলে এখানে কোনো পরিবর্তন লাগবে না।
+  const bizCfg = BUSINESS_TYPE_REGISTRY[businessType] || BUSINESS_TYPE_REGISTRY.pharmacy;
+  const pfHidden = bizCfg.hiddenFields?.productForm || [];
+  const purchaseFormHidden = bizCfg.hiddenFields?.purchaseForm || [];
   const [showAdd,      setShowAdd]      = useState(false);
   const [editId,       setEditId]       = useState(null);
   const [form,         setForm]         = useState({ name: "", price: "", stock: "", minStockAlert: "5", category: "অন্যান্য", company: "", productType: "product", costPrice: "", spPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common", dosageForm: "" });
@@ -23022,7 +23113,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       if (!form.costPrice || parseFloat(form.costPrice) <= 0) errs.costPrice = true;
       if (form.stock === "" || form.stock === null || form.stock === undefined || parseInt(form.stock) < 0 || isNaN(parseInt(form.stock))) errs.stock = true;
       if (form.minStockAlert === "" || form.minStockAlert === null || form.minStockAlert === undefined || parseInt(form.minStockAlert) < 0 || isNaN(parseInt(form.minStockAlert))) errs.minStockAlert = true;
-      if (!form.expiryDate) errs.expiryDate = true;
+      if (!form.expiryDate && !pfHidden.includes("expiryDate")) errs.expiryDate = true;
     }
     // 🔴 ফিক্স: একই নামে একাধিক পণ্য এন্ট্রি হয়ে যাচ্ছিল (ভুলবশত ডুপ্লিকেট
     // তৈরি — একই পণ্যের নতুন স্টক এলে নতুন প্রোডাক্ট বানানোর বদলে বিদ্যমান
@@ -23374,9 +23465,23 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           const errs = {};
           if (!peForm.productId) errs.productId = true;
           if (!peForm.qty || parseFloat(peForm.qty) <= 0) errs.qty = true;
+          // 🆕 ধাপ ৪: semen business-এ বাকি সব ফিল্ড mandatory (registry
+          // purchaseEntryAllFieldsMandatory: true) — ফ্রি স্টক না হলে ক্রয়মূল্য,
+          // বিক্রয়মূল্য ও সাপ্লায়ার বাধ্যতামূলক।
+          if (bizCfg.purchaseEntryAllFieldsMandatory) {
+            if (!peForm.isFreeStock && (!peForm.unitCost || parseFloat(peForm.unitCost) < 0)) errs.unitCost = true;
+            if (!peForm.unitSell || parseFloat(peForm.unitSell) <= 0) errs.unitSell = true;
+            if (!peForm.supplier || !peForm.supplier.trim()) errs.supplier = true;
+          }
           setPeFormErrors(errs);
-          if (errs.productId || errs.qty) {
-            showToast(errs.productId ? "পণ্য নির্বাচন করুন" : "সঠিক পরিমাণ দিন", "#ef4444");
+          if (Object.keys(errs).length) {
+            const msg = errs.productId ? "পণ্য নির্বাচন করুন"
+              : errs.qty ? "সঠিক পরিমাণ দিন"
+              : errs.unitCost ? "ক্রয়মূল্য দিন"
+              : errs.unitSell ? "বিক্রয়মূল্য দিন"
+              : errs.supplier ? "সাপ্লায়ার দিন"
+              : "সব বাধ্যতামূলক ফিল্ড পূরণ করুন";
+            showToast(msg, "#ef4444");
             return;
           }
           const prod = products.find(p => p.id === peForm.productId);
@@ -23474,8 +23579,9 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               {peShowForm ? "ফর্ম বন্ধ করুন" : "আজকের ক্রয় এন্ট্রি করুন"}
             </button>
 
-            {/* ── #৭ AI ফিচার — চালান/ইনভয়েসের ছবি → বাল্ক ক্রয় এন্ট্রি ─────────────── */}
-            {!peInvoiceItems && (
+            {/* ── #৭ AI ফিচার — চালান/ইনভয়েসের ছবি → বাল্ক ক্রয় এন্ট্রি ───────────────
+                 🆕 ধাপ ৪: semen business-এ সম্পূর্ণ বাদ (registry bulkImageEntry: false) */}
+            {!peInvoiceItems && bizCfg.bulkImageEntry && (
               <button type="button" disabled={peInvoiceBusy}
                 onClick={() => peInvoiceInputRef.current?.click()}
                 style={{
@@ -23654,6 +23760,13 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                           </div>
                         ))}
                         {peForm.productSearch.trim() && (
+                          bizCfg.purchaseEntryRestrictToExisting ? (
+                            // 🆕 ধাপ ৪: semen business-এ ক্রয় এন্ট্রি থেকে নতুন পণ্য তৈরি বন্ধ —
+                            // শুধু "+ নতুন পণ্য" বাটন (Products ট্যাব) দিয়েই নতুন পণ্য যোগ করা যাবে
+                            <div style={{ padding:"10px 14px", color:T.sub, fontSize:12, fontWeight:600 }}>
+                              এই নামে কোনো পণ্য পাওয়া যায়নি — নতুন পণ্য শুধুমাত্র "+ নতুন পণ্য" বাটনের মাধ্যমে যোগ করুন
+                            </div>
+                          ) : (
                           <div
                             onMouseDown={() => {
                               setPeNewProduct({ name: peForm.productSearch.trim(), unit: "", company: "", price: "", dosageForm: "" });
@@ -23663,6 +23776,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                             style={{ padding:"10px 14px", cursor:"pointer", display:"flex", alignItems:"center", gap:8, color:"#22c55e", fontWeight:800, fontSize:13 }}>
                             <IcPlus /> "{peForm.productSearch.trim()}" নামে নতুন পণ্য তৈরি করুন
                           </div>
+                          )
                         )}
                       </div>
                     )}
@@ -23826,11 +23940,13 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               {/* সাপ্লায়ার, পরিমাণ, মূল্য ইত্যাদি — নতুন পণ্য mode-এ লুকানো (peNewProduct ফর্মের ভেতরে আছে) */}
               {!peNewProduct && <>
                 <div>
-                <label style={S.label}>🏭 সাপ্লায়ার</label>
+                <label style={S.label}>🏭 সাপ্লায়ার{bizCfg.purchaseEntryAllFieldsMandatory ? " *" : ""}</label>
                 <SupplierPicker T={T} S={S} businessType={businessType}
+                  error={peFormErrors.supplier}
                   value={peForm.supplier}
                   extraSuppliers={knownSuppliers}
-                  onChange={v => setPeForm(f => ({ ...f, supplier: v }))} />
+                  onChange={v => { setPeForm(f => ({ ...f, supplier: v })); if (v.trim()) setPeFormErrors(er => ({ ...er, supplier: false })); }} />
+                {peFormErrors.supplier && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ সাপ্লায়ার আবশ্যক</div>}
               </div>
 
               {/* SP — শুধু রেফারেন্সের জন্য, ঐচ্ছিক — শুধু ভেটেরিনারি মোডে দেখানো হয় */}
@@ -23852,22 +23968,25 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                   {peFormErrors.qty && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ সঠিক পরিমাণ দিন</div>}
                 </div>
                 <div>
-                  <label style={S.label}>💵 নতুন একক ক্রয়মূল্য (৳)</label>
-                  <input style={S.input} type="number" placeholder="" inputMode="numeric"
+                  <label style={S.label}>💵 নতুন একক ক্রয়মূল্য (৳){bizCfg.purchaseEntryAllFieldsMandatory ? " *" : ""}</label>
+                  <input style={{ ...S.input, border: peFormErrors.unitCost ? "1.5px solid #ef4444" : S.input.border }} type="number" placeholder="" inputMode="numeric"
                     value={peForm.unitCost}
-                    onChange={e => setPeForm(f => ({ ...f, unitCost: e.target.value }))} />
+                    onChange={e => { setPeForm(f => ({ ...f, unitCost: e.target.value })); if (parseFloat(e.target.value) >= 0) setPeFormErrors(er=>({...er,unitCost:false})); }} />
+                  {peFormErrors.unitCost && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ ক্রয়মূল্য আবশ্যক</div>}
                 </div>
               </div>
 
               {/* নতুন একক বিক্রয়মূল্য */}
               <div>
-                <label style={S.label}>🏷️ নতুন একক বিক্রয়মূল্য (৳)</label>
-                <input style={S.input} type="number" placeholder="" inputMode="numeric"
+                <label style={S.label}>🏷️ নতুন একক বিক্রয়মূল্য (৳){bizCfg.purchaseEntryAllFieldsMandatory ? " *" : ""}</label>
+                <input style={{ ...S.input, border: peFormErrors.unitSell ? "1.5px solid #ef4444" : S.input.border }} type="number" placeholder="" inputMode="numeric"
                   value={peForm.unitSell}
-                  onChange={e => setPeForm(f => ({ ...f, unitSell: e.target.value }))} />
+                  onChange={e => { setPeForm(f => ({ ...f, unitSell: e.target.value })); if (parseFloat(e.target.value) > 0) setPeFormErrors(er=>({...er,unitSell:false})); }} />
+                {peFormErrors.unitSell && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ বিক্রয়মূল্য আবশ্যক</div>}
               </div>
 
-              {/* ফ্রি স্টক চেকবক্স */}
+              {/* ফ্রি স্টক চেকবক্স — 🆕 ধাপ ৪: semen business-এ হাইড (registry hiddenFields.purchaseForm: "bonusStock") */}
+              {!purchaseFormHidden.includes("bonusStock") && (
               <div style={{ display:"flex", alignItems:"center", gap:10, background: peForm.isFreeStock ? "#22c55e12" : T.card, border:`1.5px solid ${peForm.isFreeStock ? "#22c55e44" : T.border}`, borderRadius:10, padding:"10px 14px", cursor:"pointer" }}
                 onClick={() => setPeForm(f => ({ ...f, isFreeStock: !f.isFreeStock, unitCost: !f.isFreeStock ? "0" : f.unitCost }))}>
                 <div style={{ width:20, height:20, borderRadius:6, border:`2px solid ${peForm.isFreeStock ? "#22c55e" : T.border}`, background: peForm.isFreeStock ? "#22c55e" : "transparent", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
@@ -23878,6 +23997,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                   <div style={{ color: T.sub, fontSize:11 }}>সাপ্লায়ার বিনামূল্যে দিয়েছে — ক্রয়মূল্য ০ হবে</div>
                 </div>
               </div>
+              )}
 
               {/* মোট + নতুন এভারেজ ক্রয়মূল্য + নতুন এভারেজ বিক্রয়মূল্য Preview */}
               {peForm.qty && parseFloat(peForm.qty) > 0 && (peForm.isFreeStock || (peForm.unitCost && parseFloat(peForm.unitCost) >= 0)) && (
@@ -23907,13 +24027,16 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                 </div>
               )}
 
-              {/* মেয়াদ উত্তীর্ণের তারিখ — full width, same as product form */}
+              {/* মেয়াদ উত্তীর্ণের তারিখ — full width, same as product form
+                   🆕 ধাপ ৪: semen business-এ হাইড (registry hiddenFields.purchaseForm: "expiryDate") */}
+              {!purchaseFormHidden.includes("expiryDate") && (
               <div>
                 <label style={S.label}>📅 মেয়াদ উত্তীর্ণের তারিখ</label>
                 <ExpiryYearMonthPicker
                   value={peForm.expiryDate}
                   onChange={v => setPeForm(f => ({ ...f, expiryDate: v }))} />
               </div>
+              )}
 
               {/* ব্যাচ নম্বর — auto chip, same style as product form */}
               <div style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px", borderRadius:12, border:"1px solid #a78bfa44", background:"#a78bfa10" }}>
@@ -24494,13 +24617,17 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               {formErrors.minStockAlert && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ মিন স্টক অ্যালার্ট আবশ্যক</div>}
             </div>
           </div>
+          {!pfHidden.includes("expiryDate") && (<>
           <label style={{ ...S.label, marginTop:8 }}>📅 মেয়াদ উত্তীর্ণের তারিখ *</label>
           <ExpiryYearMonthPicker value={form.expiryDate} onChange={v => { setForm({ ...form, expiryDate: v }); if (v) setFormErrors(er=>({...er,expiryDate:false})); }}
             style={formErrors.expiryDate ? { border: "1.5px solid #ef4444", borderRadius: 10, padding: 2 } : {}} />
           {formErrors.expiryDate && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ মেয়াদ উত্তীর্ণের তারিখ আবশ্যক</div>}
+          </>)}
 
-          {/* ── #৪ মাল্টি-ব্যাচ এক্সপায়ারি — একই পণ্যে একসাথে আলাদা এক্সপায়ারির একাধিক ব্যাচ যোগ (শুধু নতুন পণ্যে) ── */}
-          {!editId && (() => {
+          {/* ── #৪ মাল্টি-ব্যাচ এক্সপায়ারি — একই পণ্যে একসাথে আলাদা এক্সপায়ারির একাধিক ব্যাচ যোগ (শুধু নতুন পণ্যে) ──
+               🆕 ধাপ ৪: semen business-এ এই ফিচার হাইড (registry hiddenFields.productForm: "addBatchButton") —
+               মেয়াদবিহীন পণ্যে "আলাদা মেয়াদের ব্যাচ" ধারণাটাই প্রযোজ্য না। */}
+          {!editId && !pfHidden.includes("addBatchButton") && (() => {
             const validRows = [
               ...(form.stock && parseInt(form.stock) > 0 ? [{ qty: parseInt(form.stock), expiryDate: form.expiryDate }] : []),
               ...extraBatches.filter(r => r.qty && parseInt(r.qty) > 0 && r.expiryDate).map(r => ({ qty: parseInt(r.qty), expiryDate: r.expiryDate })),
@@ -29359,15 +29486,21 @@ function Settings_({ T, S, shopName,
             <button onClick={() => setShowDevUnlock(false)} style={{ padding:"6px 10px", borderRadius:6, border:`1px solid ${T.border}`, background:"transparent", color:T.sub, fontWeight:700, fontSize:11, cursor:"pointer" }}>বাতিল</button>
           </div>
         )}
-        {currentUser?.role === "staff" ? (
-          // 🆕 স্টাফ ডিভাইস — শুধু read-only ব্যাজ, meta/businessConfig থেকে real-time সিংক হওয়া মোড দেখায়
+        {(currentUser?.role === "staff" || businessTypeLocked) ? (
+          // 🆕 ধাপ ৩: read-only ব্যাজ — Business type নির্ধারণ এখন admin.html-নিয়ন্ত্রিত
+          // (প্ল্যান ৫.১)। স্টাফের ফোনে সবসময়, আর owner/admin-এর ফোনেও একবার লক হয়ে
+          // গেলে (বর্তমানে প্রায় সব শপ) শুধু তথ্য দেখাবে, ট্যাপ করে বদলানো যাবে না।
           <div style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px", borderRadius:10, border:`1.5px solid ${businessType === "veterinary" ? "#16a34a44" : "#0ea5e944"}`, background: businessType === "veterinary" ? "#16a34a12" : "#0ea5e912" }}>
             <span style={{ fontSize:18 }}>{businessType === "veterinary" ? "🐄" : "💊"}</span>
             <div>
               <div style={{ color: businessType === "veterinary" ? "#16a34a" : "#0ea5e9", fontWeight:800, fontSize:13 }}>
                 {businessType === "veterinary" ? "ভেটেরিনারি মোড" : "ফার্মেসি মোড"}
               </div>
-              <div style={{ color:T.sub, fontSize:10.5, marginTop:1 }}>🔒 শুধু মালিক/এডমিন এই সেটিং পরিবর্তন করতে পারবেন</div>
+              <div style={{ color:T.sub, fontSize:10.5, marginTop:1 }}>
+                {currentUser?.role === "staff"
+                  ? "🔒 শুধু মালিক/এডমিন এই সেটিং পরিবর্তন করতে পারবেন"
+                  : "🔒 লক করা আছে — পরিবর্তনের প্রয়োজন হলে সাপোর্টে যোগাযোগ করুন"}
+              </div>
             </div>
           </div>
         ) : (
