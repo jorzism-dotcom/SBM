@@ -1859,10 +1859,17 @@ service cloud.firestore {
     }
 
     // ── users (staff/admin permission) ── role সীমিত মানের মধ্যে
+    // 🆕 ধাপ ৫ (Staff Permission System, ১৮ জুলাই ২০২৬): assignedBusinessType
+    // (থাকলে) শুধু registry-তে থাকা মান হতে পারবে — বাকি সব validation (এটা
+    // owner-এর enabledBusinessTypes-এর সদস্য কিনা) client-side-এ হয়, এখানে শুধু
+    // হালকা shape validation (ভুল টাইপ/মান ডাটাবেজ পর্যন্ত পৌঁছাতে পারবে না)।
     match /users/{id} {
       allow read: if true;
-      allow create, update: if !("role" in request.resource.data) ||
-        request.resource.data.role in ["admin", "staff"];
+      allow create, update: if (!("role" in request.resource.data) ||
+        request.resource.data.role in ["admin", "staff"]) &&
+        (!("assignedBusinessType" in request.resource.data) ||
+         request.resource.data.assignedBusinessType == null ||
+         request.resource.data.assignedBusinessType in ["pharmacy", "veterinary", "semen"]);
       allow delete: if true;
     }
 
