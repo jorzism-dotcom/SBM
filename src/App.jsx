@@ -4052,7 +4052,7 @@ const DEV_MASTER_HASH = "d640f2be304872c2aaba9fbf2a113f8333911366ac2e9857bffac8d
 // SBM Backup project — Google OAuth Web Client ID (Drive auto-backup)
 // ⚠️ নতুন Client ID — authorization_code flow + refresh_token সাপোর্ট করে
 const GOOGLE_WEB_CLIENT_ID = "359825185312-7ka6g11l93vb4l6r4cafs8kl9850tt54.apps.googleusercontent.com";
-const GDRIVE_REFRESH_ENDPOINT = "https://melodious-axolotl-00b2e7.netlify.app/.netlify/functions/refresh-token";
+const GDRIVE_REFRESH_ENDPOINT = "https://sbm-admin-mocha.vercel.app/api/refresh-token";
 
 // ─── Storage Keys ─────────────────────────────────────────────────────────────
 const SK = {
@@ -33401,7 +33401,7 @@ const GDrive = {
   _buildAuthUrl(clientId, state) {
     // Netlify-তে hosted oauth.html → authorization_code parse করে Netlify Function-এ পাঠায়
     // Function client_secret দিয়ে code → access_token + refresh_token exchange করে
-    const OAUTH_REDIRECT = "https://melodious-axolotl-00b2e7.netlify.app/oauth.html";
+    const OAUTH_REDIRECT = "https://sbm-admin-mocha.vercel.app/oauth.html";
     const redirectUri = window.Capacitor?.isNativePlatform?.()
       ? OAUTH_REDIRECT
       : window.location.origin;
