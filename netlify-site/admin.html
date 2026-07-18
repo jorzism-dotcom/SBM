@@ -246,6 +246,11 @@
   .mini-act:hover{ background:rgba(34,211,238,0.18); }
   .mini-act.save{ background:rgba(52,211,153,0.1); border-color:rgba(52,211,153,0.3); color:#6ee7b7; }
   .mini-act.save:hover{ background:rgba(52,211,153,0.18); }
+  .mini-act.edit{ background:rgba(148,163,184,0.1); border-color:rgba(148,163,184,0.3); color:#cbd5e1; }
+  .mini-act.edit:hover{ background:rgba(148,163,184,0.18); }
+  .mini-act.edit.active{ background:rgba(245,158,11,0.14); border-color:rgba(245,158,11,0.4); color:#fcd34d; }
+  .mini-act.edit.active:hover{ background:rgba(245,158,11,0.22); }
+  textarea[readonly]{ opacity:0.72; cursor:not-allowed; }
   .gd-yes{ color:#6ee7b7; font-weight:700; } .gd-no{ color:var(--sub2); }
 
   /* ── settings ─────────────────────────────────────────────────────────── */
@@ -412,9 +417,116 @@
   .modal-close svg{ width:14px; height:14px; }
   .modal-body{ padding:20px 22px; }
   .modal-actions.sticky{ padding:16px 22px; border-top:1px solid var(--border); background:rgba(5,7,13,0.4); margin:0; }
+
+  /* ══════════════════════════════════════════════════════════════════════
+     ☀️ LIGHT THEME — toggled via body.light-theme
+     সব ভ্যারিয়েবল + hardcoded রঙ যেগুলো লাইট ব্যাকগ্রাউন্ডে পড়া যাবে না,
+     সেগুলো এখানে ওভাররাইড করা হলো যাতে সব টেক্সট রিডেবল থাকে।
+     ══════════════════════════════════════════════════════════════════════ */
+  .theme-toggle-btn{
+    width:36px; height:36px; border-radius:10px; border:1px solid var(--border); background:var(--surface);
+    color:var(--sub); display:flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0;
+    transition:all .15s ease;
+  }
+  .theme-toggle-btn:hover{ background:var(--surface2); color:var(--text); }
+  .theme-toggle-btn:active{ transform:scale(0.92); }
+  .theme-toggle-btn svg{ width:17px; height:17px; }
+
+  body.light-theme{
+    --bg:#f4f6fb; --bg2:#eef1f8;
+    --surface:rgba(15,23,42,0.035); --surface2:rgba(15,23,42,0.065);
+    --border:rgba(15,23,42,0.12); --border-hi:rgba(8,145,178,0.45);
+    --cyan:#0891b2; --violet:#7c3aed; --pink:#db2777; --amber:#b45309;
+    --green:#059669; --red:#dc2626; --blue:#2563eb;
+    --text:#0f172a; --sub:#475569; --sub2:#64748b;
+    --shadow:0 10px 34px rgba(15,23,42,0.1);
+  }
+  body.light-theme::before{ background:radial-gradient(circle,rgba(8,145,178,0.10),transparent 70%); }
+  body.light-theme::after{ background:radial-gradient(circle,rgba(124,58,237,0.09),transparent 70%); }
+  body.light-theme .bg-grid{ background-image:linear-gradient(rgba(15,23,42,0.045) 1px,transparent 1px), linear-gradient(90deg,rgba(15,23,42,0.045) 1px,transparent 1px); }
+  body.light-theme ::-webkit-scrollbar-thumb{ background:rgba(15,23,42,0.18); }
+  body.light-theme ::selection{ background:rgba(8,145,178,0.25); }
+
+  body.light-theme .topbar{ background:rgba(244,246,251,0.85); }
+  body.light-theme .tabs{ background:rgba(244,246,251,0.8); }
+  body.light-theme .tab.active{ color:#fff; background:linear-gradient(135deg,#0891b2,#0e7490); box-shadow:0 4px 18px rgba(8,145,178,0.28); }
+  body.light-theme .brand-mark::before, body.light-theme .login-logo::before{ background:var(--bg); }
+
+  body.light-theme input, body.light-theme select, body.light-theme textarea,
+  body.light-theme .toggle-row, body.light-theme .status-toggle-row,
+  body.light-theme .diag-row, body.light-theme .segmented, body.light-theme .lu-notes{
+    background:rgba(15,23,42,0.03);
+  }
+  body.light-theme textarea[readonly]{ background:rgba(15,23,42,0.05); }
+
+  body.light-theme .btn-primary{ color:#fff; }
+  body.light-theme .btn-primary.violet{ color:#fff; }
+
+  body.light-theme .badge.trial{ background:rgba(124,58,237,0.12); color:#6d28d9; } body.light-theme .badge.trial .dot{ background:#7c3aed; }
+  body.light-theme .badge.active{ background:rgba(5,150,105,0.12); color:#047857; }
+  body.light-theme .badge.expired{ background:rgba(220,38,38,0.12); color:#b91c1c; }
+  body.light-theme .badge.blocked{ background:rgba(71,85,105,0.14); color:#334155; } body.light-theme .badge.blocked .dot{ background:#64748b; }
+  body.light-theme .badge.grace{ background:rgba(180,83,9,0.12); color:#92400e; }
+
+  body.light-theme .btn-edit{ color:#1d4ed8; }
+  body.light-theme .btn-activate{ color:#047857; }
+  body.light-theme .btn-block{ color:#b91c1c; }
+  body.light-theme .btn-dev{ color:#6d28d9; }
+  body.light-theme .icon-btn.edit{ color:#1d4ed8; }
+
+  body.light-theme .status-toggle-row.is-active .stl{ color:#047857; }
+  body.light-theme .status-toggle-row.is-blocked .stl{ color:#b91c1c; }
+
+  body.light-theme .dropdown-menu{ background:linear-gradient(165deg,#ffffff,#f4f6fb); box-shadow:0 16px 40px rgba(15,23,42,0.16); }
+  body.light-theme .dropdown-item:hover{ background:rgba(15,23,42,0.05); }
+  body.light-theme .dropdown-item.danger{ color:#b91c1c; }
+  body.light-theme .dropdown-item.warn{ color:#92400e; }
+
+  body.light-theme .tag-btn.pin{ color:#0e7490; }
+  body.light-theme .tag-btn.rec{ color:#047857; }
+  body.light-theme .tag-warn{ color:#b91c1c; }
+
+  body.light-theme .txn-box{ background:rgba(180,83,9,0.08); color:#92400e; }
+  body.light-theme .recovery-row{ background:rgba(15,23,42,0.035); }
+  body.light-theme .recovery-row .rcopy, body.light-theme .mini-act{ color:#0e7490; }
+  body.light-theme .mini-act.save{ color:#047857; }
+  body.light-theme .mini-act.edit{ color:#334155; }
+  body.light-theme .mini-act.edit.active{ color:#92400e; }
+  body.light-theme .gd-yes{ color:#047857; }
+
+  body.light-theme .err-count{ color:#92400e; }
+  body.light-theme .err-message{ color:#b91c1c; }
+  body.light-theme .diag-row.cause .diag-lbl{ color:#b91c1c; }
+  body.light-theme .diag-row.solution .diag-lbl{ color:#047857; }
+  body.light-theme .stack-box{ background:rgba(15,23,42,0.05); }
+
+  body.light-theme .segmented .seg-opt.sel-trial.active{ background:rgba(124,58,237,0.14); color:#6d28d9; }
+  body.light-theme .segmented .seg-opt.sel-active.active{ background:rgba(5,150,105,0.14); color:#047857; }
+  body.light-theme .segmented .seg-opt.sel-blocked.active{ background:rgba(71,85,105,0.16); color:#1e293b; }
+
+  body.light-theme .notice-box{ background:rgba(8,145,178,0.07); }
+  body.light-theme .notice-box .t{ color:#0e7490; }
+  body.light-theme .notice-box .t b{ color:#0f172a; }
+
+  body.light-theme .toast.ok{ background:rgba(5,150,105,0.14); color:#047857; }
+  body.light-theme .toast.err{ background:rgba(220,38,38,0.14); color:#b91c1c; }
+  body.light-theme .toast.info{ background:rgba(37,99,235,0.14); color:#1d4ed8; }
+
+  body.light-theme .skeleton{ background:linear-gradient(90deg, rgba(15,23,42,0.04) 25%, rgba(15,23,42,0.08) 37%, rgba(15,23,42,0.04) 63%); }
+  body.light-theme .modal{ background:rgba(15,23,42,0.5); }
+  body.light-theme .modal-head{ background:linear-gradient(160deg, rgba(8,145,178,0.07), rgba(124,58,237,0.05)); }
+  body.light-theme .modal-actions.sticky{ background:rgba(244,246,251,0.75); }
+  body.light-theme #loginErr{ color:#dc2626 !important; }
 </style>
 </head>
 <body>
+<script>
+(function(){
+  try {
+    if (localStorage.getItem('sbmAdminTheme') === 'light') document.body.classList.add('light-theme');
+  } catch(e) {}
+})();
+</script>
 <div class="bg-grid"></div>
 <div id="toastRoot"></div>
 
@@ -448,7 +560,13 @@
         <div class="t2">Enterprise Admin</div>
       </div>
     </div>
-    <div class="live-pill"><span class="live-dot"></span><span id="userCount">০ জন</span></div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <button class="theme-toggle-btn" id="themeToggleBtn" onclick="toggleLightTheme()" title="থিম পরিবর্তন করুন">
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      </button>
+      <div class="live-pill"><span class="live-dot"></span><span id="userCount">০ জন</span></div>
+    </div>
   </div>
 
   <div class="tabs">
@@ -659,23 +777,25 @@
           </button>
 
           <div class="form-section-title" style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:8px">
-            <span>Firestore Rules <span style="font-weight:400;color:var(--sub2);font-size:11px">(এডিট করা যাবে)</span></span>
+            <span>Firestore Rules <span style="font-weight:400;color:var(--sub2);font-size:11px">(এডিট বাটনে চাপলে এডিট করা যাবে)</span></span>
             <span style="display:flex;gap:6px">
+              <button class="mini-act edit" id="fbRulesTextEditBtn" onclick="fbToggleEdit('fbRulesText')">🔒 এডিট</button>
               <button class="mini-act" onclick="fbCopyTextarea('fbRulesText','fbRulesMsg')">📋 কপি</button>
               <button class="mini-act save" onclick="fbSaveTemplate('rules')">💾 সেভ</button>
             </span>
           </div>
-          <textarea id="fbRulesText" rows="16" style="width:100%;min-height:320px;font-family:monospace;font-size:13px;line-height:1.6;background:rgba(0,0,0,0.3);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:14px"></textarea>
+          <textarea id="fbRulesText" rows="16" readonly style="width:100%;min-height:320px;font-family:monospace;font-size:13px;line-height:1.6;background:rgba(0,0,0,0.3);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:14px"></textarea>
           <div id="fbRulesMsg" style="font-size:12px;color:#6ee7b7;margin-top:4px;min-height:16px"></div>
 
           <div class="form-section-title" style="margin-top:14px;display:flex;align-items:center;justify-content:space-between;gap:8px">
-            <span>Firestore Indexes (JSON) <span style="font-weight:400;color:var(--sub2);font-size:11px">(এডিট করা যাবে)</span></span>
+            <span>Firestore Indexes (JSON) <span style="font-weight:400;color:var(--sub2);font-size:11px">(এডিট বাটনে চাপলে এডিট করা যাবে)</span></span>
             <span style="display:flex;gap:6px">
+              <button class="mini-act edit" id="fbIndexesTextEditBtn" onclick="fbToggleEdit('fbIndexesText')">🔒 এডিট</button>
               <button class="mini-act" onclick="fbCopyTextarea('fbIndexesText','fbIndexesMsg')">📋 কপি</button>
               <button class="mini-act save" onclick="fbSaveTemplate('indexes')">💾 সেভ</button>
             </span>
           </div>
-          <textarea id="fbIndexesText" rows="16" style="width:100%;min-height:320px;font-family:monospace;font-size:13px;line-height:1.6;background:rgba(0,0,0,0.3);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:14px"></textarea>
+          <textarea id="fbIndexesText" rows="16" readonly style="width:100%;min-height:320px;font-family:monospace;font-size:13px;line-height:1.6;background:rgba(0,0,0,0.3);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:14px"></textarea>
           <div id="fbIndexesMsg" style="font-size:12px;color:#6ee7b7;margin-top:4px;min-height:16px"></div>
 
           <div class="glass" style="margin-top:18px;padding:14px;border:1px solid rgba(252,211,77,0.35);border-radius:12px;background:rgba(252,211,77,0.06)">
@@ -686,10 +806,11 @@
               RTDB Rules এই account দিয়ে অটো-ডিপ্লয় করা যায় না (Google-এর সীমাবদ্ধতা)। নিচের JSON কপি করে Firebase Console → Realtime Database → Rules ট্যাবে paste করে Publish করুন — প্রতি দোকানে মাত্র একবার লাগবে। প্রয়োজনে নিচেই এডিটও করা যাবে।
             </p>
             <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-bottom:6px">
+              <button class="mini-act edit" id="fbRtdbTextEditBtn" onclick="fbToggleEdit('fbRtdbText')">🔒 এডিট</button>
               <button class="mini-act" onclick="fbCopyTextarea('fbRtdbText','fbRtdbCopyMsg')">📋 কপি</button>
               <button class="mini-act save" onclick="fbSaveTemplate('rtdb')">💾 সেভ</button>
             </div>
-            <textarea id="fbRtdbText" rows="10" style="width:100%;min-height:220px;font-family:monospace;font-size:13px;line-height:1.6;background:rgba(0,0,0,0.3);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:14px"></textarea>
+            <textarea id="fbRtdbText" rows="10" readonly style="width:100%;min-height:220px;font-family:monospace;font-size:13px;line-height:1.6;background:rgba(0,0,0,0.3);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:14px"></textarea>
             <button class="btn" style="margin-top:10px;width:100%;background:linear-gradient(135deg,#10b981,#059669)" onclick="fbConfirmRtdbRules()">✅ RTDB Rules বসানো হয়ে গেছে — নিশ্চিত করুন</button>
             <div id="fbRtdbCopyMsg" style="font-size:12px;color:#6ee7b7;margin-top:6px;min-height:16px"></div>
             <a id="fbRtdbConsoleLink" href="#" target="_blank" style="display:inline-block;margin-top:4px;font-size:12px;color:#7dd3fc;text-decoration:underline">Firebase Console-এ RTDB Rules খুলুন →</a>
@@ -869,6 +990,26 @@ const FIREBASE_CONFIG = {
 
 const ADMIN_PASSWORD = "sbm2026";
 const MONTHLY_PRICE  = 599;
+
+// ── লাইট/ডার্ক থিম টগল — localStorage-এ পছন্দ সংরক্ষিত থাকে ──
+window.toggleLightTheme = function() {
+  const isLight = !document.body.classList.contains('light-theme');
+  document.body.classList.toggle('light-theme', isLight);
+  const btn = document.getElementById('themeToggleBtn');
+  if (btn) {
+    btn.querySelector('.icon-moon').style.display = isLight ? 'none' : 'block';
+    btn.querySelector('.icon-sun').style.display  = isLight ? 'block' : 'none';
+  }
+  try { localStorage.setItem('sbmAdminTheme', isLight ? 'light' : 'dark'); } catch(e) {}
+};
+(function syncThemeIcon(){
+  const light = document.body.classList.contains('light-theme');
+  const btn = document.getElementById('themeToggleBtn');
+  if (btn) {
+    btn.querySelector('.icon-moon').style.display = light ? 'none' : 'block';
+    btn.querySelector('.icon-sun').style.display  = light ? 'block' : 'none';
+  }
+})();
 
 const app = initializeApp(FIREBASE_CONFIG);
 const db  = getFirestore(app);
@@ -2189,6 +2330,32 @@ window.fbCopyTextarea = async function(textareaId, msgId) {
   }
 };
 
+// ── Firestore Rules/Indexes/RTDB টেক্সট এরিয়াগুলো ডিফল্টভাবে readonly —
+// শুধু নিচের "🔒 এডিট" বাটনে চাপলেই এডিট করা যাবে, ভুলবশত টেক্সট এরিয়ায়
+// ক্লিক/ট্যাপ করলে আর এডিট মোডে চলে যাবে না। ──
+window.fbToggleEdit = function(textareaId) {
+  const ta = document.getElementById(textareaId);
+  const btn = document.getElementById(textareaId + 'EditBtn');
+  if (!ta) return;
+  const willUnlock = ta.hasAttribute('readonly');
+  if (willUnlock) {
+    ta.removeAttribute('readonly');
+    ta.focus();
+    if (btn) { btn.textContent = '🔓 লক করুন'; btn.classList.add('active'); }
+  } else {
+    ta.setAttribute('readonly', 'readonly');
+    if (btn) { btn.textContent = '🔒 এডিট'; btn.classList.remove('active'); }
+  }
+};
+
+// সেভ করার পর টেক্সট এরিয়া আবার readonly করে দেয় ও এডিট বাটন রিসেট করে
+function fbRelockTextarea(textareaId) {
+  const ta = document.getElementById(textareaId);
+  const btn = document.getElementById(textareaId + 'EditBtn');
+  if (ta) ta.setAttribute('readonly', 'readonly');
+  if (btn) { btn.textContent = '🔒 এডিট'; btn.classList.remove('active'); }
+}
+
 // ── Firestore Rules/Indexes/RTDB টেক্সট এরিয়ায় করা এডিট "ডিফল্ট" হিসেবে
 // কেন্দ্রীয়ভাবে (সব অ্যাডমিনের জন্য) সংরক্ষণ করা — পরের বার ট্যাব খুললে
 // hardcoded ডিফল্টের বদলে এই সেভ করা ভার্সনটাই লোড হবে। ──
@@ -2214,6 +2381,7 @@ window.fbSaveTemplate = async function(which) {
       updatedAt: new Date().toISOString()
     }, { merge: true });
     if (msg) { msg.textContent = '💾 ডিফল্ট হিসেবে সেভ হয়েছে — পরের বার এই ট্যাব খুললে এটাই দেখাবে।'; setTimeout(() => msg.textContent = '', 3500); }
+    fbRelockTextarea(cfg.id);
   } catch (e) {
     if (msg) { msg.textContent = '❌ সেভ ব্যর্থ: ' + e.message; setTimeout(() => msg.textContent = '', 4000); }
   }
