@@ -1869,15 +1869,26 @@ service cloud.firestore {
     // ── meta (resetMarker, businessConfig) ── কোনো Auth সম্ভব না (client-side PIN),
     // তাই বাকি সব collection-এর মতোই read/write খোলা রাখা হলো। শুধু
     // businessConfig ডকুমেন্টের জন্য হালকা shape validation — businessType শুধু
-    // "pharmacy"/"veterinary" আর businessTypeLocked শুধু boolean হতে পারবে,
+    // রেজিস্ট্রিতে থাকা মান আর businessTypeLocked শুধু boolean হতে পারবে,
     // ভুল টাইপ/মান ডাটাবেজ পর্যন্ত পৌঁছাতে পারবে না।
+    // 🆕 ধাপ ২ (Multi-Business System Plan): enabledBusinessTypes এখন একটা array
+    // (আগে এই ফিল্ডই ছিল না — পুরনো ডকুমেন্টে অনুপস্থিত থাকাটাও বৈধ, migration
+    // ক্লায়েন্ট-সাইডে হয়) এবং activeBusinessType অবশ্যই সেই array-এর সদস্য হতে হবে।
     match /meta/{id} {
       allow read: if true;
       allow write: if id != "businessConfig" ||
         ((!("businessType" in request.resource.data) ||
-          request.resource.data.businessType in ["pharmacy", "veterinary"]) &&
+          request.resource.data.businessType in ["pharmacy", "veterinary", "semen"]) &&
          (!("businessTypeLocked" in request.resource.data) ||
-          request.resource.data.businessTypeLocked is bool));
+          request.resource.data.businessTypeLocked is bool) &&
+         (!("enabledBusinessTypes" in request.resource.data) ||
+          (request.resource.data.enabledBusinessTypes is list &&
+           request.resource.data.enabledBusinessTypes.size() > 0 &&
+           request.resource.data.enabledBusinessTypes.hasOnly(["pharmacy", "veterinary", "semen"]))) &&
+         (!("activeBusinessType" in request.resource.data) ||
+          (request.resource.data.activeBusinessType in ["pharmacy", "veterinary", "semen"] &&
+           (!("enabledBusinessTypes" in request.resource.data) ||
+            request.resource.data.activeBusinessType in request.resource.data.enabledBusinessTypes))));
     }
 
     // ── বাকি সব collection (suppliers, smsLog, expenses, returns, auditLogs, settings) ──
