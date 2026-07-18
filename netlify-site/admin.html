@@ -734,6 +734,12 @@
             <div class="row"><span>⬆️</span><span>"আপডেট" ট্যাব থেকে প্রকাশিত ভার্সন কোনো নোটিফিকেশন ছাড়াই দোকানদারের Settings-এ নীরবে দেখা যাবে</span></div>
           </div>
         </div>
+
+        <div class="settings-section">
+          <h4><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg> 🏢 বিজনেস টাইপ পরিবর্তনের Audit Log</h4>
+          <p style="font-size:12px;color:var(--sub2);margin-bottom:10px">সাম্প্রতিক ১০০টা পরিবর্তন — কে/কবে/কোন দোকান/আগে কী ছিল/পরে কী হলো</p>
+          <div id="bizAuditLogList"></div>
+        </div>
       </div>
     </div>
 
@@ -897,6 +903,41 @@
   </div>
 </div>
 
+<!-- ══════════ 🆕 ধাপ ৬: বিজনেস টাইপ পরিবর্তন Modal (৩-স্তরের সুরক্ষা) ══════════ -->
+<div class="modal" id="bizTypeModal">
+  <div class="glass modal-box" style="max-width:440px">
+    <h3>🏢 বিজনেস টাইপ পরিবর্তন</h3>
+    <div style="font-size:12.5px;color:var(--sub);margin-bottom:14px" id="btmShop"></div>
+
+    <div class="hint" style="margin-bottom:12px;border-color:rgba(248,113,113,0.35);color:#fca5a5">
+      ⚠️ সংবেদনশীল অ্যাকশন — এই দোকানের সব ডিভাইসে সাথে সাথে প্রভাব পড়বে। ভুলবশত কোনো
+      বিজনেস টাইপ বাদ দিলে সেই বিজনেসের ডেটা অ্যাপে দেখা যাবে না (ডিলিট হবে না,
+      কিন্তু হাইড হয়ে যাবে)।
+    </div>
+
+    <div class="form-group">
+      <label>এই দোকানের জন্য কোন বিজনেসগুলো চালু থাকবে?</label>
+      <div id="btmChecklist" style="display:flex;flex-direction:column;gap:8px;margin-top:6px"></div>
+    </div>
+
+    <div class="form-group">
+      <label>নিশ্চিতকরণ — নিচে ঠিক এভাবে টাইপ করুন: <strong style="color:#fcd34d">আমি নিশ্চিত</strong></label>
+      <input id="btmConfirmText" placeholder="আমি নিশ্চিত">
+    </div>
+
+    <div class="form-group">
+      <label>Master PIN দিয়ে যাচাই করুন</label>
+      <input id="btmMasterPin" type="password" inputmode="numeric" placeholder="৬ ডিজিট Master PIN" style="letter-spacing:4px">
+    </div>
+
+    <button class="btn-primary" style="width:100%;background:linear-gradient(135deg,#dc2626,#b91c1c)" onclick="saveBizTypes()">
+      🔒 নিশ্চিত করে সংরক্ষণ করুন
+    </button>
+    <p id="btmMsg" style="font-size:12px;margin-top:8px;text-align:center;min-height:16px"></p>
+    <button class="btn-ghost" style="margin-top:4px" onclick="closeBizTypeModal()">বাতিল</button>
+  </div>
+</div>
+
 <!-- ══════════ PIN View Modal ══════════ -->
 <div class="modal" id="pinModal">
   <div class="glass modal-box" style="max-width:340px;text-align:center">
@@ -976,7 +1017,7 @@
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getFirestore, collection, getDocs, doc, setDoc, updateDoc, deleteDoc, getDoc, query, orderBy, limit } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getFirestore, collection, getDocs, doc, setDoc, updateDoc, deleteDoc, getDoc, query, orderBy, limit, addDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyBzQKeQzVt-GRL1XVe6cNebh89ghi5f_Fc",
@@ -990,6 +1031,16 @@ const FIREBASE_CONFIG = {
 
 const ADMIN_PASSWORD = "sbm2026";
 const MONTHLY_PRICE  = 599;
+
+// 🆕 ধাপ ৬ (Multi-Business System Plan, ১৮ জুলাই ২০২৬): App.jsx-এর
+// BUSINESS_TYPE_REGISTRY-এর সাথে label/color সিঙ্ক রাখা আবশ্যক — নতুন বিজনেস
+// টাইপ (৪র্থ, ৫ম...) যোগ হলে এখানেও নতুন এন্ট্রি + firestore.rules-এর enum
+// আপডেট করতে হবে (App.jsx-এর মতোই, admin.html থেকে dynamic-add সম্ভব না)।
+const BUSINESS_TYPE_REGISTRY = {
+  pharmacy:   { id: "pharmacy",   label: "ফার্মেসি",     color: "#22c55e" },
+  veterinary: { id: "veterinary", label: "ভেটেরিনারি",   color: "#f59e0b" },
+  semen:      { id: "semen",      label: "সিমেন বিজনেস", color: "#a855f7" },
+};
 
 // ── লাইট/ডার্ক থিম টগল — localStorage-এ পছন্দ সংরক্ষিত থাকে ──
 window.toggleLightTheme = function() {
@@ -1120,6 +1171,15 @@ const svgLock  = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 const svgTool  = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>`;
 const svgTrash = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m5 0V4a2 2 0 0 1 2-2h0a2 2 0 0 1 2 2v2"/></svg>`;
 
+// 🆕 ধাপ ৬: subscriptions ডকুমেন্টে enabledBusinessTypes না থাকলে (পুরনো
+// ডকুমেন্ট, migration আগে হয়নি) — সেই দোকানের বর্তমান businessType (বা ডিফল্ট
+// pharmacy)-কেই একমাত্র enabled ধরা হয়, App.jsx-এর ফলব্যাক লজিকের সাথে সামঞ্জস্যপূর্ণ।
+function bizTypesOf(u) {
+  return (Array.isArray(u.enabledBusinessTypes) && u.enabledBusinessTypes.length)
+    ? u.enabledBusinessTypes
+    : [u.businessType || 'pharmacy'];
+}
+
 window.renderUsers = function(search = '') {
   const list = document.getElementById('userList');
   let filtered = users;
@@ -1152,6 +1212,7 @@ window.renderUsers = function(search = '') {
         ${daysText ? `<span class="chip">${svgClock} ${daysText}</span>` : ''}
         ${u.gmail ? `<span class="chip">📧 ${u.gmail}</span>` : ''}
         ${u.pendingTxn ? `<span class="chip" style="color:#fbbf24">${svgCard} TXN: ${u.pendingTxn}</span>` : ''}
+        ${bizTypesOf(u).map(bt => `<span class="chip" style="color:${BUSINESS_TYPE_REGISTRY[bt]?.color || '#94a3b8'}">🏢 ${BUSINESS_TYPE_REGISTRY[bt]?.label || bt}</span>`).join('')}
       </div>
       <div class="tags-row">
         ${hasPin ? `<span class="tag-btn pin" onclick="viewPin('${u.phone}')">🔐 PIN দেখুন/রিসেট</span>` : `<span class="tag-warn">⚠️ PIN নেই — সম্পাদনা করুন</span>`}
@@ -1184,6 +1245,8 @@ window.renderUsers = function(search = '') {
             <div class="dropdown-item ${(u.recoveryPhone || u.shopFirebaseConfig) ? '' : 'disabled'}" onclick="closeAllMenus();viewRecovery('${u.phone}')">${svgKey} রিকভারি তথ্য</div>
             <div class="dropdown-sep"></div>
             <div class="dropdown-item ${u.devPanelVisible ? 'warn' : ''}" onclick="closeAllMenus();toggleDevPanel('${u.phone}', ${!u.devPanelVisible})">${svgTool} ${u.devPanelVisible ? 'ডেভ প্যানেল বন্ধ করুন' : 'ডেভ প্যানেল চালু করুন'}</div>
+            <div class="dropdown-sep"></div>
+            <div class="dropdown-item" onclick="closeAllMenus();openBizTypeModal('${u.phone}')">🏢 বিজনেস টাইপ পরিবর্তন</div>
             <div class="dropdown-sep"></div>
             <div class="dropdown-item danger" onclick="closeAllMenus();deleteUser('${u.phone}')">${svgTrash} মুছে ফেলুন</div>
           </div>
@@ -1429,6 +1492,79 @@ window.saveUser = async function() {
   } catch(e) { toast('সংরক্ষণ ব্যর্থ: ' + e.message, 'err'); }
 };
 
+// ── 🆕 ধাপ ৬ (Multi-Business System Plan): বিজনেস টাইপ পরিবর্তন — ৩-স্তরের সুরক্ষা ──
+// এই একশন সেন্সিটিভ (একটা লাইভ শপের ডেটা isolation বদলে দেয়) বলে সাধারণ
+// saveUser()-এর মতো সরাসরি সেভ হয় না — আলাদা মডেল/ফ্লো, main edit modal-কে
+// touch করা হয়নি (স্কোপ মিনিমাইজ, নিয়ম ২)।
+let bizTypeEditingPhone = null;
+
+window.openBizTypeModal = function(phone) {
+  const u = users.find(x => x.phone === phone);
+  if (!u) return;
+  bizTypeEditingPhone = phone;
+  document.getElementById('btmShop').textContent = `${u.shopName || u.name || 'নাম নেই'} · ${phone}`;
+  const current = bizTypesOf(u);
+  document.getElementById('btmChecklist').innerHTML = Object.values(BUSINESS_TYPE_REGISTRY).map(r => `
+    <label style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;border:1.5px solid ${current.includes(r.id) ? r.color+'88' : 'var(--border)'};background:${current.includes(r.id) ? r.color+'1a' : 'transparent'};cursor:pointer">
+      <input type="checkbox" value="${r.id}" ${current.includes(r.id) ? 'checked' : ''} style="width:16px;height:16px;accent-color:${r.color}">
+      <span style="font-size:13px;font-weight:700;color:${r.color}">${r.label}</span>
+    </label>`).join('');
+  document.getElementById('btmConfirmText').value = '';
+  document.getElementById('btmMasterPin').value = '';
+  const msg = document.getElementById('btmMsg'); msg.textContent = ''; msg.style.color = '';
+  document.getElementById('bizTypeModal').classList.add('open');
+};
+
+window.closeBizTypeModal = function() {
+  document.getElementById('bizTypeModal').classList.remove('open');
+  bizTypeEditingPhone = null;
+};
+
+window.saveBizTypes = async function() {
+  const phone = bizTypeEditingPhone;
+  const u = users.find(x => x.phone === phone);
+  const msg = document.getElementById('btmMsg');
+  if (!u || !phone) { msg.textContent = '⚠️ দোকান খুঁজে পাওয়া যায়নি'; msg.style.color = '#f87171'; return; }
+
+  const checked = Array.from(document.querySelectorAll('#btmChecklist input:checked')).map(el => el.value);
+  if (!checked.length) { msg.textContent = '⚠️ অন্তত ১টা বিজনেস টাইপ সিলেক্ট করুন'; msg.style.color = '#f87171'; return; }
+
+  // ── স্তর ১: টাইপ করে নিশ্চিতকরণ ──
+  const typed = document.getElementById('btmConfirmText').value.trim();
+  if (typed !== 'আমি নিশ্চিত') { msg.textContent = '⚠️ "আমি নিশ্চিত" ঠিক এভাবে টাইপ করুন'; msg.style.color = '#f87171'; return; }
+
+  // ── স্তর ২: Master PIN পুনরায় যাচাই ──
+  if (!masterPin) { msg.textContent = '⚠️ Master PIN এখনো সেট করা নেই — Settings ট্যাব থেকে আগে সেট করুন'; msg.style.color = '#f87171'; return; }
+  const pinVal = document.getElementById('btmMasterPin').value.trim();
+  if (pinVal !== masterPin) { msg.textContent = '⚠️ ভুল Master PIN'; msg.style.color = '#f87171'; return; }
+
+  const before = bizTypesOf(u);
+  const activeBefore = u.activeBusinessType || u.businessType || before[0];
+  // active business নতুন লিস্টে না থাকলে প্রথম enabled টাতে fallback (App.jsx-এর
+  // "active অবশ্যই enabled-এর সদস্য" নিয়মের সাথে সামঞ্জস্যপূর্ণ)
+  const activeAfter = checked.includes(activeBefore) ? activeBefore : checked[0];
+
+  try {
+    await updateDoc(doc(db, "subscriptions", phone), {
+      enabledBusinessTypes: checked,
+      activeBusinessType: activeAfter,
+      updatedAt: new Date().toISOString(),
+    });
+    // ── স্তর ৩: Audit Log ──
+    await addDoc(collection(db, "businessTypeAuditLog"), {
+      phone, shopName: u.shopName || u.name || '',
+      before, after: checked,
+      activeBefore, activeAfter,
+      at: new Date().toISOString(),
+    });
+    closeBizTypeModal();
+    await loadUsers();
+    toast('✅ বিজনেস টাইপ পরিবর্তন সংরক্ষিত ও লগ হয়েছে', 'ok');
+  } catch(e) {
+    msg.textContent = 'সংরক্ষণ ব্যর্থ: ' + e.message; msg.style.color = '#f87171';
+  }
+};
+
 // ── Status / Payment / Delete ─────────────────────────────────────────────────
 window.setStatus = async function(phone, status) {
   try {
@@ -1512,6 +1648,31 @@ function timeAgo(iso) {
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs} ঘণ্টা আগে`;
   return `${Math.floor(hrs / 24)} দিন আগে`;
+}
+
+// ── 🆕 ধাপ ৬: বিজনেস টাইপ পরিবর্তনের Audit Log — সর্বশেষ ১০০টা রিড-অনলি প্যানেল ──
+async function loadBizTypeAuditLog() {
+  const list = document.getElementById('bizAuditLogList');
+  if (!list) return;
+  list.innerHTML = emptyState('লোড হচ্ছে...');
+  try {
+    const q = query(collection(db, "businessTypeAuditLog"), orderBy("at", "desc"), limit(100));
+    const snap = await getDocs(q);
+    const logs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    if (!logs.length) { list.innerHTML = emptyState('এখনো কোনো পরিবর্তন হয়নি'); return; }
+    list.innerHTML = logs.map(l => {
+      const beforeTxt = (l.before || []).map(bt => BUSINESS_TYPE_REGISTRY[bt]?.label || bt).join(', ') || '—';
+      const afterTxt  = (l.after  || []).map(bt => BUSINESS_TYPE_REGISTRY[bt]?.label || bt).join(', ') || '—';
+      return `
+      <div class="row" style="align-items:flex-start;flex-direction:column;gap:3px;padding:10px 0;border-bottom:1px solid var(--border)">
+        <div style="font-size:12.5px;font-weight:700">${l.shopName || 'অজানা দোকান'} <span style="color:var(--sub2);font-weight:400">(${l.phone || '—'})</span></div>
+        <div style="font-size:11.5px;color:var(--sub)">${beforeTxt} → <strong style="color:#93c5fd">${afterTxt}</strong></div>
+        <div style="font-size:10.5px;color:var(--sub2)">${timeAgo(l.at)}</div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    list.innerHTML = emptyState('লোড করা যায়নি: ' + e.message);
+  }
 }
 
 let _errorsCache = [];
@@ -1748,6 +1909,7 @@ window.switchTab = function(tab) {
   if (tab === 'alerts')   renderAlerts();
   if (tab === 'errors')   loadErrors();
   if (tab === 'update')   loadCurrentUpdate();
+  if (tab === 'settings') loadBizTypeAuditLog();
   if (tab === 'fbdeploy') fbInitTab();
 };
 
