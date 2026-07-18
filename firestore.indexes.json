@@ -39,6 +39,126 @@
       { "fieldPath": "customerId", "order": "ASCENDING" },
       { "fieldPath": "dateKey", "order": "DESCENDING" },
       { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_pharmacy", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "customerId", "order": "ASCENDING" },
+      { "fieldPath": "payType", "order": "ASCENDING" },
+      { "fieldPath": "dateKey", "order": "DESCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_veterinary", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "customerId", "order": "ASCENDING" },
+      { "fieldPath": "payType", "order": "ASCENDING" },
+      { "fieldPath": "dateKey", "order": "DESCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_semen", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "customerId", "order": "ASCENDING" },
+      { "fieldPath": "payType", "order": "ASCENDING" },
+      { "fieldPath": "dateKey", "order": "DESCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "txns_pharmacy", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "customerId", "order": "ASCENDING" },
+      { "fieldPath": "dateKey", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "txns_veterinary", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "customerId", "order": "ASCENDING" },
+      { "fieldPath": "dateKey", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "txns_semen", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "customerId", "order": "ASCENDING" },
+      { "fieldPath": "dateKey", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_pharmacy", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "customerId", "order": "ASCENDING" },
+      { "fieldPath": "dateKey", "order": "ASCENDING" },
+      { "fieldPath": "payType", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_veterinary", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "customerId", "order": "ASCENDING" },
+      { "fieldPath": "dateKey", "order": "ASCENDING" },
+      { "fieldPath": "payType", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_semen", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "customerId", "order": "ASCENDING" },
+      { "fieldPath": "dateKey", "order": "ASCENDING" },
+      { "fieldPath": "payType", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_pharmacy", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "customerId", "order": "ASCENDING" },
+      { "fieldPath": "dateKey", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_veterinary", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "customerId", "order": "ASCENDING" },
+      { "fieldPath": "dateKey", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_semen", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "customerId", "order": "ASCENDING" },
+      { "fieldPath": "dateKey", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_pharmacy", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "dateKey", "order": "DESCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_veterinary", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "dateKey", "order": "DESCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_semen", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "dateKey", "order": "DESCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_pharmacy", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "status", "order": "ASCENDING" },
+      { "fieldPath": "dateKey", "order": "DESCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_veterinary", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "status", "order": "ASCENDING" },
+      { "fieldPath": "dateKey", "order": "DESCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_semen", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "status", "order": "ASCENDING" },
+      { "fieldPath": "dateKey", "order": "DESCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_pharmacy", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "dateKey", "order": "ASCENDING" },
+      { "fieldPath": "status", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_veterinary", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "dateKey", "order": "ASCENDING" },
+      { "fieldPath": "status", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_semen", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "dateKey", "order": "ASCENDING" },
+      { "fieldPath": "status", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_pharmacy", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "customerId", "order": "ASCENDING" },
+      { "fieldPath": "dateKey", "order": "DESCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_veterinary", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "customerId", "order": "ASCENDING" },
+      { "fieldPath": "dateKey", "order": "DESCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "invoices_semen", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "customerId", "order": "ASCENDING" },
+      { "fieldPath": "dateKey", "order": "DESCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
     ]}
   ],
   "fieldOverrides": []
