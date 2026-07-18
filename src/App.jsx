@@ -309,12 +309,12 @@ function bnMonthYear(dateStr) {
 //      product ডকুমেন্টে প্রয়োগ করে atomically লেখা যায় (নিচে দেখুন)।
 function computeStockDeductionFIFO(product, qty) {
   if (!product || product.productType === "service") {
-    return { newStock: product?.stock ?? 0, updatedBatches: product?.batches || [], batchNo: "", costPrice: product?.costPrice ?? 0 };
+    return { newStock: product?.stock ?? 0, updatedBatches: product?.batches || [], batchNo: "", costPrice: product?.costPrice ?? 0, expiryDate: "" };
   }
   const newStock = Math.max(0, (product.stock || 0) - qty);
   let remaining = qty;
   const sortedBatches = getSortedActiveBatches(product);
-  let batchNo = "", costPrice = product.costPrice ?? 0;
+  let batchNo = "", costPrice = product.costPrice ?? 0, expiryDate = "";
   if (sortedBatches.length > 0) {
     let calcRem = qty, totalC = 0, totalQ = 0;
     sortedBatches.forEach(b => {
@@ -326,6 +326,14 @@ function computeStockDeductionFIFO(product, qty) {
     });
     costPrice = totalQ > 0 ? totalC / totalQ : (product.costPrice ?? 0);
     batchNo = sortedBatches[0].batchNo || "";
+    // 🔴 ফিক্স (রুট কজ — ভয়েড করা ইনভয়েসে এক্সপায়ারি ডেট না থাকা, আসল কারণ):
+    // আগে expiryDate এখানে ফেরত দেওয়া হতোই না — caller পরে `updatedBatches`
+    // (নিচে) থেকে ব্যাচ খুঁজে expiry বের করার চেষ্টা করত, কিন্তু বিক্রিত ব্যাচের
+    // পুরো qty শেষ হয়ে গেলে (সাধারণ ঘটনা — একটা ব্যাচ থেকেই পুরো বিক্রি হলে)
+    // সেই ব্যাচ নিচের `.filter(b => b.qty > 0)`-এ বাদ পড়ে যেত, তাই কখনোই খুঁজে
+    // পাওয়া যেত না। এখন deduction গণনার এই মুহূর্তেই (ব্যাচ এখনো হাতে থাকা
+    // অবস্থায়) মূল বিক্রিত ব্যাচের expiryDate সরাসরি সংরক্ষণ করা হচ্ছে।
+    expiryDate = sortedBatches[0].expiryDate || sortedBatches[0].expiry || "";
   }
   const updatedBatches = sortedBatches
     .map(b => {
@@ -335,7 +343,7 @@ function computeStockDeductionFIFO(product, qty) {
       return { ...b, qty: (b.qty || 0) - deduct };
     })
     .filter(b => b.qty > 0);
-  return { newStock, updatedBatches, batchNo, costPrice };
+  return { newStock, updatedBatches, batchNo, costPrice, expiryDate };
 }
 
 // ─── smartMatch — fuzzy/contains scorer for Bengali+English ───────────────────
@@ -5096,12 +5104,12 @@ const FSS = {
         const snap = await tx.get(ref);
         if (!snap.exists()) return null;
         const serverProduct = { id: snap.id, ...snap.data() };
-        const { newStock, updatedBatches, batchNo, costPrice } = computeStockDeductionFIFO(serverProduct, deductQty);
+        const { newStock, updatedBatches, batchNo, costPrice, expiryDate } = computeStockDeductionFIFO(serverProduct, deductQty);
         tx.update(ref, {
           stock: newStock, batches: updatedBatches, costPrice,
           lastUpdated: new Date().toISOString(), _updatedAt: Date.now(),
         });
-        return { stock: newStock, batches: updatedBatches, batchNo, costPrice };
+        return { stock: newStock, batches: updatedBatches, batchNo, costPrice, expiryDate };
       });
       return result;
     } catch (e) {
@@ -5485,6 +5493,92 @@ const FSS = {
       } catch { remaining.push(item); }
     }
     try { localStorage.setItem("sbm_pending_stats", JSON.stringify(remaining)); } catch {}
+  },
+
+  // 🔴 ফিক্স (অফলাইনে ইনভয়েস তৈরিতে বাড়তি ডিলে + স্টক/বাকি ট্রানজেকশন হারানো):
+  // createInvoice()-এর Optimistic UI ব্যাকগ্রাউন্ড রিকনসিলিয়েশন ব্লক যখন সত্যিই
+  // অফলাইন থাকে (navigator.onLine === false) তখন transactionUpdateStock()/
+  // transactionUpdateBalance() কল না করেই (নিষ্ফল নেটওয়ার্ক অ্যাটেম্পট এড়াতে)
+  // এই কিউতে জমা রাখে — sbm_pending_stats-এর ঠিক একই localStorage-কিউ প্যাটার্ন।
+  // runTransaction() সাধারণ write-এর মতো Firestore-এর নিজস্ব offline persistence
+  // queue-তে জমা থাকে না (এটা সার্ভারের একদম তাজা read দাবি করে), তাই এই
+  // ম্যানুয়াল কিউ ছাড়া নেট ফিরলেও এই বিক্রির স্টক/বাকি আপডেট চিরতরে হারিয়ে যেত।
+  queuePendingSalesTxn(entry) {
+    try {
+      const q = JSON.parse(localStorage.getItem("sbm_pending_sales_txns") || "[]");
+      q.push({ ...entry, at: Date.now() });
+      localStorage.setItem("sbm_pending_sales_txns", JSON.stringify(q.slice(-200)));
+    } catch {}
+  },
+
+  // 🔁 কিউতে জমে থাকা স্টক/বাকি রিকনসিলিয়েশন আবার চেষ্টা করে — FSS রেডি হওয়ার
+  // পরে ও নেট ফিরে এলে (flushPendingStats()-এর ঠিক পাশাপাশি) কল করা উচিত।
+  // সফল হলে local products/customers/invoices স্টেটও (পাস করা setter থাকলে)
+  // সার্ভারের চূড়ান্ত মান দিয়ে সাইলেন্টলি আপডেট করে দেয়।
+  async flushPendingSalesTxns({ setProducts, setCustomers, setInvoices } = {}) {
+    if (!this._db) return;
+    let q = [];
+    try { q = JSON.parse(localStorage.getItem("sbm_pending_sales_txns") || "[]"); } catch { return; }
+    if (!q.length) return;
+    const remaining = [];
+    for (const item of q) {
+      const failedStockItems = [];
+      const failedBalanceUpdates = [];
+      try {
+        if (item.stockItems?.length) {
+          const stockResults = await Promise.all(item.stockItems.map(async (sold) => {
+            const txResult = await this.transactionUpdateStock(sold.productId, sold.qty);
+            if (!txResult) failedStockItems.push(sold);
+            return txResult ? { id: sold.productId, ...txResult } : null;
+          }));
+          const validResults = stockResults.filter(Boolean);
+          if (validResults.length) {
+            const resMap = new Map(validResults.map(r => [r.id, r]));
+            if (setProducts) {
+              setProducts(prev => prev.map(p => {
+                const r = resMap.get(p.id);
+                return r ? { ...p, stock: r.stock, batches: r.batches, costPrice: r.costPrice } : p;
+              }));
+            }
+            if (item.invoiceId && setInvoices) {
+              let itemsChanged = false;
+              let correctedInv = null;
+              setInvoices(prev => prev.map(inv => {
+                if (inv.id !== item.invoiceId) return inv;
+                const correctedItems = (inv.items || []).map(it => {
+                  const r = resMap.get(it.productId);
+                  if (!r) return it;
+                  const rExpiry = r.expiryDate || "";
+                  if (r.batchNo !== it.batchNo || r.costPrice !== it.costPrice || rExpiry !== (it.expiryDate || "")) {
+                    itemsChanged = true;
+                    return { ...it, batchNo: r.batchNo, costPrice: r.costPrice, expiryDate: rExpiry };
+                  }
+                  return it;
+                });
+                if (!itemsChanged) return inv;
+                correctedInv = { ...inv, items: correctedItems };
+                return correctedInv;
+              }));
+              if (correctedInv) pushDurable("invoices", item.invoiceId, withTs(correctedInv));
+            }
+          }
+        }
+        if (item.balanceUpdates?.length) {
+          for (const bu of item.balanceUpdates) {
+            const txBal = await this.transactionUpdateBalance(bu.customerId, (serverBal) => Math.max(0, serverBal + bu.delta));
+            if (txBal === null) { failedBalanceUpdates.push(bu); continue; }
+            if (setCustomers) setCustomers(prev => prev.map(c => c.id === bu.customerId ? { ...c, balance: txBal } : c));
+          }
+        }
+        if (failedStockItems.length || failedBalanceUpdates.length) {
+          remaining.push({ ...item, stockItems: failedStockItems, balanceUpdates: failedBalanceUpdates });
+        }
+      } catch (e) {
+        logErrorToCentral?.("flushPendingSalesTxns", e, { invoiceId: item.invoiceId });
+        remaining.push(item);
+      }
+    }
+    try { localStorage.setItem("sbm_pending_sales_txns", JSON.stringify(remaining)); } catch {}
   },
 
   // 🩹 ড্রিফট-প্রুফ রিপেয়ার: increment()-এর বদলে সরাসরি প্রকৃত ইনভয়েস/txn ডেটা
@@ -11381,6 +11475,9 @@ function SmartBusinessMgmt() {
     // 🔴 ফিক্স: আগে ব্যর্থ হওয়া updateStats() delta গুলো কখনো রিট্রাই হতো না —
     // এখন প্রতিবার Firestore রেডি হওয়ার সময় pending queue ফ্লাশ করার চেষ্টা হয়
     FSS.flushPendingStats();
+    // 🔴 ফিক্স: অফলাইনে জমে থাকা ইনভয়েসের স্টক/বাকি রিকনসিলিয়েশন (createInvoice()-এর
+    // Optimistic UI ব্যাকগ্রাউন্ড ব্লক দেখুন) একইভাবে এখানেও রিট্রাই করা হয়
+    FSS.flushPendingSalesTxns({ setProducts, setCustomers, setInvoices });
 
     // Device presence (RTDB) — Settings স্ক্রিনে active devices লিস্টের জন্য
     FB.init(firebaseConfig);
@@ -11394,7 +11491,14 @@ function SmartBusinessMgmt() {
     }, 5 * 60 * 1000);
     FB.getActiveDevices().then(devs => setActiveDevices(devs));
 
-    const onOnline = () => { const r = FSS.init(firebaseConfig); setFssReady(r); if (r) FSS.flushPendingStats(); };
+    const onOnline = () => {
+      const r = FSS.init(firebaseConfig);
+      setFssReady(r);
+      if (r) {
+        FSS.flushPendingStats();
+        FSS.flushPendingSalesTxns({ setProducts, setCustomers, setInvoices });
+      }
+    };
     window.addEventListener("online", onOnline);
 
     return () => {
@@ -15315,6 +15419,16 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     };
   }, []);
 
+  // 🔴 ফিক্স (ইনভয়েস তৈরিতে দেরি — Optimistic UI): এই পুরো ফাংশনটা আগে
+  // FSS.transactionUpdateStock()/transactionUpdateBalance()-এর নেটওয়ার্ক
+  // রাউন্ড-ট্রিপ(গুলো) await করে তারপর setPrintInv()/setCreating(false) কল করত —
+  // অর্থাৎ স্লো/অস্থির নেটে "তৈরি হচ্ছে..." বাটনে ১-৩+ সেকেন্ড আটকে থাকত, যদিও
+  // ডেটা মূলত লোকালি রেডি ছিল। এখন স্টক-ডিডাকশন ও ব্যালেন্স আপডেট সম্পূর্ণ
+  // লোকালি (computeStockDeductionFIFO + সবচেয়ে সাম্প্রতিক getState() স্ন্যাপশট
+  // দিয়ে) সিঙ্ক্রোনাসভাবে হিসেব করে সাথে সাথেই UI দেখানো হয় (SMS-এর মতোই
+  // fire-and-forget প্যাটার্ন) — তারপর আসল Firestore transaction(s) ব্যাকগ্রাউন্ডে
+  // চলে, আর সার্ভারের চূড়ান্ত মান লোকাল guess-এর চেয়ে ভিন্ন হলে (কনফ্লিক্ট/রেস
+  // কন্ডিশনে, বিরল) সাইলেন্টলি স্টেট + পুশ-করা ইনভয়েস ডকুমেন্ট রিকনসাইল হয়ে যায়।
   const createInvoice = async () => {
     if (!selCust || items.length === 0) { showToast("কাস্টমার ও পণ্য বেছে নিন", "#ef4444"); return; }
     setCreating(true);
@@ -15330,31 +15444,18 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     const walkInBakiAmt   = walkInIsBaki ? total : walkInIsPartial ? total - walkInPaidAmt : 0;
     const effectivePayType = isSelfUse ? "cash" : isWalkIn ? (walkInIsBaki ? "baki" : walkInIsPartial ? "partial" : "cash") : payType;
 
-    // Walk-in বাকি/আংশিক বাকি হলে — পুরোনো কাস্টমার সিলেক্ট করা থাকলে তার balance আপডেট, নাহলে নতুন কাস্টমার তৈরি
+    // Walk-in বাকি/আংশিক বাকি হলে — পুরোনো কাস্টমার সিলেক্ট করা থাকলে তার balance
+    // এখনই (optimistic guess) আপডেট, নাহলে নতুন কাস্টমার তৈরি
     const invId = uid(); // invoice id আগেই তৈরি করি — txn-এ invoiceId লিংক করতে
     let walkInCustId = null;
-    let walkInBalTxPromise = null;
+    let newWalkInBal = null; // optimistic guess — নিচে ব্যাকগ্রাউন্ডে রিকনসাইল হবে
     if (walkInHasBaki && walkInBakiAmt > 0) {
       if (walkInCustMode === "existing" && walkInExistingId) {
         walkInCustId = walkInExistingId;
-        // 🔴 ফিক্স #১১ (মাল্টি-ডিভাইস balance lost-update race — walk-in থেকে
-        // পুরোনো কাস্টমার বাছাই): এই একই ফাংশনের নিচে (মূল selCust বাকি) আর
-        // standalone "বাকি আদায়" বাটনে balance এখন সার্ভারের লাইভ ভ্যালু থেকে
-        // atomically (FSS.transactionUpdateBalance) আপডেট হয়, কিন্তু walk-in
-        // ফ্লো-তে "পুরোনো কাস্টমার" ম্যাচ করলে balance এতদিন সরাসরি লোকাল
-        // React state (`c.balance`) থেকে হিসেব হয়ে setCustomers দিয়ে বসত —
-        // দুই ডিভাইস প্রায় একই সময়ে এই একই কাস্টমারকে বাকি দিলে (এখান থেকে বা
-        // অন্য কোনো বাকি এন্ট্রি থেকে) একটা delta হারিয়ে যেতে পারত। এখন একই
-        // atomic + getState() fallback প্যাটার্ন প্রয়োগ করা হলো।
-        // 🔴 ফিক্স (ইনভয়েস তৈরিতে দেরি — root cause #২, নিচের needsBalanceTx-এর
-        // একই প্যাটার্ন): আগে এই transaction এখানেই সরাসরি await হতো — অর্থাৎ
-        // নিচের স্টক-ডিডাকশন transaction(s) শুরু হওয়ারও আগে একটা সম্পূর্ণ
-        // নেটওয়ার্ক রাউন্ড-ট্রিপ যোগ হতো (walk-in পুরোনো কাস্টমার + বাকি/আংশিক
-        // ফ্লো-তে)। এখন শুধু promise শুরু করা হচ্ছে — স্টক ডিডাকশনের প্যারালালেই
-        // চলবে, ফলাফল নিচে (স্টক ডিডাকশনের পরপরই) await হয়।
-        walkInBalTxPromise = FSS.isReady()
-          ? FSS.transactionUpdateBalance(walkInExistingId, (serverBal) => serverBal + walkInBakiAmt)
-          : Promise.resolve(null);
+        const latestWalkInBal = useAppStore.getState().customers.find(c => c.id === walkInExistingId)?.balance ?? 0;
+        newWalkInBal = latestWalkInBal + walkInBakiAmt;
+        setCustomers(prev => prev.map(c => c.id === walkInExistingId ? { ...c, balance: newWalkInBal } : c));
+        addTxn(walkInCustId, "baki", walkInBakiAmt, newWalkInBal, invId, `Walk-in বাকি`);
       } else {
         const newCust = {
           id: uid(),
@@ -15376,18 +15477,57 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       const cp = it.costPrice || p?.costPrice || 0;
       return s + cp * (it.qty || 1);
     }, 0) : 0;
+
+    // ── রেজিস্টার্ড কাস্টমার বাকি/আংশিক — optimistic balance guess এখনই হিসেব ──
+    const needsBalanceTx = !isWalkIn && !isSelfUse && (effectivePayType === "baki" || effectivePayType === "partial");
+    let _overpayAmt = 0, delta = 0, newBal = null;
+    if (needsBalanceTx) {
+      _overpayAmt = (effectivePayType === "partial" && paidAmt > total) ? (paidAmt - total) : 0;
+      delta = bakiAmt - _overpayAmt;
+      const latestLocalBal = useAppStore.getState().customers.find(c => c.id === selCust.id)?.balance ?? (selCust.balance || 0);
+      newBal = Math.max(0, latestLocalBal + delta);
+    }
+
+    // ── স্টক ডিডাকশন — এখন সম্পূর্ণ সিঙ্ক্রোনাস লোকাল হিসেব (computeStockDeductionFIFO),
+    // সবচেয়ে সাম্প্রতিক getState() স্ন্যাপশট থেকে (একই ট্যাবে/ট্যাপে দ্রুত পরপর দুটো
+    // বিক্রি হলেও একটার deduction আরেকটাকে হারায় না) ── প্রকৃত Firestore
+    // transaction(s) নিচে ব্যাকগ্রাউন্ডে চলবে, দরকার হলে সাইলেন্টলি রিকনসাইল করবে।
+    const soldBatchMap = {};
+    const sellableItems = items.filter(i => i.productType !== "service");
+    const stockUpdates = sellableItems.map((sold) => {
+      const freshP = useAppStore.getState().products.find(p => p.id === sold.productId)
+        || products.find(p => p.id === sold.productId);
+      if (!freshP || freshP.productType === "service") return null;
+      const { newStock, updatedBatches, batchNo, costPrice, expiryDate } = computeStockDeductionFIFO(freshP, sold.qty);
+      soldBatchMap[sold.productId] = { batchNo, costPrice, expiryDate: expiryDate || "" };
+      return { id: sold.productId, stock: newStock, batches: updatedBatches };
+    });
+    const stockUpdateMap = new Map(stockUpdates.filter(Boolean).map(u => [u.id, u]));
+    setProducts(prev => prev.map(p => {
+      const upd = stockUpdateMap.get(p.id);
+      return upd ? { ...p, stock: upd.stock, batches: upd.batches } : p;
+    }));
+
     const inv = {
       id: invId, customerId: isSelfUse ? null : isWalkIn ? walkInCustId : selCust.id,
       customerName: isSelfUse ? "নিজের ব্যবহার (Personal Use)" : isWalkIn ? (walkInName.trim() || "Walk-in Customer") : selCust.name,
       customerMobile: isSelfUse ? "" : isWalkIn ? walkInMobile.trim() : selCust.mobile,
-      items, total: isSelfUse ? selfUseCost : total, subtotal: isSelfUse ? selfUseCost : subtotal, discount: discAmt, itemDiscount: isSelfUse ? 0 : itemDiscTotal, extraCharge: isSelfUse ? 0 : extraAmt,
+      items: items.map(i => {
+        const soldBatch = soldBatchMap[i.productId];
+        const batchNo = soldBatch?.batchNo || soldBatch || i.batchNo || "";
+        const expiryDate = (soldBatch && typeof soldBatch === "object" ? soldBatch.expiryDate : "") || i.expiryDate || "";
+        return {
+          ...i,
+          batchNo,
+          expiryDate,
+          costPrice: (soldBatch && typeof soldBatch === "object") ? soldBatch.costPrice : (i.costPrice ?? 0),
+        };
+      }),
+      total: isSelfUse ? selfUseCost : total, subtotal: isSelfUse ? selfUseCost : subtotal, discount: discAmt, itemDiscount: isSelfUse ? 0 : itemDiscTotal, extraCharge: isSelfUse ? 0 : extraAmt,
       payType: effectivePayType, note,
       paidAmount: isSelfUse ? 0 : isWalkIn ? walkInPaidAmt : paidAmt,
       bakiAmount: isSelfUse ? 0 : isWalkIn ? walkInBakiAmt : bakiAmt,
-      // 🔴 ফিক্স: Walk-in ফ্লো-তে "পুরোনো কাস্টমার" সিলেক্ট করা থাকলে (walkInCustId
-      // === walkInExistingId) তার পূর্বের বাকিও রিসিটে সঠিকভাবে সেভ হতে হবে —
-      // আগে isWalkIn হলেই prevBalance সবসময় ০ সেভ হতো (নতুন walk-in বাকিদারের
-      // ক্ষেত্রে ঠিক আছে, কিন্তু পুরোনো কাস্টমার বাছাই করলে ভুল)।
+      overpayAmount: _overpayAmt,
       prevBalance: isSelfUse ? 0
         : (isWalkIn ? (walkInCustMode === "existing" && walkInExistingId
             ? (customers.find(c => c.id === walkInExistingId)?.balance || 0)
@@ -15404,153 +15544,27 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     };
     setInvoices(prev => [inv, ...prev]);
 
-    // ── Phase 1.3: Stats doc update — invoice save-এ running total বাড়াও ──────
-    // Dashboard totals (todayTotal, todayProfit) এখন এই doc থেকে পড়তে পারবে।
-    // বাকি (baki) amount: customer.balance থেকে আসে, এখানে invoice-এর bakiAmount।
+    // ── Phase 1.3: Stats doc update — invoice save-এ running total বাড়াও (fire-and-forget) ──
     if (FSS.isReady()) {
       const saleAmt   = inv.isSelfUse ? 0 : (inv.total || 0);
       const cashAmt   = inv.payType === "cash" ? saleAmt
                       : inv.payType === "partial" ? (inv.paidAmount || 0) : 0;
-      const bakiAmt   = inv.payType === "baki"    ? saleAmt
+      const bakiAmtStat = inv.payType === "baki"    ? saleAmt
                       : inv.payType === "partial"  ? (inv.bakiAmount || 0) : 0;
       const profitAmt = 0; // profit post-calculation-এ আসে — পরবর্তী phase-এ যোগ হবে
-      FSS.updateStats(inv.dateKey, { sale: saleAmt, cash: cashAmt, baki: bakiAmt, profit: profitAmt });
+      FSS.updateStats(inv.dateKey, { sale: saleAmt, cash: cashAmt, baki: bakiAmtStat, profit: profitAmt });
     }
 
-    // ── Deduct stock for each sold product (নিজের ব্যবহারেও স্টক কমবে) ──
-    // batchNo ট্র্যাক করার জন্য map তৈরি (রিসিট ট্রেসেবিলিটি)
-    // 🔴 এন্টারপ্রাইজ-লেভেল ফিক্স (স্টক race condition): আগে এখানে সরাসরি
-    // local `products` state থেকে stock/batches হিসেব করে setProducts দিয়ে
-    // বসিয়ে দেওয়া হতো, যেটা পরে generic diff-push দিয়ে Firestore-এ absolute
-    // value হিসেবে যেত। দুই ডিভাইস একই পণ্য প্রায় একই সময়ে বিক্রি করলে একজনের
-    // deduction আরেকজনেরটাকে সম্পূর্ণ মুছে দিতে পারত (overselling ঝুঁকি) — ঠিক
-    // customer.balance-এ যেমন ছিল (transactionUpdateBalance() দিয়ে ফিক্স করা)।
-    // এখন প্রতিটা বিক্রিত পণ্যের জন্য FSS.transactionUpdateStock() ব্যবহার করা
-    // হচ্ছে — এটা runTransaction()-এর ভেতর সার্ভারের *সেই মুহূর্তের* stock পড়ে
-    // deduction প্রয়োগ করে atomically লেখে, তাই সমসাময়িক বিক্রয়ে কোনো
-    // deduction হারায় না। ফলাফল (সার্ভারের চূড়ান্ত stock/batches) থেকেই local
-    // state আপডেট হয় (নিজের stale guess থেকে না) — ঠিক balance-এর প্যাটার্নেই।
-    // Firebase বন্ধ/অফলাইন থাকলে (txResult === null) আগের মতো synchronous
-    // local calculation-এ fallback করে।
-    // 🔴 ফিক্স (ইনভয়েস তৈরিতে দেরি — root cause): স্টক ডিডাকশন transaction(s)
-    // (পণ্যের ডকুমেন্ট) আর কাস্টমার balance transaction (নিচে বাকি/আংশিক
-    // পেমেন্টে) সম্পূর্ণ আলাদা Firestore ডকুমেন্টে কাজ করে, একে অপরের ফলাফলের
-    // উপর নির্ভর করে না। আগে এগুলো ধারাবাহিকভাবে (sequentially) await হতো —
-    // প্রতিটা runTransaction() একটা সম্পূর্ণ নেটওয়ার্ক রাউন্ড-ট্রিপ, তাই
-    // বাকি/আংশিক ইনভয়েসে সময় প্রায় দ্বিগুণ লাগত (স্লো নেটে/একাধিক পণ্যে আরও
-    // বেশি)। এখন balance transaction স্টক ডিডাকশনের ঠিক প্যারালালেই শুরু হয়ে
-    // যায় (promise-টা নিচে দরকার হলে await হয়) — দুটো নেটওয়ার্ক কল একসাথে
-    // চলে, ফলে মোট সময় সবচেয়ে ধীর কলটার সমান হয়, দুটোর যোগফল না।
-    const needsBalanceTx = !isWalkIn && !isSelfUse && (effectivePayType === "baki" || effectivePayType === "partial");
-    let balanceTxPromise = null, _overpayAmtEarly = 0, deltaEarly = 0;
-    if (needsBalanceTx) {
-      _overpayAmtEarly = (effectivePayType === "partial" && paidAmt > total) ? (paidAmt - total) : 0;
-      deltaEarly = bakiAmt - _overpayAmtEarly;
-      balanceTxPromise = FSS.isReady()
-        ? FSS.transactionUpdateBalance(selCust.id, (serverBal) => Math.max(0, serverBal + deltaEarly))
-        : Promise.resolve(null);
-    }
-
-    const soldBatchMap = {};
-    const sellableItems = items.filter(i => i.productType !== "service");
-    const stockUpdates = await Promise.all(sellableItems.map(async (sold) => {
-      const localP = products.find(p => p.id === sold.productId);
-      if (!localP || localP.productType === "service") return null;
-      const txResult = FSS.isReady() ? await FSS.transactionUpdateStock(sold.productId, sold.qty) : null;
-      if (txResult) {
-        soldBatchMap[sold.productId] = { batchNo: txResult.batchNo, costPrice: txResult.costPrice };
-        return { id: sold.productId, stock: txResult.stock, batches: txResult.batches };
-      }
-      // fallback — Firestore বন্ধ/ব্যর্থ হলে আগের মতো local guess থেকে হিসেব
-      // 🔴 ফিক্স (স্টক race condition — balance fix-এর প্যারালাল): আগে এখানে
-      // stale React closure `products` থেকে পাওয়া `localP` দিয়ে হিসেব হতো —
-      // অফলাইনে একই পণ্য পরপর দুইবার দ্রুত বিক্রি হলে দ্বিতীয়টার হিসাব প্রথমটার
-      // deduction দেখতে পেত না, ফলে দ্বিতীয় setProducts() প্রথমটাকে ওভাররাইট করে
-      // একটা deduction হারিয়ে যেত (স্টক বেশি দেখাত)। এখন সবচেয়ে সাম্প্রতিক
-      // product state সরাসরি Zustand store থেকে (getState()) পড়া হয়।
-      const freshP = useAppStore.getState().products.find(p => p.id === sold.productId) || localP;
-      const { newStock, updatedBatches, batchNo, costPrice } = computeStockDeductionFIFO(freshP, sold.qty);
-      soldBatchMap[sold.productId] = { batchNo, costPrice };
-      return { id: sold.productId, stock: newStock, batches: updatedBatches };
-    }));
-    const stockUpdateMap = new Map(stockUpdates.filter(Boolean).map(u => [u.id, u]));
-    setProducts(prev => prev.map(p => {
-      const upd = stockUpdateMap.get(p.id);
-      return upd ? { ...p, stock: upd.stock, batches: upd.batches } : p;
-    }));
-
-    // walk-in পুরোনো কাস্টমার বাকি — উপরে প্যারালালে শুরু হওয়া balance transaction-এর
-    // ফলাফল এখানে (স্টক ডিডাকশন শেষ হওয়ার পরপরই) resolve করা হচ্ছে।
-    // 🔴 পাশাপাশি: balanceAfter আগে ভুলভাবে walkInBakiAmt (শুধু বৃদ্ধির অংশ) সেভ
-    // হতো, পুরোনো কাস্টমারের ক্ষেত্রে যেটা আসল balanceAfter নয় — এখন সঠিক newWalkInBal সেভ হচ্ছে।
-    if (walkInBalTxPromise) {
-      const txBal = await walkInBalTxPromise;
-      const latestLocalBal = useAppStore.getState().customers.find(c => c.id === walkInExistingId)?.balance ?? 0;
-      const newWalkInBal = txBal !== null ? txBal : (latestLocalBal + walkInBakiAmt);
-      setCustomers(prev => prev.map(c => c.id === walkInExistingId ? { ...c, balance: newWalkInBal } : c));
-      addTxn(walkInCustId, "baki", walkInBakiAmt, newWalkInBal, invId, `Walk-in বাকি`);
-    }
-
-    // ইনভয়েস items-এ batchNo যোগ করো (ট্রেসেবিলিটি)
-    inv.items = (inv.items || items).map(i => {
-      const soldBatch = soldBatchMap[i.productId];
-      const batchNo = soldBatch?.batchNo || soldBatch || i.batchNo || "";
-      // batch থেকে expiryDate খোঁজো (void restore-এর জন্য দরকার)
-      const prod = (products || []).find(p => p.id === i.productId);
-      const matchedBatch = (prod?.batches || []).find(b => b.batchNo === batchNo);
-      const expiryDate = matchedBatch?.expiryDate || matchedBatch?.expiry || prod?.expiryDate || i.expiryDate || "";
-      return {
-        ...i,
-        batchNo,
-        expiryDate,
-        // FIFO batch costPrice — ফ্রি/বোনাস batch→0, weighted average সঠিক
-        costPrice: (soldBatch && typeof soldBatch === "object")
-          ? soldBatch.costPrice
-          : (i.costPrice ?? 0),
-      };
-    });
-
-    // ── 🔴 ফিক্স (রুট কজ — ভয়েড করা ইনভয়েসে এক্সপায়ারি ডেট না থাকা): আগে এই
-    // push উপরে (items-এ batchNo/expiryDate বসার আগেই) হতো, ফলে Firestore-এ
-    // যে ইনভয়েস সেভ হতো তার items-এ কোনো expiryDate থাকত না। পরে সেই ইনভয়েস
-    // (অন্য ডিভাইসে ফেচ হওয়া বা resync হওয়া কপি) ভয়েড করলে voidInvoice()
-    // soldItem.expiryDate খুঁজে পেত না, তাই ফেরত আসা ব্যাচে expiry ফাঁকা থেকে
-    // যেত। এখন items পূর্ণ enrichment (batchNo + expiryDate + costPrice) শেষ
-    // হওয়ার পরই push হচ্ছে — offline হলে Firestore নিজের persistent write
-    // queue-তে রাখবে, নেট ফিরলে নিজে থেকেই sync হবে।
+    // পুরো ইনভয়েস (স্টক ব্যাচ/এক্সপায়ারি enrichment সহ) এখনই পুশ — offline হলে
+    // Firestore নিজের persistent write queue-তে রাখবে, নেট ফিরলে নিজে থেকেই sync হবে।
     if (FSS.isReady()) pushDurable("invoices", inv.id, withTs(inv));
 
     if (!isWalkIn && !isSelfUse && (effectivePayType === "baki" || effectivePayType === "partial")) {
-      // Overpayment: paid > total → অতিরিক্ত অংশ কাস্টমারের আগের বাকি থেকে বাদ যাবে (জমা)
-      const _isOverpay = effectivePayType === "partial" && paidAmt > total;
-      const _overpayAmt = _overpayAmtEarly; // উপরে স্টক ডিডাকশনের প্যারালালেই হিসাব করা হয়েছে
-      inv.overpayAmount = _overpayAmt; // রিসিট/হিস্টোরিতে "বর্তমান বাকি" ঠিকভাবে দেখানোর জন্য সংরক্ষণ
-      const delta = deltaEarly;
-      // 🔴 Transaction fix — সার্ভারের বর্তমান (সবচেয়ে up-to-date) balance থেকে
-      // atomically delta apply করা হয় — অন্য ডিভাইস ঠিক এই মুহূর্তে balance
-      // বদলালেও কোনো delta হারায় না। ব্যর্থ/local-only হলে local snapshot থেকে fallback।
-      // 🔴 ফিক্স (অফলাইন race condition): আগে fallback হিসাব `selCust.balance`
-      // থেকে হতো — এটা ইনভয়েস তৈরি শুরুর সময়ের একটা পুরনো স্ন্যাপশট। অফলাইনে
-      // (FSS.transactionUpdateBalance তখন সাথে সাথেই null রিটার্ন করে, কারণ
-      // এটা সার্ভার-রাউন্ডট্রিপ ছাড়া কাজ করতে পারে না) একই কাস্টমারের জন্য
-      // পরপর দুটো বাকি/আংশিক ইনভয়েস দ্রুত তৈরি হলে দ্বিতীয়টার হিসাব প্রথমটার
-      // আপডেট দেখতেই পেত না — ফলে দ্বিতীয় setCustomers() প্রথমটাকে ওভাররাইট
-      // করে একটা delta হারিয়ে যেত (কাস্টমারের "মোট বাকি" ভুল, যদিও প্রতিটা
-      // ইনভয়েসের নিজের রেকর্ড ঠিকই থাকত)। এখন fallback-এ সবচেয়ে সাম্প্রতিক
-      // balance সরাসরি Zustand store থেকে (getState() — React re-render-এর
-      // অপেক্ষা করে না, তাই আগের setCustomers() কল ইতিমধ্যে যা বসিয়েছে সেটাই
-      // পড়া যায়) নেওয়া হয়, তাই পরপর একাধিক অফলাইন বাকি ইনভয়েস আর একে অপরকে
-      // হারায় না।
-      const txBal = await balanceTxPromise;
-      const latestLocalBal = useAppStore.getState().customers.find(c => c.id === selCust.id)?.balance ?? (selCust.balance || 0);
-      const newBal = txBal !== null ? txBal : Math.max(0, latestLocalBal + delta);
-      setCustomers(prev => prev.map(c => c.id === selCust.id ? { ...c, balance: newBal } : c));
       if (bakiAmt > 0) addTxn(selCust.id, "baki", bakiAmt, newBal, inv.id, note);
+      setCustomers(prev => prev.map(c => c.id === selCust.id ? { ...c, balance: newBal } : c));
       // partial payment: নগদ অংশ joma txn
       if (effectivePayType === "partial" && paidAmt > 0) {
         const cashPortion = Math.min(paidAmt, total); // শুধু invoice পর্যন্ত নগদ
-        // Fix 3: joma txn-এর balanceAfter = newBal (বাকি যোগের পর যা আছে)
-        // baki txn আগে হয় তাই balanceAfter একই — history-তে ঠিকমতো দেখাবে
         const balAfterJoma = newBal;
         addTxn(selCust.id, "joma", cashPortion, balAfterJoma, inv.id, `আংশিক নগদ — ইনভয়েস #${inv.id.slice(-6).toUpperCase()}`, null, "partial-sale");
         createPaymentInvoice({ ...selCust, balance: balAfterJoma }, cashPortion, `আংশিক জমা — ইনভয়েস #${inv.id.slice(-6).toUpperCase()}`, "partial-sale");
@@ -15571,14 +15585,6 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
           dueDate: inv.dueDate,
         });
       }
-      // 🔴 ফিক্স (ইনভয়েস তৈরিতে দেরি — root cause): sendSMS() এর ভেতরে
-      // generateSMS() Anthropic API কল করে (নেটওয়ার্ক রাউন্ড-ট্রিপ, কয়েক
-      // সেকেন্ড লাগতে পারে) আর তারপর sendRealSMS() গেটওয়েতে আরেকটা নেটওয়ার্ক
-      // কল করে। আগে এই পুরো চেইন `await` করে ইনভয়েস তৈরির ফ্লো (setPrintInv/
-      // setCreating(false)) আটকে রাখা হতো — অফলাইনে/স্লো নেটে ইনভয়েসই "তৈরি
-      // হচ্ছে..." স্পিনারে অনেকক্ষণ আটকে থাকত, যদিও ডেটা ইতিমধ্যে সেভ হয়ে
-      // গিয়েছিল। এখন SMS ফায়ার-অ্যান্ড-ফরগেট — ইনভয়েস সাথে সাথেই তৈরি/প্রিন্ট
-      // হয়ে যাবে, SMS ব্যাকগ্রাউন্ডে পাঠানো হবে (ব্যর্থ হলেও ইনভয়েস প্রভাবিত হবে না)।
       setSmsSending(true);
       sendSMS({ ...selCust, balance: newBal }, "baki", bakiAmt)
         .catch(err => logErrorToCentral?.("sendSMS:baki", err, { customerId: selCust.id }))
@@ -15588,7 +15594,6 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       await Haptic.success();
       // পূর্ণ নগদ বিক্রয় (registered কাস্টমার, walk-in/self-use নয়) — txn রেকর্ড করো যাতে
       // কাস্টমার ডিটেইলস পেজে এই ইনভয়েসটি লেনদেন হিস্টোরিতে দেখা যায়।
-      // source: "cash-sale" — পুরনো বাকি আদায় নয়, তাই সব "আজকের বাকি আদায়" sum থেকে বাদ থাকবে (partial-sale এর মতো)
       if (!isWalkIn && !isSelfUse && effectivePayType === "cash" && selCust) {
         addTxn(selCust.id, "joma", total, selCust.balance || 0, inv.id, `নগদ বিক্রয় — ইনভয়েস #${inv.id.slice(-6).toUpperCase()}`, null, "cash-sale");
       }
@@ -15598,8 +15603,101 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
         showToast(isSelfUse ? "নিজের ব্যবহার রেকর্ড করা হয়েছে" : isWalkIn ? "Walk-in ইনভয়েস তৈরি হয়েছে" : "ইনভয়েস তৈরি হয়েছে");
       }
     }
+
+    // ── এখানেই ইউজারকে রিসিট দেখানো হচ্ছে — নেটওয়ার্ক transaction-এর জন্য আর
+    // অপেক্ষা করতে হচ্ছে না। নিচের ব্লকটা সম্পূর্ণ ব্যাকগ্রাউন্ডে (await ছাড়াই) চলবে। ──
     setPrintInv(inv);
     setCreating(false);
+
+    // ── ব্যাকগ্রাউন্ড রিকনসিলিয়েশন: আসল Firestore transaction(s) এখন চলবে।
+    // সার্ভারের চূড়ান্ত মান (কনফ্লিক্ট/রেস কন্ডিশনে বিরল ক্ষেত্রে) লোকাল guess-এর
+    // চেয়ে ভিন্ন হলে স্টেট + ইতিমধ্যে পুশ-করা ইনভয়েস ডকুমেন্ট সাইলেন্টলি
+    // সংশোধন হয়ে যায় — ইউজারকে কিছু দেখানো/জিজ্ঞাসা করা হয় না।
+    // 🔴 ফিক্স (অফলাইনে নিষ্ফল অ্যাটেম্পট + স্থায়ীভাবে হারিয়ে যাওয়া রিকনসিলিয়েশন):
+    // FSS.isReady() শুধু Firebase কনফিগার আছে কিনা দেখে, ডিভাইস আসলে অনলাইনে
+    // আছে কিনা না। আগে অফলাইনেও এই ব্লক transaction চেষ্টা করত, যেটা ব্যর্থ/
+    // টাইমআউট হতো আর runTransaction() সাধারণ write-এর মতো Firestore-এর নিজস্ব
+    // offline queue-তে জমা থাকে না বলে নেট ফিরলেও কখনো রিট্রাই হতো না — এই
+    // বিক্রির স্টক ডিডাকশন/বাকি আপডেট সার্ভারে চিরতরে হারিয়ে যেত। এখন
+    // navigator.onLine === false হলে নেটওয়ার্ক অ্যাটেম্পটই না করে সরাসরি
+    // FSS.queuePendingSalesTxn()-এ জমা রাখা হয় — flushPendingSalesTxns() নেট
+    // ফিরলে (FSS init/'online' ইভেন্টে) আবার চেষ্টা করবে। আর অনলাইনে থেকেও
+    // (ফ্লাকি কানেকশনে) কোনো আইটেম ব্যর্থ হলে শুধু সেই ব্যর্থ অংশটুকুই একই
+    // কিউতে জমা হয় — সফল অংশ দ্বিতীয়বার প্রয়োগ হয় না (ডাবল-ডিডাকশন এড়াতে)।
+    if (FSS.isReady()) {
+      const isOffline = typeof navigator !== "undefined" && navigator.onLine === false;
+      const balanceUpdates = [
+        ...(walkInCustMode === "existing" && walkInExistingId && walkInHasBaki && walkInBakiAmt > 0
+          ? [{ customerId: walkInExistingId, delta: walkInBakiAmt }] : []),
+        ...(needsBalanceTx ? [{ customerId: selCust.id, delta }] : []),
+      ];
+      if (isOffline) {
+        FSS.queuePendingSalesTxn({
+          invoiceId: inv.id,
+          stockItems: sellableItems.map(s => ({ productId: s.productId, qty: s.qty })),
+          balanceUpdates,
+        });
+      } else {
+        (async () => {
+          const failedStockItems = [];
+          const failedBalanceUpdates = [];
+          try {
+            const stockResults = await Promise.all(sellableItems.map(async (sold) => {
+              const txResult = await FSS.transactionUpdateStock(sold.productId, sold.qty);
+              if (!txResult) failedStockItems.push({ productId: sold.productId, qty: sold.qty });
+              return txResult ? { id: sold.productId, ...txResult } : null;
+            }));
+            const validResults = stockResults.filter(Boolean);
+            if (validResults.length) {
+              const resMap = new Map(validResults.map(r => [r.id, r]));
+              setProducts(prev => prev.map(p => {
+                const r = resMap.get(p.id);
+                return r ? { ...p, stock: r.stock, batches: r.batches, costPrice: r.costPrice } : p;
+              }));
+              let itemsChanged = false;
+              const correctedItems = inv.items.map(it => {
+                const r = resMap.get(it.productId);
+                if (!r) return it;
+                const rExpiry = r.expiryDate || "";
+                if (r.batchNo !== it.batchNo || r.costPrice !== it.costPrice || rExpiry !== (it.expiryDate || "")) {
+                  itemsChanged = true;
+                  return { ...it, batchNo: r.batchNo, costPrice: r.costPrice, expiryDate: rExpiry };
+                }
+                return it;
+              });
+              if (itemsChanged) {
+                const correctedInv = { ...inv, items: correctedItems };
+                setInvoices(prev => prev.map(i => i.id === inv.id ? correctedInv : i));
+                setPrintInv(prev => (prev && prev.id === inv.id) ? correctedInv : prev);
+                pushDurable("invoices", inv.id, withTs(correctedInv));
+              }
+            }
+          } catch (err) {
+            logErrorToCentral?.("createInvoice:stockReconcile", err, { invoiceId: inv.id });
+            failedStockItems.push(...sellableItems.map(s => ({ productId: s.productId, qty: s.qty })));
+          }
+
+          for (const bu of balanceUpdates) {
+            try {
+              const txBal = await FSS.transactionUpdateBalance(bu.customerId, (serverBal) => Math.max(0, serverBal + bu.delta));
+              if (txBal === null) { failedBalanceUpdates.push(bu); continue; }
+              const localGuess = bu.customerId === walkInExistingId ? newWalkInBal : newBal;
+              if (txBal !== localGuess) {
+                setCustomers(prev => prev.map(c => c.id === bu.customerId ? { ...c, balance: txBal } : c));
+              }
+            } catch (err) {
+              logErrorToCentral?.("createInvoice:balanceReconcile", err, { invoiceId: inv.id, customerId: bu.customerId });
+              failedBalanceUpdates.push(bu);
+            }
+          }
+
+          // ব্যর্থ অংশ (নেট মাঝপথে চলে গেলে) একই পেন্ডিং কিউতে জমা রাখো — নেট ফিরলে flushPendingSalesTxns() রিট্রাই করবে
+          if (failedStockItems.length || failedBalanceUpdates.length) {
+            FSS.queuePendingSalesTxn({ invoiceId: inv.id, stockItems: failedStockItems, balanceUpdates: failedBalanceUpdates });
+          }
+        })();
+      }
+    }
     } catch (err) {
       showToast("ইনভয়েস তৈরিতে সমস্যা হয়েছে: " + (err?.message || ""), "#ef4444");
       setCreating(false);
@@ -19746,7 +19844,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       const parts = [];
       if (v.strip) parts.push(`${v.strip} স্ট্রিপ`);
       if (v.box) parts.push(`${v.box} বক্স`);
-      if (v.pcs) parts.push(`${v.pcs} সংখ্যা`);
+      if (v.pcs) parts.push(`${v.pcs} টি`);
       return parts.join(" + ");
     };
     // পুরনো/PO আইটেম থেকে (stripQty/boxQty/pcsQty সংরক্ষিত থাকলে) ব্রেকডাউন লেবেল বানায় —
@@ -19802,7 +19900,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           <div style={{ display:"flex", alignItems:"flex-start", gap:10, flexWrap:"wrap" }}>
             {qtyField("strip", "স্ট্রিপ")}
             {qtyField("box", "বক্স")}
-            {qtyField("pcs", "সংখ্যা")}
+            {qtyField("pcs", "টি")}
             {qty > 0 && (
               <button onClick={()=>setOrderQtysAll(q=>({...q,[p.id]:{strip:0,box:0,pcs:0}}))}
                 style={{ background:"#fef2f2", border:"1px solid #fecaca", borderRadius:10, color:"#dc2626", fontSize:12, fontWeight:800, padding:"9px 12px", cursor:"pointer", fontFamily:"inherit", alignSelf:"flex-start" }}>✕ রিসেট</button>
@@ -20048,7 +20146,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                             onChange={(e)=>{ const v = parseInt(e.target.value,10); setOrderQtysAll(q=>({...q,[p.id]:{...(q[p.id]||{}),[key]:(isNaN(v)||v<0)?0:v}})); }}
                             onClick={(e)=>e.target.select()}
                             style={{ width:34, background:"#f8fafc", border:`1px solid #cbd5e1`, borderRadius:8, color:PRINT.textDark, fontSize:12.5, fontWeight:800, padding:"5px 2px", textAlign:"center", fontFamily:"inherit" }} />
-                          <span style={{ fontSize:8.5, color:PRINT.textMuted, fontWeight:700 }}>{key==="strip"?"স্ট্রি":key==="box"?"বক্স":"সংখ্যা"}</span>
+                          <span style={{ fontSize:8.5, color:PRINT.textMuted, fontWeight:700 }}>{key==="strip"?"স্ট্রি":key==="box"?"বক্স":"টি"}</span>
                         </div>
                       ))}
                       <button onClick={()=>setOrderQtysAll(q=>{ const n={...q}; delete n[p.id]; return n; })}
