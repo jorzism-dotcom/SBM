@@ -5754,7 +5754,9 @@ const FSS = {
       // হওয়ার সময় flushPendingStats() সেটা আবার চেষ্টা করবে, একদম হারাবে না।
       try {
         const q = JSON.parse(localStorage.getItem("sbm_pending_stats") || "[]");
-        q.push({ dateKey, monthKey, delta, at: Date.now() });
+        // 🔴 ফিক্স (মাল্টি-বিজনেস ক্রস-কনটামিনেশন): এই delta কোন বিজনেসের stats
+        // doc-এর জন্য তা রেকর্ড করা হচ্ছে (queuePendingSalesTxn()-এর কমেন্ট দ্রষ্টব্য)।
+        q.push({ dateKey, monthKey, delta, prefix: this._businessPrefix || null, at: Date.now() });
         localStorage.setItem("sbm_pending_stats", JSON.stringify(q.slice(-200)));
       } catch {}
     }
@@ -5768,7 +5770,11 @@ const FSS = {
     try { q = JSON.parse(localStorage.getItem("sbm_pending_stats") || "[]"); } catch { return; }
     if (!q.length) return;
     const remaining = [];
+    const currentPrefix = this._businessPrefix || null;
     for (const item of q) {
+      // 🔴 ফিক্স (মাল্টি-বিজনেস ক্রস-কনটামিনেশন): অন্য বিজনেসের delta হলে স্কিপ।
+      const itemPrefix = Object.prototype.hasOwnProperty.call(item, "prefix") ? item.prefix : null;
+      if (itemPrefix !== currentPrefix) { remaining.push(item); continue; }
       try {
         const upd = {};
         if (item.delta.sale   !== undefined) upd.totalSale   = increment(item.delta.sale);
@@ -5796,7 +5802,13 @@ const FSS = {
   queuePendingSalesTxn(entry) {
     try {
       const q = JSON.parse(localStorage.getItem("sbm_pending_sales_txns") || "[]");
-      q.push({ ...entry, at: Date.now() });
+      // 🔴 ফিক্স (রুট কজ — মাল্টি-বিজনেস ক্রস-কনটামিনেশন, অফলাইন কিউ): এই এন্ট্রি
+      // কোন বিজনেসের (কোন Firestore prefix-এর) productId/customerId নিয়ে কাজ করছে
+      // তা রেকর্ড করা হচ্ছে। আগে এটা রেকর্ড করা হতো না — flush হওয়ার সময় তখন
+      // যে prefix active থাকত (offline অবস্থায় ইউজার অন্য বিজনেসে সুইচ করে
+      // ফেললে ভিন্ন হতে পারত) সেটা দিয়েই replay হতো, ফলে ভুল বিজনেসের
+      // কালেকশনে stock/balance আপডেট প্রয়োগ হয়ে যেতে পারত।
+      q.push({ ...entry, prefix: this._businessPrefix || null, at: Date.now() });
       localStorage.setItem("sbm_pending_sales_txns", JSON.stringify(q.slice(-200)));
     } catch {}
   },
@@ -5811,7 +5823,16 @@ const FSS = {
     try { q = JSON.parse(localStorage.getItem("sbm_pending_sales_txns") || "[]"); } catch { return; }
     if (!q.length) return;
     const remaining = [];
+    const currentPrefix = this._businessPrefix || null;
     for (const item of q) {
+      // 🔴 ফিক্স (মাল্টি-বিজনেস ক্রস-কনটামিনেশন): এই এন্ট্রি অন্য বিজনেসের হলে
+      // (item.prefix বর্তমান active prefix-এর সাথে না মিললে) এখন প্রসেস করা হয়
+      // না — কিউতেই অপরিবর্তিত থেকে যায়, ওই বিজনেসে ফিরে গেলে/সেটা active হলে
+      // পরের flush-এ ঠিক জায়গায় প্রয়োগ হবে। পুরনো এন্ট্রি (prefix ফিল্ড ছাড়া,
+      // এই ফিক্সের আগে জমা হয়েছিল) backward-compat হিসেবে current single-business
+      // prefix (null)-এর সাথে মেলানো হয়।
+      const itemPrefix = Object.prototype.hasOwnProperty.call(item, "prefix") ? item.prefix : null;
+      if (itemPrefix !== currentPrefix) { remaining.push(item); continue; }
       const failedStockItems = [];
       const failedBalanceUpdates = [];
       try {
@@ -5893,7 +5914,9 @@ const FSS = {
   queuePendingVoidRestore(entry) {
     try {
       const q = JSON.parse(localStorage.getItem("sbm_pending_void_restores") || "[]");
-      q.push({ ...entry, at: Date.now() });
+      // 🔴 ফিক্স (মাল্টি-বিজনেস ক্রস-কনটামিনেশন) — queuePendingSalesTxn()-এর
+      // ঠিক একই কারণে prefix রেকর্ড করা হচ্ছে।
+      q.push({ ...entry, prefix: this._businessPrefix || null, at: Date.now() });
       localStorage.setItem("sbm_pending_void_restores", JSON.stringify(q.slice(-200)));
     } catch {}
   },
@@ -5911,7 +5934,12 @@ const FSS = {
     try { q = JSON.parse(localStorage.getItem("sbm_pending_void_restores") || "[]"); } catch { return; }
     if (!q.length) return;
     const remaining = [];
+    const currentPrefix = this._businessPrefix || null;
     for (const item of q) {
+      // 🔴 ফিক্স (মাল্টি-বিজনেস ক্রস-কনটামিনেশন): flushPendingSalesTxns()-এর
+      // ঠিক একই গার্ড — অন্য বিজনেসের এন্ট্রি এখানে স্কিপ, কিউতে থেকে যায়।
+      const itemPrefix = Object.prototype.hasOwnProperty.call(item, "prefix") ? item.prefix : null;
+      if (itemPrefix !== currentPrefix) { remaining.push(item); continue; }
       const failedRestoreItems = [];
       let failedBalanceUpdate = null;
       try {
@@ -11800,19 +11828,44 @@ function SmartBusinessMgmt() {
       // লাগবে না (auditLogs, cashLogs, stockMovements, ইত্যাদি বড়/সেটিংস-
       // নির্ভর কালেকশন) সেগুলো আলাদা "wave 2"-তে সরানো হলো — ইনভয়েস
       // ব্যাকফিলের মতোই একই প্যাটার্নে (setTimeout 0, প্রথম রেন্ডারের পর)।
+      // 🔴 ফিক্স (রুট কজ — মাল্টি-বিজনেস ক্রস-কনটামিনেশন, ১৯ জুলাই ২০২৬): আগে
+      // SK.businessType/SK.businessTypeLocked/SK.enabledBusinessTypes DEFERRED_KEYS
+      // (wave 2, setTimeout 0-এ প্রথম পেইন্টের পর লোড) এ ছিল, অথচ SK.products/
+      // SK.customers/SK.firebaseConfig/SK.firebaseEnabled CRITICAL_KEYS-এ (wave 1,
+      // সিঙ্ক্রোনাসভাবে প্রথম রেন্ডারেই)। ফলে boot হওয়ার সময় একটা রেস কন্ডিশন
+      // তৈরি হতো: fssReady (FSS.init() wave 1-এর firebaseConfig/firebaseEnabled
+      // দিয়ে) সত্যি হয়ে যেত, আর useFSSCollection("products"/"customers",...)
+      // Firestore-এ সাবস্ক্রাইব করা শুরু করত — কিন্তু তখনো FSS._businessPrefix
+      // ছিল default/null (কারণ businessType/enabledBusinessTypes এখনো লোড হয়নি,
+      // isMultiBusiness তখনো false ধরা হতো), মানে ভুল (unprefixed বা আগের সেশনের)
+      // Firestore কালেকশনে সাবস্ক্রাইব হয়ে যেত। একইসাথে products/customers এর
+      // লোকাল স্টেট বসত একটামাত্র শেয়ার্ড, বিজনেস-নন-স্কোপড localStorage key
+      // (sbm-products/sbm-customers) থেকে — যেটাতে ডিভাইসে সবশেষ যে বিজনেস
+      // অ্যাক্টিভ ছিল তারই ডেটা থাকতে পারে। এই দুটোর কম্বিনেশনে
+      // useFSSCollection-এর "local-only push" রিকভারি লজিক (আসল অফলাইন-এন্ট্রি
+      // রিকভারির জন্য বসানো হয়েছিল) ভুল করে অন্য বিজনেসের স্টেল লোকাল ডেটাকে
+      // "এখনো push হয়নি এমন নতুন রেকর্ড" ধরে ভুল কালেকশনে push করে দিত —
+      // এটাই "অন্য বিজনেসের পণ্য আসছে" বাগের root cause, একই ডিভাইসে
+      // বিজনেস-সুইচ করার সময়ও হতো, আর push হয়ে যাওয়ার পর real-time sync-এর
+      // মাধ্যমে অন্য ডিভাইসেও ছড়িয়ে পড়ত। ফিক্স: businessType/
+      // businessTypeLocked/enabledBusinessTypes এখন CRITICAL_KEYS-এ (wave 1) —
+      // products/customers-এর মতো একই ব্যাচ/একই রেন্ডারে state-এ বসে, তাই
+      // useFSSCollection ও prefix-resolve effect দুটোই প্রথমবারই সঠিক প্রিফিক্স
+      // দিয়ে চলে, রেস কন্ডিশনের সুযোগই থাকে না।
       const CRITICAL_KEYS = [
         SK.customers, SK.products, SK.invoices, SK.txns, SK.users,
         SK.shopName, SK.darkMode, SK.activeTheme, SK.fontSize,
         SK.paymentInvoices, SK.firebaseConfig, SK.firebaseEnabled,
         SK.authSession, SK.devContact, SK.masterResetHash,
         SK.recoveryPhone, SK.recoveryPinHash,
+        SK.businessType, SK.businessTypeLocked, SK.enabledBusinessTypes,
       ];
       const DEFERRED_KEYS = [
         SK.smsLog, SK.deletedCustomers, SK.deletedProducts, SK.smsGateway,
         SK.lastAutoBackup, SK.anthropicKey, SK.smsTemplates, SK.autoBackupEnabled,
         SK.lastMasterSync, SK.autoMasterSyncEnabled, SK.suppliers, SK.purchaseOrders,
         SK.stockMovements, SK.cashLogs, SK.expenses, SK.returns, SK.auditLogs,
-        SK.quotations, SK.supplierPayments, SK.businessType, SK.businessTypeLocked, SK.enabledBusinessTypes,
+        SK.quotations, SK.supplierPayments,
       ];
       const boot1 = await loadMany(CRITICAL_KEYS);
       const rawCustomers    = boot1[SK.customers];
@@ -11832,6 +11885,13 @@ function SmartBusinessMgmt() {
       const masterHashVal   = boot1[SK.masterResetHash];
       const recoveryPhoneVal   = boot1[SK.recoveryPhone];
       const recoveryPinHashVal = boot1[SK.recoveryPinHash];
+      // 🔴 ফিক্স (রুট কজ — মাল্টি-বিজনেস ক্রস-কনটামিনেশন): এখন wave 1-এই পড়া হয়,
+      // দেখুন CRITICAL_KEYS-এর উপরের কমেন্ট।
+      const businessTypeVal        = boot1[SK.businessType]         || "pharmacy";
+      const businessTypeLockedVal  = boot1[SK.businessTypeLocked]   || false;
+      const enabledBusinessTypesVal = (Array.isArray(boot1[SK.enabledBusinessTypes]) && boot1[SK.enabledBusinessTypes].length)
+        ? boot1[SK.enabledBusinessTypes]
+        : [businessTypeVal];
 
       // ── #৭ স্কিমা মাইগ্রেশন — কেন্দ্রীয় SCHEMA_MIGRATIONS রেজিস্ট্রি থেকে ─────
       // আগে এখানে শুধু products-এর batches[] মাইগ্রেশন হার্ডকোড ছিল (Batch-1
@@ -11881,6 +11941,9 @@ function SmartBusinessMgmt() {
         currentUser:           savedUser?.id ? savedUser : null,
         devContact:            devContactVal       || DEV_CONTACT,
         masterResetHash:       masterHashVal       || DEV_MASTER_HASH,
+        businessType:          businessTypeVal,
+        businessTypeLocked:    businessTypeLockedVal,
+        enabledBusinessTypes:  enabledBusinessTypesVal,
         authChecked:           true,
         loaded:                true,
         schemaMigrationStats:  schemaStats.totalMigrated > 0 ? schemaStats : null, // #৭ — কিছু মাইগ্রেট হলেই শুধু দেখায়
@@ -11930,14 +11993,11 @@ function SmartBusinessMgmt() {
           auditLogs:             boot2[SK.auditLogs]            || [],
           quotations:            boot2[SK.quotations]           || [],
           supplierPayments:      boot2[SK.supplierPayments]     || [],
-          businessType:          boot2[SK.businessType]         || "pharmacy",
-          businessTypeLocked:    boot2[SK.businessTypeLocked]   || false,
-          // 🆕 ধাপ ২ Migration: পুরনো ডিভাইসে এই key কখনো সেভ হয়নি — তখন বর্তমান
-          // businessType-কেই একমাত্র enabled টাইপ ধরে নেওয়া হয় (single-business
-          // আচরণ ষোলআনা অপরিবর্তিত)।
-          enabledBusinessTypes: (Array.isArray(boot2[SK.enabledBusinessTypes]) && boot2[SK.enabledBusinessTypes].length)
-            ? boot2[SK.enabledBusinessTypes]
-            : [boot2[SK.businessType] || "pharmacy"],
+          // businessType/businessTypeLocked/enabledBusinessTypes এখন wave 1-এই
+          // সেট হয়ে গেছে (দেখুন উপরের CRITICAL_KEYS কমেন্ট) — এখানে আর বসানো হয়
+          // না, নাহলে wave 2 আবার সেগুলোকে (এই মুহূর্তে ঠিকমতোই থাকা) ওভাররাইট
+          // করে ফেলতে পারত যদি কোথাও ইতিমধ্যে বদলে গিয়ে থাকে (যেমন remote
+          // businessConfig sync দ্রুত এসে গেলে)।
           settingsLoaded:        true, // 🔴 এখন থেকেই autoBackupEnabled/autoMasterSyncEnabled-এর real value store-এ বসলো — persistence effect চালু করা নিরাপদ
         });
       }, 0);
@@ -12210,11 +12270,29 @@ function SmartBusinessMgmt() {
   // হলেই কেবল FSS.col()/doc() collection-prefix লাগায় — single-business শপে
   // (বর্তমানে সবাই) prefix সবসময় null থাকে, ফলে Firestore-এ কোনো ডেটা migrate
   // করার দরকারই পড়ে না (দেখুন Multi-Business-System-Plan.md-এ আলোচিত conflict)।
+  const _lastAppliedBizPrefixRef = useRef(undefined); // undefined = এখনো একবারও সেট হয়নি
   useEffect(() => {
     if (!fssReady) return;
     const isMultiBusiness = Array.isArray(enabledBusinessTypes) && enabledBusinessTypes.length > 1;
     const prefix = isMultiBusiness ? (BUSINESS_TYPE_REGISTRY[businessType]?.collectionPrefix || null) : null;
     FSS.setBusinessPrefix(prefix);
+    // 🔴 ফিক্স (ডিফেন্স-ইন-ডেপথ — মাল্টি-বিজনেস ক্রস-কনটামিনেশন): boot-race
+    // ফিক্স (দেখুন CRITICAL_KEYS-এর কমেন্ট) মূল কারণটা বন্ধ করে দিলেও, businessType/
+    // enabledBusinessTypes ভবিষ্যতে অন্য কোনো পথে (যেমন remote businessConfig
+    // sync, বা admin.html bridge) বদলে গেলে এই effect আবার চলবে ও prefix বদলে
+    // যাবে — কিন্তু আগে এখানে শুধু FSS.setBusinessPrefix() কল হতো, কোনো
+    // resubscribe ট্রিগার হতো না। useFSSCollection("products"/"customers"...)
+    // তখন পরবর্তী heartbeat/resume (সর্বোচ্চ ~২০s) পর্যন্ত পুরনো prefix-এর
+    // কালেকশনেই সাবস্ক্রাইব থেকে যেত — এই উইন্ডোতেই local-only push ভুল
+    // কালেকশনে ডেটা লিখে দিতে পারত। এখন prefix সত্যিই বদলালে (প্রথমবার সেট
+    // হওয়া বাদে) সাথে সাথে _bumpBusinessSwitch()+_bumpGlobalResync() কল করে
+    // তৎক্ষণাৎ সঠিক prefix দিয়ে resubscribe বাধ্য করা হচ্ছে — handleSwitchBusiness()
+    // যেভাবে করে ঠিক সেভাবেই।
+    if (_lastAppliedBizPrefixRef.current !== undefined && _lastAppliedBizPrefixRef.current !== prefix) {
+      _bumpBusinessSwitch();
+      _bumpGlobalResync();
+    }
+    _lastAppliedBizPrefixRef.current = prefix;
   }, [fssReady, businessType, enabledBusinessTypes]);
 
   // ── প্রতিটা collection — local array ↔ Firestore (record-level, real-time) ──
@@ -13769,6 +13847,19 @@ function SmartBusinessMgmt() {
         1800 // নেটওয়ার্ক ধীর/অফলাইন হলে সর্বোচ্চ এই সময় পর ওভারলে এমনিতেই সরে যাবে
       );
     } catch {}
+    // 🔴 ফিক্স (মাল্টি-বিজনেস ক্রস-কনটামিনেশন — pending queue flush): এই
+    // ডিভাইসে যদি নতুন এই বিজনেসের জন্য (এই prefix-এর) কোনো অফলাইন-জমা-হওয়া
+    // sales/void/stats queue এন্ট্রি থেকে থাকে (দেখুন queuePendingSalesTxn()/
+    // queuePendingVoidRestore()-এর prefix ফিল্ড), সুইচ করার সাথে সাথেই সেগুলো
+    // এখন রিট্রাই করার চেষ্টা হয় — আগে এই flush কল শুধু FSS init/online ইভেন্টে
+    // হতো, business switch-এ না, ফলে ভুল সময়ে (অন্য prefix active থাকা অবস্থায়)
+    // queue হওয়া এন্ট্রি সেই বিজনেসে ফিরে আসা পর্যন্ত (অ্যাপ রিলোড/অনলাইন
+    // ইভেন্ট না হলে) কখনো flush-ই হতো না।
+    if (FSS.isReady()) {
+      FSS.flushPendingStats();
+      FSS.flushPendingSalesTxns({ setProducts, setCustomers, setInvoices });
+      FSS.flushPendingVoidRestores({ setProducts, setCustomers });
+    }
     setSwitchingBusiness(false);
   }, [businessType, businessTypeLocked, enabledBusinessTypes, setBusinessType]);
 
