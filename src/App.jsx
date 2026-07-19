@@ -3301,25 +3301,28 @@ function SubscriptionGate({ children }) {
             withTimeout(FSS.getCollectionOnce("quotations"), T, []),
             withTimeout(FSS.getCollectionOnce("supplierPayments"), T, []),
           ]);
-          if (customersD.length)       await save(SK.customers, customersD);
-          if (productsD.length)        await save(SK.products, productsD);
-          if (invoicesD.length)        await save(SK.invoices, invoicesD);
-          if (txnsD.length)            await save(SK.txns, txnsD);
-          if (smsLogD.length)          await save(SK.smsLog, smsLogD);
-          if (paymentInvoicesD.length) await save(SK.paymentInvoices, paymentInvoicesD);
-          if (purchaseOrdersD.length)  await save(SK.purchaseOrders, purchaseOrdersD);
-          if (stockMovementsD.length)  await save(SK.stockMovements, stockMovementsD);
-          if (cashLogsD.length)        await save(SK.cashLogs, cashLogsD);
-          if (suppliersD.length)       await save(SK.suppliers, suppliersD);
-          if (usersD.length)           await save(SK.users, usersD); // সর্বশেষ users (permission সহ)
+          // 🔴 ফিক্স (মাল্টি-বিজনেস কন্টামিনেশন): এই সব business-scoped collection
+          // এখন LK() দিয়ে সক্রিয় বিজনেস-প্রিফিক্সড local key-তে সেভ হয় — নাহলে
+          // ডিভাইস রিকভারির পর ভুল/আগের বিজনেসের local cache-এ ডেটা বসে যেতে পারত।
+          if (customersD.length)       await save(LK(SK.customers), customersD);
+          if (productsD.length)        await save(LK(SK.products), productsD);
+          if (invoicesD.length)        await save(LK(SK.invoices), invoicesD);
+          if (txnsD.length)            await save(LK(SK.txns), txnsD);
+          if (smsLogD.length)          await save(LK(SK.smsLog), smsLogD);
+          if (paymentInvoicesD.length) await save(LK(SK.paymentInvoices), paymentInvoicesD);
+          if (purchaseOrdersD.length)  await save(LK(SK.purchaseOrders), purchaseOrdersD);
+          if (stockMovementsD.length)  await save(LK(SK.stockMovements), stockMovementsD);
+          if (cashLogsD.length)        await save(LK(SK.cashLogs), cashLogsD);
+          if (suppliersD.length)       await save(LK(SK.suppliers), suppliersD);
+          if (usersD.length)           await save(SK.users, usersD); // সর্বশেষ users (permission সহ) — শপ-লেভেল, prefix হয় না
           if (settingsD?.shopName)     await save(SK.shopName, settingsD.shopName);
           if (settingsD?.smsTemplates) await save(SK.smsTemplates, settingsD.smsTemplates);
           if (settingsD?.smsGateway)   await save(SK.smsGateway, settingsD.smsGateway);
-          if (expensesD.length)        await save(SK.expenses, expensesD);
-          if (returnsD.length)         await save(SK.returns, returnsD);
-          if (auditLogsD.length)       await save(SK.auditLogs, auditLogsD);
-          if (quotationsD.length)      await save(SK.quotations, quotationsD);
-          if (supplierPaymentsD.length) await save(SK.supplierPayments, supplierPaymentsD);
+          if (expensesD.length)        await save(LK(SK.expenses), expensesD);
+          if (returnsD.length)         await save(LK(SK.returns), returnsD);
+          if (auditLogsD.length)       await save(LK(SK.auditLogs), auditLogsD);
+          if (quotationsD.length)      await save(LK(SK.quotations), quotationsD);
+          if (supplierPaymentsD.length) await save(LK(SK.supplierPayments), supplierPaymentsD);
         } catch { pullFailed = true; /* রিলোডের পর রিয়েল-টাইম listener চেষ্টা করবে, কিন্তু এখন owner-কে জানানো হচ্ছে */ }
       }
 
@@ -4121,6 +4124,45 @@ const SK = {
   autoMasterSyncEnabled: "sbm-auto-master-sync-on", // ⏰ Hourly auto Master Sync toggle
   lastBackupFieldHashes: "sbm-last-backup-hashes", // #৪ ডেল্টা সিঙ্ক — destination-ভিত্তিক checkpoint hash
 };
+
+// ─── LK — Local persistence business-scoping (মাল্টি-বিজনেস কন্টামিনেশন ফিক্স) ──
+// সমস্যা: FSS-এর Firestore কালেকশনে business-prefix (_prefixed) থাকলেও, একই
+// ডিভাইসে local IndexedDB/localStorage cache (SK.products/SK.customers ইত্যাদি)
+// সবসময় একটাই শেয়ার্ড key ছিল — কোন বিজনেস অফলাইনে সবশেষ অ্যাক্টিভ ছিল তারই
+// ডেটা থাকত। একই ডিভাইসে বা মাল্টি-ডিভাইসে বিজনেস সুইচ করলে/অফলাইন থাকলে এই
+// শেয়ার্ড cache-ই "অন্য বিজনেসের পণ্য/কাস্টমার আসছে" বাগের একটা বড় উৎস ছিল।
+// ফিক্স: FSS._prefixed()-এর ঠিক একই প্যাটার্নে, business-specific collection-
+// গুলোর local key-ও এখন সক্রিয় বিজনেস-প্রিফিক্স দিয়ে namespace করা হয় —
+// sbm-products_veterinary, sbm-customers_semen ইত্যাদি। শপ-লেভেল key (users,
+// থিম, ফন্ট, Firebase config, master key ইত্যাদি — FSS._NEVER_PREFIX-এর সাথে
+// সঙ্গতিপূর্ণ) অপরিবর্তিত থাকে — single-business শপে (প্রিফিক্স null) সব key-ই
+// আগের মতো unprefixed থাকে, কোনো ডেটা মাইগ্রেশন লাগে না (backward-compatible)।
+const LOCAL_BUSINESS_SCOPED_KEYS = new Set([
+  SK.customers, SK.products, SK.invoices, SK.txns, SK.smsLog,
+  SK.deletedCustomers, SK.deletedProducts, SK.paymentInvoices,
+  SK.suppliers, SK.purchaseOrders, SK.stockMovements, SK.cashLogs,
+  SK.expenses, SK.returns, SK.auditLogs, SK.quotations, SK.supplierPayments,
+]);
+let _localBizPrefix = null;
+function setLocalBusinessPrefix(prefix) { _localBizPrefix = prefix || null; }
+function getLocalBusinessPrefix() { return _localBizPrefix; }
+// LK(SK.products) → বিজনেস-স্কোপড key (মাল্টি-বিজনেস চালু থাকলে), নাহলে অপরিবর্তিত
+function LK(key) {
+  if (!_localBizPrefix) return key;
+  if (!LOCAL_BUSINESS_SCOPED_KEYS.has(key)) return key;
+  return `${key}_${_localBizPrefix}`;
+}
+// Master Reset-এর মতো ক্ষেত্রে সব বিজনেস-টাইপের local cache-ই মুছতে হয় (শুধু
+// বর্তমান সক্রিয়টা না) — এই হেল্পার একটা key-র জন্য প্রতিটা রেজিস্টার্ড বিজনেস-
+// টাইপের prefixed variant + unprefixed (legacy/single-business) variant ফেরত দেয়।
+function allBizVariantsOf(key) {
+  if (!LOCAL_BUSINESS_SCOPED_KEYS.has(key)) return [key];
+  const variants = new Set([key]); // unprefixed (single-business/legacy)
+  Object.values(BUSINESS_TYPE_REGISTRY).forEach(bt => {
+    if (bt?.collectionPrefix) variants.add(`${key}_${bt.collectionPrefix}`);
+  });
+  return Array.from(variants);
+}
 // ─── Device ID Layer (Multi-Device Support) ───────────────────────────────────
 // প্রতিটি ডিভাইসের আলাদা ID, যাতে ৫টি ডিভাইস একসাথে সিঙ্ক করতে পারে
 // 🔥 ফিক্স: শুধু raw localStorage ব্যবহার করায় Capacitor WebView-তে মাঝে মাঝে
@@ -5700,26 +5742,41 @@ const FSS = {
     return { ok: false, left: lastLeft, err: lastErr };
   },
 
-  async clearAllData(onProgress) {
+  // 🔴 ফিক্স (মাল্টি-বিজনেস Master Reset): allPrefixes দিলে (যেমন
+  // enabledBusinessTypes-এর সবগুলোর collectionPrefix) প্রতিটা prefix-এর কালেকশনও
+  // আলাদাভাবে (এই prefix সাময়িকভাবে সক্রিয় ধরে) মোছা হয় — নাহলে শুধু বর্তমান
+  // সক্রিয় বিজনেসের Firestore কালেকশন মুছত, বাকি বিজনেস-টাইপের ডেটা থেকেই যেত।
+  // allPrefixes না দিলে (ডিফল্ট) আগের মতোই শুধু বর্তমান _businessPrefix মোছে —
+  // backward-compatible, single-business শপে কোনো আচরণ বদলায় না।
+  async clearAllData(onProgress, allPrefixes) {
     if (!this._db) return { ok: false, msg: "Firestore সংযুক্ত নেই" };
-    const total = FSS_COLLECTIONS.length + 1; // +1 = "stats"
+    const prefixList = (Array.isArray(allPrefixes) && allPrefixes.length) ? allPrefixes : [this._businessPrefix || null];
+    const total = (FSS_COLLECTIONS.length + 1) * prefixList.length; // +1 = "stats" প্রতি prefix-এ
     let done = 0;
     const errors = [];
-    // 🔴 ফিক্স: আগে কালেকশনগুলো একটার পর একটা (sequential for-loop) মোছা হতো —
-    // স্লো নেটওয়ার্কে অনেক সময় লাগত (১৭টা কালেকশন × রাউন্ড-ট্রিপ)। এখন সবগুলো
-    // একসাথে (parallel, Promise.all) প্রসেস হয়, প্রতিটা কালেকশন retry+verify সহ
-    // (_clearCollectionWithRetry) — কোনো একটা কালেকশন প্রথম চেষ্টায় ব্যর্থ/আংশিক
-    // হলে বাকিগুলোর জন্য অপেক্ষা না করেই নিজে থেকে আবার চেষ্টা করে।
-    await Promise.all([...FSS_COLLECTIONS, "stats"].map(async (coll) => {
-      const res = await this._clearCollectionWithRetry(coll);
-      if (!res.ok) {
-        const reason = res.left === -2 ? "কিছু রেকর্ড এখনো আছে" : "ব্যর্থ";
-        errors.push(`${coll}: ${reason}${res.err ? " [" + res.err + "]" : ""} (৪ বার চেষ্টার পরও)`);
+    const originalPrefix = this._businessPrefix;
+    try {
+      for (const prefix of prefixList) {
+        this._businessPrefix = prefix || null;
+        // 🔴 ফিক্স: আগে কালেকশনগুলো একটার পর একটা (sequential for-loop) মোছা হতো —
+        // স্লো নেটওয়ার্কে অনেক সময় লাগত (১৭টা কালেকশন × রাউন্ড-ট্রিপ)। এখন সবগুলো
+        // একসাথে (parallel, Promise.all) প্রসেস হয়, প্রতিটা কালেকশন retry+verify সহ
+        // (_clearCollectionWithRetry) — কোনো একটা কালেকশন প্রথম চেষ্টায় ব্যর্থ/আংশিক
+        // হলে বাকিগুলোর জন্য অপেক্ষা না করেই নিজে থেকে আবার চেষ্টা করে।
+        await Promise.all([...FSS_COLLECTIONS, "stats"].map(async (coll) => {
+          const res = await this._clearCollectionWithRetry(coll);
+          if (!res.ok) {
+            const reason = res.left === -2 ? "কিছু রেকর্ড এখনো আছে" : "ব্যর্থ";
+            errors.push(`${prefix || "default"}/${coll}: ${reason}${res.err ? " [" + res.err + "]" : ""} (৪ বার চেষ্টার পরও)`);
+          }
+          done++;
+          try { onProgress?.(done, total); } catch {}
+        }));
       }
-      done++;
-      try { onProgress?.(done, total); } catch {}
-    }));
-    try { await deleteDoc(this.doc("settings", "main")); } catch {}
+      try { await deleteDoc(this.doc("settings", "main")); } catch {}
+    } finally {
+      this._businessPrefix = originalPrefix; // যে prefix-এ কল হয়েছিল সেটাতেই ফিরিয়ে আনা
+    }
 
     // ✅ ভেরিফিকেশন এখন _clearCollectionWithRetry-এর ভেতরেই হয়ে গেছে (প্রতিটা
     // কালেকশন সত্যিই খালি না হওয়া পর্যন্ত retry করে) — তাই এখানে আলাদা করে আবার
@@ -6213,12 +6270,18 @@ const SyncOutbox = {
       req.onerror   = () => reject(req.error);
     });
   },
+  // 🔴 ফিক্স (মাল্টি-বিজনেস কন্টামিনেশন): প্রতিটা এন্ট্রি জমা হওয়ার সময়েই তার
+  // বিজনেস-প্রিফিক্স ট্যাগ করে রাখা হয় (sbm_pending_sales_txns/void_restores/
+  // stats কিউ-গুলোর একই প্যাটার্নে) — নাহলে অফলাইনে বিজনেস A-তে queued একটা
+  // entry, রিকানেক্টের আগে B-তে সুইচ করলে ভুল বিজনেসে (B-এর Firestore
+  // কালেকশনে) push হয়ে যেতে পারত।
   async put(collection, recordId, rec) {
     try {
       const db = await this.open();
+      const prefix = FSS._businessPrefix || null;
       await new Promise((resolve, reject) => {
         const tx = db.transaction(this.STORE, "readwrite");
-        tx.objectStore(this.STORE).put({ key: `${collection}:${recordId}`, collection, recordId: String(recordId), rec, ts: Date.now() });
+        tx.objectStore(this.STORE).put({ key: `${collection}:${recordId}`, collection, recordId: String(recordId), rec, prefix, ts: Date.now() });
         tx.oncomplete = resolve;
         tx.onerror    = () => reject(tx.error);
       });
@@ -6327,7 +6390,15 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
       if (GLOBAL_RESET_MARKER_AT && (Date.now() - GLOBAL_RESET_MARKER_AT < 120000)) return;
       const items = await SyncOutbox.getAll(name);
       if (cancelled || !items.length) return;
+      const currentPrefix = FSS._businessPrefix || null;
       items.forEach(it => {
+        // 🔴 ফিক্স (মাল্টি-বিজনেস কন্টামিনেশন): অন্য বিজনেসের এন্ট্রি (prefix
+        // না মিললে) এখন flush করা হয় না — outbox-এই থেকে যায়, সেই বিজনেসে
+        // ফিরে গেলে/সেটা active হলে পরের flush-এ সঠিক জায়গায় প্রয়োগ হবে।
+        // prefix ফিল্ড ছাড়া পুরনো এন্ট্রি (এই ফিক্সের আগে জমা হয়েছিল)
+        // backward-compat হিসেবে single-business (null) প্রিফিক্সের সাথে মেলানো হয়।
+        const itemPrefix = Object.prototype.hasOwnProperty.call(it, "prefix") ? it.prefix : null;
+        if (itemPrefix !== currentPrefix) return;
         pending.current.set(String(it.recordId), { rec: it.rec, old: null, ts: Date.now() });
         FSS.setRecord(name, it.recordId, it.rec).then(res => {
           if (res && res.ok === false) {
@@ -11852,32 +11923,51 @@ function SmartBusinessMgmt() {
       // products/customers-এর মতো একই ব্যাচ/একই রেন্ডারে state-এ বসে, তাই
       // useFSSCollection ও prefix-resolve effect দুটোই প্রথমবারই সঠিক প্রিফিক্স
       // দিয়ে চলে, রেস কন্ডিশনের সুযোগই থাকে না।
+      // 🔴 ফিক্স (মাল্টি-বিজনেস লোকাল-cache কন্টামিনেশন, ১৯ জুলাই ২০২৬ — চেইন-ফিক্স):
+      // businessType/enabledBusinessTypes (সবসময় unprefixed, শপ-লেভেল) সবার আগে
+      // আলাদাভাবে পড়ে নেওয়া হয়, যাতে products/customers ইত্যাদি বিজনেস-স্কোপড
+      // key (LK()) লোড করার আগেই সঠিক prefix জানা থাকে — নাহলে chicken-and-egg
+      // সমস্যা হতো (prefix জানতে businessType লাগে, businessType লোড করতে key
+      // ঠিক করতে prefix লাগে)।
+      const PREFIX_KEYS = [SK.businessType, SK.businessTypeLocked, SK.enabledBusinessTypes];
+      const bootPrefix = await loadMany(PREFIX_KEYS);
+      const businessTypeVal        = bootPrefix[SK.businessType]         || "pharmacy";
+      const businessTypeLockedVal  = bootPrefix[SK.businessTypeLocked]   || false;
+      const enabledBusinessTypesVal = (Array.isArray(bootPrefix[SK.enabledBusinessTypes]) && bootPrefix[SK.enabledBusinessTypes].length)
+        ? bootPrefix[SK.enabledBusinessTypes]
+        : [businessTypeVal];
+      const _bootIsMultiBiz = enabledBusinessTypesVal.length > 1;
+      const _bootBizPrefix = _bootIsMultiBiz ? (BUSINESS_TYPE_REGISTRY[businessTypeVal]?.collectionPrefix || null) : null;
+      // প্রথম রেন্ডারের আগেই local prefix সেট — নিচের LK() কলগুলো ও পরের
+      // FSS.setBusinessPrefix effect দুটোই এখন সঠিক/সামঞ্জস্যপূর্ণ prefix পাবে।
+      setLocalBusinessPrefix(_bootBizPrefix);
+      FSS.setBusinessPrefix(_bootBizPrefix);
+
       const CRITICAL_KEYS = [
-        SK.customers, SK.products, SK.invoices, SK.txns, SK.users,
+        LK(SK.customers), LK(SK.products), LK(SK.invoices), LK(SK.txns), SK.users,
         SK.shopName, SK.darkMode, SK.activeTheme, SK.fontSize,
-        SK.paymentInvoices, SK.firebaseConfig, SK.firebaseEnabled,
+        LK(SK.paymentInvoices), SK.firebaseConfig, SK.firebaseEnabled,
         SK.authSession, SK.devContact, SK.masterResetHash,
         SK.recoveryPhone, SK.recoveryPinHash,
-        SK.businessType, SK.businessTypeLocked, SK.enabledBusinessTypes,
       ];
       const DEFERRED_KEYS = [
-        SK.smsLog, SK.deletedCustomers, SK.deletedProducts, SK.smsGateway,
+        LK(SK.smsLog), LK(SK.deletedCustomers), LK(SK.deletedProducts), SK.smsGateway,
         SK.lastAutoBackup, SK.anthropicKey, SK.smsTemplates, SK.autoBackupEnabled,
-        SK.lastMasterSync, SK.autoMasterSyncEnabled, SK.suppliers, SK.purchaseOrders,
-        SK.stockMovements, SK.cashLogs, SK.expenses, SK.returns, SK.auditLogs,
-        SK.quotations, SK.supplierPayments,
+        SK.lastMasterSync, SK.autoMasterSyncEnabled, LK(SK.suppliers), LK(SK.purchaseOrders),
+        LK(SK.stockMovements), LK(SK.cashLogs), LK(SK.expenses), LK(SK.returns), LK(SK.auditLogs),
+        LK(SK.quotations), LK(SK.supplierPayments),
       ];
       const boot1 = await loadMany(CRITICAL_KEYS);
-      const rawCustomers    = boot1[SK.customers];
-      const rawProds        = boot1[SK.products];
-      const rawInvoices     = boot1[SK.invoices];
-      const rawTxns         = boot1[SK.txns];
+      const rawCustomers    = boot1[LK(SK.customers)];
+      const rawProds        = boot1[LK(SK.products)];
+      const rawInvoices     = boot1[LK(SK.invoices)];
+      const rawTxns         = boot1[LK(SK.txns)];
       const rawUsers        = boot1[SK.users];
       const shopNameVal     = boot1[SK.shopName];
       const darkModeVal     = boot1[SK.darkMode];
       const activeThemeVal  = boot1[SK.activeTheme];
       const fontSizeVal     = boot1[SK.fontSize];
-      const rawPayInv       = boot1[SK.paymentInvoices];
+      const rawPayInv       = boot1[LK(SK.paymentInvoices)];
       const fbCfg           = boot1[SK.firebaseConfig];
       const fbOn            = boot1[SK.firebaseEnabled];
       const savedUser       = boot1[SK.authSession];
@@ -11885,13 +11975,6 @@ function SmartBusinessMgmt() {
       const masterHashVal   = boot1[SK.masterResetHash];
       const recoveryPhoneVal   = boot1[SK.recoveryPhone];
       const recoveryPinHashVal = boot1[SK.recoveryPinHash];
-      // 🔴 ফিক্স (রুট কজ — মাল্টি-বিজনেস ক্রস-কনটামিনেশন): এখন wave 1-এই পড়া হয়,
-      // দেখুন CRITICAL_KEYS-এর উপরের কমেন্ট।
-      const businessTypeVal        = boot1[SK.businessType]         || "pharmacy";
-      const businessTypeLockedVal  = boot1[SK.businessTypeLocked]   || false;
-      const enabledBusinessTypesVal = (Array.isArray(boot1[SK.enabledBusinessTypes]) && boot1[SK.enabledBusinessTypes].length)
-        ? boot1[SK.enabledBusinessTypes]
-        : [businessTypeVal];
 
       // ── #৭ স্কিমা মাইগ্রেশন — কেন্দ্রীয় SCHEMA_MIGRATIONS রেজিস্ট্রি থেকে ─────
       // আগে এখানে শুধু products-এর batches[] মাইগ্রেশন হার্ডকোড ছিল (Batch-1
@@ -11974,9 +12057,9 @@ function SmartBusinessMgmt() {
       setTimeout(async () => {
         const boot2 = await loadMany(DEFERRED_KEYS);
         _patch({
-          smsLog:                boot2[SK.smsLog]              || [],
-          deletedCustomers:      boot2[SK.deletedCustomers]     || [],
-          deletedProducts:       boot2[SK.deletedProducts]      || [],
+          smsLog:                boot2[LK(SK.smsLog)]              || [],
+          deletedCustomers:      boot2[LK(SK.deletedCustomers)]     || [],
+          deletedProducts:       boot2[LK(SK.deletedProducts)]      || [],
           smsGateway:            boot2[SK.smsGateway]           || null,
           lastAutoBackup:        boot2[SK.lastAutoBackup]       || null,
           anthropicKey:          boot2[SK.anthropicKey]         || "",
@@ -11984,15 +12067,15 @@ function SmartBusinessMgmt() {
           autoBackupEnabled:     boot2[SK.autoBackupEnabled]    ?? false,
           lastMasterSync:        boot2[SK.lastMasterSync]       || null,
           autoMasterSyncEnabled: boot2[SK.autoMasterSyncEnabled]?? false,
-          suppliers:             boot2[SK.suppliers]            || [],
-          purchaseOrders:        boot2[SK.purchaseOrders]       || [],
-          stockMovements:        boot2[SK.stockMovements]       || [],
-          cashLogs:              boot2[SK.cashLogs]             || [],
-          expenses:              boot2[SK.expenses]             || [],
-          returns:               boot2[SK.returns]              || [],
-          auditLogs:             boot2[SK.auditLogs]            || [],
-          quotations:            boot2[SK.quotations]           || [],
-          supplierPayments:      boot2[SK.supplierPayments]     || [],
+          suppliers:             boot2[LK(SK.suppliers)]            || [],
+          purchaseOrders:        boot2[LK(SK.purchaseOrders)]       || [],
+          stockMovements:        boot2[LK(SK.stockMovements)]       || [],
+          cashLogs:              boot2[LK(SK.cashLogs)]             || [],
+          expenses:              boot2[LK(SK.expenses)]             || [],
+          returns:               boot2[LK(SK.returns)]              || [],
+          auditLogs:             boot2[LK(SK.auditLogs)]            || [],
+          quotations:            boot2[LK(SK.quotations)]           || [],
+          supplierPayments:      boot2[LK(SK.supplierPayments)]     || [],
           // businessType/businessTypeLocked/enabledBusinessTypes এখন wave 1-এই
           // সেট হয়ে গেছে (দেখুন উপরের CRITICAL_KEYS কমেন্ট) — এখানে আর বসানো হয়
           // না, নাহলে wave 2 আবার সেগুলোকে (এই মুহূর্তে ঠিকমতোই থাকা) ওভাররাইট
@@ -12157,7 +12240,13 @@ function SmartBusinessMgmt() {
       for (const coll of ["invoices", "txns", "stockMovements", "cashLogs"]) {
         const items = await SyncOutbox.getAll(coll);
         if (cancelled || !items.length) continue;
+        const currentPrefix = FSS._businessPrefix || null;
         items.forEach(it => {
+          // 🔴 ফিক্স (মাল্টি-বিজনেস কন্টামিনেশন): দেখুন useFSSCollection-এর একই
+          // ফিক্সের কমেন্ট — এই ৪টা windowed কালেকশনের outbox flush-ও এখন
+          // prefix-filtered।
+          const itemPrefix = Object.prototype.hasOwnProperty.call(it, "prefix") ? it.prefix : null;
+          if (itemPrefix !== currentPrefix) return;
           FSS.setRecord(coll, it.recordId, it.rec).then(res => {
             if (res && res.ok === false) {
               logErrorToCentral?.(`windowed-outbox-flush:${coll}`, new Error(res.msg || "flush failed"), { id: it.recordId });
@@ -12276,6 +12365,10 @@ function SmartBusinessMgmt() {
     const isMultiBusiness = Array.isArray(enabledBusinessTypes) && enabledBusinessTypes.length > 1;
     const prefix = isMultiBusiness ? (BUSINESS_TYPE_REGISTRY[businessType]?.collectionPrefix || null) : null;
     FSS.setBusinessPrefix(prefix);
+    // 🔴 ফিক্স (মাল্টি-বিজনেস কন্টামিনেশন — local cache namespacing): Firestore
+    // prefix-এর সাথে সাথেই local storage/IndexedDB prefix (LK) আপডেট হয় — নাহলে
+    // নিচের persistence effect-গুলো ভুল (আগের বিজনেসের) local key-তে সেভ করে ফেলত।
+    setLocalBusinessPrefix(prefix);
     // 🔴 ফিক্স (ডিফেন্স-ইন-ডেপথ — মাল্টি-বিজনেস ক্রস-কনটামিনেশন): boot-race
     // ফিক্স (দেখুন CRITICAL_KEYS-এর কমেন্ট) মূল কারণটা বন্ধ করে দিলেও, businessType/
     // enabledBusinessTypes ভবিষ্যতে অন্য কোনো পথে (যেমন remote businessConfig
@@ -12554,11 +12647,11 @@ function SmartBusinessMgmt() {
   useStaffPermissionGuard(fssReady, loaded, setCurrentUser, setUsers);
 
 
-  useEffect(() => { if (loaded) { debouncedSave(SK.customers, customers, 1500); setBackupNeeded(true); } }, [customers, loaded]);
-  useEffect(() => { if (loaded) { debouncedSave(SK.products,  products,  1500); setBackupNeeded(true); } }, [products, loaded]);
-  useEffect(() => { if (loaded) { debouncedSave(SK.invoices,  invoices,  1500); setBackupNeeded(true); } }, [invoices, loaded]);
-  useEffect(() => { if (loaded) { debouncedSave(SK.txns,      txns,      2000); setBackupNeeded(true); } }, [txns, loaded]);
-  useEffect(() => { if (loaded) debouncedSave(SK.smsLog, smsLog, 2000); }, [smsLog, loaded]);
+  useEffect(() => { if (loaded) { debouncedSave(LK(SK.customers), customers, 1500); setBackupNeeded(true); } }, [customers, loaded]);
+  useEffect(() => { if (loaded) { debouncedSave(LK(SK.products),  products,  1500); setBackupNeeded(true); } }, [products, loaded]);
+  useEffect(() => { if (loaded) { debouncedSave(LK(SK.invoices),  invoices,  1500); setBackupNeeded(true); } }, [invoices, loaded]);
+  useEffect(() => { if (loaded) { debouncedSave(LK(SK.txns),      txns,      2000); setBackupNeeded(true); } }, [txns, loaded]);
+  useEffect(() => { if (loaded) debouncedSave(LK(SK.smsLog), smsLog, 2000); }, [smsLog, loaded]);
   useEffect(() => { if (loaded) save(SK.users,     users);     }, [users, loaded]);
   useEffect(() => { if (loaded) save(SK.shopName,  shopName);  }, [shopName, loaded]);
   useEffect(() => { if (loaded) save(SK.darkMode,  darkMode);  }, [darkMode, loaded]);
@@ -12590,8 +12683,8 @@ function SmartBusinessMgmt() {
     } catch {}
   }, [activeTheme, currentPreset]);
   useEffect(() => { if (loaded) save(SK.fontSize, fontSize); }, [fontSize, loaded]);
-  useEffect(() => { if (loaded) save(SK.deletedCustomers, deletedCustomers); }, [deletedCustomers, loaded]);
-  useEffect(() => { if (loaded) save(SK.deletedProducts,  deletedProducts);  }, [deletedProducts,  loaded]);
+  useEffect(() => { if (loaded) save(LK(SK.deletedCustomers), deletedCustomers); }, [deletedCustomers, loaded]);
+  useEffect(() => { if (loaded) save(LK(SK.deletedProducts),  deletedProducts);  }, [deletedProducts,  loaded]);
   // 🗑️ Recycle Bin auto-cleanup — ৩০ দিনের বেশি পুরনো এন্ট্রি স্থায়ীভাবে সরিয়ে দেয়
   // (_deletedAt না থাকা পুরনো এন্ট্রি স্পর্শ করে না — শুধু নতুন টাইমস্ট্যাম্প-যুক্ত এন্ট্রি চেক করে)
   useEffect(() => {
@@ -12608,7 +12701,7 @@ function SmartBusinessMgmt() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
-  useEffect(() => { if (loaded) debouncedSave(SK.paymentInvoices, paymentInvoices, 1500); }, [paymentInvoices, loaded]);
+  useEffect(() => { if (loaded) debouncedSave(LK(SK.paymentInvoices), paymentInvoices, 1500); }, [paymentInvoices, loaded]);
   useEffect(() => { if (loaded) save(SK.smsGateway, smsGateway); }, [smsGateway, loaded]);
   useEffect(() => { if (loaded) save(SK.anthropicKey, anthropicKey); }, [anthropicKey, loaded]);
   useEffect(() => { if (loaded) save(SK.smsTemplates, smsTemplates); }, [smsTemplates, loaded]);
@@ -12714,17 +12807,17 @@ function SmartBusinessMgmt() {
       }
     })();
   }, [currentUser?.role, loaded]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (loaded) debouncedSave(SK.suppliers,      suppliers,      1500); }, [suppliers,      loaded]);
-  useEffect(() => { if (loaded) debouncedSave(SK.purchaseOrders, purchaseOrders, 1500); }, [purchaseOrders, loaded]);
-  useEffect(() => { if (loaded) debouncedSave(SK.stockMovements, stockMovements, 1500); }, [stockMovements, loaded]);
-  useEffect(() => { if (loaded) debouncedSave(SK.cashLogs,       cashLogs,       1500); }, [cashLogs,       loaded]);
+  useEffect(() => { if (loaded) debouncedSave(LK(SK.suppliers),      suppliers,      1500); }, [suppliers,      loaded]);
+  useEffect(() => { if (loaded) debouncedSave(LK(SK.purchaseOrders), purchaseOrders, 1500); }, [purchaseOrders, loaded]);
+  useEffect(() => { if (loaded) debouncedSave(LK(SK.stockMovements), stockMovements, 1500); }, [stockMovements, loaded]);
+  useEffect(() => { if (loaded) debouncedSave(LK(SK.cashLogs),       cashLogs,       1500); }, [cashLogs,       loaded]);
   // 🔴 ফিক্স: এই ৫টা কালেকশনের আগে কোনো লোকাল পার্সিস্টেন্স ছিল না — Firebase বন্ধ
   // থাকা (local-only) দোকানে প্রতি রিলোডে এই ডেটা হারিয়ে যেত।
-  useEffect(() => { if (loaded) debouncedSave(SK.expenses,         expenses,         1500); }, [expenses,         loaded]);
-  useEffect(() => { if (loaded) debouncedSave(SK.returns,          returns,          1500); }, [returns,          loaded]);
-  useEffect(() => { if (loaded) debouncedSave(SK.auditLogs,        auditLogs,        2000); }, [auditLogs,        loaded]);
-  useEffect(() => { if (loaded) debouncedSave(SK.quotations,       quotations,       1500); }, [quotations,       loaded]);
-  useEffect(() => { if (loaded) debouncedSave(SK.supplierPayments, supplierPayments, 1500); }, [supplierPayments, loaded]);
+  useEffect(() => { if (loaded) debouncedSave(LK(SK.expenses),         expenses,         1500); }, [expenses,         loaded]);
+  useEffect(() => { if (loaded) debouncedSave(LK(SK.returns),          returns,          1500); }, [returns,          loaded]);
+  useEffect(() => { if (loaded) debouncedSave(LK(SK.auditLogs),        auditLogs,        2000); }, [auditLogs,        loaded]);
+  useEffect(() => { if (loaded) debouncedSave(LK(SK.quotations),       quotations,       1500); }, [quotations,       loaded]);
+  useEffect(() => { if (loaded) debouncedSave(LK(SK.supplierPayments), supplierPayments, 1500); }, [supplierPayments, loaded]);
   // 🔴 ফিক্স: "ব্যাকআপ প্রয়োজন" ব্যাজ আগে শুধু customers/products/invoices/txns
   // বদলালে জ্বলত — বাকি ব্যাকআপযোগ্য ফিল্ডগুলো বদলালে জ্বলত না।
   useEffect(() => { if (loaded) setBackupNeeded(true); }, [suppliers, purchaseOrders, stockMovements, cashLogs, expenses, returns, auditLogs, quotations, supplierPayments, paymentInvoices, loaded]);
@@ -29651,18 +29744,22 @@ function Settings_({ T, S, shopName,
       // IndexedDB থেকে আবার লোড হয়ে যেত। এখানে সরাসরি await দিয়ে সব key
       // এখনই flush করে দেওয়া হচ্ছে, ডিবাউন্সের উপর নির্ভর না করে।
       setDelBkMsg("লোকাল স্টোরেজ ফাঁকা করা হচ্ছে...");
+      // 🔴 ফিক্স (মাল্টি-বিজনেস Master Reset): আগে শুধু বর্তমান সক্রিয় বিজনেসের
+      // (LK() prefix) local key খালি হতো — অন্য বিজনেস-টাইপের ডেটা local cache-এ
+      // রয়ে যেত, ফলে "রিসেট দিলাম, কিছুক্ষণ পর আবার ফিরে এলো" আচরণ হতে পারত
+      // (Firestore থেকেও শুধু বর্তমান prefix মোছা হতো — নিচের FSS.clearAllData
+      // কলও দেখুন)। এখন প্রতিটা business-scoped key-র জন্য প্রতিটা রেজিস্টার্ড
+      // বিজনেস-টাইপের prefixed variant + unprefixed (legacy/single-business)
+      // variant — সবকটাই খালি করা হয়।
       try {
-        await Promise.all([
-          save(SK.customers, []),        save(SK.products, []),
-          save(SK.invoices, []),         save(SK.txns, []),
-          save(SK.smsLog, []),           save(SK.paymentInvoices, []),
-          save(SK.purchaseOrders, []),   save(SK.stockMovements, []),
-          save(SK.deletedProducts, []),  save(SK.deletedCustomers, []),
-          save(SK.cashLogs, []),         save(SK.suppliers, []),
-          save(SK.expenses, []),         save(SK.returns, []),
-          save(SK.auditLogs, []),        save(SK.quotations, []),
-          save(SK.supplierPayments, []),
-        ]);
+        const scopedKeys = [
+          SK.customers, SK.products, SK.invoices, SK.txns,
+          SK.smsLog, SK.paymentInvoices, SK.purchaseOrders, SK.stockMovements,
+          SK.deletedProducts, SK.deletedCustomers, SK.cashLogs, SK.suppliers,
+          SK.expenses, SK.returns, SK.auditLogs, SK.quotations, SK.supplierPayments,
+        ];
+        const allKeysToClear = scopedKeys.flatMap(allBizVariantsOf);
+        await Promise.all(allKeysToClear.map(k => save(k, [])));
       } catch {}
 
       // 2️⃣ Firestore — লাইভ রিয়েল-টাইম ডেটা (সব collection + settings) মুছো
@@ -29694,9 +29791,15 @@ function Settings_({ T, S, shopName,
           // 🔴 ফিক্স: আগে এই কল করা হতো কিন্তু রিটার্ন ভ্যালু কখনো চেক হতো না —
           // ব্যর্থ/আংশিক হলেও নিঃশব্দে ধরে নেওয়া হতো সফল হয়েছে, তাই পুরনো ডেটা
           // Firestore-এ রয়ে যেত আর live listener সেটা আবার ফিরিয়ে আনত।
+          // 🔴 ফিক্স (মাল্টি-বিজনেস Master Reset): শুধু বর্তমান সক্রিয় বিজনেসের
+          // কালেকশন না, enabledBusinessTypes-এর সবগুলো prefix-এর Firestore ডেটাই
+          // মোছা হয় — নাহলে অন্য বিজনেস-টাইপের ডেটা Firestore-এ থেকেই যেত।
+          const allPrefixesToReset = (Array.isArray(enabledBusinessTypes) && enabledBusinessTypes.length > 1)
+            ? enabledBusinessTypes.map(bt => BUSINESS_TYPE_REGISTRY[bt]?.collectionPrefix || null)
+            : null; // single-business শপে আগের মতোই শুধু বর্তমান (unprefixed) প্রিফিক্স
           const res = await FSS.clearAllData((done, total) => {
             setDelBkMsg(`Firestore মোছা হচ্ছে... (${done}/${total} কালেকশন সম্পন্ন)`);
-          });
+          }, allPrefixesToReset);
           if (!res?.ok) { firestoreOk = false; firestoreErr = res?.msg || "অজানা কারণ"; }
           if (googleDriveToken) { try { await FSS.setSettings({ googleDriveToken }); } catch {} }
         } catch (e) {
@@ -31305,7 +31408,12 @@ function Settings_({ T, S, shopName,
                 if (!window.confirm("শেষ সুযোগ — Firestore-এর সব ডেটা মুছবেন?")) return;
                 setFbClearing(true);
                 FSS.init(fbForm);
-                const result = await FSS.clearAllData();
+                // 🔴 ফিক্স (মাল্টি-বিজনেস কন্টামিনেশন): এই বাটনও এখন সব বিজনেস-
+                // টাইপের prefix মোছে, শুধু বর্তমান সক্রিয়টা না (দেখুন runDeleteAllBackups)।
+                const allPrefixesToClear = (Array.isArray(enabledBusinessTypes) && enabledBusinessTypes.length > 1)
+                  ? enabledBusinessTypes.map(bt => BUSINESS_TYPE_REGISTRY[bt]?.collectionPrefix || null)
+                  : null;
+                const result = await FSS.clearAllData(undefined, allPrefixesToClear);
                 setFbClearing(false);
                 if (result.ok) showToast("✅ Firestore ডেটা মুছা হয়েছে", "#ef4444");
                 else showToast(`❌ ব্যর্থ: ${result.msg}`, "#ef4444");
