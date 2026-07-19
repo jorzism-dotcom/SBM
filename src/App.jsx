@@ -11853,6 +11853,19 @@ function SmartBusinessMgmt() {
   // Settings/Sync Diagnostics কার্ডে owner-কে দেখানো হবে যে recovery backup আপডেট হয়নি।
   const [recoveryPushFailed, setRecoveryPushFailed] = useState(false);
 
+  // 🔴 ফিক্স (TDZ ক্র্যাশ): showToast আগে useCallback-এর dependency array-তে
+  // ব্যবহার হতো কিন্তু const হিসেবে declare হতো অনেক পরে (~লাইন 12587-এ) —
+  // ফলে প্রতিবার অ্যাপ ওপেন হওয়ার সাথে সাথেই
+  // "Cannot access 'showToast' before initialization" ক্র্যাশ হতো। এখন এই
+  // declaration-টা autoBalanceDriftCheck-এর আগে আনা হলো (dependencies
+  // setToast/safeTimeout দুটোই এর আগেই declare করা আছে, তাই এখানে তোলা নিরাপদ)।
+  const showToast = useCallback((msg, color = "#22c55e") => {
+    // 🔴 ফিক্স: warning/error (যেমন Master Reset-এর Firestore detail) বেশি লম্বা
+    // হয় আর গুরুত্বপূর্ণ — সবুজ "সেভ হয়েছে ✓"-এর মতো ৩.২s-এ পড়া যায় না।
+    const dur = (color === "#f59e0b" || color === "#ef4444") ? 8000 : 3200;
+    setToast({ msg, color }); safeTimeout(() => setToast(null), dur);
+  }, [safeTimeout]);
+
   // 🔴 ফিক্স (রুট কজ ৩ — রিকনেক্ট-পরবর্তী ড্রিফট-অ্যালার্ট): অফলাইন রেসের সব
   // কোণা কখনোই ১০০% প্রুফ করা যাবে না (উপরের void/return/createInvoice
   // ফিক্সগুলো prevention, কিন্তু ভবিষ্যতে নতুন race condition এলেও যেন ধরা
@@ -12583,13 +12596,6 @@ function SmartBusinessMgmt() {
   // backup) করত, ভিন্ন শর্তে, ভিন্ন সময়ে। এখন শুধু একটাই timer আছে (নিচে),
   // যেটা বেশি ঘনঘন চলে (৫-৪৫ মিনিট, আগেরটার ১ ঘণ্টার চেয়ে বেশি frequent) —
   // তাই backup frequency কমেনি, শুধু duplicate logic সরানো হয়েছে।
-
-  const showToast = useCallback((msg, color = "#22c55e") => {
-    // 🔴 ফিক্স: warning/error (যেমন Master Reset-এর Firestore detail) বেশি লম্বা
-    // হয় আর গুরুত্বপূর্ণ — সবুজ "সেভ হয়েছে ✓"-এর মতো ৩.২s-এ পড়া যায় না।
-    const dur = (color === "#f59e0b" || color === "#ef4444") ? 8000 : 3200;
-    setToast({ msg, color }); safeTimeout(() => setToast(null), dur);
-  }, [safeTimeout]);
 
   // 🔴 Backup source fix — আগে এই ফাংশন windowed local `invoices` state (শুধু
   // শেষ ৩০ দিন) থেকে backup বানাত, তাই ৩০ দিনের বেশি পুরনো সব invoice নিঃশব্দে
