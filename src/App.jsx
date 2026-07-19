@@ -109,7 +109,7 @@ const useAppStore = create(subscribeWithSelector((set) => ({
 
   // ── Theme ─────────────────────────────────────────────────────────────────
   darkMode:          true,
-  activeTheme:       "forest",
+  activeTheme:       "neon",
   fontSize:          15,
 
   // ── SMS ───────────────────────────────────────────────────────────────────
@@ -5519,7 +5519,12 @@ const FSS = {
       const ref = this.doc("products", productId);
       const result = await runTransaction(this._db, async (tx) => {
         const snap = await tx.get(ref);
-        if (!snap.exists()) return null;
+        // 🔴 ফিক্স (বাগ ৩ — ডিলিট হওয়া পণ্যে নীরব স্কিপ): আগে এখানে null রিটার্ন হতো,
+        // যা transient network error-এর null-এর সাথে আলাদা করা যেত না। এখন
+        // { deleted: true } রিটার্ন হয়, যাতে caller নিশ্চিতভাবে জানতে পারে পণ্যটা
+        // সত্যিই ডিলিট হয়ে গেছে (legit skip) — আর দোকানদারকে সেটা জানাতে পারে,
+        // পরিবর্তে ভুলবশত এটাকে transient error ভেবে queue-তে রিট্রাই না করে।
+        if (!snap.exists()) return { deleted: true };
         const serverProduct = { id: snap.id, ...snap.data() };
         let updatedBatches = serverProduct.batches ? [...serverProduct.batches] : [];
         if (restoreBatchNo) {
@@ -5559,8 +5564,13 @@ const FSS = {
       });
       return result;
     } catch (e) {
+      // 🔴 ফিক্স (বাগ ৪): এখানে ধরা পড়া এরর মানে transient failure (নেটওয়ার্ক/
+      // পারমিশন/সাময়িক সমস্যা) — পণ্য ডিলিট নয় (সেটা উপরে আলাদাভাবে { deleted: true }
+      // দিয়ে চিহ্নিত হয়)। null রিটার্ন করে caller-কে বলা হচ্ছে: এটা রিট্রাই-যোগ্য,
+      // তাই caller-এর উচিত queue-তে জমা রাখা, শুধু local absolute-value write দিয়ে
+      // "সমাধান" ধরে না নেওয়া।
       logErrorToCentral?.("transaction:restoreStock", e, { productId, restoreQty });
-      return null; // ব্যর্থ হলে caller local fallback ব্যবহার করবে
+      return null; // null = transient failure → caller queue করবে + সাময়িক local fallback দেখাবে
     } finally {
       clearFieldTxPending("products", productId, ["stock", "batches"]);
     }
@@ -5581,7 +5591,9 @@ const FSS = {
       const ref = this.doc("products", productId);
       const result = await runTransaction(this._db, async (tx) => {
         const snap = await tx.get(ref);
-        if (!snap.exists()) return null;
+        // 🔴 ফিক্স (বাগ ৩, transactionRestoreStock()-এর সাথে সামঞ্জস্যপূর্ণ): ডিলিট
+        // হওয়া পণ্য transient error থেকে আলাদা করতে { deleted: true } রিটার্ন।
+        if (!snap.exists()) return { deleted: true };
         const serverProduct = { id: snap.id, ...snap.data() };
         let updatedBatches = serverProduct.batches ? [...serverProduct.batches] : [];
         let totalRestore = 0;
@@ -5612,8 +5624,10 @@ const FSS = {
       });
       return result;
     } catch (e) {
+      // 🔴 ফিক্স (বাগ ৪, transactionRestoreStock()-এর সাথে সামঞ্জস্যপূর্ণ): null =
+      // transient failure, caller queue করবে।
       logErrorToCentral?.("transaction:restoreStockBatches", e, { productId, restoreItems });
-      return null; // ব্যর্থ হলে caller local fallback ব্যবহার করবে
+      return null;
     } finally {
       clearFieldTxPending("products", productId, ["stock", "batches"]);
     }
@@ -6140,17 +6154,36 @@ const FSS = {
       if (itemPrefix !== currentPrefix) { remaining.push(item); continue; }
       const failedRestoreItems = [];
       let failedBalanceUpdate = null;
-      try {
-        if (item.restoreItems?.length) {
+      // 🔴 ফিক্স (বাগ ২ — Promise.all-এর ভুল ব্যবহার): আগে কোনো একটা আইটেমে এরর হলে পুরো
+      // Promise.all reject হয়ে যেত, আর নিচের বাইরের catch পুরো `item`-টাই (ইতিমধ্যে
+      // সফলভাবে restore হওয়া আইটেমগুলোসহ) আবার queue-তে ফেরত দিত — পরের flush-এ সেগুলো
+      // দ্বিতীয়বার restore হয়ে ডাবল-স্টক তৈরি করত। এখন প্রতিটা আইটেমের এরর নিজের
+      // try/catch-এ ধরা হয় — Promise.all কখনো reject হয় না, শুধু সেই একটা আইটেমই ব্যর্থ
+      // হিসেবে চিহ্নিত হয়ে queue-তে থাকে, বাকি সফল আইটেমগুলো normally প্রয়োগ হয়ে যায়।
+      if (item.restoreItems?.length) {
+        try {
+          const deletedProductIds = [];
           const restoreResults = await Promise.all(item.restoreItems.map(async (ri) => {
-            const txResult = (Array.isArray(ri.batchBreakdown) && ri.batchBreakdown.length > 0)
-              ? await this.transactionRestoreStockBatches(ri.productId, ri.batchBreakdown, ri.voidAdjBatchNo)
-              : await this.transactionRestoreStock(ri.productId, ri.qty, ri.batchNo || "", {
-                  costPrice: ri.costPrice || 0, expiryDate: ri.expiryDate || "", voidAdjBatchNo: ri.voidAdjBatchNo,
-                });
-            if (!txResult) failedRestoreItems.push(ri);
-            return txResult ? { id: ri.productId, ...txResult } : null;
+            try {
+              const txResult = (Array.isArray(ri.batchBreakdown) && ri.batchBreakdown.length > 0)
+                ? await this.transactionRestoreStockBatches(ri.productId, ri.batchBreakdown, ri.voidAdjBatchNo)
+                : await this.transactionRestoreStock(ri.productId, ri.qty, ri.batchNo || "", {
+                    costPrice: ri.costPrice || 0, expiryDate: ri.expiryDate || "", voidAdjBatchNo: ri.voidAdjBatchNo,
+                  });
+              // 🔴 ফিক্স (বাগ ৩): পণ্য সত্যিই ডিলিট হয়ে থাকলে ({ deleted: true }) সেটাকে আর
+              // রিট্রাই করার মানে নেই (চিরকাল queue-তে আটকে থাকত) — বাদ দিয়ে লগ করা হচ্ছে।
+              if (txResult?.deleted) { deletedProductIds.push(ri.productId); return null; }
+              if (!txResult) { failedRestoreItems.push(ri); return null; } // transient — পরের চেষ্টায় আবার হবে
+              return { id: ri.productId, ...txResult };
+            } catch (e) {
+              logErrorToCentral?.("flushPendingVoidRestores:item", e, { invoiceId: item.invoiceId, productId: ri.productId });
+              failedRestoreItems.push(ri);
+              return null;
+            }
           }));
+          if (deletedProductIds.length) {
+            logErrorToCentral?.("flushPendingVoidRestores:productDeleted", null, { invoiceId: item.invoiceId, productIds: deletedProductIds });
+          }
           const validResults = restoreResults.filter(Boolean);
           if (validResults.length && setProducts) {
             const resMap = new Map(validResults.map(r => [r.id, r]));
@@ -6159,19 +6192,27 @@ const FSS = {
               return r ? { ...p, stock: r.stock, batches: r.batches, lastUpdated: new Date().toISOString() } : p;
             }));
           }
+        } catch (e) {
+          // এই ব্লকের বাইরের কোনো অপ্রত্যাশিত এরর (যেমন Promise.all সেটআপেই সমস্যা) —
+          // পুরো restoreItems আবার queue-তে (ডাবল-রিস্টোরের ঝুঁকি নেই কারণ এখানে কোনো
+          // আইটেমই এখনো সফল হয়নি বলে ধরে নেওয়া নিরাপদ, উপরের সব await Promise.all-এর ভেতরেই)।
+          logErrorToCentral?.("flushPendingVoidRestores:restoreItems", e, { invoiceId: item.invoiceId });
+          failedRestoreItems.push(...item.restoreItems);
         }
-        if (item.balanceUpdate) {
+      }
+      if (item.balanceUpdate) {
+        try {
           const { customerId, netChange } = item.balanceUpdate;
           const txBal = await this.transactionUpdateBalance(customerId, (serverBal) => Math.max(0, serverBal - netChange));
           if (txBal === null) { failedBalanceUpdate = item.balanceUpdate; }
           else if (setCustomers) setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, balance: txBal } : c));
+        } catch (e) {
+          logErrorToCentral?.("flushPendingVoidRestores:balance", e, { invoiceId: item.invoiceId });
+          failedBalanceUpdate = item.balanceUpdate;
         }
-        if (failedRestoreItems.length || failedBalanceUpdate) {
-          remaining.push({ ...item, restoreItems: failedRestoreItems, balanceUpdate: failedBalanceUpdate });
-        }
-      } catch (e) {
-        logErrorToCentral?.("flushPendingVoidRestores", e, { invoiceId: item.invoiceId });
-        remaining.push(item);
+      }
+      if (failedRestoreItems.length || failedBalanceUpdate) {
+        remaining.push({ ...item, restoreItems: failedRestoreItems, balanceUpdate: failedBalanceUpdate });
       }
     }
     try { localStorage.setItem("sbm_pending_void_restores", JSON.stringify(remaining)); } catch {}
@@ -9552,14 +9593,24 @@ const LIGHT = {
 // ─── Theme Presets ────────────────────────────────────────────────────────────
 const THEME_PRESETS = [
   // ── বাম পাশ (Light) | ডান পাশ (Dark) — 2-column grid-এ পাশাপাশি দেখাবে ──
-  { id:"light",       label:"Light",           dark:false, accent:"#15803d", accentDark:"#166534", bg:"#f0faf3",   card:"#ffffff",  border:"#d4eddb", header:"linear-gradient(160deg,#14532d,#15803d,#166534)",   statusBar:"#14532d", text:"#0d2010", sub:"#5a8a6a", nav:"#ffffff", navActive:"#15803d", headingColor:"#ffffff", meshD:null, meshL:["rgba(21,128,61,0.22)","rgba(6,182,212,0.18)","rgba(255,140,0,0.14)","rgba(99,102,241,0.12)"] },
-  { id:"forest",      label:"Forest Green",    dark:true,  accent:"#4ade80", accentDark:"#22c55e", bg:"#020f06",   card:"#071a0d",  border:"#0e3a1a", header:"linear-gradient(160deg,#021407,#093d12,#041a09)",   statusBar:"#021407", text:"#dcfce7", sub:"#4a8a5a", nav:"#071a0d", navActive:"#4ade80", headingColor:"#86efac", meshD:["rgba(74,222,128,0.28)","rgba(34,197,94,0.20)","rgba(16,185,129,0.18)","rgba(5,150,105,0.14)"], meshL:null },
-  { id:"rosegold",    label:"Rose Gold",       dark:false, accent:"#e11d48", accentDark:"#be123c", bg:"#fff5f7",   card:"#ffffff",  border:"#fecdd3", header:"linear-gradient(160deg,#9d1a3c,#be1850,#8b1535)",   statusBar:"#9d1a3c", text:"#1a0008", sub:"#8a4a5a", nav:"#ffffff", navActive:"#e11d48", headingColor:"#ffffff", meshD:null, meshL:["rgba(225,29,72,0.18)","rgba(251,113,133,0.14)","rgba(255,182,193,0.20)","rgba(255,100,150,0.12)"] },
-  { id:"volcano",     label:"Volcano Red",     dark:true,  accent:"#ff3300", accentDark:"#cc1100", bg:"#0f0000",   card:"#1a0303",  border:"#5c1010", header:"linear-gradient(160deg,#1a0000,#2d0505,#1a0303)",   statusBar:"#100000", text:"#fff0ee", sub:"#b05050", nav:"#150202", navActive:"#ff3300", headingColor:"#ff6600", meshD:["rgba(239,68,68,0.35)","rgba(220,38,38,0.26)","rgba(251,146,60,0.20)","rgba(185,28,28,0.18)"], meshL:null },
-  { id:"arctic",      label:"Arctic",          dark:false, accent:"#0891b2", accentDark:"#0e7490", bg:"#f0fafe",   card:"#ffffff",  border:"#bae6fd", header:"linear-gradient(160deg,#0c4a6e,#0369a1,#075985)",   statusBar:"#0c4a6e", text:"#0c1a24", sub:"#4a7a9a", nav:"#ffffff", navActive:"#0891b2", headingColor:"#ffffff", meshD:null, meshL:["rgba(8,145,178,0.18)","rgba(14,165,233,0.14)","rgba(99,202,241,0.16)","rgba(56,189,248,0.12)"] },
-  { id:"aurora",      label:"Aurora Borealis", dark:true,  accent:"#34d399", accentDark:"#059669", bg:"#020c14",   card:"#041c28",  border:"#0a3a48", header:"linear-gradient(160deg,#020c14,#041c2c,#051e2e)",   statusBar:"#020c14", text:"#ecfdf5", sub:"#3a8a7a", nav:"#041c28", navActive:"#34d399", headingColor:"#6ee7b7", meshD:["rgba(52,211,153,0.30)","rgba(56,189,248,0.24)","rgba(99,102,241,0.18)","rgba(168,85,247,0.16)"], meshL:null },
-  { id:"mint",        label:"Mint Fresh",      dark:false, accent:"#10b981", accentDark:"#059669", bg:"#f0fdf9",   card:"#ffffff",  border:"#a7f3d0", header:"linear-gradient(160deg,#064e3b,#065f46,#047857)",   statusBar:"#064e3b", text:"#022c22", sub:"#3a7a6a", nav:"#ffffff", navActive:"#10b981", headingColor:"#ffffff", meshD:null, meshL:["rgba(16,185,129,0.22)","rgba(52,211,153,0.18)","rgba(6,182,212,0.14)","rgba(5,150,105,0.16)"] },
-  { id:"gold",        label:"Royal Gold",      dark:true,  accent:"#f59e0b", accentDark:"#d97706", bg:"#0c0800",   card:"#1a1200",  border:"#3d2e00", header:"linear-gradient(160deg,#0c0800,#1e1500,#160f00)",   statusBar:"#0c0800", text:"#fffbeb", sub:"#9a7a3a", nav:"#1a1200", navActive:"#f59e0b", headingColor:"#fcd34d", meshD:["rgba(245,158,11,0.32)","rgba(251,191,36,0.26)","rgba(234,88,12,0.18)","rgba(220,150,0,0.22)"], meshL:null },
+  { id:"neon", label:"Neo-Tokyo Neon", dark:true, accent:"#00e5ff", accentDark:"#ff2a6d", bg:"#050507", card:"#05191d", border:"#04363e", header:"linear-gradient(160deg,#050507,#043f47,#042227)", statusBar:"#050507", text:"#e8e6f0", sub:"#4dbecb", nav:"#05191d", navActive:"#00e5ff", headingColor:"#64e8f7", meshD:["rgba(0,229,255,0.3)","rgba(255,42,109,0.24)","rgba(0,229,255,0.16)","rgba(255,42,109,0.14)"], meshL:null },
+  { id:"auroraglass", label:"Aurora Glass", dark:true, accent:"#7c7fff", accentDark:"#00c9a7", bg:"#060714", card:"#111229", border:"#202148", header:"linear-gradient(160deg,#060714,#252651,#151733)", statusBar:"#060714", text:"#eef0ff", sub:"#4d50cb", nav:"#111229", navActive:"#7c7fff", headingColor:"#9ea0fa", meshD:["rgba(124,127,255,0.3)","rgba(0,201,167,0.24)","rgba(124,127,255,0.16)","rgba(0,201,167,0.14)"], meshL:null },
+  { id:"bioocean", label:"Bioluminescent Ocean", dark:true, accent:"#00ffb4", accentDark:"#00d4ff", bg:"#020b0c", card:"#02211b", border:"#024131", header:"linear-gradient(160deg,#020b0c,#014a38,#022b22)", statusBar:"#020b0c", text:"#dff7f0", sub:"#4dcba6", nav:"#02211b", navActive:"#00ffb4", headingColor:"#64f7cc", meshD:["rgba(0,255,180,0.3)","rgba(0,212,255,0.24)","rgba(0,255,180,0.16)","rgba(0,212,255,0.14)"], meshL:null },
+  { id:"solarflare", label:"Solar Flare", dark:true, accent:"#ffb703", accentDark:"#ff6a00", bg:"#0c0906", card:"#221906", border:"#412f05", header:"linear-gradient(160deg,#0c0906,#4b3605,#2c2006)", statusBar:"#0c0906", text:"#fff3e6", sub:"#cba74d", nav:"#221906", navActive:"#ffb703", headingColor:"#f7ce67", meshD:["rgba(255,183,3,0.3)","rgba(255,106,0,0.24)","rgba(255,183,3,0.16)","rgba(255,106,0,0.14)"], meshL:null },
+  { id:"vapor", label:"Vaporwave Sunset", dark:true, accent:"#ff6ec7", accentDark:"#ffaa3c", bg:"#1a0b2e", card:"#2f143c", border:"#4c2150", header:"linear-gradient(160deg,#1a0b2e,#562556,#381842)", statusBar:"#1a0b2e", text:"#ffe6f5", sub:"#cb4d9b", nav:"#2f143c", navActive:"#ff6ec7", headingColor:"#fa9ed6", meshD:["rgba(255,110,199,0.3)","rgba(255,170,60,0.24)","rgba(255,110,199,0.16)","rgba(255,170,60,0.14)"], meshL:null },
+  { id:"ruby", label:"Blood Ruby", dark:true, accent:"#ff5c76", accentDark:"#e0a4ad", bg:"#0d0507", card:"#230d11", border:"#42181f", header:"linear-gradient(160deg,#0d0507,#4c1c24,#2c1015)", statusBar:"#0d0507", text:"#ffe9ec", sub:"#cb4d61", nav:"#230d11", navActive:"#ff5c76", headingColor:"#fa9ead", meshD:["rgba(255,92,118,0.3)","rgba(224,164,173,0.24)","rgba(255,92,118,0.16)","rgba(224,164,173,0.14)"], meshL:null },
+  { id:"sapphire", label:"Midnight Sapphire", dark:true, accent:"#5aa8ff", accentDark:"#c9d8ff", bg:"#020712", card:"#0a1527", border:"#152a46", header:"linear-gradient(160deg,#020712,#193150,#0d1c31)", statusBar:"#020712", text:"#e8f1ff", sub:"#4d89cb", nav:"#0a1527", navActive:"#5aa8ff", headingColor:"#9ec9fa", meshD:["rgba(90,168,255,0.3)","rgba(201,216,255,0.24)","rgba(90,168,255,0.16)","rgba(201,216,255,0.14)"], meshL:null },
+  { id:"volt", label:"Volt Lime", dark:true, accent:"#d4ff5c", accentDark:"#a3e635", bg:"#0a0d05", card:"#1c230d", border:"#364218", header:"linear-gradient(160deg,#0a0d05,#3f4c1c,#242c10)", statusBar:"#0a0d05", text:"#f2ffe0", sub:"#aacb4d", nav:"#1c230d", navActive:"#d4ff5c", headingColor:"#e2fa9e", meshD:["rgba(212,255,92,0.3)","rgba(163,230,53,0.24)","rgba(212,255,92,0.16)","rgba(163,230,53,0.14)"], meshL:null },
+  { id:"pearl", label:"Pearl Platinum", dark:false, accent:"#6b6f95", accentDark:"#9a9dc2", bg:"#f7f7fa", card:"#ffffff", border:"#dcdce6", header:"linear-gradient(160deg,#161a3b,#1f245c,#1c204a)", statusBar:"#161a3b", text:"#0f1015", sub:"#646787", nav:"#ffffff", navActive:"#6b6f95", headingColor:"#ffffff", meshD:null, meshL:["rgba(107,111,149,0.2)","rgba(154,157,194,0.16)","rgba(107,111,149,0.12)","rgba(154,157,194,0.1)"] },
+  { id:"frostmint", label:"Frosted Mint Glass", dark:false, accent:"#0ea472", accentDark:"#34d399", bg:"#eafaf3", card:"#ffffff", border:"#b8ecd4", header:"linear-gradient(160deg,#064b34,#07744f,#085e41)", statusBar:"#064b34", text:"#071c15", sub:"#3fac87", nav:"#ffffff", navActive:"#0ea472", headingColor:"#ffffff", meshD:null, meshL:["rgba(14,164,114,0.2)","rgba(52,211,153,0.16)","rgba(14,164,114,0.12)","rgba(52,211,153,0.1)"] },
+  { id:"ivorygold", label:"Ivory Gold Luxe", dark:false, accent:"#a9812f", accentDark:"#e6c581", bg:"#faf6ee", card:"#fffdf8", border:"#d9b978", header:"linear-gradient(160deg,#403112,#634a18,#503d16)", statusBar:"#403112", text:"#19140b", sub:"#9a8251", nav:"#fffdf8", navActive:"#a9812f", headingColor:"#ffffff", meshD:null, meshL:["rgba(169,129,47,0.2)","rgba(230,197,129,0.16)","rgba(169,129,47,0.12)","rgba(230,197,129,0.1)"] },
+  { id:"skychrome", label:"Sky Chrome", dark:false, accent:"#1c7aad", accentDark:"#7fc7ec", bg:"#eef6fb", card:"#ffffff", border:"#b8dcef", header:"linear-gradient(160deg,#0b3246,#0e4b6c,#0e3e58)", statusBar:"#0b3246", text:"#09151b", sub:"#4783a4", nav:"#ffffff", navActive:"#1c7aad", headingColor:"#ffffff", meshD:null, meshL:["rgba(28,122,173,0.2)","rgba(127,199,236,0.16)","rgba(28,122,173,0.12)","rgba(127,199,236,0.1)"] },
+  { id:"rosequartz", label:"Blush Rose Quartz", dark:false, accent:"#c25f70", accentDark:"#f4a7b0", bg:"#fdf1f2", card:"#fffbfc", border:"#f0c3c8", header:"linear-gradient(160deg,#3b161d,#5c1f29,#4a1c24)", statusBar:"#3b161d", text:"#170c0e", sub:"#925862", nav:"#fffbfc", navActive:"#c25f70", headingColor:"#ffffff", meshD:null, meshL:["rgba(194,95,112,0.2)","rgba(244,167,176,0.16)","rgba(194,95,112,0.12)","rgba(244,167,176,0.1)"] },
+  { id:"lavender", label:"Cloud Lavender", dark:false, accent:"#7c5cc4", accentDark:"#b6a1ec", bg:"#f4f1fb", card:"#ffffff", border:"#d9cdf2", header:"linear-gradient(160deg,#21163c,#311d5d,#2a1b4b)", statusBar:"#21163c", text:"#100c18", sub:"#6a5794", nav:"#ffffff", navActive:"#7c5cc4", headingColor:"#ffffff", meshD:null, meshL:["rgba(124,92,196,0.2)","rgba(182,161,236,0.16)","rgba(124,92,196,0.12)","rgba(182,161,236,0.1)"] },
+  { id:"solarwhite", label:"Solar White", dark:false, accent:"#e07800", accentDark:"#ffb347", bg:"#fffaf3", card:"#ffffff", border:"#ffd9a3", header:"linear-gradient(160deg,#502c02,#7a4200,#633603)", statusBar:"#502c02", text:"#1e1305", sub:"#b67a35", nav:"#ffffff", navActive:"#e07800", headingColor:"#ffffff", meshD:null, meshL:["rgba(224,120,0,0.2)","rgba(255,179,71,0.16)","rgba(224,120,0,0.12)","rgba(255,179,71,0.1)"] },
+  { id:"porcelain", label:"Porcelain Jade", dark:false, accent:"#1f8a55", accentDark:"#6fcf97", bg:"#f5faf7", card:"#ffffff", border:"#b9e0c6", header:"linear-gradient(160deg,#0f4329,#13673e,#135333)", statusBar:"#0f4329", text:"#0a1a12", sub:"#4c9e76", nav:"#ffffff", navActive:"#1f8a55", headingColor:"#ffffff", meshD:null, meshL:["rgba(31,138,85,0.2)","rgba(111,207,151,0.16)","rgba(31,138,85,0.12)","rgba(111,207,151,0.1)"] },
+  { id:"champagne", label:"Champagne Silk", dark:false, accent:"#8a7238", accentDark:"#d9c49a", bg:"#f7f0e6", card:"#fffcf7", border:"#cbb98f", header:"linear-gradient(160deg,#3b3016,#5c4a1f,#4a3d1c)", statusBar:"#3b3016", text:"#17140d", sub:"#91815a", nav:"#fffcf7", navActive:"#8a7238", headingColor:"#ffffff", meshD:null, meshL:["rgba(138,114,56,0.2)","rgba(217,196,154,0.16)","rgba(138,114,56,0.12)","rgba(217,196,154,0.1)"] },
+  { id:"arcticday", label:"Arctic Daylight", dark:false, accent:"#2f74c9", accentDark:"#4fa8e8", bg:"#f8fafc", card:"#ffffff", border:"#dbe4ec", header:"linear-gradient(160deg,#0f2642,#143966,#133053)", statusBar:"#0f2642", text:"#0a111a", sub:"#4d719d", nav:"#ffffff", navActive:"#2f74c9", headingColor:"#ffffff", meshD:null, meshL:["rgba(47,116,201,0.2)","rgba(79,168,232,0.16)","rgba(47,116,201,0.12)","rgba(79,168,232,0.1)"] },
 ];
 
 // ─── Dashboard ভিজ্যুয়াল টোকেন — dark থিমে Glassmorphism, light থিমে POS Bold ──────
@@ -12241,7 +12292,7 @@ function SmartBusinessMgmt() {
         users:                 rawUsers            || SEED_USERS,
         shopName:              shopNameVal         || "SBM",
         darkMode:              darkModeVal         ?? true,
-        activeTheme:           (activeThemeVal && activeThemeVal !== "dark") ? activeThemeVal : "forest",
+        activeTheme:           (activeThemeVal && activeThemeVal !== "dark") ? activeThemeVal : "neon",
         fontSize:              fontSizeVal         ?? 15,
         paymentInvoices:       rawPayInv           || [],
         firebaseConfig:        firebaseCfg,
@@ -13810,6 +13861,15 @@ function SmartBusinessMgmt() {
       showToast("এই ইনভয়েস ইতিমধ্যে ভয়েড করা হয়ে গেছে", "#f59e0b");
       return;
     }
+    // 🔴 ফিক্স (বাগ ১ — রুট কজ): আগে voidInvoice()-এর ভেতরে বা এটাকে কল করার সময়
+    // কোনো try/catch ছিল না (.catch() ছাড়া কল হতো)। ফলে ২. স্টক-রিস্টোর, ৩. ব্যালেন্স-
+    // রিভার্সাল ইত্যাদি ধাপে কোনো অপ্রত্যাশিত এরর হলে পুরো ফাংশনটা নীরবে মাঝপথে থেমে
+    // যেত (unhandled promise rejection শুধু console-এ লগ হতো) — ইনভয়েস "voided" হয়েই
+    // থাকত (ধাপ ১ এর মধ্যেই সেট হয়ে গেছে) কিন্তু স্টক/টাকা ফেরত না-ও যেতে পারত, আর
+    // দোকানদার কোনো এরর মেসেজ না দেখে ভাবতেন সব ঠিকমতো হয়েছে। এখন পুরো ফ্লো try/catch
+    // দিয়ে ঘেরা — এরর হলে স্পষ্ট মেসেজ দেখানো হবে যাতে দোকানদার জানেন কিছু একটা মিস
+    // হতে পারে এবং যোগাযোগ/রিট্রাই করা দরকার।
+    try {
     // ── 1. Mark invoice as voided ────────────────────────────────────────────
     // 🔴 ফিক্স (_serverTs স্টেল-ইনহেরিটেন্স, ভয়েড-হারানোর মূল কারণ): এই spread
     // আগের _serverTs (ইনভয়েসটা তৈরির সময়কার) বহন করে আনত, ফলে windowed
@@ -13844,9 +13904,20 @@ function SmartBusinessMgmt() {
     // ব্যবহার হবে (single-device optimistic update)।
     const isOffline = typeof navigator !== "undefined" && navigator.onLine === false;
     const pendingVoidStockItems = [];
+    // 🔴 ফিক্স (বাগ ৩): কোনো আইটেমের পণ্য সত্যিই ডিলিট হয়ে গেলে (তাই স্টক ফেরত
+    // দেওয়ার কিছু নেই) সেটা এখানে জমা হবে, শেষে দোকানদারকে জানানো হবে — আগে এটা
+    // পুরোপুরি নীরব ছিল।
+    const skippedDeletedNames = [];
     if (inv.items && inv.items.length > 0) {
       const sellableRestoreItems = inv.items.filter(it => it.productType !== "service");
+      // 🔴 ফিক্স (বাগ ২ — Promise.all-এর ভুল ব্যবহার): আগে কোনো একটা আইটেমে
+      // (এই async ফাংশনের ভেতরে) অপ্রত্যাশিত এরর হলে পুরো Promise.all reject হয়ে
+      // যেত — ইনভয়েসে ৩টা পণ্য থাকলে ১টায় সমস্যা হলে বাকি ২টার স্টকও ফেরত যেত না,
+      // যদিও সেগুলোর কোনো সমস্যা ছিল না। এখন প্রতিটা আইটেমের নিজস্ব try/catch আছে —
+      // একটা ব্যর্থ হলে সেটা শুধু queue-তে জমা থাকে (পরে রিট্রাই হবে), বাকিগুলো
+      // স্বাভাবিকভাবে চলতে থাকে।
       const restoreResults = await Promise.all(sellableRestoreItems.map(async (soldItem) => {
+       try {
         const restoredQty = soldItem.qty || 0;
         if (restoredQty <= 0) return null;
         // 🔴 ফিক্স (রুট কজ — "ভয়েড করলে স্টক একদমই বাড়ে না"): voidInvoice()
@@ -13897,6 +13968,12 @@ function SmartBusinessMgmt() {
                 expiryDate: soldItem.expiryDate || "",
                 voidAdjBatchNo: `VOID-ADJ-${inv.id.slice(-6)}`,
               });
+          // 🔴 ফিক্স (বাগ ৩): পণ্য সত্যিই ডিলিট — স্টক ফেরত দেওয়ার কিছু নেই, দোকানদারকে
+          // জানাতে নাম জমা রাখা হচ্ছে, নিচের local fallback-এও যাওয়া হবে না।
+          if (txResult?.deleted) {
+            skippedDeletedNames.push(soldItem.name || soldItem.productId);
+            return null;
+          }
           if (txResult) {
             const mv = pushStockMovement({
               id: "sm_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
@@ -13906,6 +13983,21 @@ function SmartBusinessMgmt() {
             });
             return { id: soldItem.productId, stock: txResult.stock, batches: txResult.batches, movement: mv };
           }
+          // 🔴 ফিক্স (বাগ ৪ — রুট কজ): txResult === null মানে transient error
+          // (নেটওয়ার্ক/সার্ভার সমস্যা), পণ্য ডিলিট নয়। আগে এখানে সরাসরি নিচের local
+          // absolute-value fallback-এর ওপর ভরসা করা হতো, যা অন্য ডিভাইসের একই সময়ের
+          // concurrent পরিবর্তন মুছে দিতে পারত (ঠিক যে race condition atomic
+          // transaction দিয়ে আগে ফিক্স করা হয়েছিল, সেটাই আবার ফিরে আসত)। এখন নিচের
+          // local fallback শুধু তাৎক্ষণিক UI-এর জন্য ব্যবহার হচ্ছে ঠিকই, কিন্তু একই
+          // সাথে এই আইটেমটাও queue-তে জমা রাখা হচ্ছে যাতে reconnect/পরের flush-এ আসল
+          // atomic transaction দিয়ে সঠিকভাবে reconcile হয়।
+          pendingVoidStockItems.push({
+            productId: soldItem.productId, qty: restoredQty, batchNo: soldBatchNo,
+            costPrice: soldItem.costPrice || localP?.costPrice || 0,
+            expiryDate: soldItem.expiryDate || "",
+            batchBreakdown: hasBreakdown ? soldItem.batchBreakdown : undefined,
+            voidAdjBatchNo: `VOID-ADJ-${inv.id.slice(-6)}`,
+          });
         }
         // fallback — Firestore বন্ধ/ব্যর্থ হলে আগের মতো local হিসেব
         // 🔴 ফিক্স (স্টক race condition — void পাথ, checkout ফিক্সের প্যারালাল):
@@ -13915,7 +14007,11 @@ function SmartBusinessMgmt() {
         // 🔴 ফিক্স: পণ্য সত্যিই ডিলিট হয়ে থাকলে (Firestore-এও নেই/অফলাইন) freshP
         // undefined হতে পারে — সেক্ষেত্রে local batches হিসেব সম্ভব না, তাই স্কিপ।
         const freshP = useAppStore.getState().products.find(p => p.id === soldItem.productId) || localP;
-        if (!freshP) return null;
+        if (!freshP) {
+          // 🔴 ফিক্স (বাগ ৩): local state-এও পণ্য নেই — সত্যিই ডিলিট, দোকানদারকে জানানো হবে।
+          skippedDeletedNames.push(soldItem.name || soldItem.productId);
+          return null;
+        }
         const existingBatches = freshP.batches ? [...freshP.batches] : [];
         // 🧪 shared formula (src/logic.js) — regression test suite এখন সরাসরি এই
         // একই restoreBatchQty() কোড টেস্ট করে, আলাদা "reference-copy" না।
@@ -13956,6 +14052,19 @@ function SmartBusinessMgmt() {
           delta: restoredQty, at: new Date().toISOString(), dateKey: inv.dateKey || todayEn(), source: "void",
         });
         return { id: soldItem.productId, stock: (freshP.stock || 0) + restoredQty, batches: updatedBatches, movement: mvFallback };
+       } catch (e) {
+        // 🔴 ফিক্স (বাগ ২): এই আইটেমের জন্য অপ্রত্যাশিত এরর — পুরো Promise.all reject
+        // না করে শুধু এই আইটেমটাই queue-তে জমা রাখা হচ্ছে (পরে রিট্রাই হবে), বাকি
+        // আইটেমগুলো স্বাভাবিকভাবে চলতে থাকে।
+        logErrorToCentral?.("voidInvoice:restoreItem", e, { invoiceId: inv.id, productId: soldItem.productId });
+        pendingVoidStockItems.push({
+          productId: soldItem.productId, qty: soldItem.qty || 0, batchNo: soldItem.batchNo || "",
+          costPrice: soldItem.costPrice || 0, expiryDate: soldItem.expiryDate || "",
+          batchBreakdown: (Array.isArray(soldItem.batchBreakdown) && soldItem.batchBreakdown.length > 0) ? soldItem.batchBreakdown : undefined,
+          voidAdjBatchNo: `VOID-ADJ-${inv.id.slice(-6)}`,
+        });
+        return null;
+       }
       }));
       const restoreResultsClean = restoreResults.filter(Boolean);
       const restoreMap = new Map(restoreResultsClean.map(r => [r.id, r]));
@@ -14013,14 +14122,29 @@ function SmartBusinessMgmt() {
       }
     }
 
-    // 🔴 ফিক্স: অফলাইনে স্কিপ-করা স্টক-রিস্টোর/ব্যালেন্স-রিভার্সাল থাকলে এক সাথে
-    // একটাই কিউ-এন্ট্রিতে জমা — reconnect হলে flushPendingVoidRestores() আসল
+    // 🔴 ফিক্স: অফলাইনে স্কিপ-করা, অথবা অনলাইনে থেকেও transient error-এ ব্যর্থ হওয়া
+    // (বাগ ৪ ফিক্স — আগে শুধু isOffline চেক করা হতো, এখন online-transient-failure-ও
+    // এখানে ধরা পড়বে) স্টক-রিস্টোর/ব্যালেন্স-রিভার্সাল থাকলে এক সাথে একটাই
+    // কিউ-এন্ট্রিতে জমা — reconnect/পরের flush হলে flushPendingVoidRestores() আসল
     // atomic transaction দিয়ে reconcile করবে (দেখুন FSS.queuePendingVoidRestore())।
-    if (isOffline && (pendingVoidStockItems.length || pendingVoidBalanceUpdate)) {
+    if (pendingVoidStockItems.length || pendingVoidBalanceUpdate) {
       FSS.queuePendingVoidRestore({
         invoiceId: inv.id,
         restoreItems: pendingVoidStockItems,
         balanceUpdate: pendingVoidBalanceUpdate,
+      });
+    }
+
+    // 🔴 ফিক্স (বাগ ৩): ডিলিট হওয়া পণ্যের কারণে যেসব আইটেমের স্টক ফেরত দেওয়া যায়নি,
+    // সেটা দোকানদারকে স্পষ্টভাবে জানানো হচ্ছে — আগে এটা সম্পূর্ণ নীরব ছিল।
+    if (skippedDeletedNames.length) {
+      showToast(
+        `⚠️ পণ্য ডিলিট থাকায় স্টক ফেরত যায়নি: ${skippedDeletedNames.join(", ")}`,
+        "#f59e0b"
+      );
+      auditLog("INVOICE_VOID_STOCK_SKIPPED_DELETED", {
+        invoiceId: inv.id,
+        productNames: skippedDeletedNames,
       });
     }
 
@@ -14046,6 +14170,16 @@ function SmartBusinessMgmt() {
       const bakiAmt = inv.payType === "baki"   ? saleAmt
                     : inv.payType === "partial" ? (inv.bakiAmount || 0) : 0;
       FSS.updateStats(inv.dateKey, { sale: -saleAmt, cash: -cashAmt, baki: -bakiAmt, profit: 0 });
+    }
+    } catch (e) {
+      // 🔴 ফিক্স (বাগ ১): ইনভয়েস ইতিমধ্যে "voided" মার্ক হয়ে গেছে (ধাপ ১), কিন্তু এর পরের
+      // কোনো ধাপে (স্টক-রিস্টোর/ব্যালেন্স-রিভার্সাল/ইত্যাদি) অপ্রত্যাশিত এরর হলে সেটা এখন
+      // নীরবে হারিয়ে না গিয়ে স্পষ্টভাবে জানানো হচ্ছে। স্টক/ব্যালেন্সের transient ব্যর্থতা
+      // ইতিমধ্যে queuePendingVoidRestore()-এ জমা থাকে (ওপরে) — তাই সেটা reconnect/পরের
+      // flush-এ নিজে থেকেই ঠিক হয়ে যাবে। এই catch মূলত পুরোপুরি অপ্রত্যাশিত এরর (যেমন কোড
+      // বাগ) থেকে দোকানদারকে সতর্ক করার জন্য।
+      logErrorToCentral?.("voidInvoice", e, { invoiceId: inv.id });
+      showToast("⚠️ ভয়েড প্রসেসিং-এ একটা সমস্যা হয়েছে — ইনভয়েসটা voided দেখাচ্ছে, কিন্তু স্টক/ব্যালেন্স ঠিকমতো ফেরত গেছে কিনা যাচাই করুন", "#ef4444");
     }
   }, [setInvoices, setCustomers, setProducts, setStockMovements, addTxn, showToast, auditLog]);
 
@@ -21797,7 +21931,10 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             <button
               disabled={pinInput !== "VOID"}
               onClick={() => {
-                voidInvoice(inv, reason);
+                // 🔴 ফিক্স (বাগ ১): voidInvoice() এখন try/catch দিয়ে ঘেরা তাই সাধারণত reject
+                // করবে না, কিন্তু defense-in-depth হিসেবে .catch() রাখা হচ্ছে যাতে ভবিষ্যতে
+                // কোনো unhandled promise rejection console-এর বাইরে না যায়।
+                voidInvoice(inv, reason).catch(e => logErrorToCentral?.("voidInvoice:call", e, { invoiceId: inv.id }));
                 setVoidConfirm(null);
               }}
               style={{ flex:1, padding:"12px 0", borderRadius:12, border:"none", background: pinInput==="VOID" ? "linear-gradient(135deg,#7e22ce,#ef4444)" : "#1e293b", color: pinInput==="VOID" ? "#fff" : "#4b5563", fontWeight:800, fontSize:14, cursor: pinInput==="VOID" ? "pointer":"not-allowed", boxShadow: pinInput==="VOID" ? "0 4px 20px #ef444450" : "none", letterSpacing:0.5 }}>
@@ -26527,14 +26664,25 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
       // voidInvoice()-এ একই ফিক্সের কমেন্ট এবং FSS.queuePendingVoidRestore()।
       const isOffline = typeof navigator !== "undefined" && navigator.onLine === false;
       let stockResult = null;
+      // 🔴 ফিক্স (বাগ ৩/৪-এর ripple): transactionRestoreStock() এখন { deleted: true }
+      // (পণ্য সত্যিই ডিলিট) কে null (transient error) থেকে আলাদা করে রিটার্ন করে —
+      // এখানে সেই কনট্র্যাক্ট অনুযায়ী দুটো কেস আলাদাভাবে হ্যান্ডল করা হচ্ছে। আগে এখানে
+      // { deleted: true }-কে truthy stockResult ধরে নিয়ে সরাসরি setProducts-এ
+      // stockResult.stock/batches (undefined) বসিয়ে দিত — এই ফিক্সের অংশ হিসেবেই এটা
+      // ঠিক করা জরুরি ছিল।
+      let productDeleted = false;
+      let transientFailure = false;
       if (!isOffline && FSS.isReady()) {
-        stockResult = await FSS.transactionRestoreStock(productId, qty, item.batchNo || "", {
+        const txResult = await FSS.transactionRestoreStock(productId, qty, item.batchNo || "", {
           costPrice: item.costPrice || localP?.costPrice || 0,
           expiryDate: item.expiryDate || "",
           voidAdjBatchNo: `RETURN-ADJ-${inv.id.slice(-6)}`,
         });
+        if (txResult?.deleted) productDeleted = true;
+        else if (txResult) stockResult = txResult;
+        else transientFailure = true;
       }
-      if (!stockResult) {
+      if (!stockResult && !productDeleted) {
         const freshP = useAppStore.getState().products.find(p => p.id === productId) || localP;
         if (freshP) {
           let updatedBatches = freshP.batches ? [...freshP.batches] : [];
@@ -26551,6 +26699,9 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
             }];
           }
           stockResult = { stock: (freshP.stock || 0) + qty, batches: updatedBatches };
+        } else {
+          // 🔴 ফিক্স (বাগ ৩): local state-এও পণ্য নেই — সত্যিই ডিলিট।
+          productDeleted = true;
         }
       }
       if (stockResult) {
@@ -26578,9 +26729,12 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
       const refundAmount = qty * (item.price ?? 0);
       let newBalanceAfter = null;
       const cust = inv.customerId ? custMap.get(inv.customerId) : null;
-      // 🔴 ফিক্স: অফলাইনে স্কিপ-করা স্টক-রিস্টোর/ব্যালেন্স-সমন্বয় একটাই কিউ-এন্ট্রিতে
-      // জমা রাখা হচ্ছে — reconnect-এর পর flushPendingVoidRestores() reconcile করবে।
-      if (isOffline) {
+      // 🔴 ফিক্স: অফলাইনে স্কিপ-করা, অথবা অনলাইনে থেকেও transient error-এ ব্যর্থ হওয়া
+      // (বাগ ৪-এর ripple — আগে শুধু isOffline চেক হতো) স্টক-রিস্টোর/ব্যালেন্স-সমন্বয়
+      // একটাই কিউ-এন্ট্রিতে জমা রাখা হচ্ছে — reconnect/পরের flush-এ
+      // flushPendingVoidRestores() reconcile করবে। পণ্য সত্যিই ডিলিট হলে (productDeleted)
+      // queue করার মানে নেই — চিরকাল আটকে থাকত, তাই সেটা বাদ।
+      if ((isOffline || transientFailure) && !productDeleted) {
         const restoreItems = stockResult ? [] : [{
           productId, qty, batchNo: item.batchNo || "",
           costPrice: item.costPrice || localP?.costPrice || 0,
@@ -26594,6 +26748,11 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
             balanceUpdate: (mode === "baki" && cust) ? { customerId: cust.id, netChange: refundAmount } : null,
           });
         }
+      }
+      // 🔴 ফিক্স (বাগ ৩): পণ্য ডিলিট থাকায় স্টক ফেরত দেওয়া যায়নি — দোকানদারকে জানানো
+      // হচ্ছে (রিফান্ড/ব্যালেন্স সমন্বয় নিচে যথারীতি চলবে)।
+      if (productDeleted) {
+        showToast("⚠️ এই পণ্যটি ডিলিট হয়ে যাওয়ায় স্টক ফেরত যায়নি (রিফান্ড/সমন্বয় চলছে)", "#f59e0b");
       }
       if (mode === "baki" && cust) {
         const txBal = isOffline ? null : await FSS.transactionUpdateBalance(cust.id, (serverBal) => Math.max(0, serverBal - refundAmount));
@@ -26638,6 +26797,13 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
       setRetQty(m => ({ ...m, [productId]: "" }));
       setRetReason(m => ({ ...m, [productId]: "" }));
       showToast(`✅ ${qty} ${item.unit || "পিস"} ফেরত নেওয়া হয়েছে${mode === "baki" ? " ও বাকি সমন্বয় হয়েছে" : ""}`, "#22c55e");
+    } catch (e) {
+      // 🔴 ফিক্স (বাগ ১-এর সাথে সামঞ্জস্যপূর্ণ): voidInvoice()-এর মতোই, এখানে আগে কোনো
+      // catch ছিল না — অপ্রত্যাশিত এরর হলে নীরবে থেমে যেত, দোকানদার কোনো মেসেজ দেখতেন
+      // না। transient স্টক/ব্যালেন্স ব্যর্থতা ইতিমধ্যে queuePendingVoidRestore()-এ জমা
+      // থাকে (ওপরে) — এই catch মূলত সম্পূর্ণ অপ্রত্যাশিত এরর থেকে সতর্ক করার জন্য।
+      logErrorToCentral?.("processReturn", e, { invoiceId: inv.id, productId });
+      showToast("⚠️ রিটার্ন প্রসেসিং-এ একটা সমস্যা হয়েছে — স্টক/ব্যালেন্স ঠিকমতো আপডেট হয়েছে কিনা যাচাই করুন", "#ef4444");
     } finally {
       setRetBusy(null);
     }
