@@ -5779,7 +5779,12 @@ const FSS = {
                   return it;
                 });
                 if (!itemsChanged) return inv;
-                correctedInv = { ...inv, items: correctedItems };
+                // 🔴 ফিক্স (_serverTs স্টেল-ইনহেরিটেন্স): এই local correction-এ পুরনো
+                // _serverTs বহন হয়ে এলে windowed listener protection ভুলভাবে একে
+                // "সার্ভার-কনফার্মড" ভাবতে পারে, ফলে reconnect-এ সার্ভারের পুরনো কপি
+                // এই সংশোধনটা নিঃশব্দে মুছে দিতে পারে। null করলে protection logic
+                // সঠিকভাবে "unconfirmed" হিসেবে চিনবে যতক্ষণ না সার্ভার echo আসে।
+                correctedInv = { ...inv, items: correctedItems, _serverTs: null };
                 return correctedInv;
               }));
               if (correctedInv) pushDurable("invoices", item.invoiceId, withTs(correctedInv));
@@ -5802,6 +5807,80 @@ const FSS = {
       }
     }
     try { localStorage.setItem("sbm_pending_sales_txns", JSON.stringify(remaining)); } catch {}
+  },
+
+  // 🔴 ফিক্স (রুট কজ — অফলাইনে ভয়েড/রিটার্ন করলে স্টক-রিস্টোর/ব্যালেন্স-রিভার্সাল
+  // চিরতরে হারিয়ে যাওয়া, "স্টক/হিসাবে গরমিল"): voidInvoice()/product-return
+  // এতদিন transactionRestoreStock()/transactionRestoreStockBatches()/
+  // transactionUpdateBalance() সরাসরি কল করত — অফলাইনে এগুলো ব্যর্থ হয়ে null
+  // রিটার্ন করত (ঠিক queuePendingSalesTxn()-এর কমেন্টে বর্ণিত কারণেই —
+  // runTransaction() Firestore-এর offline persistence queue-তে যায় না, সার্ভারের
+  // তাজা read দাবি করে), আর caller তখন শুধু local React state (setProducts/
+  // setCustomers) আপডেট করত UI-এর জন্য — কিন্তু সার্ভারে সেই restore/reversal
+  // কখনো পৌঁছাত না, নেট ফিরলেও রিট্রাই হতো না। ফলে অন্য ডিভাইস (বা এই ডিভাইসেই
+  // পরের সিঙ্ক) সার্ভারের পুরনো stock/balance-ই দেখত — "গরমিল"। এখন
+  // createInvoice()-এর sbm_pending_sales_txns প্যাটার্নের ঠিক সমতুল্য একটা
+  // localStorage-ভিত্তিক কিউ — অফলাইনে সরাসরি এখানে জমা রাখা হয়, reconnect হলে
+  // (boot + 'online' ইভেন্ট) আসল atomic transaction দিয়েই reconcile হয়।
+  queuePendingVoidRestore(entry) {
+    try {
+      const q = JSON.parse(localStorage.getItem("sbm_pending_void_restores") || "[]");
+      q.push({ ...entry, at: Date.now() });
+      localStorage.setItem("sbm_pending_void_restores", JSON.stringify(q.slice(-200)));
+    } catch {}
+  },
+
+  // 🔁 কিউতে জমে থাকা ভয়েড/রিটার্ন স্টক-রিস্টোর ও ব্যালেন্স-রিভার্সাল আবার চেষ্টা
+  // করে — flushPendingSalesTxns()-এর ঠিক পাশাপাশি, FSS রেডি হওয়ার পরে ও নেট
+  // ফিরে এলে কল করা উচিত। প্রতিটা আইটেম আলাদাভাবে atomic transaction দিয়ে
+  // প্রয়োগ হয় (batchBreakdown থাকলে transactionRestoreStockBatches, নাহলে
+  // transactionRestoreStock), যাতে অন্য ডিভাইসের concurrent পরিবর্তন হারিয়ে না
+  // যায়। ব্যর্থ অংশ (নেট মাঝপথে চলে গেলে) একই কিউতে থেকে যায়, পরের চেষ্টায়
+  // আবার প্রয়োগ হবে।
+  async flushPendingVoidRestores({ setProducts, setCustomers } = {}) {
+    if (!this._db) return;
+    let q = [];
+    try { q = JSON.parse(localStorage.getItem("sbm_pending_void_restores") || "[]"); } catch { return; }
+    if (!q.length) return;
+    const remaining = [];
+    for (const item of q) {
+      const failedRestoreItems = [];
+      let failedBalanceUpdate = null;
+      try {
+        if (item.restoreItems?.length) {
+          const restoreResults = await Promise.all(item.restoreItems.map(async (ri) => {
+            const txResult = (Array.isArray(ri.batchBreakdown) && ri.batchBreakdown.length > 0)
+              ? await this.transactionRestoreStockBatches(ri.productId, ri.batchBreakdown, ri.voidAdjBatchNo)
+              : await this.transactionRestoreStock(ri.productId, ri.qty, ri.batchNo || "", {
+                  costPrice: ri.costPrice || 0, expiryDate: ri.expiryDate || "", voidAdjBatchNo: ri.voidAdjBatchNo,
+                });
+            if (!txResult) failedRestoreItems.push(ri);
+            return txResult ? { id: ri.productId, ...txResult } : null;
+          }));
+          const validResults = restoreResults.filter(Boolean);
+          if (validResults.length && setProducts) {
+            const resMap = new Map(validResults.map(r => [r.id, r]));
+            setProducts(prev => prev.map(p => {
+              const r = resMap.get(p.id);
+              return r ? { ...p, stock: r.stock, batches: r.batches, lastUpdated: new Date().toISOString() } : p;
+            }));
+          }
+        }
+        if (item.balanceUpdate) {
+          const { customerId, netChange } = item.balanceUpdate;
+          const txBal = await this.transactionUpdateBalance(customerId, (serverBal) => Math.max(0, serverBal - netChange));
+          if (txBal === null) { failedBalanceUpdate = item.balanceUpdate; }
+          else if (setCustomers) setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, balance: txBal } : c));
+        }
+        if (failedRestoreItems.length || failedBalanceUpdate) {
+          remaining.push({ ...item, restoreItems: failedRestoreItems, balanceUpdate: failedBalanceUpdate });
+        }
+      } catch (e) {
+        logErrorToCentral?.("flushPendingVoidRestores", e, { invoiceId: item.invoiceId });
+        remaining.push(item);
+      }
+    }
+    try { localStorage.setItem("sbm_pending_void_restores", JSON.stringify(remaining)); } catch {}
   },
 
   // 🩹 ড্রিফট-প্রুফ রিপেয়ার: increment()-এর বদলে সরাসরি প্রকৃত ইনভয়েস/txn ডেটা
@@ -11713,6 +11792,45 @@ function SmartBusinessMgmt() {
   // Settings/Sync Diagnostics কার্ডে owner-কে দেখানো হবে যে recovery backup আপডেট হয়নি।
   const [recoveryPushFailed, setRecoveryPushFailed] = useState(false);
 
+  // 🔴 ফিক্স (রুট কজ ৩ — রিকনেক্ট-পরবর্তী ড্রিফট-অ্যালার্ট): অফলাইন রেসের সব
+  // কোণা কখনোই ১০০% প্রুফ করা যাবে না (উপরের void/return/createInvoice
+  // ফিক্সগুলো prevention, কিন্তু ভবিষ্যতে নতুন race condition এলেও যেন ধরা
+  // পড়ে তার জন্য এটা একটা safety net)। reconnect-এর কিছুক্ষণ পর (queue
+  // flush-গুলো শেষ হওয়ার সময় দিয়ে) প্রতিটা কাস্টমারের বর্তমান balance তার
+  // সবচেয়ে সাম্প্রতিক txn-এর balanceAfter-এর সাথে মিলিয়ে দেখা হয় — এই দুটো
+  // ভিন্ন হলে মানে কোথাও sync miss হয়েছে। ইচ্ছাকৃতভাবে এটা কিছু auto-repair
+  // করে না (ভুল "auto-fix" নিজেই নতুন ডেটা-লস বাগ হতে পারত) — শুধু owner/
+  // admin-কে (স্টাফকে না) toast + SyncLog দিয়ে জানায়।
+  const autoBalanceDriftCheck = useCallback(() => {
+    try {
+      const role = useAppStore.getState().currentUser?.role;
+      if (role !== "owner" && role !== "admin") return;
+      const allCustomers = useAppStore.getState().customers || [];
+      const allTxns = useAppStore.getState().txns || [];
+      const latestTxnByCustomer = new Map();
+      for (const t of allTxns) {
+        if (!t.customerId) continue;
+        const prev = latestTxnByCustomer.get(t.customerId);
+        if (!prev || new Date(t.date || 0) > new Date(prev.date || 0)) latestTxnByCustomer.set(t.customerId, t);
+      }
+      const driftedCustomers = [];
+      for (const c of allCustomers) {
+        const lastTxn = latestTxnByCustomer.get(c.id);
+        if (!lastTxn || lastTxn.balanceAfter === undefined || lastTxn.balanceAfter === null) continue;
+        if (Math.round(lastTxn.balanceAfter) !== Math.round(c.balance || 0)) {
+          driftedCustomers.push({ id: c.id, name: c.name, expected: lastTxn.balanceAfter, actual: c.balance || 0 });
+        }
+      }
+      if (driftedCustomers.length) {
+        const msg = `রিকনেক্ট-পরবর্তী ব্যালেন্স ড্রিফট শনাক্ত: ${driftedCustomers.length} জন কাস্টমারের হিসাব মিলছে না`;
+        showToast(msg, "#ef4444");
+        SyncLog.add("error", `${msg} — উদাহরণ: ${driftedCustomers.slice(0, 3).map(d => `${d.name || d.id} (প্রত্যাশিত ৳${d.expected}, বর্তমান ৳${d.actual})`).join(", ")}`);
+      }
+    } catch (e) {
+      logErrorToCentral?.("autoBalanceDriftCheck", e, {});
+    }
+  }, [showToast]);
+
   useEffect(() => {
     if (!loaded || !firebaseEnabled || !firebaseConfig) {
       FSS.teardown();
@@ -11730,6 +11848,12 @@ function SmartBusinessMgmt() {
     // 🔴 ফিক্স: অফলাইনে জমে থাকা ইনভয়েসের স্টক/বাকি রিকনসিলিয়েশন (createInvoice()-এর
     // Optimistic UI ব্যাকগ্রাউন্ড ব্লক দেখুন) একইভাবে এখানেও রিট্রাই করা হয়
     FSS.flushPendingSalesTxns({ setProducts, setCustomers, setInvoices });
+    // 🔴 ফিক্স: অফলাইনে ভয়েড/রিটার্ন করা হলে জমে থাকা স্টক-রিস্টোর/ব্যালেন্স-
+    // রিভার্সাল কিউ — দেখুন FSS.queuePendingVoidRestore()-এর কমেন্ট
+    FSS.flushPendingVoidRestores({ setProducts, setCustomers });
+    // 🔴 ফিক্স (রুট কজ ৩): flush-গুলো শেষ হওয়ার সময় দিয়ে ১৫ সেকেন্ড পর ব্যালেন্স
+    // ড্রিফট চেক — দেখুন autoBalanceDriftCheck()-এর কমেন্ট
+    setTimeout(() => autoBalanceDriftCheck(), 15000);
 
     // Device presence (RTDB) — Settings স্ক্রিনে active devices লিস্টের জন্য
     FB.init(firebaseConfig);
@@ -11749,6 +11873,9 @@ function SmartBusinessMgmt() {
       if (r) {
         FSS.flushPendingStats();
         FSS.flushPendingSalesTxns({ setProducts, setCustomers, setInvoices });
+        FSS.flushPendingVoidRestores({ setProducts, setCustomers });
+        // 🔴 ফিক্স (রুট কজ ৩): দেখুন autoBalanceDriftCheck()-এর কমেন্ট
+        setTimeout(() => autoBalanceDriftCheck(), 15000);
       }
     };
     window.addEventListener("online", onOnline);
@@ -13108,7 +13235,14 @@ function SmartBusinessMgmt() {
       return;
     }
     // ── 1. Mark invoice as voided ────────────────────────────────────────────
-    const voidedInv = { ...inv, status: "voided", voidedAt: new Date().toISOString(), voidReason };
+    // 🔴 ফিক্স (_serverTs স্টেল-ইনহেরিটেন্স, ভয়েড-হারানোর মূল কারণ): এই spread
+    // আগের _serverTs (ইনভয়েসটা তৈরির সময়কার) বহন করে আনত, ফলে windowed
+    // listener protection ভয়েডটাকে ভুলভাবে "সার্ভার-কনফার্মড" ভাবত — অথচ এই
+    // নির্দিষ্ট voided অবস্থাটা তখনো সার্ভারে পৌঁছায়নি। অফলাইনে ভয়েড করার পর
+    // reconnect হলে সার্ভারের পুরনো (non-voided) কপি "recent"-এ ফিরে এসে local
+    // ভয়েড অবস্থা মুছে দিত। _serverTs: null রাখলে protection logic সঠিকভাবে
+    // এটাকে "unconfirmed" চিনবে যতক্ষণ না সার্ভার echo আসে।
+    const voidedInv = { ...inv, status: "voided", voidedAt: new Date().toISOString(), voidReason, _serverTs: null };
     setInvoices(prev => prev.map(i => i.id === inv.id ? voidedInv : i));
 
     // ── 🔴 Void push fix — আগে void শুধু local array-তে "voided" status বসাত,
@@ -13126,6 +13260,14 @@ function SmartBusinessMgmt() {
     // দিয়ে সার্ভারের বর্তমান stock/batches-এর ওপর atomically qty ফেরত দেওয়া
     // হয় — দুই ডিভাইস প্রায় একই সময়ে ঐ পণ্য বিক্রি/ভয়েড করলেও কোনো
     // পরিবর্তন হারায় না। Firebase বন্ধ/ব্যর্থ হলে আগের মতো local fallback।
+    // 🔴 ফিক্স (রুট কজ — অফলাইনে ভয়েড করলে স্টক-রিস্টোর হারিয়ে যাওয়া): দেখুন
+    // FSS.queuePendingVoidRestore()-এর কমেন্ট। navigator.onLine === false হলে
+    // নিষ্ফল transaction অ্যাটেম্পট এড়িয়ে সরাসরি এই কিউতে জমা রাখা হয় —
+    // reconnect হলে flushPendingVoidRestores() আসল atomic transaction দিয়েই
+    // reconcile করবে। এই মুহূর্তে UI-এর জন্য নিচের local fallback হিসাব
+    // ব্যবহার হবে (single-device optimistic update)।
+    const isOffline = typeof navigator !== "undefined" && navigator.onLine === false;
+    const pendingVoidStockItems = [];
     if (inv.items && inv.items.length > 0) {
       const sellableRestoreItems = inv.items.filter(it => it.productType !== "service");
       const restoreResults = await Promise.all(sellableRestoreItems.map(async (soldItem) => {
@@ -13161,7 +13303,17 @@ function SmartBusinessMgmt() {
         // ব্যাচে মিশে যাবে না। পুরনো ইনভয়েসে (এই ফিক্সের আগে তৈরি) breakdown
         // নেই — সেগুলোর জন্য আগের single-batch আচরণই fallback হিসেবে চলবে।
         const hasBreakdown = Array.isArray(soldItem.batchBreakdown) && soldItem.batchBreakdown.length > 0;
-        if (FSS.isReady()) {
+        if (isOffline) {
+          // অফলাইনে transaction অ্যাটেম্পটই করা হচ্ছে না — সরাসরি কিউতে জমা,
+          // reconnect-এর পর আসল atomic transaction দিয়ে reconcile হবে।
+          pendingVoidStockItems.push({
+            productId: soldItem.productId, qty: restoredQty, batchNo: soldBatchNo,
+            costPrice: soldItem.costPrice || localP?.costPrice || 0,
+            expiryDate: soldItem.expiryDate || "",
+            batchBreakdown: hasBreakdown ? soldItem.batchBreakdown : undefined,
+            voidAdjBatchNo: `VOID-ADJ-${inv.id.slice(-6)}`,
+          });
+        } else if (FSS.isReady()) {
           const txResult = hasBreakdown
             ? await FSS.transactionRestoreStockBatches(soldItem.productId, soldItem.batchBreakdown, `VOID-ADJ-${inv.id.slice(-6)}`)
             : await FSS.transactionRestoreStock(soldItem.productId, restoredQty, soldBatchNo, {
@@ -13243,6 +13395,11 @@ function SmartBusinessMgmt() {
       }
     }
 
+    // 🔴 ফিক্স: অফলাইনে স্কিপ-করা স্টক-রিস্টোর আইটেমগুলো এখানে queue করা হচ্ছে —
+    // balance reversal (নিচে) নেটChange জানার পর সেটাও একই entry-তে যোগ হবে,
+    // যাতে একটা ইনভয়েসের জন্য একটাই কিউ-এন্ট্রি তৈরি হয়।
+    let pendingVoidBalanceUpdate = null;
+
     // ── 3. Reverse customer balance with CORRECT balanceAfter ─────────────────
     // নেট প্রভাব: এই ইনভয়েস বাকি যোগ করেছিল (+bakiAmount), আর overpay থাকলে আগের
     // বাকি কমিয়েছিল (-overpayAmount) — ভয়েডে দুটোই সঠিকভাবে উল্টাতে হবে
@@ -13255,7 +13412,11 @@ function SmartBusinessMgmt() {
         // থেকে atomic transaction-এ বিয়োগ করা হয় (অন্য ডিভাইসের concurrent এডিট
         // থাকলেও কোনো delta হারাবে না)। ব্যর্থ/local-only mode হলে local state
         // থেকে fallback হিসাব হয় (single-device-এ এটা এমনিতেই নিরাপদ)।
-        const txBal = await FSS.transactionUpdateBalance(inv.customerId, (serverBal) => Math.max(0, serverBal - netChange));
+        // 🔴 ফিক্স (রুট কজ — অফলাইনে balance reversal হারিয়ে যাওয়া): অফলাইনে এই
+        // transaction অ্যাটেম্পটই না করে সরাসরি pendingVoidBalanceUpdate-এ জমা
+        // রাখা হচ্ছে, reconnect হলে flushPendingVoidRestores() রিট্রাই করবে।
+        const txBal = isOffline ? null : await FSS.transactionUpdateBalance(inv.customerId, (serverBal) => Math.max(0, serverBal - netChange));
+        if (isOffline) pendingVoidBalanceUpdate = { customerId: inv.customerId, netChange };
         setCustomers(prev => {
           const updated = prev.map(c => {
             if (c.id !== inv.customerId) return c;
@@ -13274,6 +13435,17 @@ function SmartBusinessMgmt() {
           return updated;
         });
       }
+    }
+
+    // 🔴 ফিক্স: অফলাইনে স্কিপ-করা স্টক-রিস্টোর/ব্যালেন্স-রিভার্সাল থাকলে এক সাথে
+    // একটাই কিউ-এন্ট্রিতে জমা — reconnect হলে flushPendingVoidRestores() আসল
+    // atomic transaction দিয়ে reconcile করবে (দেখুন FSS.queuePendingVoidRestore())।
+    if (isOffline && (pendingVoidStockItems.length || pendingVoidBalanceUpdate)) {
+      FSS.queuePendingVoidRestore({
+        invoiceId: inv.id,
+        restoreItems: pendingVoidStockItems,
+        balanceUpdate: pendingVoidBalanceUpdate,
+      });
     }
 
     // 🔴 ফিক্স: এই ইনভয়েসের বাকির জন্য due-date reminder শিডিউল করা থাকলে
@@ -16157,7 +16329,10 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                 return it;
               });
               if (itemsChanged) {
-                const correctedInv = { ...inv, items: correctedItems };
+                // 🔴 ফিক্স (_serverTs স্টেল-ইনহেরিটেন্স): দেখুন voidInvoice()-এর একই
+                // ফিক্সের মন্তব্য — এখানেও edited কপিতে পুরনো _serverTs বহন হয়ে
+                // এলে windowed listener protection ভুলভাবে "কনফার্মড" ভাবতে পারে।
+                const correctedInv = { ...inv, items: correctedItems, _serverTs: null };
                 setInvoices(prev => prev.map(i => i.id === inv.id ? correctedInv : i));
                 setPrintInv(prev => (prev && prev.id === inv.id) ? correctedInv : prev);
                 pushDurable("invoices", inv.id, withTs(correctedInv));
@@ -25698,8 +25873,11 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
       // ── ১. স্টক ফেরত — সার্ভারের বর্তমান কপির ওপর atomically (voidInvoice-এর
       // মতোই); Firebase বন্ধ/ব্যর্থ হলে সবচেয়ে সাম্প্রতিক local state (getState())
       // থেকে fallback, stale closure থেকে না।
+      // 🔴 ফিক্স (রুট কজ — অফলাইনে রিটার্ন করলে স্টক-রিস্টোর হারিয়ে যাওয়া): দেখুন
+      // voidInvoice()-এ একই ফিক্সের কমেন্ট এবং FSS.queuePendingVoidRestore()।
+      const isOffline = typeof navigator !== "undefined" && navigator.onLine === false;
       let stockResult = null;
-      if (FSS.isReady()) {
+      if (!isOffline && FSS.isReady()) {
         stockResult = await FSS.transactionRestoreStock(productId, qty, item.batchNo || "", {
           costPrice: item.costPrice || localP?.costPrice || 0,
           expiryDate: item.expiryDate || "",
@@ -25750,8 +25928,25 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
       const refundAmount = qty * (item.price ?? 0);
       let newBalanceAfter = null;
       const cust = inv.customerId ? custMap.get(inv.customerId) : null;
+      // 🔴 ফিক্স: অফলাইনে স্কিপ-করা স্টক-রিস্টোর/ব্যালেন্স-সমন্বয় একটাই কিউ-এন্ট্রিতে
+      // জমা রাখা হচ্ছে — reconnect-এর পর flushPendingVoidRestores() reconcile করবে।
+      if (isOffline) {
+        const restoreItems = stockResult ? [] : [{
+          productId, qty, batchNo: item.batchNo || "",
+          costPrice: item.costPrice || localP?.costPrice || 0,
+          expiryDate: item.expiryDate || "",
+          voidAdjBatchNo: `RETURN-ADJ-${inv.id.slice(-6)}`,
+        }];
+        if (restoreItems.length || (mode === "baki" && cust)) {
+          FSS.queuePendingVoidRestore({
+            invoiceId: inv.id,
+            restoreItems,
+            balanceUpdate: (mode === "baki" && cust) ? { customerId: cust.id, netChange: refundAmount } : null,
+          });
+        }
+      }
       if (mode === "baki" && cust) {
-        const txBal = await FSS.transactionUpdateBalance(cust.id, (serverBal) => Math.max(0, serverBal - refundAmount));
+        const txBal = isOffline ? null : await FSS.transactionUpdateBalance(cust.id, (serverBal) => Math.max(0, serverBal - refundAmount));
         setCustomers(prev => prev.map(c => {
           if (c.id !== cust.id) return c;
           const newBal = txBal !== null ? txBal : Math.max(0, (c.balance || 0) - refundAmount);
