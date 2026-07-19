@@ -4952,6 +4952,23 @@ const BUSINESS_TYPE_REGISTRY = {
   },
 };
 
+// ─── stripUndefinedDeep — Firestore write-এর আগে যেকোনো নেস্টেড object/array
+// থেকে `undefined` ভ্যালুর field/element বাদ দেয় (FSS.setRecord() ব্যবহার করে,
+// দেখুন সেখানকার কমেন্ট)। `null` স্পর্শ করা হয় না — শুধু literal `undefined`।
+function stripUndefinedDeep(value) {
+  if (Array.isArray(value)) return value.map(stripUndefinedDeep);
+  if (value && typeof value === "object" && !(value instanceof Date)) {
+    const out = {};
+    Object.keys(value).forEach(k => {
+      const v = value[k];
+      if (v === undefined) return; // বাদ
+      out[k] = stripUndefinedDeep(v);
+    });
+    return out;
+  }
+  return value;
+}
+
 const FSS = {
   _app: null,
   _db: null,
@@ -5502,7 +5519,18 @@ const FSS = {
       logErrorToCentral?.("schema:validationFailed", new Error(errors?.join("; ") || "invalid shape"), { coll, id: String(id) }).catch?.(() => {});
     }
     try {
-      await setDoc(this.doc(coll, id), { ...data, _serverTs: serverTimestamp() });
+      // 🔴 ফিক্স (১৯ জুলাই ২০২৬ — "undefined field value" ক্লাস): products-এ
+      // আগে যে bug ধরা পড়েছিল (কোনো field-এর ভ্যালু `undefined` হলে Firestore-এর
+      // setDoc() পুরো write-ই throw করে বাতিল করে দেয়) সেটা এতদিন শুধু products
+      // creation flow-এ ঠিক করা ছিল। কিন্তু এই একই ক্লাসের bug যেকোনো collection-এই
+      // (যেমন users — স্টাফ object স্প্রেড করে {...u, canAddProduct: next} বানানোর
+      // সময় যদি u-এর কোনো পুরনো field আগে থেকেই undefined থাকে) ঘটতে পারে, আর
+      // ঘটলে caller নীরবে fire-and-forget করায় ধরাই পড়ত না। এখন FSS.setRecord()-এর
+      // ভেতরেই (সব কালেকশনের জন্য, কেন্দ্রীয়ভাবে একবার) recursively `undefined`
+      // ভ্যালুর field ছেঁটে ফেলা হচ্ছে — Firestore নিজে থেকে `null` আর `undefined`কে
+      // আলাদা মনে করে বলে এটা ডেটার অর্থ বদলায় না, শুধু write-কে সবসময় বৈধ রাখে।
+      const cleaned = stripUndefinedDeep(data);
+      await setDoc(this.doc(coll, id), { ...cleaned, _serverTs: serverTimestamp() });
       return { ok: true };
     } catch (e) {
       return { ok: false, msg: e.message || "Firestore write ব্যর্থ" };
