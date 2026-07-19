@@ -2840,6 +2840,18 @@ const MONTHLY_PRICE = 599;            // মাসিক মূল্য (টা
 // যেভাবে কাজ করে সেভাবেই — লাইভ লিসেনার ইচ্ছাকৃতভাবে বাদ, সরলতার জন্য)।
 const DevPanelFlag = { visible: false };
 
+// 🆕 Multi-Business bridge ফিক্স (১৯ জুলাই ২০২৬): admin.html-এর "বিজনেস টাইপ
+// পরিবর্তন" ফিচার enabledBusinessTypes/activeBusinessType লেখে কেন্দ্রীয়
+// protik-aa991 প্রজেক্টের subscriptions/{phone} ডকুমেন্টে — কিন্তু App.jsx-এর
+// আসল multi-business লজিক (isMultiBusinessActive, Business Switcher,
+// FSS collection-prefix) শুধু দোকানের নিজস্ব Firebase প্রজেক্টের
+// meta/businessConfig থেকে enabledBusinessTypes পড়ে। এই দুটোর মাঝে আগে কোনো
+// সংযোগ ছিল না — admin থেকে বিজনেস টাইপ বদলালেও দোকানের অ্যাপে কখনো পৌঁছাত না।
+// checkSubscription()-এ কেন্দ্রীয় ডক পড়ার সময়ই এই ফ্ল্যাগে বসিয়ে রাখা হয়
+// (DevPanelFlag-এর একই প্যাটার্নে), আর App()-এর businessConfig sync effect
+// (নিচে) এটা পড়ে দোকানের নিজস্ব প্রজেক্টে বসিয়ে দেয়।
+const CentralBizConfig = { enabledBusinessTypes: null, activeBusinessType: null };
+
 function SubscriptionGate({ children }) {
   const [status, setStatus] = useState("loading");
   const [phoneInput, setPhoneInput] = useState("");
@@ -2964,6 +2976,12 @@ function SubscriptionGate({ children }) {
       const d = snap.data();
       if (!isMounted()) return;
       DevPanelFlag.visible = !!d.devPanelVisible; // admin.html থেকে টগল করা ফ্ল্যাগ
+      // 🆕 Multi-Business bridge ফিক্স: admin.html-এ সেট করা enabledBusinessTypes/
+      // activeBusinessType এখানে ধরে রাখা হয়, App()-এর effect পরে এটা পড়ে
+      // দোকানের নিজস্ব প্রজেক্টে বসাবে।
+      CentralBizConfig.enabledBusinessTypes = (Array.isArray(d.enabledBusinessTypes) && d.enabledBusinessTypes.length)
+        ? d.enabledBusinessTypes : null;
+      CentralBizConfig.activeBusinessType = d.activeBusinessType || null;
       if (d.status === "blocked") { setStatus("expired"); if (typeof window.__hideSplash === "function") window.__hideSplash(); return; }
       const now = new Date();
       // 🔴 ফিক্স (টাইমজোন বাগ): expiryDate শুধু "YYYY-MM-DD" (date-only) স্ট্রিং হিসেবে
@@ -11804,6 +11822,35 @@ function SmartBusinessMgmt() {
     });
     return () => unsub();
   }, [fssReady, settingsLoaded, businessType, businessTypeLocked, enabledBusinessTypes, currentUser?.role]);
+
+  // 🆕 Multi-Business bridge ফিক্স (১৯ জুলাই ২০২৬): admin.html কেন্দ্রীয়
+  // subscriptions/{phone} ডকুমেন্টে enabledBusinessTypes/activeBusinessType
+  // লেখে, কিন্তু উপরের effect শুধু দোকানের নিজস্ব প্রজেক্টের meta/businessConfig
+  // থেকে পড়ে — এই দুটোর মাঝে আগে কোনো সংযোগ ছিল না। checkSubscription()
+  // CentralBizConfig-এ কেন্দ্রীয় মান রেখে দেয় (দেখুন উপরে); এখানে সেটা দোকানের
+  // নিজস্ব প্রজেক্টে বসানো হয় (FSS.setBusinessConfig), যা উপরের
+  // subscribeBusinessConfig লিসেনারকে ট্রিগার করে এবং local state-ও আপডেট হয়ে
+  // যায়। শুধু admin/owner ডিভাইসে (স্টাফ নয়) এবং শুধু কেন্দ্রীয় লিস্ট local
+  // থেকে আলাদা হলেই লেখে — অহেতুক বারবার write এড়াতে।
+  useEffect(() => {
+    if (!fssReady || !FSS._db || !settingsLoaded) return;
+    if (currentUser?.role === "staff") return;
+    const central = CentralBizConfig.enabledBusinessTypes;
+    if (!central || !central.length) return;
+    const sameList = Array.isArray(enabledBusinessTypes) &&
+      enabledBusinessTypes.length === central.length &&
+      enabledBusinessTypes.every(bt => central.includes(bt));
+    if (sameList) return;
+    // activeBusinessType: কেন্দ্রীয় active টাইপ নতুন লিস্টে থাকলে সেটাই ধরা হয়,
+    // নাহলে দোকানের বর্তমান businessType (এখনো enabled থাকলে) বা নতুন লিস্টের
+    // প্রথমটা — owner ইচ্ছাকৃতভাবে যেটায় আছে সেখান থেকে অহেতুক সরানো হবে না।
+    const nextActive = central.includes(CentralBizConfig.activeBusinessType)
+      ? CentralBizConfig.activeBusinessType
+      : (central.includes(businessType) ? businessType : central[0]);
+    setEnabledBusinessTypes(central);
+    if (nextActive !== businessType) setBusinessType(nextActive);
+    FSS.setBusinessConfig(nextActive, businessTypeLocked, central);
+  }, [fssReady, settingsLoaded, businessType, businessTypeLocked, enabledBusinessTypes, currentUser?.role, appResyncTick]);
 
   // 🆕 ধাপ ৫ (Staff Permission System, ১৮ জুলাই ২০২৬): স্টাফের businessType সবসময়
   // owner-assigned মান (currentUser.assignedBusinessType) দিয়ে লক থাকবে — উপরের
