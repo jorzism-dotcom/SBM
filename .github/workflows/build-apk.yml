@@ -41,6 +41,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     needs: firestore-rules
+    permissions:
+      contents: write   # 🔴 GitHub Release তৈরি + পুরনো release ডিলিট করার জন্য প্রয়োজন
 
     steps:
       - name: Checkout code
@@ -101,6 +103,17 @@ jobs:
           curl -fsSL "https://accounts.google.com/gsi/client" -o public/gsi-client.js
           echo "✅ gsi-client.js bundled ($(wc -c < public/gsi-client.js) bytes)"
 
+      - name: 🏷️ Compute semantic app version (auto — ম্যানুয়াল version বাম্প লাগবে না)
+        run: |
+          # প্রতিটা build স্বয়ংক্রিয়ভাবে একটা নতুন, সবসময়-বাড়তে-থাকা x.y.z ভার্সন
+          # পায় — run_number কখনো কমে না়, তাই App.jsx-এর compareVersions()
+          # সবসময় সঠিকভাবে কাজ করবে। শুরুর "1.0" অংশ শুধু বড় মাইলফলকে
+          # (মেজর ফিচার রিলিজ) ইচ্ছে করলে হাতে বদলাতে পারেন — নাহলে কিছুই
+          # ছোঁয়া লাগবে না, প্যাচ অংশ (শেষেরটা) সবসময় auto বাড়বে।
+          APP_SEMVER="1.0.${{ github.run_number }}"
+          echo "APP_SEMVER=$APP_SEMVER" >> "$GITHUB_ENV"
+          echo "computed version: $APP_SEMVER"
+
       - name: Build web assets
         run: |
           # 🔴 App.jsx-এর APP_BUILD এই ভ্যালু import.meta.env.VITE_BUILD_ID
@@ -108,7 +121,11 @@ jobs:
           # Settings-এ অ্যাপ ভার্সন কার্ডে স্বয়ংক্রিয়ভাবে নতুন মান দেখাবে,
           # ম্যানুয়ালি v1-dbgN বাড়ানো লাগবে না।
           export VITE_BUILD_ID="$(date -u +%Y%m%d-%H%M)-${GITHUB_SHA::7}-run${GITHUB_RUN_NUMBER}"
+          # 🔴 App.jsx-এর APP_VERSION_CODE এখন এই VITE_APP_VERSION থেকে পড়ে —
+          # admin.html-এর সাথে সেমান্টিক (x.y.z) কম্পেয়ারের জন্য এটাই সোর্স অফ ট্রুথ।
+          export VITE_APP_VERSION="$APP_SEMVER"
           echo "VITE_BUILD_ID=$VITE_BUILD_ID"
+          echo "VITE_APP_VERSION=$VITE_APP_VERSION"
           npm run build
 
       - name: Copy gsi-client.js to dist (Vite public dir fix)
@@ -331,3 +348,35 @@ jobs:
           name: hisabghor-apk-v${{ github.run_number }}
           path: android/app/build/outputs/apk/release/app-release.apk
           retention-days: 30
+
+      - name: 📦 Rename signed APK (version নাম দিয়ে)
+        run: |
+          mkdir -p release-out
+          cp android/app/build/outputs/apk/release/app-release.apk "release-out/SBM-v${APP_SEMVER}.apk"
+
+      - name: 🚀 GitHub Release তৈরি করা (APK পাবলিক ডাউনলোড লিংক সহ)
+        # 🔴 admin.html-এর Update ট্যাব এই Release-গুলো GitHub API দিয়ে পড়ে
+        # (jorzism-dotcom/Turjo/releases) — version + APK লিংক auto-fill হয়,
+        # ম্যানুয়ালি টাইপ করা লাগে না। Publish করা না হওয়া পর্যন্ত কোনো দোকানে
+        # কিছু যায় না — এটা শুধু APK-টা GitHub-এ রেডি করে রাখে।
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.APP_SEMVER }}
+          name: SBM v${{ env.APP_SEMVER }}
+          body: |
+            Auto-built from commit ${{ github.sha }} (run #${{ github.run_number }})
+            admin.html → Update ট্যাব → "GitHub রিলিজ থেকে আনুন" দিয়ে এই ভার্সন বেছে প্রকাশ করুন।
+          files: release-out/SBM-v${{ env.APP_SEMVER }}.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🧹 পুরনো/টেস্ট রিলিজ পরিষ্কার (সর্বশেষ ১৫টা রেখে বাকি ডিলিট)
+        run: |
+          gh release list --limit 200 --json tagName --jq '.[].tagName' | tail -n +16 | while read -r tag; do
+            echo "Deleting old release: $tag"
+            gh release delete "$tag" --yes --cleanup-tag || true
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
