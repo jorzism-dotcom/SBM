@@ -12047,20 +12047,15 @@ function SmartBusinessMgmt() {
   };
   const isDark = currentPreset.dark;
 
-  // 🆕 ধাপ ৩: multi-business শপে (enabledBusinessTypes.length > 1) active
-  // business অনুযায়ী শুধু accent elements (টপ বার হাইলাইট/active ট্যাব/প্রধান
-  // বাটন) registry-র রঙে বদলায় — ইউজারের personal theme (bg/card/text ইত্যাদি)
-  // অক্ষুণ্ণ থাকে। single-business শপে (বর্তমানে সবাই) এটা no-op।
+  // 🆕 রিডিজাইন (২০ জুলাই ২০২৬ — "থিম রাখার লাভ কী?" ফিডব্যাক): আগে multi-business
+  // শপে সক্রিয় বিজনেসের registry-রং পুরো অ্যাপের accent/navActive ওভাররাইট করে
+  // দিত — ফলে ইউজার যেকোনো থিম বেছে নিলেও (green/orange/purple বিজনেসে) সেই থিমের
+  // accent আসলে কখনো দেখা যেত না, পুরো থিম-সিস্টেমটাই কার্যত অকেজো হয়ে পড়ত।
+  // এখন থিম সবসময় সম্পূর্ণরূপে (accent সহ) প্রযোজ্য থাকে — businessAccentColor
+  // শুধু "সক্রিয় বিজনেস" badge/সুইচার বাটন ও শপ-নামের ব্র্যাকেটে (নিচে) ব্যবহার হয়,
+  // যেটা ইচ্ছাকৃতভাবে থিম-নিরপেক্ষ সেফটি-সিগন্যাল হিসেবে থেকে যায়।
   const isMultiBusinessActive = Array.isArray(enabledBusinessTypes) && enabledBusinessTypes.length > 1;
   const businessAccentColor = isMultiBusinessActive ? (BUSINESS_TYPE_REGISTRY[businessType]?.color || null) : null;
-  if (businessAccentColor) {
-    T.accent = businessAccentColor;
-    T.accentDark = businessAccentColor;
-    T.accentGlow = businessAccentColor + "33";
-    T.accentPill = businessAccentColor + "22";
-    T.navActive = businessAccentColor;
-    T.navPill = businessAccentColor + "18";
-  }
 
   // ── CSS Variables — 1,712 inline style → var(--t-*) ──────────────────────
   // T object-এর সব token একবারে :root-এ inject করা হয়।
@@ -15164,15 +15159,32 @@ function SmartBusinessMgmt() {
                 dropdown-এর প্রতিটা আইটেম staggered bounceIn দিয়ে খোলে — বিদ্যমান
                 keyframes (glow/bounceIn/qc-press প্যাটার্ন) পুনরায় ব্যবহার করা
                 হয়েছে, নতুন কিছু বানানো হয়নি। */}
-            {!isStaff && isMultiBusinessActive && (
+            {!isStaff && isMultiBusinessActive && (() => {
+              // 🆕 রিডিজাইন v2 (প্রিমিয়াম/ফিউচারিস্টিক, ইউজার পছন্দ ১+৪):
+              // ১. Neon-glow pill selector — গ্রেডিয়েন্ট বর্ডার পিল, soft outer-glow, খোলা থাকলে pulse
+              // ৪. Orbiting/rotating icon badge — আইকনের চারপাশে ধীরে ঘোরা conic-gradient রিং
+              // businessAccentColor থেকেই hue-shift করে দ্বিতীয় গ্লো-কালার বানানো হয়েছে,
+              // তাই প্রতিটা বিজনেস টাইপের নিজস্ব রঙের পরিচয় বজায় থেকেই নিয়ন-ডুয়াল-টোন লুক পাওয়া যায়।
+              const { h: _bh, s: _bs, l: _bl } = hexToHsl(businessAccentColor);
+              const glow2 = hslToHex((_bh + 55) % 360, Math.min(95, _bs + 12), Math.min(66, Math.max(48, _bl + 8)));
+              return (
               <div style={{ marginBottom: 6 }}>
                 <style>{`
-                  @keyframes bizSwitchGlow { 0%,100%{ box-shadow: 0 0 0px ${businessAccentColor}00; } 50%{ box-shadow: 0 0 16px ${businessAccentColor}55; } }
+                  @keyframes bizOrbitSpin { from{ transform:rotate(0deg); } to{ transform:rotate(360deg); } }
+                  @keyframes bizPillPulse {
+                    0%,100%{ box-shadow: 0 0 8px ${businessAccentColor}55, 0 0 18px ${glow2}22; }
+                    50%{ box-shadow: 0 0 16px ${businessAccentColor}99, 0 0 30px ${glow2}55; }
+                  }
                   .biz-switch-btn {
-                    transition: transform 0.15s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.25s ease, background 0.25s ease, border-color 0.25s ease;
+                    position:relative; transition: transform 0.15s cubic-bezier(0.34,1.56,0.64,1);
+                    box-shadow: 0 0 10px ${businessAccentColor}44, 0 0 20px ${glow2}22;
                   }
                   .biz-switch-btn:active { transform: scale(0.97); }
-                  .biz-switch-btn.is-open { animation: bizSwitchGlow 1.8s ease-in-out infinite; }
+                  .biz-switch-btn.is-open { animation: bizPillPulse 1.8s ease-in-out infinite; }
+                  .biz-orbit-ring {
+                    background: conic-gradient(from 0deg, ${businessAccentColor}, ${glow2}, ${businessAccentColor});
+                    animation: bizOrbitSpin 3.2s linear infinite;
+                  }
                   .biz-switch-item {
                     transition: transform 0.15s cubic-bezier(0.34,1.56,0.64,1), background 0.2s ease, border-color 0.2s ease;
                     animation: bounceIn 0.32s cubic-bezier(0.34,1.56,0.64,1) both;
@@ -15185,12 +15197,21 @@ function SmartBusinessMgmt() {
                   onClick={() => setShowBizSwitcherList(v => !v)}
                   style={{
                     display:"flex", alignItems:"center", gap:10, width:"100%",
-                    background: `${businessAccentColor}1a`, border:`1.5px solid ${businessAccentColor}66`,
-                    borderRadius:12, padding:"11px 12px", cursor:"pointer", fontFamily:"inherit", textAlign:"left",
+                    border:"1.5px solid transparent", borderRadius:999, padding:"9px 14px 9px 9px", cursor:"pointer", fontFamily:"inherit", textAlign:"left",
+                    backgroundImage:`linear-gradient(135deg, ${T.card}, ${T.card}), linear-gradient(135deg, ${businessAccentColor}, ${glow2})`,
+                    backgroundOrigin:"border-box", backgroundClip:"padding-box, border-box",
                   }}>
-                  <span style={{ fontSize:16 }}>🔀</span>
+                  <span style={{ position:"relative", width:32, height:32, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                    <span className="biz-orbit-ring" style={{ position:"absolute", inset:0, borderRadius:"50%" }} />
+                    <span style={{ position:"absolute", inset:2.5, borderRadius:"50%", background:T.card, display:"flex", alignItems:"center", justifyContent:"center" }}>
+                      <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke={businessAccentColor} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>
+                        <path d="m3.3 7 8.7 5 8.7-5M12 22V12"/>
+                      </svg>
+                    </span>
+                  </span>
                   <div style={{ flex:1 }}>
-                    <div style={{ color:businessAccentColor, fontWeight:800, fontSize:12.5 }}>সক্রিয় বিজনেস</div>
+                    <div style={{ color:businessAccentColor, fontWeight:800, fontSize:12.5, letterSpacing:0.2 }}>সক্রিয় বিজনেস</div>
                     <div style={{ color:T.headingColor, fontWeight:700, fontSize:13.5 }}>{BUSINESS_TYPE_REGISTRY[businessType]?.label || businessType}</div>
                   </div>
                   <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={businessAccentColor} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" style={{ transform: showBizSwitcherList ? "rotate(180deg)" : "none", transition:"transform 0.25s cubic-bezier(0.34,1.56,0.64,1)" }}><polyline points="6 9 12 15 18 9"/></svg>
@@ -15206,7 +15227,8 @@ function SmartBusinessMgmt() {
                   </div>
                 )}
               </div>
-            )}
+              );
+            })()}
             {moreNavItems.map(n => {
               const isActive = tab === n.id && !showDetail;
               return (
