@@ -10329,33 +10329,48 @@ function KpiCardsGrid({ T, stats }) {
   ];
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 6 }}>
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
       {items.map((item, i) => (
         <div key={i} style={{
-          background: `linear-gradient(160deg,${T.card},${item.color}0c)`, borderRadius: 8, padding: "5px 5px",
-          border: `1px solid ${item.color}33`,
-          boxShadow: `0 0 8px ${item.color}10`,
+          background: `linear-gradient(160deg, ${T.card}f5, ${item.color}20)`,
+          backdropFilter: "blur(14px) saturate(160%)",
+          WebkitBackdropFilter: "blur(14px) saturate(160%)",
+          borderRadius: 18, padding: "16px 10px",
+          border: `1px solid ${item.color}45`,
+          boxShadow: `0 6px 20px ${item.color}22, 0 1px 0 rgba(255,255,255,0.06) inset, 0 0 0 1px ${item.color}12 inset`,
           position: "relative", overflow: "hidden", minWidth: 0,
+          display: "flex", flexDirection: "column", alignItems: "center",
+          textAlign: "center", gap: 5,
         }}>
-          <div style={{ display:"flex", alignItems:"center", gap: 3, marginBottom: 2 }}>
-            <span style={{
-              fontSize: 8.5, width: 13, height: 13, borderRadius: 4, flexShrink: 0,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              background: `${item.color}22`, border: `1px solid ${item.color}44`,
-            }}>{item.icon}</span>
-            <div style={{
-              color: T.text, fontWeight: 800, fontSize: 7.3, opacity: 0.8,
-              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-            }}>{item.label}</div>
-          </div>
+          {/* top accent glow strip */}
           <div style={{
-            color: item.color, fontWeight: 900, fontSize: 10.5,
-            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-            textShadow: `0 0 10px ${item.color}55`,
+            position: "absolute", top: 0, left: 0, right: 0, height: 3,
+            background: `linear-gradient(90deg, transparent, ${item.color}, transparent)`,
+          }} />
+          {/* subtle corner glow */}
+          <div style={{
+            position: "absolute", top: -30, right: -30, width: 70, height: 70,
+            borderRadius: "50%", background: `${item.color}22`, filter: "blur(18px)",
+            pointerEvents: "none",
+          }} />
+          <span style={{
+            fontSize: 20, width: 38, height: 38, borderRadius: 12, flexShrink: 0,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: `linear-gradient(160deg, ${item.color}30, ${item.color}12)`,
+            border: `1px solid ${item.color}55`,
+            boxShadow: `0 3px 10px ${item.color}30`,
+          }}>{item.icon}</span>
+          <div style={{
+            color: T.text, fontWeight: 800, fontSize: 12.5, opacity: 0.88,
+            lineHeight: 1.35, letterSpacing: 0.1,
+          }}>{item.label}</div>
+          <div style={{
+            color: item.color, fontWeight: 900, fontSize: 18.5,
+            letterSpacing: 0.2,
+            textShadow: `0 0 14px ${item.color}66`,
           }}>{item.val}</div>
           <div style={{
-            color: T.sub, fontSize: 6.8, marginTop: 1,
-            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+            color: T.sub, fontSize: 10.5, opacity: 0.85, lineHeight: 1.3,
           }}>{item.sub}</div>
         </div>
       ))}
@@ -28615,15 +28630,20 @@ function DailySummaryModule({ T, S, currentUser, shopName, showToast, customers 
 
       {/* ── AI ড্যাশবোর্ডের ২০টি KPI কার্ড হুবহু — নোটিফিকেশন সময়সূচি কার্ডের উপরে ── */}
       <div className="qc-gradient-card" style={{ ...S.card, marginBottom: 12 }}>
-        <div onClick={() => setShowKpiSection(v => !v)} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer", userSelect:"none", marginBottom: showKpiSection ? 12 : 0 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-            <span style={{ fontSize:18 }}>📈</span>
-            <div>
-              <div style={{ color: T.text, fontWeight: 900, fontSize: 14 }}>ব্যবসার সারসংক্ষেপ</div>
-              <div style={{ color: T.sub, fontSize: 11, marginTop: 2 }}>বিক্রয়, লাভ, খরচ ও স্টকের ২০টি কার্ড</div>
+        <div onClick={() => setShowKpiSection(v => !v)} style={{ position:"relative", display:"flex", justifyContent:"center", alignItems:"center", cursor:"pointer", userSelect:"none", marginBottom: showKpiSection ? 16 : 0, padding: "2px 28px" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10, textAlign:"center" }}>
+            <span style={{
+              fontSize:24, width:42, height:42, borderRadius:13, flexShrink:0,
+              display:"flex", alignItems:"center", justifyContent:"center",
+              background: "linear-gradient(160deg, #3b82f630, #3b82f612)",
+              border: "1px solid #3b82f655", boxShadow: "0 3px 12px #3b82f640",
+            }}>📈</span>
+            <div style={{ textAlign:"center" }}>
+              <div style={{ color: T.text, fontWeight: 900, fontSize: 17, letterSpacing: 0.2, textAlign:"center" }}>ব্যবসার সারসংক্ষেপ</div>
+              <div style={{ color: T.sub, fontSize: 12.5, marginTop: 3, textAlign:"center" }}>বিক্রয়, লাভ, খরচ ও স্টকের ২০টি কার্ড</div>
             </div>
           </div>
-          <span style={{ color: T.sub, fontSize: 12 }}>{showKpiSection ? "▲" : "▼"}</span>
+          <span style={{ position:"absolute", right: 4, top: "50%", transform:"translateY(-50%)", color: T.sub, fontSize: 13 }}>{showKpiSection ? "▲" : "▼"}</span>
         </div>
         {showKpiSection && <KpiCardsGrid T={T} stats={kpiStats} />}
       </div>
