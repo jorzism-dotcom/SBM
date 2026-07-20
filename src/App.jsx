@@ -13488,9 +13488,28 @@ function SmartBusinessMgmt() {
           mergedData[colName] = mergedArr;
           if (changed) {
             setter(mergedArr);
-            // Firestore-এও push করো (merged records)
+            // 🔴 ফিক্স (নীরব ডেটা-লস): আগে এখানে সরাসরি fire-and-forget
+            // FSS.setRecord() কল হতো — কোনো await/catch/retry ছাড়া। নেটওয়ার্ক
+            // গ্লিচে একটা রেকর্ড push ব্যর্থ হলে সেটা কোথাও লগ/queue না হয়েই
+            // হারিয়ে যেত, অথচ UI "Master Sync সম্পন্ন! ✅" দেখাত। এখন বাকি
+            // অ্যাপের মতোই pushDurable() ব্যবহার হচ্ছে — আগে IndexedDB
+            // SyncOutbox-এ persist করে, তারপর Firestore-এ লেখার চেষ্টা করে;
+            // ব্যর্থ হলে outbox-এই থেকে যায় ও useFSSCollection/windowed-flush
+            // effect-গুলো (boot/resume/online/heartbeat-এ) নিজে থেকেই পরে
+            // আবার পাঠানোর চেষ্টা করবে — এই কালেকশনগুলোর প্রতিটাই (customers/
+            // products/smsLog/suppliers/purchaseOrders/expenses/returns/
+            // auditLogs/quotations/supplierPayments/paymentInvoices) আগে
+            // থেকেই useFSSCollection দিয়ে ম্যানেজড, আর invoices/txns/
+            // stockMovements/cashLogs আলাদা windowed outbox-flush effect দিয়ে
+            // কভার্ড — তাই নতুন কোনো flush পাথ যোগ করা লাগেনি।
             mergedArr.forEach(rec => {
-              if (rec?.id != null) FSS.setRecord(colName, rec.id, rec);
+              if (rec?.id != null) {
+                pushDurable(colName, rec.id, rec).then(res => {
+                  if (res && res.ok === false) {
+                    logErrorToCentral?.(`masterSync-merge-push:${colName}`, new Error(res.msg || "push failed"), { id: rec.id });
+                  }
+                });
+              }
             });
           }
         });
@@ -34675,6 +34694,21 @@ const GDrive = {
   BACKUP_FILENAME: "sbm-backup.json",
   FOLDER_NAME: "SBM Backups",
 
+  // 🔴 ফিক্স (মাল্টি-বিজনেস Drive ওভাররাইট বাগ): আগে সব বিজনেস-টাইপের জন্য
+  // একটাই ফিক্সড ফাইলনেম (sbm-backup.json) ব্যবহার হতো — একই ডিভাইসে/একই
+  // Google অ্যাকাউন্টে একাধিক বিজনেস চালু থাকলে, যেই বিজনেস active থাকা
+  // অবস্থায় auto-backup/Master Sync চলত, সে-ই Drive-এর একমাত্র ফাইলটা
+  // ওভাররাইট করে দিত — অন্য বিজনেসের Drive ব্যাকআপ কার্যত হারিয়ে যেত।
+  // এখন বর্তমান সক্রিয় বিজনেস-প্রিফিক্স (FSS._businessPrefix, ঠিক SnapshotDB/
+  // ArchiveDB/SyncOutbox-এর মতোই) অনুযায়ী আলাদা ফাইলনেম ব্যবহার হয়। single-
+  // business শপে (prefix null) নাম অপরিবর্তিত (sbm-backup.json) থাকে — কোনো
+  // migration/backward-compat সমস্যা নেই।
+  _backupBaseName() {
+    const prefix = FSS._businessPrefix || null;
+    if (!prefix) return this.BACKUP_FILENAME;
+    return this.BACKUP_FILENAME.replace(/\.json$/, `-${prefix}.json`);
+  },
+
   async getToken() {
     return localStorage.getItem("sbm_gd_token") || null;
   },
@@ -34902,8 +34936,9 @@ const GDrive = {
     // ── "SBM Backups" folder খুঁজো বা তৈরি করো (visible, Drive অ্যাপে দেখা যাবে)
     const folderId = await this._ensureFolder(token);
 
+    const baseName = this._backupBaseName();
     const meta = JSON.stringify({
-      name: compressed ? this.BACKUP_FILENAME + ".gz" : this.BACKUP_FILENAME,
+      name: compressed ? baseName + ".gz" : baseName,
       description: `SBM Backup — ${new Date().toLocaleString("en-US")} | ${compressed ? `gzip ${(compressedBytes/1024).toFixed(0)}KB←${(originalBytes/1024).toFixed(0)}KB` : `json ${(originalBytes/1024).toFixed(0)}KB`}`,
       appProperties: { hg_compressed: compressed ? "gzip" : "none", hg_version: "5.0" },
     });
@@ -35020,7 +35055,13 @@ const GDrive = {
 
   async findBackupFile(token) {
     const folderId = await this._ensureFolder(token);
-    const names = [this.BACKUP_FILENAME + ".gz", this.BACKUP_FILENAME];
+    const baseName = this._backupBaseName();
+    // prefix থাকলে prefixed নাম আগে খোঁজা হয়; না পেলে পুরনো shared নামেও একবার
+    // fallback (শুধু read/restore-এর জন্য — migration সুবিধার্থে, upload সবসময়
+    // prefixed নামেই হয় তাই এটা কন্টামিনেশন ফিরিয়ে আনে না)।
+    const names = baseName !== this.BACKUP_FILENAME
+      ? [baseName + ".gz", baseName, this.BACKUP_FILENAME + ".gz", this.BACKUP_FILENAME]
+      : [baseName + ".gz", baseName];
     for (const name of names) {
       const q = encodeURIComponent(`name="${name}" and "${folderId}" in parents and trashed=false`);
       const r = await fetch(
@@ -35220,8 +35261,15 @@ const SnapshotDB = {
       return { ok: true, slot: nextSlot + 1 };
     } catch (e) {
       // IndexedDB ব্যর্থ হলে localStorage fallback
+      // 🔴 ফিক্স (মাল্টি-বিজনেস কন্টামিনেশন): এই fallback key আগে গ্লোবাল
+      // ("sbm_local_backup") ছিল, prefix ছাড়া — IndexedDB পাথ (উপরে) prefix-
+      // স্কোপড হলেও, IndexedDB ব্যর্থ হলে যেকোনো বিজনেসের fallback save একই
+      // key ওভাররাইট করত, আর পরের যেকোনো বিজনেসের loadLatest() সেই ভুল
+      // বিজনেসের ডেটা পড়ে ফেলত। এখন IndexedDB-এর মতোই prefix-স্কোপড key।
       try {
-        localStorage.setItem("sbm_local_backup", JSON.stringify({ ...data, _savedAt: new Date().toISOString(), _version: "6.0-ls" }));
+        const prefix = FSS._businessPrefix || null;
+        const fallbackKey = "sbm_local_backup" + (prefix ? "_" + prefix : "");
+        localStorage.setItem(fallbackKey, JSON.stringify({ ...data, _savedAt: new Date().toISOString(), _version: "6.0-ls" }));
         localStorage.setItem("sbm_snap_last", new Date().toISOString());
         return { ok: true, slot: 1, fallback: true };
       } catch (e2) {
@@ -35256,8 +35304,10 @@ const SnapshotDB = {
     try {
       const all = await this.loadAll();
       if (!all.length) {
-        // localStorage fallback
-        const raw = localStorage.getItem("sbm_local_backup");
+        // localStorage fallback — prefix-স্কোপড (উপরে _saveInternal-এর ফিক্স দেখুন)
+        const prefix = FSS._businessPrefix || null;
+        const fallbackKey = "sbm_local_backup" + (prefix ? "_" + prefix : "");
+        const raw = localStorage.getItem(fallbackKey);
         return raw ? JSON.parse(raw) : null;
       }
       return all.sort((a, b) => new Date(b._savedAt) - new Date(a._savedAt))[0];
@@ -35321,7 +35371,16 @@ const LocalBackup = {
   async deleteAll() {
     await SnapshotDB.deleteAll();
     try {
-      localStorage.removeItem(this.STORAGE_KEY);
+      // 🔴 ফিক্স: fallback key এখন প্রতি-বিজনেস prefix-স্কোপড (sbm_local_backup_<prefix>),
+      // তাই শুধু একটা fixed key মুছলে বাকি বিজনেসগুলোর fallback backup থেকে যেত।
+      // Master Reset ইচ্ছাকৃতভাবে সব বিজনেসের ব্যাকআপ মোছে (SnapshotDB.deleteAll()-এর
+      // মতোই গ্লোবাল), তাই "sbm_local_backup" দিয়ে শুরু হওয়া সব key খোঁজে মুছে ফেলা হয়।
+      const toRemove = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.indexOf(this.STORAGE_KEY) === 0) toRemove.push(k);
+      }
+      toRemove.forEach(k => localStorage.removeItem(k));
       localStorage.removeItem(this.LAST_SYNC_KEY);
     } catch {}
   },
