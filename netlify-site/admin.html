@@ -803,12 +803,23 @@
       <div class="section-head"><div class="section-title">বর্তমানে প্রকাশিত ভার্সন</div></div>
       <div id="currentUpdateBox"></div>
 
+      <div class="section-head" style="margin-top:22px"><div class="section-title">GitHub থেকে রিলিজ আনুন</div></div>
+      <div class="glass card">
+        <div class="hint" style="margin-bottom:10px">প্রতিটা GitHub build স্বয়ংক্রিয়ভাবে একটা Release + APK তৈরি করে। এখান থেকে বেছে নিলে নিচের ভার্সন ও লিংক ফিল্ড auto-fill হবে — শুধু ম্যানুয়ালি টাইপ করা লাগবে না। এতে চাপলেও এখনই কারো কাছে কিছু যায় না, "আপডেট প্রকাশ করুন" চাপলে তবেই যাবে।</div>
+        <div class="form-group">
+          <select id="upd-gh-release" style="width:100%"><option value="">-- রিলিজ লোড করুন --</option></select>
+        </div>
+        <button class="btn-edit" style="width:100%" onclick="loadGithubReleases()">🔄 GitHub রিলিজ লিস্ট লোড করুন</button>
+        <button class="btn-edit" style="width:100%;margin-top:8px" onclick="applyGithubRelease()">⬇️ নির্বাচিত রিলিজ ফর্মে বসান</button>
+        <p id="ghRelMsg" style="font-size:12px;margin-top:10px;text-align:center;min-height:16px;"></p>
+      </div>
+
       <div class="section-head" style="margin-top:22px"><div class="section-title">নতুন আপডেট প্রকাশ করুন</div></div>
       <div class="glass card">
         <div class="form-group">
           <label>ভার্সন নাম্বার (x.y.z ফরম্যাট) *</label>
           <input id="upd-version" placeholder="যেমন: 1.1.0">
-          <div class="hint">App.jsx-এর <code>APP_VERSION_CODE</code>-এর সাথে মিলিয়ে সেমান্টিকভাবে (x.y.z) কম্পেয়ার হবে — বর্তমান কোডের চেয়ে বড় হলেই দোকানদার নতুন আপডেট দেখতে পাবেন।</div>
+          <div class="hint">App.jsx-এর <code>APP_VERSION_CODE</code>-এর সাথে মিলিয়ে সেমান্টিকভাবে (x.y.z) কম্পেয়ার হবে — বর্তমান কোডের চেয়ে বড় হলেই দোকানদার নতুন আপডেট দেখতে পাবেন। উপরের বাটন দিয়ে GitHub থেকে auto-fill করতে পারেন।</div>
         </div>
         <div class="form-group">
           <label>APK ডাউনলোড লিংক *</label>
@@ -822,6 +833,15 @@
           <div><div class="t-lbl">জরুরি হিসেবে চিহ্নিত করুন</div><div class="t-sub">শুধু কার্ডে "জরুরি" ব্যাজ দেখাবে — কোনো জোরপূর্বক লক/পপ-আপ তৈরি করে না</div></div>
           <label class="switch"><input type="checkbox" id="upd-mandatory"><span class="slider"></span></label>
         </div>
+
+        <div class="form-group" style="margin-top:14px">
+          <label>নির্দিষ্ট দোকানে পাঠান (ঐচ্ছিক)</label>
+          <div class="hint" style="margin-bottom:6px">কিছু না বাছলে <b>সব দোকান</b> এই আপডেট দেখবে (আগের মতো)। নির্দিষ্ট কিছু দোকান বাছলে <b>শুধু তারাই</b> দেখবে — বাকিরা পুরনো ভার্সনেই থাকবে। নতুন বিল্ড আগে টেস্ট দোকানে যাচাই করতে এটা কাজে লাগে।</div>
+          <input id="upd-shop-search" placeholder="দোকান খুঁজুন (নাম/ফোন)..." oninput="renderUpdShopPicker()">
+          <div id="upd-shop-picker" style="max-height:220px;overflow-y:auto;margin-top:8px;border:1px solid var(--border);border-radius:10px;padding:6px;"></div>
+          <div id="upd-shop-selected" style="font-size:12px;margin-top:8px;color:var(--sub)"></div>
+        </div>
+
         <button class="btn-primary violet" onclick="publishUpdate()">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
           আপডেট প্রকাশ করুন
@@ -2020,6 +2040,8 @@ async function loadCurrentUpdate() {
       return;
     }
     const d = snap.data();
+    const targets = Array.isArray(d.targetPhones) ? d.targetPhones.filter(Boolean) : [];
+    const targetLabel = targets.length ? `🎯 শুধু ${targets.length}টি নির্দিষ্ট দোকান` : '🌐 সব দোকান';
     box.innerHTML = `
       <div class="glass live-update-card card-hi">
         <div class="lu-head">
@@ -2031,12 +2053,14 @@ async function loadCurrentUpdate() {
         </div>
         ${d.updateNotesBn ? `<div class="lu-notes">${d.updateNotesBn.replace(/</g,'&lt;')}</div>` : ''}
         <div class="lu-meta">🔗 ${d.updateUrl || '—'}</div>
+        <div class="lu-meta">${targetLabel}</div>
         <div class="actions">
           <button class="btn btn-edit" onclick="prefillUpdateForm()">✏️ সম্পাদনা</button>
           <button class="btn btn-block" onclick="unpublishUpdate()">🗑️ প্রত্যাহার করুন</button>
         </div>
       </div>`;
     box.dataset.version = d.version; box.dataset.url = d.updateUrl || ''; box.dataset.notes = d.updateNotesBn || ''; box.dataset.mandatory = d.forceUpdate ? '1' : '0';
+    box.dataset.targets = JSON.stringify(targets);
   } catch(e) {
     box.innerHTML = emptyState('লোড করা যায়নি: ' + e.message);
   }
@@ -2047,8 +2071,73 @@ window.prefillUpdateForm = function() {
   document.getElementById('upd-url').value = box.dataset.url || '';
   document.getElementById('upd-notes').value = box.dataset.notes || '';
   document.getElementById('upd-mandatory').checked = box.dataset.mandatory === '1';
+  try { updSelectedPhones = JSON.parse(box.dataset.targets || '[]'); } catch { updSelectedPhones = []; }
+  renderUpdShopPicker();
   document.getElementById('upd-version').scrollIntoView({ behavior: 'smooth', block: 'center' });
 };
+
+// ── 🚀 GitHub Release picker — প্রতিটা build-এ auto তৈরি হওয়া Release থেকে
+// version + APK লিংক সরাসরি ফর্মে বসানো, ম্যানুয়ালি টাইপ করা লাগে না ──────────
+const GH_OWNER_REPO = 'jorzism-dotcom/Turjo';
+let ghReleasesCache = [];
+window.loadGithubReleases = async function() {
+  const sel = document.getElementById('upd-gh-release');
+  const msg = document.getElementById('ghRelMsg');
+  msg.style.color = 'var(--sub)'; msg.textContent = 'লোড হচ্ছে...';
+  try {
+    const res = await fetch(`https://api.github.com/repos/${GH_OWNER_REPO}/releases?per_page=15`);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const releases = await res.json();
+    ghReleasesCache = releases;
+    sel.innerHTML = '<option value="">-- একটা রিলিজ বাছুন --</option>' + releases.map((r, i) => {
+      const apk = (r.assets || []).find(a => a.name.endsWith('.apk'));
+      const dt = r.published_at ? new Date(r.published_at).toLocaleString('bn-BD') : '';
+      return `<option value="${i}">${r.tag_name}${apk ? '' : ' (⚠️ APK নেই)'} — ${dt}</option>`;
+    }).join('');
+    msg.style.color = '#6ee7b7'; msg.textContent = `✅ ${releases.length}টি রিলিজ পাওয়া গেছে`;
+    setTimeout(() => msg.textContent = '', 4000);
+  } catch(e) {
+    msg.style.color = '#f87171'; msg.textContent = '❌ লোড ব্যর্থ: ' + e.message + ' (রিপো পাবলিক কিনা যাচাই করুন)';
+  }
+};
+window.applyGithubRelease = function() {
+  const sel = document.getElementById('upd-gh-release');
+  const msg = document.getElementById('ghRelMsg');
+  const idx = sel.value;
+  if (idx === '') { msg.style.color = '#f87171'; msg.textContent = '⚠️ আগে একটা রিলিজ বাছুন'; return; }
+  const r = ghReleasesCache[Number(idx)];
+  if (!r) return;
+  const apk = (r.assets || []).find(a => a.name.endsWith('.apk'));
+  if (!apk) { msg.style.color = '#f87171'; msg.textContent = '❌ এই রিলিজে APK ফাইল সংযুক্ত নেই'; return; }
+  const version = (r.tag_name || '').replace(/^v/, '');
+  document.getElementById('upd-version').value = version;
+  document.getElementById('upd-url').value = apk.browser_download_url;
+  msg.style.color = '#6ee7b7'; msg.textContent = '✅ ভার্সন ও লিংক বসানো হয়েছে — নোট লিখে প্রকাশ করুন';
+  document.getElementById('upd-version').scrollIntoView({ behavior: 'smooth', block: 'center' });
+};
+
+// ── 🎯 শপ-টার্গেটিং পিকার — নির্দিষ্ট দোকান বেছে আপডেট পাঠানোর জন্য ──────────
+let updSelectedPhones = [];
+window.renderUpdShopPicker = function() {
+  const box = document.getElementById('upd-shop-picker');
+  const q = (document.getElementById('upd-shop-search').value || '').trim().toLowerCase();
+  const list = (typeof users !== 'undefined' ? users : []).filter(u =>
+    !q || (u.shopName || '').toLowerCase().includes(q) || (u.phone || '').includes(q) || (u.name || '').toLowerCase().includes(q)
+  ).slice(0, 60);
+  box.innerHTML = list.length ? list.map(u => `
+    <label style="display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;font-size:13px;">
+      <input type="checkbox" onchange="toggleUpdShop('${u.phone}')" ${updSelectedPhones.includes(u.phone) ? 'checked' : ''}>
+      <span>${u.shopName || 'নাম নেই'} — ${u.phone || ''}</span>
+    </label>`).join('') : `<div style="font-size:12px;color:var(--sub);padding:6px">কোনো দোকান পাওয়া যায়নি</div>`;
+  const selBox = document.getElementById('upd-shop-selected');
+  selBox.textContent = updSelectedPhones.length ? `✅ ${updSelectedPhones.length}টি দোকান নির্বাচিত (খালি রাখলে সব দোকান পাবে)` : 'কিছু নির্বাচিত নেই → আপডেট সব দোকানে যাবে';
+};
+window.toggleUpdShop = function(phone) {
+  const i = updSelectedPhones.indexOf(phone);
+  if (i === -1) updSelectedPhones.push(phone); else updSelectedPhones.splice(i, 1);
+  renderUpdShopPicker();
+};
+
 window.publishUpdate = async function() {
   const version = document.getElementById('upd-version').value.trim();
   const url     = document.getElementById('upd-url').value.trim();
@@ -2057,9 +2146,15 @@ window.publishUpdate = async function() {
   const msg = document.getElementById('updMsg');
   if (!/^\d+\.\d+\.\d+$/.test(version)) { msg.style.color = '#f87171'; msg.textContent = '⚠️ ভার্সন অবশ্যই x.y.z ফরম্যাটে হতে হবে (যেমন: 1.1.0)'; return; }
   if (!url) { msg.style.color = '#f87171'; msg.textContent = '⚠️ ডাউনলোড লিংক আবশ্যক'; return; }
+  const targetPhones = updSelectedPhones.slice();
+  const confirmMsg = targetPhones.length
+    ? `শুধু ${targetPhones.length}টি নির্দিষ্ট দোকানে এই আপডেট পাঠাবেন?`
+    : `কোনো দোকান বাছা হয়নি — এই আপডেট সব দোকানে যাবে। নিশ্চিত?`;
+  if (!confirm(confirmMsg)) return;
   try {
     await setDoc(doc(db, "admin_config", "appVersion"), {
       version, updateUrl: url, updateNotesBn: notes, forceUpdate: mandatory,
+      targetPhones,
       publishedAt: new Date().toISOString()
     }, { merge: true });
     msg.style.color = '#6ee7b7'; msg.textContent = '✅ প্রকাশিত হয়েছে — কোনো notification যায়নি, শুধু দোকানদারের Settings-এ নীরবে দেখা যাবে।';
@@ -2087,7 +2182,7 @@ window.switchTab = function(tab) {
   if (tab === 'payments') renderPayments();
   if (tab === 'alerts')   renderAlerts();
   if (tab === 'errors')   loadErrors();
-  if (tab === 'update')   loadCurrentUpdate();
+  if (tab === 'update')   { loadCurrentUpdate(); renderUpdShopPicker(); }
   if (tab === 'settings') loadBizTypeAuditLog();
   if (tab === 'fbdeploy') fbInitTab();
 };
