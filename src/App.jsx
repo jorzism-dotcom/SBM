@@ -29547,17 +29547,22 @@ async function downloadAndInstallApk(url, version, onProgress) {
   if (!Filesystem) { window.open(url, "_blank"); return { ok: true, installed: false }; }
 
   const fileName = `sbm-update-v${version}.apk`;
-  const dirPath = "Download/SBM-Update";
+  const dirPath = "SBM-Update";
   const path = dirPath + "/" + fileName;
+  // 🔴 ফিক্স: আগে public "Download/SBM-Update" ফোল্ডারে (directory: EXTERNAL_STORAGE)
+  // লেখা হতো, কিন্তু Android 10+ (scoped storage)-এ সাধারণ অ্যাপের জন্য পাবলিক
+  // Download ফোল্ডারে সরাসরি লেখার অনুমতি নেই — এর জন্য বিশেষ "All files access"
+  // পারমিশন লাগে যা runtime popup দিয়ে চাওয়া যায় না, ম্যানিফেস্টে declare করলেও
+  // ব্যবহারকারীকে Settings থেকে আলাদাভাবে on করতে হয়। এই কারণেই mkdir ফিক্স করার
+  // পরও "open failed: ENOENT" এরর আসছিল — আসল সমস্যা ফোল্ডার-না-থাকা নয়,
+  // লেখার অনুমতি না থাকা। সমাধান: অ্যাপের নিজস্ব external ফোল্ডারে
+  // (Android/data/com.protik.sbm/files/) ডাউনলোড করা — এখানে লিখতে কোনো বিশেষ
+  // পারমিশনের দরকার নেই, Android নিজে থেকেই এই অ্যাক্সেস দেয়।
+  const DL_DIR = "EXTERNAL";
   let progressHandle = null;
 
-  // 🔴 ফিক্স: Filesystem.downloadFile()-এ recursive:true দিলেও ফোল্ডার
-  // নিজে থেকে তৈরি হয় না (শুধু writeFile-এ কাজ করে) — ফোল্ডার আগে থেকে না
-  // থাকলে "open failed: ENOENT (No such file or directory)" এরর আসে।
-  // তাই ডাউনলোডের আগে explicit mkdir — ফোল্ডার আগে থেকেই থাকলে যে error
-  // আসবে সেটা নীরবে উপেক্ষা করা হচ্ছে।
   try {
-    await Filesystem.mkdir({ path: dirPath, directory: "EXTERNAL_STORAGE", recursive: true });
+    await Filesystem.mkdir({ path: dirPath, directory: DL_DIR, recursive: true });
   } catch { /* ফোল্ডার আগে থেকেই থাকলে এখানে error আসবে — নিরাপদে উপেক্ষা */ }
 
   try {
@@ -29570,10 +29575,10 @@ async function downloadAndInstallApk(url, version, onProgress) {
           if (p?.contentLength) onProgress?.(Math.round((p.bytes / p.contentLength) * 100));
         });
       } catch { /* progress listener না থাকলে চুপচাপ এগিয়ে যাও */ }
-      const res = await Filesystem.downloadFile({ url, path, directory: "EXTERNAL_STORAGE", recursive: true });
+      const res = await Filesystem.downloadFile({ url, path, directory: DL_DIR, recursive: true });
       fileUri = res?.path || res?.uri || null;
       if (!fileUri) {
-        const g = await Filesystem.getUri({ path, directory: "EXTERNAL_STORAGE" });
+        const g = await Filesystem.getUri({ path, directory: DL_DIR });
         fileUri = g?.uri || null;
       }
     } else {
@@ -29582,8 +29587,8 @@ async function downloadAndInstallApk(url, version, onProgress) {
       const { CapacitorHttp } = await import("@capacitor/core");
       const r = await CapacitorHttp.request({ method: "GET", url, responseType: "blob" });
       onProgress?.(75);
-      await Filesystem.writeFile({ path, data: r.data, directory: "EXTERNAL_STORAGE", recursive: true });
-      const g = await Filesystem.getUri({ path, directory: "EXTERNAL_STORAGE" });
+      await Filesystem.writeFile({ path, data: r.data, directory: DL_DIR, recursive: true });
+      const g = await Filesystem.getUri({ path, directory: DL_DIR });
       fileUri = g?.uri || null;
       onProgress?.(100);
     }
