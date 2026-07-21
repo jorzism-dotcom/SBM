@@ -19,6 +19,7 @@
     "prepare": "husky"
   },
   "dependencies": {
+    "@capacitor-community/file-opener": "^6.0.1",
     "@capacitor-mlkit/barcode-scanning": "^6.2.0",
     "@capacitor/android": "^6.2.0",
     "@capacitor/app": "^6.0.0",
@@ -29,8 +30,8 @@
     "@capacitor/local-notifications": "^6.0.0",
     "@capacitor/preferences": "^6.0.0",
     "@capacitor/push-notifications": "^6.0.0",
-    "@capacitor-community/file-opener": "^6.0.1",
     "@capacitor/share": "^6.0.0",
+    "@capacitor/status-bar": "^6.0.3",
     "@codetrix-studio/capacitor-google-auth": "3.3.6",
     "@e-is/capacitor-bluetooth-serial": "^6.0.3",
     "firebase": "^10.12.0",
