@@ -2242,14 +2242,17 @@ window.applyNoteTemplate = function(idx) {
 
 // ── 🚀 GitHub Release picker — প্রতিটা build-এ auto তৈরি হওয়া Release থেকে
 // version + APK লিংক সরাসরি ফর্মে বসানো, ম্যানুয়ালি টাইপ করা লাগে না ──────────
-const GH_OWNER_REPO = 'jorzism-dotcom/Turjo';
+// 🔴 ফিক্স: আগে এখান থেকে সরাসরি api.github.com কল হতো — ভুল repo নাম
+// ("Turjo", আসলে "SBM" হওয়া উচিত) আর unauthenticated ৬০/ঘণ্টা rate-limit
+// দুটো সমস্যাই ছিল। এখন নিজের /api/gh-releases সার্ভারলেস প্রক্সি কল করা হয়
+// (দেখুন api/gh-releases.js) — সঠিক repo, ঐচ্ছিক token, আর কয়েক মিনিট cache।
 let ghReleasesCache = [];
 window.loadGithubReleases = async function() {
   const sel = document.getElementById('upd-gh-release');
   const msg = document.getElementById('ghRelMsg');
   msg.style.color = 'var(--sub)'; msg.textContent = 'লোড হচ্ছে...';
   try {
-    const res = await fetch(`https://api.github.com/repos/${GH_OWNER_REPO}/releases?per_page=15`);
+    const res = await fetch(`/api/gh-releases`);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const releases = await res.json();
     ghReleasesCache = releases;
