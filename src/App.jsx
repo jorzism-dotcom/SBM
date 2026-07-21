@@ -14440,6 +14440,16 @@ function SmartBusinessMgmt() {
   useBackHandler(!!cashModal,    useCallback(() => { setCashModal(null);    return true; }, []));
   useBackHandler(!!invModal,     useCallback(() => { setInvModal(null);     return true; }, []));
   useBackHandler(!!dashModal,    useCallback(() => { setDashModal(null);    return true; }, []));
+  // 🔴 ফিক্স ("staircase ফলো না করে সরাসরি dashboard-এ চলে যাওয়া" — এই
+  // সেশনে ধরা পড়েছে): `modal` (Zustand store-এর গ্লোবাল ফিল্ড — customer
+  // জমা/বাকি TransactionModal এখান থেকে খোলে) এবং `showBizSwitcherList`
+  // (বিজনেস সুইচার ড্রপডাউন) — এই দুটো লেয়ার কখনোই back-stack-এ
+  // রেজিস্টার্ড ছিল না। ফলে এগুলো খোলা অবস্থায় ব্যাক চাপলে runBackStack()
+  // কিছুই পেত না (খালি), আর কোড সরাসরি "tab !== dashboard হলে dashboard-এ
+  // যাও" ফলব্যাকে পড়ে যেত — যেমন Customers ট্যাবে থেকে কাস্টমারের জমা/বাকি
+  // মোডাল খুলে ব্যাক চাপলে মোডাল বন্ধ না হয়ে সরাসরি Dashboard-এ চলে যেত।
+  useBackHandler(!!modal,              useCallback(() => { setModal(null); return true; }, []));
+  useBackHandler(showBizSwitcherList,  useCallback(() => { setShowBizSwitcherList(false); return true; }, []));
 
   // 🔄 Google Drive auto-reconnect: প্রতি ৩ মিনিটে চেক — expired হলে silent→interactive চেষ্টা
   // Admin-only। Fail হলে floating banner দেখায় যাতে user এক ট্যাপে reconnect করতে পারে।
@@ -32934,7 +32944,9 @@ function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken, 
   const [autoEnabled, setAutoEnabled] = useState(() => localStorage.getItem("sbm_gd_auto") === "1");
   const [autoInterval, setAutoInterval] = useState(() => parseInt(localStorage.getItem("hg_gd_interval") || "30"));
   const [confirmRestore, setConfirmRestore] = useState(false);
-  // #১১ রিস্টোর প্রিভিউ (dry-run) — কনফার্ম করার আগে ফাইল ডাউনলোড করে
+  // 🔴 ফিক্স (staircase ব্যাক): এই ২য়-ধাপ কনফার্মেশনটা back-stack-এ
+  // রেজিস্টার্ড ছিল না — ব্যাক চাপলে সরাসরি bypass হয়ে যেত।
+  useBackHandler(confirmRestore, useCallback(() => { setConfirmRestore(false); return true; }, []));
   // current vs incoming ডেটার diff দেখানো হয়
   const [restorePreview, setRestorePreview] = useState(null); // { rows, totalAdded, totalRemoved, totalChanged }
   const [previewData, setPreviewData] = useState(null); // ফেচ করা raw backup — কনফার্মে পুনরায় ডাউনলোড এড়াতে
@@ -33571,6 +33583,7 @@ function LocalStorageSection({ data, setters, showToast, T, S, currentBusinessTy
   const [saving, setSaving] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [confirmRestore, setConfirmRestore] = useState(false);
+  useBackHandler(confirmRestore, useCallback(() => { setConfirmRestore(false); return true; }, []));
   const [status, setStatus] = useState("idle");
   const [statusMsg, setStatusMsg] = useState("");
   const [restoreSource, setRestoreSource] = useState("snapshot"); // snapshot | file
@@ -33587,6 +33600,7 @@ function LocalStorageSection({ data, setters, showToast, T, S, currentBusinessTy
     try { return localStorage.getItem("sbm-enc-backup") === "1"; } catch { return false; }
   });
   const [showPinModal, setShowPinModal] = useState(null); // null | "encrypt" | "decrypt"
+  useBackHandler(!!showPinModal, useCallback(() => { setShowPinModal(null); return true; }, []));
   const [pinInput, setPinInput] = useState("");
   const [pinConfirm, setPinConfirm] = useState("");
   const [pendingRestoreData, setPendingRestoreData] = useState(null); // encrypted wrapper waiting for PIN
@@ -34545,6 +34559,7 @@ function BackupArchivePanel({ data, setters, showToast, GREEN, currentBusinessTy
   const [selectedKey, setSelectedKey] = useState("");
   const [preview, setPreview] = useState(null); // { snap, diff, valid }
   const [confirmRestore, setConfirmRestore] = useState(false);
+  useBackHandler(confirmRestore, useCallback(() => { setConfirmRestore(false); return true; }, []));
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
 
