@@ -355,7 +355,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: hisabghor-apk-v${{ github.run_number }}
+          name: sbm-apk-v${{ github.run_number }}
           path: android/app/build/outputs/apk/release/app-release.apk
           retention-days: 30
 
