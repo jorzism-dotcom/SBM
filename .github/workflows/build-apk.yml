@@ -50,6 +50,16 @@ jobs:
         # করা হবে না।
         run: npm run test:sync-emulator
 
+      - name: 🐤 রিলিজ-ক্যানারি (blocks build — ফেজ C, দেখুন ENTERPRISE_MONITORING_PLAN.md)
+        # ২২ জুলাই ২০২৬: end-to-end canary — ইনভয়েস তৈরি → সিঙ্ক → ব্যাকআপ →
+        # রিস্টোর → ভয়েড, একটানা sequential চেইনে (প্রতিটা ধাপ আগেরটার
+        # output-এর উপর নির্ভর করে, আসল রিলিজের সময় যেভাবে ঘটবে ঠিক সেই
+        # ক্রমে)। কোনো ধাপ fail করলে script নিজে থেকেই কোন ধাপে থেমেছে তার
+        # স্পষ্ট রিপোর্ট প্রিন্ট করে exit code 1 দেয় — এই step-ই সেটাকে build
+        # জবের গেট বানায় (এই স্টেপ fail করলে নিচের build জব শুরুই হবে না,
+        # কারণ build জব firestore-rules-এর উপর needs নির্ভরশীল)।
+        run: npm run test:release-canary
+
   build:
     runs-on: ubuntu-latest
     needs: firestore-rules
