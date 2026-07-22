@@ -6374,22 +6374,6 @@ let GLOBAL_RESET_MARKER_AT = 0;
 
 // ── withTs: record-এ _updatedAt timestamp যোগ করে (Master Sync merge-এর জন্য) ──
 const withTs = (rec) => ({ ...rec, _updatedAt: Date.now() });
-
-// 🔴 ফিক্স (LIFO ইনকনসিস্টেন্সি): কাস্টমার ডিটেইল পেজের লেনদেন-ইতিহাস আগে শুধু
-// `dateKey` দিয়ে সর্ট হতো। একই dateKey-এর একাধিক এন্ট্রি থাকলে (যেমন "পুরাতন
-// এন্ট্রি"/backdated এন্ট্রি অন্য এন্ট্রির সাথে same-day হলে) টাই ব্রেক
-// অনির্দিষ্ট থাকতো — কখনো Firestore doc-id অনুযায়ী, কখনো লোকাল array-এর
-// insertion order অনুযায়ী — ফলে একই এন্ট্রি কখনো তালিকার উপরে কখনো নিচে
-// দেখাতো। এখন সবসময় dateKey → _updatedAt (push সময়ের প্রকৃত টাইমস্ট্যাম্প) →
-// time স্ট্রিং — এই ক্রমে স্থিতিশীলভাবে সর্ট হয়, উৎস (Firestore query বা
-// লোকাল windowed state) যা-ই হোক না কেন।
-const sortTxnsDesc = (list) => [...(list || [])].sort((a, b) => {
-  const dk = (b.dateKey || "").localeCompare(a.dateKey || "");
-  if (dk !== 0) return dk;
-  const tsDiff = (b._updatedAt || 0) - (a._updatedAt || 0);
-  if (tsDiff !== 0) return tsDiff;
-  return (b.time || "").localeCompare(a.time || "");
-});
 // 🔴 ফিক্স: FSS.setRecord() প্রতিটা write-এ সার্ভার-সাইড _serverTs যোগ করে, যেটা
 // শুধু Firestore-কনফার্মড কপিতেই থাকে (fresh local edit-এ কখনো থাকে না, কারণ
 // এটা write-এর সময় সার্ভার নিজে বসায়)। তাই local-vs-remote সমতা (echo/diff)
@@ -8784,13 +8768,9 @@ function UnifiedDayMonthNav({ hook, accentColor = "#1fd15e", T, onPrint }) {
 // নেভিগেটর দেখায় (◄ [তারিখ] ►) — DashModalDateRangePicker-এর কাস্টম-তারিখ
 // ইনপুটেরই একই প্যাটার্ন: লেবেলের ওপর একটা অদৃশ্য native <input type="date">
 // বসানো, তাই ট্যাপ করলেই নেটিভ ক্যালেন্ডার খোলে। ভবিষ্যতের তারিখ max দিয়ে আটকানো। ──
-function OldEntryDateNav({ dateKey, setDateKey, accentColor = "#8b5cf6", T }) {
+function OldEntryDateNav({ dateKey, setDateKey, accentColor = "#8b5cf6" }) {
   const todayKey = todayEn();
   const isToday = dateKey === todayKey;
-  // 🔴 ফিক্স: আগে লেবেল/অ্যারো-বাটনের রং হার্ডকোড করা ছিল "#fff", যেটা লাইট থিমে
-  // সাদা ব্যাকগ্রাউন্ডের ওপর প্রায় অদৃশ্য হয়ে যেত। এখন থিম-অ্যাওয়্যার (T.text) —
-  // ডার্ক ও লাইট দুই থিমেই স্পষ্ট দেখা যাবে।
-  const labelColor = T?.text || "#fff";
   const shift = (days) => {
     const d = new Date(dateKey + "T00:00:00");
     d.setDate(d.getDate() + days);
@@ -8802,17 +8782,17 @@ function OldEntryDateNav({ dateKey, setDateKey, accentColor = "#8b5cf6", T }) {
     catch { return dateKey; }
   })();
   return (
-    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom: 10, background: T?.card || "rgba(255,255,255,0.03)", border:`1px solid ${accentColor}33`, borderRadius:14, padding:"8px 10px" }}>
+    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom: 10, background:"rgba(255,255,255,0.03)", border:`1px solid ${accentColor}33`, borderRadius:14, padding:"8px 10px" }}>
       <button type="button" onClick={() => shift(-1)}
-        style={{ width:34, height:34, borderRadius:10, background:`${accentColor}1f`, border:`1px solid ${accentColor}4d`, color: accentColor, fontSize:16, fontWeight:900, cursor:"pointer", flexShrink:0 }}>‹</button>
+        style={{ width:34, height:34, borderRadius:10, background:`${accentColor}1f`, border:`1px solid ${accentColor}4d`, color:"#fff", fontSize:16, fontWeight:900, cursor:"pointer", flexShrink:0 }}>‹</button>
       <div style={{ flex:1, position:"relative", textAlign:"center" }}>
-        <div style={{ color: labelColor, fontSize:12, fontWeight:800 }}>📅 {isToday ? "আজ" : dateLabel}</div>
+        <div style={{ color:"#fff", fontSize:12, fontWeight:800 }}>📅 {isToday ? "আজ" : dateLabel}</div>
         <input type="date" value={dateKey} max={todayKey}
           onChange={e => e.target.value && setDateKey(e.target.value)}
           style={{ position:"absolute", inset:0, opacity:0, width:"100%", height:"100%", border:"none", cursor:"pointer" }} />
       </div>
       <button type="button" onClick={() => shift(1)} disabled={isToday}
-        style={{ width:34, height:34, borderRadius:10, background:`${accentColor}1f`, border:`1px solid ${accentColor}4d`, color: isToday ? "#9ca3af" : accentColor, fontSize:16, fontWeight:900, cursor: isToday ? "default" : "pointer", flexShrink:0 }}>›</button>
+        style={{ width:34, height:34, borderRadius:10, background:`${accentColor}1f`, border:`1px solid ${accentColor}4d`, color: isToday ? "#4b4566" : "#fff", fontSize:16, fontWeight:900, cursor: isToday ? "default" : "pointer", flexShrink:0 }}>›</button>
     </div>
   );
 }
@@ -13041,7 +13021,7 @@ function SmartBusinessMgmt() {
         const q = query(colRef, where("customerId", "==", detailCId), orderBy("dateKey", "desc"));
         const snap = await getDocs(q);
         if (cancelled) return;
-        const rows = sortTxnsDesc(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+        const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         setCustomerTxnsFull({ customerId: detailCId, rows });
       } catch (err) {
         console.error("customerTxnsFull query failed:", err);
@@ -14616,6 +14596,172 @@ function SmartBusinessMgmt() {
     }
   }, [setInvoices, setCustomers, setProducts, setStockMovements, addTxn, showToast, auditLog, returns, setCashLogs, currentUser]);
 
+  // 🆕 Unified Invoice Void — আংশিক পণ্য ফেরত (partial return)। আগে এই লজিক
+  // ReturnModule-এর ভেতরেই লোকাল ফর্ম-স্টেট (retQty/retMode/retReason) নিয়ে
+  // বাঁধা ছিল — এখন voidInvoice()-এর মতোই top-level-এ তুলে আনা হয়েছে যাতে
+  // Dashboard, CustomerDetail ও ReturnModule — তিন জায়গা থেকেই একই
+  // InvoiceVoidModal দিয়ে কল করা যায় (qty/mode/reason এখন সরাসরি প্যারামিটার,
+  // ফর্ম-স্টেট caller/modal-এর দায়িত্ব)। ব্যবসায়িক লজিক অপরিবর্তিত।
+  const processReturn = useCallback(async (inv, item, qtyInput, mode = "cash", reasonInput = "") => {
+    if (currentUser?.role === "staff") {
+      showToast("⚠️ পণ্য ফেরত নেওয়ার অনুমতি আপনার নেই — মালিক/অ্যাডমিনের সাথে যোগাযোগ করুন", "#ef4444");
+      throw new Error("permission-denied");
+    }
+    const productId = item.productId;
+    const alreadyReturned = getReturnedQtyForInvoice(returns, inv.id, productId);
+    const maxReturnable = Math.max(0, (item.qty || 0) - alreadyReturned);
+    const qty = parseFloat(qtyInput);
+    if (!qty || qty <= 0) { showToast("সঠিক পরিমাণ দিন", "#ef4444"); throw new Error("invalid-qty"); }
+    if (qty > maxReturnable) { showToast(`সর্বোচ্চ ${maxReturnable} ${item.unit || "পিস"} ফেরত নেওয়া যাবে`, "#ef4444"); throw new Error("qty-exceeds-max"); }
+
+    const reason = (reasonInput || "").trim();
+    const localP = products.find(p => p.id === productId);
+
+    const isOffline = typeof navigator !== "undefined" && navigator.onLine === false;
+    let stockResult = null;
+    let productDeleted = false;
+    let transientFailure = false;
+    const freshReturned = (useAppStore.getState().returns || [])
+      .filter(r => r.invoiceId === inv.id && r.productId === productId)
+      .reduce((s, r) => s + (r.qty || 0), 0);
+    const freshMax = Math.max(0, (item.qty || 0) - freshReturned);
+    if (qty > freshMax) {
+      showToast(freshMax <= 0 ? "এই পণ্য ইতিমধ্যে অন্য ডিভাইস থেকে ফেরত নেওয়া হয়ে গেছে" : `সর্বোচ্চ ${freshMax} ${item.unit || "পিস"} ফেরত নেওয়া যাবে`, "#ef4444");
+      throw new Error("qty-exceeds-fresh-max");
+    }
+    if (!isOffline && FSS.isReady()) {
+      const txResult = await FSS.transactionRestoreStock(productId, qty, item.batchNo || "", {
+        costPrice: item.costPrice || localP?.costPrice || 0,
+        expiryDate: item.expiryDate || "",
+        voidAdjBatchNo: `RETURN-ADJ-${inv.id.slice(-6)}`,
+      });
+      if (txResult?.deleted) productDeleted = true;
+      else if (txResult) stockResult = txResult;
+      else transientFailure = true;
+    }
+    if (!stockResult && !productDeleted) {
+      const freshP = useAppStore.getState().products.find(p => p.id === productId) || localP;
+      if (freshP) {
+        let updatedBatches = freshP.batches ? [...freshP.batches] : [];
+        const soldBatchNo = item.batchNo || "";
+        if (soldBatchNo) {
+          const bIdx = updatedBatches.findIndex(b => b.batchNo === soldBatchNo);
+          if (bIdx >= 0) updatedBatches[bIdx] = { ...updatedBatches[bIdx], qty: (updatedBatches[bIdx].qty || 0) + qty };
+          else updatedBatches.push({ batchNo: soldBatchNo, qty, costPrice: item.costPrice || freshP.costPrice || 0, expiryDate: item.expiryDate || "" });
+        } else {
+          updatedBatches = [...updatedBatches, {
+            batchNo: `RETURN-ADJ-${inv.id.slice(-6)}`, qty,
+            costPrice: item.costPrice || freshP.avgCost || freshP.costPrice || 0,
+            expiryDate: null, addedAt: new Date().toISOString(), note: "product return adjustment",
+          }];
+        }
+        stockResult = { stock: (freshP.stock || 0) + qty, batches: updatedBatches };
+      } else {
+        productDeleted = true;
+      }
+    }
+    if (stockResult) {
+      setProducts(prev => prev.map(p => p.id === productId
+        ? { ...p, stock: stockResult.stock, batches: stockResult.batches, lastUpdated: new Date().toISOString() }
+        : p));
+    }
+
+    const todayKey = _dateKeyOf(new Date());
+    const mv = pushStockMovement({
+      id: "sm_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+      productId, productName: item.name || localP?.name || "",
+      stock: stockResult?.stock ?? ((localP?.stock || 0) + qty),
+      prevStock: stockResult ? (stockResult.stock - qty) : (localP?.stock || 0),
+      delta: qty, at: new Date().toISOString(), dateKey: todayKey, source: "return",
+    });
+    setStockMovements(prev => [mv, ...(prev || [])]);
+
+    const refundAmount = calcReturnRefundAmount(inv, item, qty);
+    const cust = inv.customerId ? customers.find(c => c.id === inv.customerId) : null;
+    if ((isOffline || transientFailure) && !productDeleted) {
+      const restoreItems = stockResult ? [] : [{
+        productId, qty, batchNo: item.batchNo || "",
+        costPrice: item.costPrice || localP?.costPrice || 0,
+        expiryDate: item.expiryDate || "",
+        voidAdjBatchNo: `RETURN-ADJ-${inv.id.slice(-6)}`,
+      }];
+      if (restoreItems.length || (mode === "baki" && cust)) {
+        FSS.queuePendingVoidRestore({
+          invoiceId: inv.id,
+          restoreItems,
+          balanceUpdate: (mode === "baki" && cust) ? { customerId: cust.id, netChange: refundAmount } : null,
+        });
+      }
+    }
+    if (productDeleted) {
+      showToast("⚠️ এই পণ্যটি ডিলিট হয়ে যাওয়ায় স্টক ফেরত যায়নি (রিফান্ড/সমন্বয় চলছে)", "#f59e0b");
+    }
+    if (mode === "baki" && cust) {
+      const txBal = isOffline ? null : await FSS.transactionUpdateBalance(cust.id, (serverBal) => Math.max(0, serverBal - refundAmount));
+      setCustomers(prev => prev.map(c => {
+        if (c.id !== cust.id) return c;
+        const newBal = txBal !== null ? txBal : Math.max(0, (c.balance || 0) - refundAmount);
+        setTimeout(() => {
+          addTxn(cust.id, "joma", refundAmount, newBal, inv.id,
+            `পণ্য ফেরত সমন্বয় — ${item.name || ""}${reason ? " (" + reason + ")" : ""}`, null, "return-adjust");
+        }, 0);
+        return { ...c, balance: newBal };
+      }));
+      if (inv.dueDate) {
+        const freshReturnsNow = useAppStore.getState().returns || [];
+        const alreadyReturnedBakiAmount = getReturnedAmountForInvoice(freshReturnsNow, inv.id, "baki") + refundAmount;
+        const originalInvoiceBaki = (inv.payType === "baki" ? inv.total : (inv.bakiAmount || 0)) - (inv.overpayAmount || 0);
+        const remainingInvoiceBaki = Math.max(0, originalInvoiceBaki - alreadyReturnedBakiAmount);
+        if (remainingInvoiceBaki <= 0) {
+          Notif.cancelPaymentReminder(inv.id);
+        } else {
+          Notif.schedulePaymentReminder({
+            invId: inv.id,
+            customerName: cust.name,
+            amount: remainingInvoiceBaki,
+            dueDate: inv.dueDate,
+          });
+        }
+      }
+    } else if (mode === "cash" && typeof setCashLogs === "function") {
+      const cashEntry = {
+        id: uid(), type: "withdrawal", cashType: "other", party: "",
+        amount: refundAmount,
+        note: `পণ্য ফেরত (নগদ) — ইনভয়েস ${inv.invoiceNo || inv.id} — ${item.name || localP?.name || ""}${reason ? " (" + reason + ")" : ""}`,
+        date: todayStr(), dateKey: todayKey,
+        createdAt: new Date().toISOString(),
+        by: currentUser?.name || "মালিক",
+      };
+      pushCashLog(cashEntry);
+      setCashLogs(prev => [cashEntry, ...(prev || [])]);
+    }
+
+    const retEntry = {
+      id: uid(), invoiceId: inv.id, invoiceNo: inv.invoiceNo || inv.id,
+      productId, productName: item.name || localP?.name || "",
+      qty, unit: item.unit || localP?.unit || "",
+      unitPrice: item.price ?? 0, costPrice: item.costPrice || localP?.costPrice || 0,
+      batchNo: item.batchNo || "", refundAmount, refundMode: mode,
+      customerId: cust?.id || null, customerName: cust?.name || inv.customerName || "",
+      reason, date: todayStr(), dateKey: todayKey, time: nowStr(),
+      createdAt: new Date().toISOString(), createdBy: currentUser?.name || "মালিক",
+    };
+    pushReturnEntry(retEntry);
+    setReturns(prev => [retEntry, ...(prev || [])]);
+
+    auditLog?.("PRODUCT_RETURN", {
+      invoiceId: inv.id,
+      invoiceNo: inv.invoiceNo || inv.id,
+      productName: item.name || localP?.name || "",
+      qty, unit: item.unit || localP?.unit || "",
+      refundAmount, refundMode: mode,
+      customerName: cust?.name || inv.customerName || "",
+      reason: reason || "(কারণ উল্লেখ করা হয়নি)",
+    });
+
+    showToast(`✅ ${qty} ${item.unit || "পিস"} ফেরত নেওয়া হয়েছে${mode === "baki" ? " ও বাকি সমন্বয় হয়েছে" : ""}`, "#22c55e");
+  }, [products, customers, returns, setProducts, setStockMovements, setCustomers, addTxn, setCashLogs, setReturns, showToast, currentUser, auditLog]);
+
   const connectBluetooth = useCallback(async () => {
     await BT.init();
     showToast("প্রিন্টার খোঁজা হচ্ছে...", "#0ea5e9");
@@ -15307,11 +15453,13 @@ function SmartBusinessMgmt() {
           <ErrorBoundary T={T}>
             <CustomerDetail T={T} S={S}
               customer={detailCust}
-              txns={(customerTxnsFull.customerId === detailCId && customerTxnsFull.rows) ? customerTxnsFull.rows : sortTxnsDesc(txns.filter(t => t.customerId === detailCId))}
+              txns={(customerTxnsFull.customerId === detailCId && customerTxnsFull.rows) ? customerTxnsFull.rows : txns.filter(t => t.customerId === detailCId)}
               invoices={invoices} customers={customers} paymentInvoices={paymentInvoices.filter(p => p.customerId === detailCId)}
               shopName={shopName}
               onGoToInvoice={(c, type) => { setPreselectedCust(c); setPreselectedType(type || null); setTab("invoice"); setDetailCId(null); }}
               setModal={setModal}
+              products={products} returns={returns} currentUser={currentUser} showToast={showToast}
+              voidInvoice={voidInvoice} processReturn={processReturn}
             />
           </ErrorBoundary>
         )}
@@ -15382,6 +15530,7 @@ function SmartBusinessMgmt() {
               setCashLogs={setCashLogs}
               auditLog={auditLog}
               voidInvoice={voidInvoice}
+              processReturn={processReturn}
             />
           </ErrorBoundary>
         )}
@@ -19990,8 +20139,366 @@ function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, set
   );
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// 🗑️ InvoiceVoidModal — একক শেয়ার্ড কম্পোনেন্ট: Dashboard, CustomerDetail,
+// ইনভয়েস হিস্ট্রি (ReturnModule) — এই ৩ জায়গার যেকোনোটা থেকে খুলে "ইনভয়েস ভয়েড"
+// করা যাবে। প্রথমে চয়েস স্ক্রিন (পুরো ভয়েড vs আংশিক পণ্য ফেরত), তারপর দুটোই
+// একই ধাঁচের ৩-ধাপের পলিশড ফ্লো (প্রিভিউ/সিলেকশন → কারণ → টাইপ-টু-কনফার্ম)।
+// ══════════════════════════════════════════════════════════════════════════════
+function InvoiceVoidModal({ inv, returns = [], products = [], customers = [], currentUser, showToast, voidInvoice, processReturn, onClose }) {
+  const [stage, setStage]   = React.useState("choice"); // choice | full1|full2|full3 | partial1|partial2|partial3
+  const [reason, setReason] = React.useState("");
+  const [pinInput, setPinInput] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [selItemId, setSelItemId] = React.useState(null);
+  const [qtyInput, setQtyInput] = React.useState("");
+  const [refundMode, setRefundMode] = React.useState("cash");
+
+  if (!inv) return null;
+  const fmt = n => fmtMoney(n);
+  const invCode = `#${inv.id?.slice(-6).toUpperCase()}`;
+
+  const close = () => {
+    setStage("choice"); setReason(""); setPinInput(""); setBusy(false);
+    setSelItemId(null); setQtyInput(""); setRefundMode("cash");
+    onClose?.();
+  };
+
+  const alreadyReturnedBakiAmt = getReturnedAmountForInvoice(returns, inv.id, "baki");
+  const hasPriorReturns = (returns || []).some(r => r && r.invoiceId === inv.id);
+  const bakiAmt = Math.max(0, (inv.payType === "baki" ? inv.total : (inv.bakiAmount || 0)) - alreadyReturnedBakiAmt);
+  const hasBaki = (inv.payType === "baki" || inv.payType === "partial") && bakiAmt > 0;
+  const remainingStockItems = (inv.items || [])
+    .map(it => ({ ...it, remainingQty: Math.max(0, (it.qty || 0) - getReturnedQtyForInvoice(returns, inv.id, it.productId)) }))
+    .filter(it => it.remainingQty > 0);
+  const hasStock = remainingStockItems.length > 0;
+  const returnableItems = remainingStockItems.filter(it => it.productType !== "service");
+  const cust = inv.customerId ? customers.find(c => c.id === inv.customerId) : null;
+
+  const overlayStyle = {
+    position: "fixed", inset: 0, zIndex: 9999,
+    background: "rgba(0,0,0,0.85)", backdropFilter: "blur(8px)",
+    display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+  };
+  const boxStyleFor = (accent) => ({
+    background: "linear-gradient(145deg,#0f172a,#1e293b)",
+    border: `1px solid ${accent}33`, borderRadius: 20, padding: "28px 22px",
+    width: "100%", maxWidth: 380, boxShadow: `0 0 40px ${accent}22, 0 20px 60px #00000088`,
+    position: "relative", overflow: "hidden", maxHeight: "88vh", overflowY: "auto",
+  });
+  const topBar = (accent) => ({ position: "absolute", top: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg,transparent,${accent},transparent)` });
+  const backBtn = { flex: 1, padding: "12px 0", borderRadius: 12, border: "1px solid #334155", background: "transparent", color: "#94a3b8", fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "inherit" };
+
+  // ══ চয়েস স্ক্রিন ══
+  if (stage === "choice") return (
+    <div style={overlayStyle} onClick={close}>
+      <div style={boxStyleFor("#ef4444")} onClick={e => e.stopPropagation()}>
+        <div style={topBar("#ef4444")} />
+        <div style={{ textAlign: "center", marginBottom: 18 }}>
+          <div style={{ fontSize: 38, marginBottom: 8 }}>🗑️</div>
+          <div style={{ color: "#f1f5f9", fontWeight: 900, fontSize: 17 }}>ইনভয়েস ভয়েড</div>
+          <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 6 }}>{inv.customerName} · {invCode} · ৳{fmt(inv.total)}</div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+          <button onClick={() => setStage("full1")}
+            style={{ display: "flex", alignItems: "center", gap: 10, textAlign: "left", background: "#ef444412", border: "1px solid #ef444433", borderRadius: 14, padding: "14px 14px", cursor: "pointer", fontFamily: "inherit" }}>
+            <span style={{ fontSize: 22 }}>🗑️</span>
+            <div>
+              <div style={{ color: "#ef4444", fontWeight: 800, fontSize: 14 }}>পুরো ইনভয়েস ভয়েড</div>
+              <div style={{ color: "#94a3b8", fontSize: 11.5, marginTop: 2 }}>পুরো ইনভয়েস বাতিল, সব স্টক ফিরে আসবে</div>
+            </div>
+          </button>
+          {returnableItems.length > 0 && (
+            <button onClick={() => setStage("partial1")}
+              style={{ display: "flex", alignItems: "center", gap: 10, textAlign: "left", background: "#0ea5e912", border: "1px solid #0ea5e933", borderRadius: 14, padding: "14px 14px", cursor: "pointer", fontFamily: "inherit" }}>
+              <span style={{ fontSize: 22 }}>🔄</span>
+              <div>
+                <div style={{ color: "#0ea5e9", fontWeight: 800, fontSize: 14 }}>আংশিক পণ্য ফেরত</div>
+                <div style={{ color: "#94a3b8", fontSize: 11.5, marginTop: 2 }}>নির্দিষ্ট পণ্য আংশিক/পূর্ণ ফেরত নিন</div>
+              </div>
+            </button>
+          )}
+        </div>
+        <button onClick={close} style={{ width: "100%", padding: "11px 0", borderRadius: 12, border: "1px solid #334155", background: "transparent", color: "#94a3b8", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
+          বাতিল করুন
+        </button>
+      </div>
+    </div>
+  );
+
+  // ══ ফুল ভয়েড — ধাপ ১: সতর্কবার্তা + ব্যাখ্যা ══
+  if (stage === "full1") return (
+    <div style={overlayStyle} onClick={close}>
+      <div style={boxStyleFor("#ef4444")} onClick={e => e.stopPropagation()}>
+        <div style={topBar("#ef4444")} />
+        <div style={{ textAlign: "center", marginBottom: 18 }}>
+          <div style={{ fontSize: 42, marginBottom: 8, animation: "hg-float 2s ease-in-out infinite" }}>⚠️</div>
+          <div style={{ color: "#ef4444", fontWeight: 900, fontSize: 17, letterSpacing: 0.5 }}>ইনভয়েস ভয়েড সতর্কতা</div>
+          <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 4 }}>ধাপ ১ / ৩</div>
+        </div>
+        <div style={{ background: "#ef444410", border: "1px solid #ef444428", borderRadius: 12, padding: "12px 14px", marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 14 }}>{inv.customerName}</div>
+              <div style={{ color: "#94a3b8", fontSize: 11, marginTop: 2 }}>{inv.date} · {inv.items?.length}টি পণ্য</div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ color: "#ef4444", fontWeight: 900, fontSize: 18 }}>৳{fmt(inv.total)}</div>
+              <div style={{ color: "#94a3b8", fontSize: 11 }}>{invCode}</div>
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
+          {hasBaki && (
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 10, background: "#22c55e0e", border: "1px solid #22c55e22", borderRadius: 10, padding: "10px 12px" }}>
+              <span style={{ fontSize: 16, flexShrink: 0 }}>✅</span>
+              <div>
+                <div style={{ color: "#22c55e", fontWeight: 700, fontSize: 12 }}>বাকি সংশোধন হবে</div>
+                <div style={{ color: "#94a3b8", fontSize: 11, marginTop: 2 }}>৳{fmt(bakiAmt)} বাকি কাস্টমারের হিসাব থেকে বাদ যাবে</div>
+              </div>
+            </div>
+          )}
+          {hasStock && (
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 10, background: "#0ea5e90e", border: "1px solid #0ea5e922", borderRadius: 10, padding: "10px 12px" }}>
+              <span style={{ fontSize: 16, flexShrink: 0 }}>📦</span>
+              <div>
+                <div style={{ color: "#0ea5e9", fontWeight: 700, fontSize: 12 }}>স্টক ফিরে আসবে</div>
+                <div style={{ color: "#94a3b8", fontSize: 11, marginTop: 2 }}>
+                  {remainingStockItems.map(it => `${it.name || it.productName} (${it.remainingQty}${it.unit || ""})`).join(", ")} ইনভেন্টরিতে যোগ হবে
+                </div>
+              </div>
+            </div>
+          )}
+          {hasPriorReturns && (
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 10, background: "#eab3080e", border: "1px solid #eab30833", borderRadius: 10, padding: "10px 12px" }}>
+              <span style={{ fontSize: 16, flexShrink: 0 }}>⚠️</span>
+              <div>
+                <div style={{ color: "#eab308", fontWeight: 700, fontSize: 12 }}>এই ইনভয়েসে আগেই আংশিক পণ্য ফেরত নেওয়া হয়েছে</div>
+                <div style={{ color: "#94a3b8", fontSize: 11, marginTop: 2 }}>উপরের বাকি/স্টকের হিসাব সেই ফেরত বাদ দিয়ে দেখানো হচ্ছে</div>
+              </div>
+            </div>
+          )}
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 10, background: "#f59e0b0e", border: "1px solid #f59e0b22", borderRadius: 10, padding: "10px 12px" }}>
+            <span style={{ fontSize: 16, flexShrink: 0 }}>🔒</span>
+            <div>
+              <div style={{ color: "#f59e0b", fontWeight: 700, fontSize: 12 }}>এই কাজ পূর্বাবস্থায় ফেরানো যাবে না</div>
+              <div style={{ color: "#94a3b8", fontSize: 11, marginTop: 2 }}>ভয়েড করলে ইনভয়েস স্থায়ীভাবে বাতিল হয়ে যাবে</div>
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={() => setStage("choice")} style={backBtn}>← পেছনে</button>
+          <button onClick={() => setStage("full2")}
+            style={{ flex: 1, padding: "12px 0", borderRadius: 12, border: "none", background: "linear-gradient(135deg,#b91c1c,#ef4444)", color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer", boxShadow: "0 4px 16px #ef444440", fontFamily: "inherit" }}>
+            পরের ধাপ →
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ══ ফুল ভয়েড — ধাপ ২: কারণ ══
+  if (stage === "full2") return (
+    <div style={overlayStyle} onClick={close}>
+      <div style={boxStyleFor("#f59e0b")} onClick={e => e.stopPropagation()}>
+        <div style={topBar("#f59e0b")} />
+        <div style={{ textAlign: "center", marginBottom: 18 }}>
+          <div style={{ fontSize: 36, marginBottom: 8 }}>📝</div>
+          <div style={{ color: "#f59e0b", fontWeight: 900, fontSize: 16 }}>ভয়েডের কারণ লিখুন</div>
+          <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 4 }}>ধাপ ২ / ৩</div>
+        </div>
+        <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 6, fontWeight: 600 }}>কারণ (বাধ্যতামূলক):</div>
+        <textarea value={reason} onChange={e => setReason(e.target.value)} rows={3}
+          style={{ width: "100%", background: "#0f172a", border: "1px solid #334155", borderRadius: 10, padding: "10px 12px", color: "#f1f5f9", fontSize: 13, fontFamily: "inherit", resize: "none", outline: "none", boxSizing: "border-box" }} />
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10, marginBottom: 18 }}>
+          {["ভুল ইনভয়েস", "পণ্য ফেরত", "ডুপ্লিকেট এন্ট্রি", "কাস্টমার বাতিল"].map(r => (
+            <button key={r} onClick={() => setReason(r)}
+              style={{ background: reason === r ? "#f59e0b22" : "#1e293b", border: `1px solid ${reason === r ? "#f59e0b44" : "#334155"}`, borderRadius: 8, padding: "4px 10px", color: reason === r ? "#f59e0b" : "#94a3b8", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+              {r}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={() => setStage("full1")} style={backBtn}>← পেছনে</button>
+          <button disabled={!reason.trim()} onClick={() => setStage("full3")}
+            style={{ flex: 1, padding: "12px 0", borderRadius: 12, border: "none", background: reason.trim() ? "linear-gradient(135deg,#b45309,#f59e0b)" : "#1e293b", color: reason.trim() ? "#fff" : "#4b5563", fontWeight: 700, fontSize: 14, cursor: reason.trim() ? "pointer" : "not-allowed", boxShadow: reason.trim() ? "0 4px 16px #f59e0b40" : "none", fontFamily: "inherit" }}>
+            পরের ধাপ →
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ══ ফুল ভয়েড — ধাপ ৩: চূড়ান্ত নিশ্চিত ══
+  if (stage === "full3") return (
+    <div style={overlayStyle} onClick={close}>
+      <div style={boxStyleFor("#a855f7")} onClick={e => e.stopPropagation()}>
+        <div style={topBar("#a855f7")} />
+        <div style={{ textAlign: "center", marginBottom: 16 }}>
+          <div style={{ fontSize: 36, marginBottom: 8 }}>🔐</div>
+          <div style={{ color: "#a855f7", fontWeight: 900, fontSize: 16 }}>চূড়ান্ত নিশ্চিতকরণ</div>
+          <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 4 }}>ধাপ ৩ / ৩ — শেষ সুযোগ</div>
+        </div>
+        <div style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 12, padding: "12px 14px", marginBottom: 14 }}>
+          <div style={{ color: "#94a3b8", fontSize: 11, marginBottom: 4 }}>ভয়েড করা হবে:</div>
+          <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 14 }}>{inv.customerName} — {invCode}</div>
+          <div style={{ color: "#ef4444", fontWeight: 900, fontSize: 16 }}>৳{fmt(inv.total)}</div>
+          <div style={{ color: "#f59e0b", fontSize: 12, marginTop: 6 }}>📝 কারণ: {reason}</div>
+        </div>
+        <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 6, fontWeight: 600 }}>
+          নিশ্চিত করতে <span style={{ color: "#ef4444", fontWeight: 800 }}>VOID</span> টাইপ করুন:
+        </div>
+        <input value={pinInput} onChange={e => setPinInput(e.target.value.toUpperCase())} placeholder="VOID" maxLength={4}
+          style={{ width: "100%", background: "#0f172a", border: `1px solid ${pinInput === "VOID" ? "#ef4444" : "#334155"}`, borderRadius: 10, padding: "12px 14px", color: "#ef4444", fontSize: 18, fontWeight: 900, textAlign: "center", fontFamily: "monospace", outline: "none", letterSpacing: 6, boxSizing: "border-box", marginBottom: 16 }} />
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={() => setStage("full2")} style={backBtn}>← পেছনে</button>
+          <button disabled={pinInput !== "VOID" || busy}
+            onClick={() => {
+              setBusy(true);
+              Promise.resolve(voidInvoice(inv, reason))
+                .catch(e => logErrorToCentral?.("voidInvoice:call", e, { invoiceId: inv.id }))
+                .finally(() => close());
+            }}
+            style={{ flex: 1, padding: "12px 0", borderRadius: 12, border: "none", background: (pinInput === "VOID" && !busy) ? "linear-gradient(135deg,#7e22ce,#ef4444)" : "#1e293b", color: (pinInput === "VOID" && !busy) ? "#fff" : "#4b5563", fontWeight: 800, fontSize: 14, cursor: (pinInput === "VOID" && !busy) ? "pointer" : "not-allowed", boxShadow: (pinInput === "VOID" && !busy) ? "0 4px 20px #ef444450" : "none", letterSpacing: 0.5, fontFamily: "inherit" }}>
+            {busy ? "প্রসেস হচ্ছে..." : "🗑️ ভয়েড নিশ্চিত করুন"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ══ আংশিক ফেরত — ধাপ ১: পণ্য/পরিমাণ/মোড নির্বাচন + প্রিভিউ ══
+  if (stage === "partial1") {
+    const selItem = returnableItems.find(it => it.productId === selItemId) || returnableItems[0] || null;
+    if (selItem && selItemId == null) setSelItemId(selItem.productId);
+    const qtyNum = parseFloat(qtyInput) || 0;
+    const validQty = selItem && qtyNum > 0 && qtyNum <= selItem.remainingQty;
+    const previewRefund = (selItem && validQty) ? calcReturnRefundAmount(inv, selItem, qtyNum) : 0;
+    return (
+      <div style={overlayStyle} onClick={close}>
+        <div style={boxStyleFor("#0ea5e9")} onClick={e => e.stopPropagation()}>
+          <div style={topBar("#0ea5e9")} />
+          <div style={{ textAlign: "center", marginBottom: 16 }}>
+            <div style={{ fontSize: 36, marginBottom: 8 }}>🔄</div>
+            <div style={{ color: "#0ea5e9", fontWeight: 900, fontSize: 16 }}>পণ্য ফেরত নিন</div>
+            <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 4 }}>ধাপ ১ / ৩ — {inv.customerName} · {invCode}</div>
+          </div>
+          <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 6, fontWeight: 600 }}>কোন পণ্য ফেরত নেবেন:</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12, maxHeight: 160, overflowY: "auto" }}>
+            {returnableItems.map(it => {
+              const already = getReturnedQtyForInvoice(returns, inv.id, it.productId);
+              return (
+                <button key={it.productId} onClick={() => { setSelItemId(it.productId); setQtyInput(""); }}
+                  style={{ textAlign: "left", background: selItemId === it.productId ? "#0ea5e922" : "#1e293b", border: `1px solid ${selItemId === it.productId ? "#0ea5e955" : "#334155"}`, borderRadius: 10, padding: "9px 12px", cursor: "pointer", fontFamily: "inherit" }}>
+                  <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 13 }}>{it.name || it.productName}</div>
+                  <div style={{ color: "#94a3b8", fontSize: 11, marginTop: 2 }}>বিক্রি: {it.qty}{it.unit || ""} · ফেরতযোগ্য: {it.remainingQty}{it.unit || ""}{already > 0 ? ` · আগে ফেরত: ${already}` : ""}</div>
+                </button>
+              );
+            })}
+          </div>
+          {selItem && (
+            <>
+              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                <input type="number" placeholder={`পরিমাণ (সর্বোচ্চ ${selItem.remainingQty})`} value={qtyInput} onChange={e => setQtyInput(e.target.value)}
+                  style={{ flex: 1, background: "#0f172a", border: "1px solid #334155", borderRadius: 10, padding: "10px 12px", color: "#f1f5f9", fontSize: 13, fontFamily: "inherit", outline: "none", boxSizing: "border-box" }} />
+                <select value={refundMode} onChange={e => setRefundMode(e.target.value)}
+                  style={{ flex: "none", width: 130, background: "#0f172a", border: "1px solid #334155", borderRadius: 10, padding: "10px 8px", color: "#f1f5f9", fontSize: 12, fontFamily: "inherit", outline: "none" }}>
+                  <option value="cash">নগদ ফেরত</option>
+                  {cust && <option value="baki">বাকি সমন্বয়</option>}
+                </select>
+              </div>
+              {validQty && (
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 10, background: "#0ea5e90e", border: "1px solid #0ea5e922", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+                  <span style={{ fontSize: 16, flexShrink: 0 }}>📦</span>
+                  <div>
+                    <div style={{ color: "#0ea5e9", fontWeight: 700, fontSize: 12 }}>স্টকে যোগ হবে ও রিফান্ড</div>
+                    <div style={{ color: "#94a3b8", fontSize: 11, marginTop: 2 }}>
+                      {qtyNum}{selItem.unit || ""} ইনভেন্টরিতে ফিরবে, ৳{fmt(previewRefund)} {refundMode === "baki" ? "বাকি থেকে বাদ যাবে" : "নগদ ফেরত হবে"}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+          <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+            <button onClick={() => setStage("choice")} style={backBtn}>← পেছনে</button>
+            <button disabled={!validQty} onClick={() => setStage("partial2")}
+              style={{ flex: 1, padding: "12px 0", borderRadius: 12, border: "none", background: validQty ? "linear-gradient(135deg,#0369a1,#0ea5e9)" : "#1e293b", color: validQty ? "#fff" : "#4b5563", fontWeight: 700, fontSize: 14, cursor: validQty ? "pointer" : "not-allowed", boxShadow: validQty ? "0 4px 16px #0ea5e940" : "none", fontFamily: "inherit" }}>
+              পরের ধাপ →
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ══ আংশিক ফেরত — ধাপ ২: কারণ ══
+  if (stage === "partial2") return (
+    <div style={overlayStyle} onClick={close}>
+      <div style={boxStyleFor("#f59e0b")} onClick={e => e.stopPropagation()}>
+        <div style={topBar("#f59e0b")} />
+        <div style={{ textAlign: "center", marginBottom: 18 }}>
+          <div style={{ fontSize: 36, marginBottom: 8 }}>📝</div>
+          <div style={{ color: "#f59e0b", fontWeight: 900, fontSize: 16 }}>ফেরতের কারণ (ঐচ্ছিক)</div>
+          <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 4 }}>ধাপ ২ / ৩</div>
+        </div>
+        <textarea value={reason} onChange={e => setReason(e.target.value)} rows={3} placeholder="যেমন: পণ্য নষ্ট, ভুল অর্ডার..."
+          style={{ width: "100%", background: "#0f172a", border: "1px solid #334155", borderRadius: 10, padding: "10px 12px", color: "#f1f5f9", fontSize: 13, fontFamily: "inherit", resize: "none", outline: "none", boxSizing: "border-box", marginBottom: 18 }} />
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={() => setStage("partial1")} style={backBtn}>← পেছনে</button>
+          <button onClick={() => setStage("partial3")}
+            style={{ flex: 1, padding: "12px 0", borderRadius: 12, border: "none", background: "linear-gradient(135deg,#b45309,#f59e0b)", color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer", boxShadow: "0 4px 16px #f59e0b40", fontFamily: "inherit" }}>
+            পরের ধাপ →
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ══ আংশিক ফেরত — ধাপ ৩: চূড়ান্ত নিশ্চিত ══
+  if (stage === "partial3") {
+    const selItem = returnableItems.find(it => it.productId === selItemId);
+    const qtyNum = parseFloat(qtyInput) || 0;
+    if (!selItem) { setStage("partial1"); return null; }
+    const previewRefund = calcReturnRefundAmount(inv, selItem, qtyNum);
+    return (
+      <div style={overlayStyle} onClick={close}>
+        <div style={boxStyleFor("#a855f7")} onClick={e => e.stopPropagation()}>
+          <div style={topBar("#a855f7")} />
+          <div style={{ textAlign: "center", marginBottom: 16 }}>
+            <div style={{ fontSize: 36, marginBottom: 8 }}>✅</div>
+            <div style={{ color: "#a855f7", fontWeight: 900, fontSize: 16 }}>চূড়ান্ত নিশ্চিতকরণ</div>
+            <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 4 }}>ধাপ ৩ / ৩</div>
+          </div>
+          <div style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 12, padding: "12px 14px", marginBottom: 16 }}>
+            <div style={{ color: "#94a3b8", fontSize: 11, marginBottom: 4 }}>ফেরত নেওয়া হবে:</div>
+            <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 14 }}>{selItem.name || selItem.productName} × {qtyNum}{selItem.unit || ""}</div>
+            <div style={{ color: "#0ea5e9", fontWeight: 900, fontSize: 16 }}>৳{fmt(previewRefund)} — {refundMode === "baki" ? "বাকি সমন্বয়" : "নগদ ফেরত"}</div>
+            {reason && <div style={{ color: "#f59e0b", fontSize: 12, marginTop: 6 }}>📝 কারণ: {reason}</div>}
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={() => setStage("partial2")} style={backBtn}>← পেছনে</button>
+            <button disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                Promise.resolve(processReturn(inv, selItem, qtyInput, refundMode, reason))
+                  .catch(e => logErrorToCentral?.("processReturn:call", e, { invoiceId: inv.id }))
+                  .finally(() => close());
+              }}
+              style={{ flex: 1, padding: "12px 0", borderRadius: 12, border: "none", background: !busy ? "linear-gradient(135deg,#0369a1,#0ea5e9)" : "#1e293b", color: !busy ? "#fff" : "#4b5563", fontWeight: 800, fontSize: 14, cursor: !busy ? "pointer" : "not-allowed", boxShadow: !busy ? "0 4px 20px #0ea5e950" : "none", fontFamily: "inherit" }}>
+              {busy ? "প্রসেস হচ্ছে..." : "✅ ফেরত নিশ্চিত করুন"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 // ── Dashboard ──────────────────────────────────────────────────────────────────
-function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, currentUser, onGoToPurchaseEntry, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, supplierPayments = [], setSupplierPayments, returns = [] }) {
+function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, processReturn, currentUser, onGoToPurchaseEntry, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, supplierPayments = [], setSupplierPayments, returns = [] }) {
   const [viewInv,    setViewInv]    = useState(null);
   const [viewPayInv, setViewPayInv] = useState(null);
   const [listDate,   setListDate]   = useState(() => todayEn()); // YYYY-MM-DD
@@ -20004,7 +20511,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   const [poSupplierQuery, setPoSupplierQuery] = useState("");
   const [poSupplierSelected, setPoSupplierSelected] = useState(null);
   const [poSupplierSuggestOpen, setPoSupplierSuggestOpen] = useState(false);
-  const [voidConfirm, setVoidConfirm] = useState(null);
+  const [voidModalInv, setVoidModalInv] = useState(null); // 🆕 InvoiceVoidModal-এর জন্য — পুরো ভয়েড+আংশিক ফেরত দুটোই এখান থেকে
   // ── মেয়াদোত্তীর্ণ পণ্য → দোকান থেকে সরালে অ্যাপ থেকেও সরানোর ব্যবস্থা ──────────
   const [expRemoveConfirm, setExpRemoveConfirm] = useState(null); // { product, batch }
   const [expRemoveSubmitting, setExpRemoveSubmitting] = useState(false);
@@ -22085,221 +22592,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       );
     }
   }
-  // ═══ ৩-স্তর ভয়েড কনফার্মেশন Modal ══════════════════════════════════════════
-  if (voidConfirm) {
-    const { inv, step, reason, pinInput } = voidConfirm;
-    const invCode = `#${inv.id?.slice(-6).toUpperCase()}`;
-    // 🔴 ফিক্স (Phase 7 — আংশিক রিটার্ন-অ্যাওয়্যার ভয়েড প্রিভিউ): এই ইনভয়েসে আগে
-    // থেকেই কোনো পণ্য প্রোডাক্ট-রিটার্নে ফেরত নেওয়া থাকলে raw inv.bakiAmount/
-    // inv.items ব্যবহার করলে ভয়েড কনফার্মেশনে ভুল (বেশি) বাকি/স্টক-পরিমাণ দেখাত —
-    // getReturnedAmountForInvoice/getReturnedQtyForInvoice দিয়ে এখন প্রকৃত
-    // অবশিষ্ট অংশ হিসাব করা হচ্ছে (calcVoidNetChange()-এ যেভাবে হিসাব হয়, একই সূত্র)।
-    const alreadyReturnedBakiAmt = getReturnedAmountForInvoice(returns, inv.id, "baki");
-    const hasPriorReturns = (returns || []).some(r => r && r.invoiceId === inv.id);
-    const bakiAmt = Math.max(0, (inv.payType === "baki" ? inv.total : (inv.bakiAmount || 0)) - alreadyReturnedBakiAmt);
-    const hasBaki = (inv.payType === "baki" || inv.payType === "partial") && bakiAmt > 0;
-    const remainingStockItems = (inv.items || [])
-      .map(it => ({ ...it, remainingQty: Math.max(0, (it.qty || 0) - getReturnedQtyForInvoice(returns, inv.id, it.productId)) }))
-      .filter(it => it.remainingQty > 0);
-    const hasStock = remainingStockItems.length > 0;
-
-    const overlayStyle = {
-      position: "fixed", inset: 0, zIndex: 9999,
-      background: "rgba(0,0,0,0.85)",
-      backdropFilter: "blur(8px)",
-      display: "flex", alignItems: "center", justifyContent: "center",
-      padding: 16,
-    };
-    const boxStyle = {
-      background: "linear-gradient(145deg,#0f172a,#1e293b)",
-      border: "1px solid #ef444433",
-      borderRadius: 20,
-      padding: "28px 22px",
-      width: "100%", maxWidth: 380,
-      boxShadow: "0 0 40px #ef444422, 0 20px 60px #00000088",
-      position: "relative",
-      overflow: "hidden",
-    };
-
-    // ── Step 1: সতর্কবার্তা + ব্যাখ্যা ─────────────────────────────────────
-    if (step === 1) return (
-      <div style={overlayStyle} onClick={() => setVoidConfirm(null)}>
-        <div style={boxStyle} onClick={e => e.stopPropagation()}>
-          {/* top glow line */}
-          <div style={{ position:"absolute", top:0, left:0, right:0, height:2, background:"linear-gradient(90deg,transparent,#ef4444,transparent)" }} />
-          <div style={{ textAlign:"center", marginBottom:18 }}>
-            <div style={{ fontSize:42, marginBottom:8, animation:"hg-float 2s ease-in-out infinite" }}>⚠️</div>
-            <div style={{ color:"#ef4444", fontWeight:900, fontSize:17, letterSpacing:0.5 }}>ইনভয়েস ভয়েড সতর্কতা</div>
-            <div style={{ color:"#94a3b8", fontSize:12, marginTop:4 }}>ধাপ ১ / ৩</div>
-          </div>
-
-          {/* invoice summary */}
-          <div style={{ background:"#ef444410", border:"1px solid #ef444428", borderRadius:12, padding:"12px 14px", marginBottom:14 }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-              <div>
-                <div style={{ color:"#f1f5f9", fontWeight:700, fontSize:14 }}>{inv.customerName}</div>
-                <div style={{ color:"#94a3b8", fontSize:11, marginTop:2 }}>{inv.date} · {inv.items?.length}টি পণ্য</div>
-              </div>
-              <div style={{ textAlign:"right" }}>
-                <div style={{ color:"#ef4444", fontWeight:900, fontSize:18 }}>৳{fmt(inv.total)}</div>
-                <div style={{ color:"#94a3b8", fontSize:11 }}>{invCode}</div>
-              </div>
-            </div>
-          </div>
-
-          {/* consequences */}
-          <div style={{ display:"flex", flexDirection:"column", gap:8, marginBottom:20 }}>
-            {hasBaki && (
-              <div style={{ display:"flex", alignItems:"flex-start", gap:10, background:"#22c55e0e", border:"1px solid #22c55e22", borderRadius:10, padding:"10px 12px" }}>
-                <span style={{ fontSize:16, flexShrink:0 }}>✅</span>
-                <div>
-                  <div style={{ color:"#22c55e", fontWeight:700, fontSize:12 }}>বাকি সংশোধন হবে</div>
-                  <div style={{ color:"#94a3b8", fontSize:11, marginTop:2 }}>৳{fmt(bakiAmt)} বাকি কাস্টমারের হিসাব থেকে বাদ যাবে</div>
-                </div>
-              </div>
-            )}
-            {hasStock && (
-              <div style={{ display:"flex", alignItems:"flex-start", gap:10, background:"#0ea5e90e", border:"1px solid #0ea5e922", borderRadius:10, padding:"10px 12px" }}>
-                <span style={{ fontSize:16, flexShrink:0 }}>📦</span>
-                <div>
-                  <div style={{ color:"#0ea5e9", fontWeight:700, fontSize:12 }}>স্টক ফিরে আসবে</div>
-                  <div style={{ color:"#94a3b8", fontSize:11, marginTop:2 }}>
-                    {remainingStockItems.map(it => `${it.name || it.productName} (${it.remainingQty}${it.unit||""})`).join(", ")} ইনভেন্টরিতে যোগ হবে
-                  </div>
-                </div>
-              </div>
-            )}
-            {hasPriorReturns && (
-              <div style={{ display:"flex", alignItems:"flex-start", gap:10, background:"#eab3080e", border:"1px solid #eab30833", borderRadius:10, padding:"10px 12px" }}>
-                <span style={{ fontSize:16, flexShrink:0 }}>⚠️</span>
-                <div>
-                  <div style={{ color:"#eab308", fontWeight:700, fontSize:12 }}>এই ইনভয়েসে আগেই আংশিক পণ্য ফেরত নেওয়া হয়েছে</div>
-                  <div style={{ color:"#94a3b8", fontSize:11, marginTop:2 }}>উপরের বাকি/স্টকের হিসাব সেই ফেরত বাদ দিয়ে দেখানো হচ্ছে</div>
-                </div>
-              </div>
-            )}
-            <div style={{ display:"flex", alignItems:"flex-start", gap:10, background:"#f59e0b0e", border:"1px solid #f59e0b22", borderRadius:10, padding:"10px 12px" }}>
-              <span style={{ fontSize:16, flexShrink:0 }}>🔒</span>
-              <div>
-                <div style={{ color:"#f59e0b", fontWeight:700, fontSize:12 }}>এই কাজ পূর্বাবস্থায় ফেরানো যাবে না</div>
-                <div style={{ color:"#94a3b8", fontSize:11, marginTop:2 }}>ভয়েড করলে ইনভয়েস স্থায়ীভাবে বাতিল হয়ে যাবে</div>
-              </div>
-            </div>
-          </div>
-
-          <div style={{ display:"flex", gap:10 }}>
-            <button onClick={() => setVoidConfirm(null)}
-              style={{ flex:1, padding:"12px 0", borderRadius:12, border:"1px solid #334155", background:"transparent", color:"#94a3b8", fontWeight:700, fontSize:14, cursor:"pointer" }}>
-              বাতিল করুন
-            </button>
-            <button onClick={() => setVoidConfirm(v => ({ ...v, step: 2 }))}
-              style={{ flex:1, padding:"12px 0", borderRadius:12, border:"none", background:"linear-gradient(135deg,#b91c1c,#ef4444)", color:"#fff", fontWeight:700, fontSize:14, cursor:"pointer", boxShadow:"0 4px 16px #ef444440" }}>
-              পরের ধাপ →
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-
-    // ── Step 2: কারণ লিখুন ───────────────────────────────────────────────────
-    if (step === 2) return (
-      <div style={overlayStyle} onClick={() => setVoidConfirm(null)}>
-        <div style={boxStyle} onClick={e => e.stopPropagation()}>
-          <div style={{ position:"absolute", top:0, left:0, right:0, height:2, background:"linear-gradient(90deg,transparent,#f59e0b,transparent)" }} />
-          <div style={{ textAlign:"center", marginBottom:18 }}>
-            <div style={{ fontSize:36, marginBottom:8 }}>📝</div>
-            <div style={{ color:"#f59e0b", fontWeight:900, fontSize:16 }}>ভয়েডের কারণ লিখুন</div>
-            <div style={{ color:"#94a3b8", fontSize:12, marginTop:4 }}>ধাপ ২ / ৩</div>
-          </div>
-
-          <div style={{ color:"#94a3b8", fontSize:12, marginBottom:6, fontWeight:600 }}>কারণ (বাধ্যতামূলক):</div>
-          <textarea
-            value={reason}
-            onChange={e => setVoidConfirm(v => ({ ...v, reason: e.target.value }))}
-            placeholder=""
-            rows={3}
-            style={{ width:"100%", background:"#0f172a", border:"1px solid #334155", borderRadius:10, padding:"10px 12px", color:"#f1f5f9", fontSize:13, fontFamily:"inherit", resize:"none", outline:"none", boxSizing:"border-box" }}
-          />
-
-          {/* quick reasons */}
-          <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginTop:10, marginBottom:18 }}>
-            {["ভুল ইনভয়েস","পণ্য ফেরত","ডুপ্লিকেট এন্ট্রি","কাস্টমার বাতিল"].map(r => (
-              <button key={r} onClick={() => setVoidConfirm(v => ({ ...v, reason: r }))}
-                style={{ background: reason === r ? "#f59e0b22" : "#1e293b", border:`1px solid ${reason===r?"#f59e0b44":"#334155"}`, borderRadius:8, padding:"4px 10px", color: reason===r?"#f59e0b":"#94a3b8", fontSize:11, fontWeight:600, cursor:"pointer" }}>
-                {r}
-              </button>
-            ))}
-          </div>
-
-          <div style={{ display:"flex", gap:10 }}>
-            <button onClick={() => setVoidConfirm(v => ({ ...v, step: 1 }))}
-              style={{ flex:1, padding:"12px 0", borderRadius:12, border:"1px solid #334155", background:"transparent", color:"#94a3b8", fontWeight:700, fontSize:14, cursor:"pointer" }}>
-              ← পেছনে
-            </button>
-            <button
-              disabled={!reason.trim()}
-              onClick={() => setVoidConfirm(v => ({ ...v, step: 3 }))}
-              style={{ flex:1, padding:"12px 0", borderRadius:12, border:"none", background: reason.trim() ? "linear-gradient(135deg,#b45309,#f59e0b)" : "#1e293b", color: reason.trim() ? "#fff" : "#4b5563", fontWeight:700, fontSize:14, cursor: reason.trim() ? "pointer":"not-allowed", boxShadow: reason.trim() ? "0 4px 16px #f59e0b40" : "none" }}>
-              পরের ধাপ →
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-
-    // ── Step 3: চূড়ান্ত নিশ্চিত ─────────────────────────────────────────────
-    if (step === 3) return (
-      <div style={overlayStyle} onClick={() => setVoidConfirm(null)}>
-        <div style={boxStyle} onClick={e => e.stopPropagation()}>
-          <div style={{ position:"absolute", top:0, left:0, right:0, height:2, background:"linear-gradient(90deg,transparent,#a855f7,transparent)" }} />
-          <div style={{ textAlign:"center", marginBottom:16 }}>
-            <div style={{ fontSize:36, marginBottom:8 }}>🔐</div>
-            <div style={{ color:"#a855f7", fontWeight:900, fontSize:16 }}>চূড়ান্ত নিশ্চিতকরণ</div>
-            <div style={{ color:"#94a3b8", fontSize:12, marginTop:4 }}>ধাপ ৩ / ৩ — শেষ সুযোগ</div>
-          </div>
-
-          {/* summary recap */}
-          <div style={{ background:"#1e293b", border:"1px solid #334155", borderRadius:12, padding:"12px 14px", marginBottom:14 }}>
-            <div style={{ color:"#94a3b8", fontSize:11, marginBottom:4 }}>ভয়েড করা হবে:</div>
-            <div style={{ color:"#f1f5f9", fontWeight:700, fontSize:14 }}>{inv.customerName} — {invCode}</div>
-            <div style={{ color:"#ef4444", fontWeight:900, fontSize:16 }}>৳{fmt(inv.total)}</div>
-            <div style={{ color:"#f59e0b", fontSize:12, marginTop:6 }}>📝 কারণ: {reason}</div>
-          </div>
-
-          {/* final type-to-confirm */}
-          <div style={{ color:"#94a3b8", fontSize:12, marginBottom:6, fontWeight:600 }}>
-            নিশ্চিত করতে <span style={{ color:"#ef4444", fontWeight:800 }}>VOID</span> টাইপ করুন:
-          </div>
-          <input
-            value={pinInput}
-            onChange={e => setVoidConfirm(v => ({ ...v, pinInput: e.target.value.toUpperCase() }))}
-            placeholder="VOID"
-            maxLength={4}
-            style={{ width:"100%", background:"#0f172a", border:`1px solid ${pinInput==="VOID"?"#ef4444":"#334155"}`, borderRadius:10, padding:"12px 14px", color:"#ef4444", fontSize:18, fontWeight:900, textAlign:"center", fontFamily:"monospace", outline:"none", letterSpacing:6, boxSizing:"border-box", marginBottom:16 }}
-          />
-
-          <div style={{ display:"flex", gap:10 }}>
-            <button onClick={() => setVoidConfirm(v => ({ ...v, step: 2 }))}
-              style={{ flex:1, padding:"12px 0", borderRadius:12, border:"1px solid #334155", background:"transparent", color:"#94a3b8", fontWeight:700, fontSize:14, cursor:"pointer" }}>
-              ← পেছনে
-            </button>
-            <button
-              disabled={pinInput !== "VOID"}
-              onClick={() => {
-                // 🔴 ফিক্স (বাগ ১): voidInvoice() এখন try/catch দিয়ে ঘেরা তাই সাধারণত reject
-                // করবে না, কিন্তু defense-in-depth হিসেবে .catch() রাখা হচ্ছে যাতে ভবিষ্যতে
-                // কোনো unhandled promise rejection console-এর বাইরে না যায়।
-                voidInvoice(inv, reason).catch(e => logErrorToCentral?.("voidInvoice:call", e, { invoiceId: inv.id }));
-                setVoidConfirm(null);
-              }}
-              style={{ flex:1, padding:"12px 0", borderRadius:12, border:"none", background: pinInput==="VOID" ? "linear-gradient(135deg,#7e22ce,#ef4444)" : "#1e293b", color: pinInput==="VOID" ? "#fff" : "#4b5563", fontWeight:800, fontSize:14, cursor: pinInput==="VOID" ? "pointer":"not-allowed", boxShadow: pinInput==="VOID" ? "0 4px 20px #ef444450" : "none", letterSpacing:0.5 }}>
-              🗑️ ভয়েড নিশ্চিত করুন
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  // 🆕 InvoiceVoidModal — পুরো ভয়েড + আংশিক ফেরত, শেয়ার্ড কম্পোনেন্ট (CustomerDetail, ReturnModule-এও একই মডাল ব্যবহৃত হয়)
 
 
 
@@ -22783,7 +23076,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   {voidInvoice && currentUser?.role !== "staff" && !isVoided && (
                     <button
                       style={{ ...S.invBtn, flex: 1, padding: "8px 6px", background: "#ef444412", color: "#ef4444", border: "1px solid #ef444428", justifyContent: "center", gap: 4, minWidth: 0 }}
-                      onClick={() => setVoidConfirm({ inv, step: 1, reason: "", pinInput: "" })}
+                      onClick={() => setVoidModalInv(inv)}
                       title="ইনভয়েস বাতিল করুন"
                     >
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
@@ -22795,6 +23088,11 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               );
             })}
           </div>
+          {voidModalInv && (
+            <InvoiceVoidModal inv={voidModalInv} returns={returns} products={products} customers={customers}
+              currentUser={currentUser} voidInvoice={voidInvoice} processReturn={processReturn}
+              onClose={() => setVoidModalInv(null)} />
+          )}
         </div>
       );
     }
@@ -23476,12 +23774,13 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
 }
 
 // ── Customer Detail ────────────────────────────────────────────────────────────
-function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvoices, shopName = "SBM", onGoToInvoice, setModal }) {
+function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvoices, shopName = "SBM", onGoToInvoice, setModal, products = [], returns = [], currentUser, showToast, voidInvoice, processReturn }) {
   const [viewInv,          setViewInv]          = useState(null);
   const [viewPayInv,       setViewPayInv]       = useState(null);
   const [txnPage,          setTxnPage]          = useState(1);
   const [histMonths,       setHistMonths]       = useState(null);
   const [showInvoicePicker,setShowInvoicePicker]= useState(false); // type picker
+  const [voidModalInv,     setVoidModalInv]     = useState(null); // 🆕 InvoiceVoidModal
   // 🔴 পারফরম্যান্স ফিক্স: আগে Virtuoso-র প্রতিটা visible row রেন্ডারে invoices.find()/
   // paymentInvoices.find() চালানো হতো — অর্থাৎ প্রতি row-এ পুরো invoices array (linear scan)।
   // ১,০০,০০০ ইনভয়েসে স্ক্রল করলে প্রতি ব্যাচ (~২০ row) ২০ লক্ষ তুলনা হতো। এখন একবারে
@@ -23701,10 +24000,22 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
                   পরে বাকি: ৳{fmt(t.balanceAfter)} {t.note && `· ${t.note}`}
                 </div>
                 {inv && (
-                  <button style={S.invBtn} onClick={() => setViewInv(inv)}>
-                    <IcInvoice /><span>ক্রয় ইনভয়েস দেখুন</span>
-                    <span style={{ marginLeft: "auto", color: T.sub }}>{inv.items.length}টি পণ্য · ৳{fmt(inv.total)}</span>
-                  </button>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button style={{ ...S.invBtn, flex: 3 }} onClick={() => setViewInv(inv)}>
+                      <IcInvoice /><span>ক্রয় ইনভয়েস দেখুন</span>
+                      <span style={{ marginLeft: "auto", color: T.sub }}>{inv.items.length}টি পণ্য · ৳{fmt(inv.total)}</span>
+                    </button>
+                    {voidInvoice && currentUser?.role !== "staff" && inv.status !== "voided" && (
+                      <button
+                        style={{ ...S.invBtn, flex: 1, padding: "8px 6px", background: "#ef444412", color: "#ef4444", border: "1px solid #ef444428", justifyContent: "center", gap: 4, minWidth: 0 }}
+                        onClick={() => setVoidModalInv(inv)}
+                        title="ইনভয়েস বাতিল করুন"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+                        <span style={{ fontSize: 10, fontWeight: 700 }}>ভয়েড</span>
+                      </button>
+                    )}
+                  </div>
                 )}
                 {payInv && (
                   <button style={{ ...S.invBtn, color: "#22c55e", borderColor: "#22c55e44" }} onClick={() => setViewPayInv(payInv)}>
@@ -23717,6 +24028,11 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
           );
         }}
       />
+      )}
+      {voidModalInv && (
+        <InvoiceVoidModal inv={voidModalInv} returns={returns} products={products} customers={customers}
+          currentUser={currentUser} voidInvoice={voidInvoice} processReturn={processReturn}
+          onClose={() => setVoidModalInv(null)} />
       )}
     </div>
   );
@@ -24017,7 +24333,7 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
           <button style={{ ...S.modeBtn, ...(mode === "joma" ? { background: "#22c55e", color: "#fff" } : {}) }} onClick={() => setMode("joma")}>▼ জমা</button>
         </div>
         {/* 🗓️ পুরাতন এন্ট্রি টগল — অন করলে নিচে তারিখ নেভিগেটর দেখাবে (ডিফল্ট আজ) */}
-        <div style={{ display:"flex", justifyContent:"center", marginBottom: 8, marginTop: -4 }}>
+        <div style={{ display:"flex", justifyContent:"flex-end", marginBottom: 8, marginTop: -4 }}>
           <button type="button"
             onClick={() => {
               setShowOldEntry(v => {
@@ -24038,8 +24354,14 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
           </button>
         </div>
         {showOldEntry && (
-          <OldEntryDateNav dateKey={entryDateKey} setDateKey={setEntryDateKey}
-            accentColor={mode === "baki" ? "#ef4444" : "#22c55e"} T={T} />
+          <>
+            <OldEntryDateNav dateKey={entryDateKey} setDateKey={setEntryDateKey}
+              accentColor={mode === "baki" ? "#ef4444" : "#22c55e"} />
+            <label style={{ display:"flex", alignItems:"center", gap:8, marginTop:-4, marginBottom: 10, color: T.sub, fontSize: 11, cursor:"pointer" }}>
+              <input type="checkbox" checked={sendSmsBackdated} onChange={e => setSendSmsBackdated(e.target.checked)} />
+              কাস্টমারকে SMS পাঠান
+            </label>
+          </>
         )}
         <div style={{ marginBottom: 10 }}>
           <div style={{ color: T.sub, fontSize: 11, marginBottom: 8 }}>দ্রুত পরিমাণ <span style={{ color: T.accent, fontWeight: 700 }}>(একাধিকবার ক্লিক করুন)</span>:</div>
@@ -26896,7 +27218,7 @@ const RH_MONTH_NAMES_BN = ["জানুয়ারি","ফেব্রুয�
 const rhDayLabel   = (dk) => { const d = new Date(dk); if (isNaN(d.getTime())) return dk; return `${d.getDate()} ${RH_MONTH_NAMES_BN[d.getMonth()]}, ${d.getFullYear()}`; };
 const rhMonthLabel = (mk) => { const [y, m] = (mk || "").split("-"); return m ? `${RH_MONTH_NAMES_BN[parseInt(m, 10) - 1]} ${y}` : mk; };
 
-function ReturnModule({ T, S, invoices, products, customers, returns, setReturns, setProducts, setCustomers, setStockMovements, addTxn, showToast, currentUser, shopName, setCashLogs, auditLog, voidInvoice }) {
+function ReturnModule({ T, S, invoices, products, customers, returns, setReturns, setProducts, setCustomers, setStockMovements, addTxn, showToast, currentUser, shopName, setCashLogs, auditLog, voidInvoice, processReturn }) {
 
   const fmt      = n => fmtMoney(n);
   const todayKey = _dateKeyOf(new Date());
@@ -26908,16 +27230,10 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
   // থেকেই এখন প্রতিটা পণ্যের জন্য ফেরত (return) প্রসেস করা যাবে (নিচে দেখুন) ──
   const [invSearch, setInvSearch]   = React.useState("");
   const [detailInv, setDetailInv]   = React.useState(null); // ফুল ডিটেইলস মোডাল — যেকোনো সোর্স থেকে ওপেন হয়
-  // 🆕 Phase 7 — এই মোডাল থেকেই পুরো ইনভয়েস ভয়েড করার কোলাপসিবল সেকশন (voidInvoice()
-  // Invoice History-এর সাথে শেয়ার্ড — একই জায়গা থেকে void + partial return দুটোই)
-  const [voidSectionOpen, setVoidSectionOpen] = React.useState(false);
-  const [voidReasonInput, setVoidReasonInput] = React.useState("");
-  const [voidBusy, setVoidBusy] = React.useState(false);
-  React.useEffect(() => {
-    setVoidSectionOpen(false);
-    setVoidReasonInput("");
-    setVoidBusy(false);
-  }, [detailInv?.id]);
+  // 🆕 এই মোডাল থেকেই একক "ইনভয়েস ভয়েড" বাটন — পুরো ভয়েড ও আংশিক ফেরত দুটোই
+  // শেয়ার্ড InvoiceVoidModal দিয়ে হয় (Dashboard, CustomerDetail-এর সাথে একই কম্পোনেন্ট)।
+  const [voidModalOpen, setVoidModalOpen] = React.useState(false);
+  React.useEffect(() => { setVoidModalOpen(false); }, [detailInv?.id]);
 
   const searchInvoice = React.useCallback(() => {
     const q = invSearch.trim().toUpperCase();
@@ -27085,265 +27401,7 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
     monthVoided.reduce((s, i) => s + Math.max(0, (i.total || 0) - getReturnedAmountForInvoice(returns, i.id)), 0),
     [monthVoided, returns]);
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // 🔄 পণ্য ফেরত (Product Return) — এতদিন এই কম্পোনেন্ট শুধু props নিতই কিন্তু
-  // ব্যবহার করত না (products/setProducts/setCustomers/setStockMovements/
-  // addTxn/returns/setReturns — সব silently unused ছিল), ফলে "returns"
-  // কালেকশনটা sync-ready থাকলেও কোথাও লেখাই হতো না। এখন এখানে আসল ফিচার —
-  // ইনভয়েস ডিটেইলস মোডাল থেকে যেকোনো বিক্রিত পণ্য আংশিক/পূর্ণ ফেরত নেওয়া যাবে।
-  // ── স্টক রিস্টোর ও কাস্টমার-ব্যালেন্স সমন্বয় ঠিক voidInvoice()-এর মতোই
-  // atomic transaction (+ অফলাইন local fallback) দিয়ে হয়, যাতে দুই ডিভাইসে
-  // প্রায় একই সময়ে রিটার্ন প্রসেস হলেও কোনো delta হারিয়ে না যায়।
-  const [retQty,    setRetQty]    = React.useState({});   // productId -> qty string
-  const [retReason, setRetReason] = React.useState({});   // productId -> reason string
-  const [retMode,   setRetMode]   = React.useState({});   // productId -> "cash" | "baki"
-  const [retBusy,   setRetBusy]   = React.useState(null);  // productId currently processing
-
-  // এই ইনভয়েসের এই পণ্যটা আগে কতটা ফেরত নেওয়া হয়েছে — returns রেকর্ড থেকেই
-  // গণনা হয় (invoice.items মিউটেট করতে হয় না, append-only audit-trail-ই সত্য উৎস)
-  const getReturnedQty = React.useCallback((invoiceId, productId) =>
-    (returns || []).filter(r => r.invoiceId === invoiceId && r.productId === productId)
-      .reduce((s, r) => s + (r.qty || 0), 0),
-    [returns]);
-
-  const processReturn = async (inv, item) => {
-    // 🔴 ফিক্স (Phase 5 — পারমিশন): voidInvoice()-এর মতোই এটাও টাকা/স্টক-সংবেদনশীল
-    // অপারেশন (নগদ ড্রয়ার থেকে টাকা বের হতে পারে বা কাস্টমারের বাকি কমে যায়) —
-    // এতদিন কোনো role-check ছাড়াই staff থেকেও প্রসেস করা যেত। voidInvoice-এর
-    // সাথে সামঞ্জস্যপূর্ণ রাখতে staff-কে আটকানো হচ্ছে (নিচে UI বাটনও staff-এর
-    // জন্য একইভাবে লুকানো/নিষ্ক্রিয় থাকবে — এটা defense-in-depth হিসেবে)।
-    if (currentUser?.role === "staff") {
-      showToast("⚠️ পণ্য ফেরত নেওয়ার অনুমতি আপনার নেই — মালিক/অ্যাডমিনের সাথে যোগাযোগ করুন", "#ef4444");
-      return;
-    }
-    const productId = item.productId;
-    const alreadyReturned = getReturnedQty(inv.id, productId);
-    const maxReturnable = Math.max(0, (item.qty || 0) - alreadyReturned);
-    const qty = parseFloat(retQty[productId]);
-    if (!qty || qty <= 0) { showToast("সঠিক পরিমাণ দিন", "#ef4444"); return; }
-    if (qty > maxReturnable) { showToast(`সর্বোচ্চ ${maxReturnable} ${item.unit || "পিস"} ফেরত নেওয়া যাবে`, "#ef4444"); return; }
-
-    setRetBusy(productId);
-    try {
-      // 🔴 ফিক্স (মাল্টি-ডিভাইস ডাবল-রিটার্ন race — সংকীর্ণ করা): উপরের চেক
-      // render-time-এর `returns` prop (stale হতে পারে) দিয়ে হয়েছিল। কমিট করার
-      // ঠিক আগে freshest Zustand state (getState()) থেকে আবার চেক করা হচ্ছে,
-      // যাতে এই ডিভাইসেই কিছুক্ষণ আগে সিঙ্ক হওয়া অন্য ডিভাইসের রিটার্ন এন্ট্রি
-      // থাকলে সেটা ধরা পড়ে। ⚠️ এটা এখনো পুরোপুরি atomic না (অন্য ডিভাইস ঠিক এই
-      // মুহূর্তে অফলাইনে/এখনো-না-সিঙ্ক-হওয়া অবস্থায় একই আইটেম ফেরত নিলে সেটা এখনো
-      // মিস হতে পারে — Firestore transaction দিয়ে কালেকশন-কোয়েরি lock করা যায় না
-      // বলে stock/balance-এর মতো ১০০% গ্যারান্টি এখানে দেওয়া সম্ভব না), কিন্তু
-      // সাধারণ ব্যবহারে (একই মুহূর্তে দুই ডিভাইস থেকে একই আইটেম ফেরত — বিরল) এটা
-      // রেসের সম্ভাবনা যথেষ্ট কমায়।
-      const freshReturned = (useAppStore.getState().returns || [])
-        .filter(r => r.invoiceId === inv.id && r.productId === productId)
-        .reduce((s, r) => s + (r.qty || 0), 0);
-      const freshMax = Math.max(0, (item.qty || 0) - freshReturned);
-      if (qty > freshMax) {
-        showToast(freshMax <= 0 ? "এই পণ্য ইতিমধ্যে অন্য ডিভাইস থেকে ফেরত নেওয়া হয়ে গেছে" : `সর্বোচ্চ ${freshMax} ${item.unit || "পিস"} ফেরত নেওয়া যাবে`, "#ef4444");
-        return; // নিচের finally { setRetBusy(null); } এমনিতেই চলবে
-      }
-      const mode = retMode[productId] || "cash";
-      const reason = (retReason[productId] || "").trim();
-      const localP = products.find(p => p.id === productId);
-
-      // ── ১. স্টক ফেরত — সার্ভারের বর্তমান কপির ওপর atomically (voidInvoice-এর
-      // মতোই); Firebase বন্ধ/ব্যর্থ হলে সবচেয়ে সাম্প্রতিক local state (getState())
-      // থেকে fallback, stale closure থেকে না।
-      // 🔴 ফিক্স (রুট কজ — অফলাইনে রিটার্ন করলে স্টক-রিস্টোর হারিয়ে যাওয়া): দেখুন
-      // voidInvoice()-এ একই ফিক্সের কমেন্ট এবং FSS.queuePendingVoidRestore()।
-      const isOffline = typeof navigator !== "undefined" && navigator.onLine === false;
-      let stockResult = null;
-      // 🔴 ফিক্স (বাগ ৩/৪-এর ripple): transactionRestoreStock() এখন { deleted: true }
-      // (পণ্য সত্যিই ডিলিট) কে null (transient error) থেকে আলাদা করে রিটার্ন করে —
-      // এখানে সেই কনট্র্যাক্ট অনুযায়ী দুটো কেস আলাদাভাবে হ্যান্ডল করা হচ্ছে। আগে এখানে
-      // { deleted: true }-কে truthy stockResult ধরে নিয়ে সরাসরি setProducts-এ
-      // stockResult.stock/batches (undefined) বসিয়ে দিত — এই ফিক্সের অংশ হিসেবেই এটা
-      // ঠিক করা জরুরি ছিল।
-      let productDeleted = false;
-      let transientFailure = false;
-      if (!isOffline && FSS.isReady()) {
-        const txResult = await FSS.transactionRestoreStock(productId, qty, item.batchNo || "", {
-          costPrice: item.costPrice || localP?.costPrice || 0,
-          expiryDate: item.expiryDate || "",
-          voidAdjBatchNo: `RETURN-ADJ-${inv.id.slice(-6)}`,
-        });
-        if (txResult?.deleted) productDeleted = true;
-        else if (txResult) stockResult = txResult;
-        else transientFailure = true;
-      }
-      if (!stockResult && !productDeleted) {
-        const freshP = useAppStore.getState().products.find(p => p.id === productId) || localP;
-        if (freshP) {
-          let updatedBatches = freshP.batches ? [...freshP.batches] : [];
-          const soldBatchNo = item.batchNo || "";
-          if (soldBatchNo) {
-            const bIdx = updatedBatches.findIndex(b => b.batchNo === soldBatchNo);
-            if (bIdx >= 0) updatedBatches[bIdx] = { ...updatedBatches[bIdx], qty: (updatedBatches[bIdx].qty || 0) + qty };
-            else updatedBatches.push({ batchNo: soldBatchNo, qty, costPrice: item.costPrice || freshP.costPrice || 0, expiryDate: item.expiryDate || "" });
-          } else {
-            updatedBatches = [...updatedBatches, {
-              batchNo: `RETURN-ADJ-${inv.id.slice(-6)}`, qty,
-              costPrice: item.costPrice || freshP.avgCost || freshP.costPrice || 0,
-              expiryDate: null, addedAt: new Date().toISOString(), note: "product return adjustment",
-            }];
-          }
-          stockResult = { stock: (freshP.stock || 0) + qty, batches: updatedBatches };
-        } else {
-          // 🔴 ফিক্স (বাগ ৩): local state-এও পণ্য নেই — সত্যিই ডিলিট।
-          productDeleted = true;
-        }
-      }
-      if (stockResult) {
-        setProducts(prev => prev.map(p => p.id === productId
-          ? { ...p, stock: stockResult.stock, batches: stockResult.batches, lastUpdated: new Date().toISOString() }
-          : p));
-      }
-
-      // ── ২. Stock movement লগ (ট্রেসেবিলিটি — অন্য সব stock adjustment-এর মতো) ──
-      const mv = pushStockMovement({
-        id: "sm_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
-        productId, productName: item.name || localP?.name || "",
-        stock: stockResult?.stock ?? ((localP?.stock || 0) + qty),
-        prevStock: stockResult ? (stockResult.stock - qty) : (localP?.stock || 0),
-        delta: qty, at: new Date().toISOString(), dateKey: todayKey, source: "return",
-      });
-      setStockMovements(prev => [mv, ...(prev || [])]);
-
-      // ── ৩. রিফান্ড/সমন্বয় — "বাকি সমন্বয়" হলে কাস্টমারের বকেয়া কমে (একই
-      // atomic transactionUpdateBalance + fallback প্যাটার্ন, voidInvoice দেখুন)।
-      // "নগদ ফেরত" হলে balance অপরিবর্তিত থাকে, কিন্তু ক্যাশ ড্রয়ার থেকে টাকা বের
-      // হয় বলে cashLogs-এ withdrawal এন্ট্রি লগ হয় (Dashboard-এর addCashLog-এর
-      // একই schema, pushCashLog হেল্পার দিয়ে সরাসরি Firestore-এ push) — নাহলে
-      // দিন শেষে ক্যাশ বুক মিলবে না।
-      // 🔴 ফিক্স (Phase 3 — ডিসকাউন্ট উপেক্ষিত থাকার বাগ): আগে qty × item.price
-      // সরাসরি রিফান্ড অ্যামাউন্ট ধরা হতো, ফলে ইনভয়েসে ডিসকাউন্ট দেওয়া থাকলে
-      // গ্রাহক আসল বিক্রয়মূল্যের চেয়ে বেশি টাকা ফেরত পেয়ে যেতেন। calcInvoiceProfit()-এর
-      // discountRatio-এর একই সূত্র পুনর্ব্যবহার করে এখন প্রকৃত (ডিসকাউন্ট-পরবর্তী)
-      // বিক্রয়মূল্য অনুযায়ী রিফান্ড হিসাব হয় (দেখুন src/logic.js: calcReturnRefundAmount)।
-      const refundAmount = calcReturnRefundAmount(inv, item, qty);
-      let newBalanceAfter = null;
-      const cust = inv.customerId ? custMap.get(inv.customerId) : null;
-      // 🔴 ফিক্স: অফলাইনে স্কিপ-করা, অথবা অনলাইনে থেকেও transient error-এ ব্যর্থ হওয়া
-      // (বাগ ৪-এর ripple — আগে শুধু isOffline চেক হতো) স্টক-রিস্টোর/ব্যালেন্স-সমন্বয়
-      // একটাই কিউ-এন্ট্রিতে জমা রাখা হচ্ছে — reconnect/পরের flush-এ
-      // flushPendingVoidRestores() reconcile করবে। পণ্য সত্যিই ডিলিট হলে (productDeleted)
-      // queue করার মানে নেই — চিরকাল আটকে থাকত, তাই সেটা বাদ।
-      if ((isOffline || transientFailure) && !productDeleted) {
-        const restoreItems = stockResult ? [] : [{
-          productId, qty, batchNo: item.batchNo || "",
-          costPrice: item.costPrice || localP?.costPrice || 0,
-          expiryDate: item.expiryDate || "",
-          voidAdjBatchNo: `RETURN-ADJ-${inv.id.slice(-6)}`,
-        }];
-        if (restoreItems.length || (mode === "baki" && cust)) {
-          FSS.queuePendingVoidRestore({
-            invoiceId: inv.id,
-            restoreItems,
-            balanceUpdate: (mode === "baki" && cust) ? { customerId: cust.id, netChange: refundAmount } : null,
-          });
-        }
-      }
-      // 🔴 ফিক্স (বাগ ৩): পণ্য ডিলিট থাকায় স্টক ফেরত দেওয়া যায়নি — দোকানদারকে জানানো
-      // হচ্ছে (রিফান্ড/ব্যালেন্স সমন্বয় নিচে যথারীতি চলবে)।
-      if (productDeleted) {
-        showToast("⚠️ এই পণ্যটি ডিলিট হয়ে যাওয়ায় স্টক ফেরত যায়নি (রিফান্ড/সমন্বয় চলছে)", "#f59e0b");
-      }
-      if (mode === "baki" && cust) {
-        const txBal = isOffline ? null : await FSS.transactionUpdateBalance(cust.id, (serverBal) => Math.max(0, serverBal - refundAmount));
-        setCustomers(prev => prev.map(c => {
-          if (c.id !== cust.id) return c;
-          const newBal = txBal !== null ? txBal : Math.max(0, (c.balance || 0) - refundAmount);
-          newBalanceAfter = newBal;
-          setTimeout(() => {
-            addTxn(cust.id, "joma", refundAmount, newBal, inv.id,
-              `পণ্য ফেরত সমন্বয় — ${item.name || ""}${reason ? " (" + reason + ")" : ""}`, null, "return-adjust");
-          }, 0);
-          return { ...c, balance: newBal };
-        }));
-        // 🔴 ফিক্স (Phase 6 — পেমেন্ট রিমাইন্ডার সিঙ্ক): createInvoice()-এ
-        // Notif.schedulePaymentReminder() দিয়ে শিডিউল করা এই ইনভয়েসের due-date
-        // রিমাইন্ডার এতদিন বাকি-মোড রিটার্নের পরও পুরনো (বড়) amount নিয়ে চলতেই
-        // থাকত — voidInvoice()-এ পুরো ইনভয়েস বাতিল হলে যেমন cancelPaymentReminder()
-        // কল হয় (দেখুন সেই ফিক্স), ঠিক একইভাবে এখানে আংশিক রিটার্নের পর এই
-        // ইনভয়েসের নিজের অবশিষ্ট বাকি হিসাব করে হয় রিমাইন্ডার রিশিডিউল (কম amount
-        // দিয়ে) নয়তো (বাকি ০ বা কম হলে) সম্পূর্ণ বাতিল করা হচ্ছে। schedulePaymentReminder()
-        // একই invId→idHash সূত্র ব্যবহার করে বলে নতুন কল আগেরটাকেই ওভাররাইট/রিশিডিউল করে।
-        if (inv.dueDate) {
-          const freshReturnsNow = useAppStore.getState().returns || [];
-          // এই রিটার্ন এন্ট্রি এখনো returns কালেকশনে push হয়নি (নিচে ধাপ ৪-এ হবে),
-          // তাই এখনকার refundAmount আলাদাভাবে যোগ করা হচ্ছে।
-          const alreadyReturnedBakiAmount = getReturnedAmountForInvoice(freshReturnsNow, inv.id, "baki") + refundAmount;
-          const originalInvoiceBaki = (inv.payType === "baki" ? inv.total : (inv.bakiAmount || 0)) - (inv.overpayAmount || 0);
-          const remainingInvoiceBaki = Math.max(0, originalInvoiceBaki - alreadyReturnedBakiAmount);
-          if (remainingInvoiceBaki <= 0) {
-            Notif.cancelPaymentReminder(inv.id);
-          } else {
-            Notif.schedulePaymentReminder({
-              invId: inv.id,
-              customerName: cust.name,
-              amount: remainingInvoiceBaki,
-              dueDate: inv.dueDate,
-            });
-          }
-        }
-      } else if (mode === "cash" && typeof setCashLogs === "function") {
-        const cashEntry = {
-          id: uid(), type: "withdrawal", cashType: "other", party: "",
-          amount: refundAmount,
-          note: `পণ্য ফেরত (নগদ) — ইনভয়েস ${inv.invoiceNo || inv.id} — ${item.name || localP?.name || ""}${reason ? " (" + reason + ")" : ""}`,
-          date: todayStr(), dateKey: todayKey,
-          createdAt: new Date().toISOString(),
-          by: currentUser?.name || "মালিক",
-        };
-        pushCashLog(cashEntry);
-        setCashLogs(prev => [cashEntry, ...(prev || [])]);
-      }
-
-      // ── ৪. returns কালেকশনে audit রেকর্ড — 🔴 ফিক্স (Phase 8): returns এখন
-      // windowed real-time sync (useFSSCollection আর diff-push করে না), তাই
-      // cashLogs/stockMovements-এর প্যাটার্নে এখানে সরাসরি pushReturnEntry() দিয়ে
-      // Firestore-এ push করা হচ্ছে।
-      const retEntry = {
-        id: uid(), invoiceId: inv.id, invoiceNo: inv.invoiceNo || inv.id,
-        productId, productName: item.name || localP?.name || "",
-        qty, unit: item.unit || localP?.unit || "",
-        unitPrice: item.price ?? 0, costPrice: item.costPrice || localP?.costPrice || 0,
-        batchNo: item.batchNo || "", refundAmount, refundMode: mode,
-        customerId: cust?.id || null, customerName: cust?.name || inv.customerName || "",
-        reason, date: todayStr(), dateKey: todayKey, time: nowStr(),
-        createdAt: new Date().toISOString(), createdBy: currentUser?.name || "মালিক",
-      };
-      pushReturnEntry(retEntry);
-      setReturns(prev => [retEntry, ...(prev || [])]);
-
-      // 🔴 ফিক্স (Phase 5 — অডিট): voidInvoice()-এর auditLog("INVOICE_VOID", {...})-এর
-      // মতোই, এতদিন প্রোডাক্ট রিটার্নের কোনো audit ট্রেইল ছিল না — কে/কখন/কোন
-      // ইনভয়েস থেকে/কত টাকা রিফান্ড করেছে সেটা এখন ট্র্যাক হবে।
-      auditLog?.("PRODUCT_RETURN", {
-        invoiceId: inv.id,
-        invoiceNo: inv.invoiceNo || inv.id,
-        productName: item.name || localP?.name || "",
-        qty, unit: item.unit || localP?.unit || "",
-        refundAmount, refundMode: mode,
-        customerName: cust?.name || inv.customerName || "",
-        reason: reason || "(কারণ উল্লেখ করা হয়নি)",
-      });
-
-      setRetQty(m => ({ ...m, [productId]: "" }));
-      setRetReason(m => ({ ...m, [productId]: "" }));
-      showToast(`✅ ${qty} ${item.unit || "পিস"} ফেরত নেওয়া হয়েছে${mode === "baki" ? " ও বাকি সমন্বয় হয়েছে" : ""}`, "#22c55e");
-    } catch (e) {
-      // 🔴 ফিক্স (বাগ ১-এর সাথে সামঞ্জস্যপূর্ণ): voidInvoice()-এর মতোই, এখানে আগে কোনো
-      // catch ছিল না — অপ্রত্যাশিত এরর হলে নীরবে থেমে যেত, দোকানদার কোনো মেসেজ দেখতেন
-      // না। transient স্টক/ব্যালেন্স ব্যর্থতা ইতিমধ্যে queuePendingVoidRestore()-এ জমা
-      // থাকে (ওপরে) — এই catch মূলত সম্পূর্ণ অপ্রত্যাশিত এরর থেকে সতর্ক করার জন্য।
-      logErrorToCentral?.("processReturn", e, { invoiceId: inv.id, productId });
-      showToast("⚠️ রিটার্ন প্রসেসিং-এ একটা সমস্যা হয়েছে — স্টক/ব্যালেন্স ঠিকমতো আপডেট হয়েছে কিনা যাচাই করুন", "#ef4444");
-    } finally {
-      setRetBusy(null);
-    }
-  };
+  // 🔄 পণ্য ফেরত — processReturn() এখন top-level prop (Dashboard/CustomerDetail-এর সাথে শেয়ার্ড, দেখুন InvoiceVoidModal)
 
   return (
     <div style={{ ...S.page, paddingBottom: 100 }}>
@@ -27643,105 +27701,24 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
             </div>
             <InvoiceReceipt T={T} S={S} inv={detailInv} customer={custMap.get(detailInv.customerId)} type="buyer" />
 
-            {/* ══ 🔄 পণ্য ফেরত নিন — শুধু active (non-voided) ইনভয়েসে, সার্ভিস-আইটেম বাদে, staff বাদে ══ */}
-            {detailInv.status !== "voided" && currentUser?.role !== "staff" && (
+            {/* 🆕 একক "ইনভয়েস ভয়েড" বাটন — পুরো ভয়েড ও আংশিক ফেরত দুটোই একই শেয়ার্ড
+                InvoiceVoidModal দিয়ে (Dashboard, CustomerDetail-এর সাথে একই কম্পোনেন্ট) */}
+            {detailInv.status !== "voided" && currentUser?.role !== "staff" && typeof voidInvoice === "function" && (
               <div style={{ marginTop:16, borderTop:`1px dashed ${T.border}`, paddingTop:14 }}>
-                <div style={{ color:T.text, fontWeight:900, fontSize:14, marginBottom:10 }}>🔄 পণ্য ফেরত নিন</div>
-                {(detailInv.items || []).filter(it => it.productType !== "service").map((item, idx) => {
-                  const alreadyReturned = getReturnedQty(detailInv.id, item.productId);
-                  const maxReturnable = Math.max(0, (item.qty || 0) - alreadyReturned);
-                  const cust = detailInv.customerId ? custMap.get(detailInv.customerId) : null;
-                  return (
-                    <div key={item.productId + "_" + idx}
-                      style={{ background:T.bg, border:`1px solid ${T.border}`, borderRadius:12, padding:"10px 12px", marginBottom:10 }}>
-                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
-                        <div style={{ color:T.text, fontWeight:800, fontSize:13 }}><DosageBadge dosageForm={item.dosageForm} />{item.name}</div>
-                        <div style={{ color:T.sub, fontSize:11 }}>বিক্রি: {item.qty} {item.unit || ""}{alreadyReturned > 0 ? ` · আগে ফেরত: ${alreadyReturned}` : ""}</div>
-                      </div>
-                      {maxReturnable <= 0 ? (
-                        <div style={{ color:T.sub, fontSize:12 }}>এই পণ্যের সম্পূর্ণ পরিমাণ ইতিমধ্যে ফেরত নেওয়া হয়েছে</div>
-                      ) : (
-                        <>
-                          <div style={{ display:"flex", gap:8, marginBottom:6 }}>
-                            <input
-                              type="number" placeholder={`পরিমাণ (সর্বোচ্চ ${maxReturnable})`}
-                              value={retQty[item.productId] || ""}
-                              onChange={e => setRetQty(m => ({ ...m, [item.productId]: e.target.value }))}
-                              style={{ ...S.input, marginTop:0, flex:1 }}
-                            />
-                            <select
-                              value={retMode[item.productId] || "cash"}
-                              onChange={e => setRetMode(m => ({ ...m, [item.productId]: e.target.value }))}
-                              style={{ ...S.input, marginTop:0, flex:"none", width:130 }}
-                            >
-                              <option value="cash">নগদ ফেরত</option>
-                              {cust && <option value="baki">বাকি সমন্বয়</option>}
-                            </select>
-                          </div>
-                          <input
-                            placeholder="কারণ (ঐচ্ছিক)"
-                            value={retReason[item.productId] || ""}
-                            onChange={e => setRetReason(m => ({ ...m, [item.productId]: e.target.value }))}
-                            style={{ ...S.input, marginTop:0, marginBottom:8 }}
-                          />
-                          <button
-                            onClick={() => processReturn(detailInv, item)}
-                            disabled={retBusy === item.productId}
-                            style={{ ...S.saveBtn, marginTop:0, width:"100%", opacity: retBusy === item.productId ? 0.6 : 1 }}
-                          >
-                            {retBusy === item.productId ? "প্রসেস হচ্ছে..." : "✅ ফেরত নিশ্চিত করুন"}
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  );
-                })}
+                <button
+                  onClick={() => setVoidModalOpen(true)}
+                  style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"center", gap:8,
+                    background:"#ef444412", border:"1px solid #ef444428", borderRadius:12, padding:"12px 0",
+                    color:"#ef4444", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:"inherit" }}
+                >
+                  🗑️ ইনভয়েস ভয়েড
+                </button>
               </div>
             )}
-
-            {/* ══ 🗑️ পুরো ইনভয়েস বাতিল করুন — কোলাপসড, staff থেকে লুকানো, ভয়েড হয়ে
-                গেলে হাইড (Invoice History-এর voidInvoice() একই ফাংশন এখান থেকেও কল হয়,
-                যাতে ভয়েড + আংশিক রিটার্ন দুটোই এক জায়গা থেকে করা যায়) ══ */}
-            {detailInv.status !== "voided" && currentUser?.role !== "staff" && typeof voidInvoice === "function" && (
-              <div style={{ marginTop:14, borderTop:`1px dashed ${T.border}`, paddingTop:12 }}>
-                <button
-                  onClick={() => setVoidSectionOpen(v => !v)}
-                  style={{ width:"100%", display:"flex", justifyContent:"space-between", alignItems:"center", background:"transparent", border:"none", padding:"4px 0", cursor:"pointer", fontFamily:"inherit" }}
-                >
-                  <span style={{ color:"#ef4444", fontWeight:800, fontSize:13 }}>🗑️ পুরো ইনভয়েস বাতিল করুন</span>
-                  <span style={{ color:"#ef4444", fontSize:13 }}>{voidSectionOpen ? "▲" : "▼"}</span>
-                </button>
-                {voidSectionOpen && (
-                  <div style={{ marginTop:10, background:"#ef444410", border:"1px solid #ef444428", borderRadius:12, padding:"10px 12px" }}>
-                    <div style={{ color:T.sub, fontSize:11.5, marginBottom:8 }}>
-                      এই কাজ পূর্বাবস্থায় ফেরানো যাবে না — ইনভয়েস স্থায়ীভাবে বাতিল হবে, স্টক ফিরে আসবে ও বাকি (থাকলে) সংশোধন হবে।
-                    </div>
-                    <input
-                      placeholder="ভয়েডের কারণ (বাধ্যতামূলক)"
-                      value={voidReasonInput}
-                      onChange={e => setVoidReasonInput(e.target.value)}
-                      style={{ ...S.input, marginTop:0, marginBottom:8 }}
-                    />
-                    <button
-                      disabled={!voidReasonInput.trim() || voidBusy}
-                      onClick={() => {
-                        if (!window.confirm(`নিশ্চিত? ইনভয়েস ${detailInv.invoiceNo || detailInv.id} স্থায়ীভাবে বাতিল হয়ে যাবে।`)) return;
-                        setVoidBusy(true);
-                        Promise.resolve(voidInvoice(detailInv, voidReasonInput.trim()))
-                          .then(() => { setVoidSectionOpen(false); setDetailInv(null); })
-                          .catch(e => showToast("⚠️ ভয়েড ব্যর্থ হয়েছে: " + (e?.message || ""), "#ef4444"))
-                          .finally(() => setVoidBusy(false));
-                      }}
-                      style={{ width:"100%", padding:"11px 0", borderRadius:10, border:"none",
-                        background: (!voidReasonInput.trim() || voidBusy) ? "#94a3b855" : "linear-gradient(135deg,#b91c1c,#ef4444)",
-                        color:"#fff", fontWeight:800, fontSize:13,
-                        cursor: (!voidReasonInput.trim() || voidBusy) ? "not-allowed" : "pointer" }}
-                    >
-                      {voidBusy ? "প্রসেস হচ্ছে..." : "🗑️ ভয়েড নিশ্চিত করুন"}
-                    </button>
-                  </div>
-                )}
-              </div>
+            {voidModalOpen && (
+              <InvoiceVoidModal inv={detailInv} returns={returns} products={products} customers={customers}
+                currentUser={currentUser} voidInvoice={voidInvoice} processReturn={processReturn}
+                onClose={() => setVoidModalOpen(false)} />
             )}
           </div>
         </div>
