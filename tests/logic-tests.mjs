@@ -14,6 +14,7 @@ import {
   calcCashDrawer, restoreBatchQty, isBatchExpired, getSortedActiveBatches,
   getActiveBatch, getSellableStock, computeSupplierDueMap, calcNextBatch,
   runInvariantChecks, getReturnedQtyForInvoice, getReturnedAmountForInvoice,
+  calcReturnRefundAmount,
 } from "../src/logic.js";
 
 let passCount = 0;
@@ -177,6 +178,30 @@ t("রিটার্ন-অ্যাওয়্যার হেল্পার
   ];
   const actual = getReturnedAmountForInvoice(returns, "inv1", "cash");
   return { pass: actual === 50, expected: 50, actual };
+});
+
+// ── রিটার্ন রিফান্ড অ্যামাউন্ট (calcReturnRefundAmount) — Phase 3 ─────────────
+t("রিটার্ন রিফান্ড অ্যামাউন্ট", "ডিসকাউন্ট ছাড়া — পুরো unit price-ই রিফান্ড হওয়া উচিত", () => {
+  const inv = { items: [{ price: 100, qty: 2 }], discount: 0, itemDiscount: 0 };
+  const actual = calcReturnRefundAmount(inv, { price: 100 }, 1);
+  return { pass: approx(actual, 100), expected: 100, actual };
+});
+t("রিটার্ন রিফান্ড অ্যামাউন্ট", "ইনভয়েস-লেভেল discount অনুপাতে রিফান্ড কমা উচিত", () => {
+  // subtotal=200 (2×100), discount=20 → discountRatio=0.9 → ১ ইউনিট ফেরত হলে রিফান্ড ৯০ হওয়া উচিত
+  const inv = { items: [{ price: 100, qty: 2 }], discount: 20, itemDiscount: 0 };
+  const actual = calcReturnRefundAmount(inv, { price: 100 }, 1);
+  return { pass: approx(actual, 90), expected: 90, actual };
+});
+t("রিটার্ন রিফান্ড অ্যামাউন্ট", "itemDiscount (পণ্যভিত্তিক ছাড়)-ও ধরা উচিত, discount-এর মতোই", () => {
+  // subtotal=200, itemDiscount=20 → discountRatio=0.9 → ২ ইউনিট ফেরত হলে রিফান্ড ১৮০ হওয়া উচিত
+  const inv = { items: [{ price: 100, qty: 2 }], discount: 0, itemDiscount: 20 };
+  const actual = calcReturnRefundAmount(inv, { price: 100 }, 2);
+  return { pass: approx(actual, 180), expected: 180, actual };
+});
+t("রিটার্ন রিফান্ড অ্যামাউন্ট", "subtotal শূন্য (crash না করে ফুল প্রাইসেই রিফান্ড ফেরত দেওয়া উচিত)", () => {
+  const inv = { items: [], discount: 0, itemDiscount: 0 };
+  const actual = calcReturnRefundAmount(inv, { price: 50 }, 2);
+  return { pass: approx(actual, 100), expected: 100, actual };
 });
 
 t("ব্যালেন্স ক্ল্যাম্প", "ভয়েড রিভার্সালে balance কখনো নেগেটিভ হয়ে যাওয়া উচিত না", () => {
