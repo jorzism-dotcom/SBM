@@ -246,6 +246,26 @@ export function getReturnedAmountForInvoice(returns, invoiceId, mode = null) {
   }, 0);
 }
 
+// ─── রিটার্ন রিফান্ড অ্যামাউন্ট — discount-adjusted ────────────────────────────
+/**
+ * processReturn()-এ একটা লাইন-আইটেমের qty ইউনিট ফেরত নেওয়ার সময় প্রকৃত রিফান্ড
+ * অ্যামাউন্ট বের করে — শুধু item.price × qty ধরলে ইনভয়েসে দেওয়া ডিসকাউন্ট
+ * (discount + itemDiscount) উপেক্ষিত থেকে যায় আর গ্রাহক আসল বিক্রয়মূল্যের চেয়ে
+ * বেশি টাকা ফেরত পেয়ে যান। calcInvoiceProfit()-এর discountRatio-এর ঠিক একই
+ * সূত্র পুনর্ব্যবহার করা হচ্ছে যাতে দুই জায়গায় হিসাব সবসময় সামঞ্জস্যপূর্ণ থাকে।
+ * @param {{items?:Array,discount?:number,itemDiscount?:number}} inv
+ * @param {{price?:number}} item - যে লাইন-আইটেম থেকে রিটার্ন হচ্ছে
+ * @param {number} qty - কত ইউনিট ফেরত নেওয়া হচ্ছে
+ * @returns {number}
+ */
+export function calcReturnRefundAmount(inv, item, qty) {
+  const items = (inv && inv.items) || [];
+  const subtotal = items.reduce((s, it) => s + (it.price || 0) * (it.qty || 1), 0);
+  const discount = ((inv && inv.discount) || 0) + ((inv && inv.itemDiscount) || 0);
+  const discountRatio = subtotal > 0 ? (subtotal - discount) / subtotal : 1;
+  return (item?.price || 0) * (qty || 0) * discountRatio;
+}
+
 // ─── ক্যাশ ড্রয়ার সূত্র — buildDailySummaryData() সরাসরি এই ফাংশন কল করে ──────
 /**
  * @param {number} opening
