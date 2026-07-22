@@ -8662,94 +8662,103 @@ function buildCustomerHistoryHtml(customer, txns, invoices, paymentInvoices, mon
 }
 
 // ── PDF Action Buttons Component ──────────────────────────────────────────────
-// ─── DashModalDateRangePicker — ডিটেইলস পেজে তারিখ রেঞ্জ সিলেক্টর ────────────
-const DASH_MODAL_RANGES = [
-  { key: "today",     label: "আজ" },
-  { key: "yesterday", label: "গতকাল" },
-  { key: "week",      label: "এই সপ্তাহ" },
-  { key: "month",     label: "এই মাস" },
-  { key: "custom",    label: "📅 কাস্টম" },
-];
+// ─── UnifiedDayMonthNav — অ্যাপ-জুড়ে সব ফিল্টার/রিপোর্ট স্ক্রিনে ব্যবহৃত একক
+// দিন/মাস নেভিগেটর (💸 খরচ ব্যবস্থাপনা স্ক্রিনের প্যাটার্ন অনুসরণ করে বানানো)।
+// আগে ছড়িয়ে-ছিটিয়ে থাকা "আজ/গতকাল/সপ্তাহ/মাস/কাস্টম" চিপ-রো + আলাদা আলাদা
+// রেঞ্জ-সিস্টেমগুলোর বদলে — সব জায়গায় এই একটাই: দিন/মাস টগল + ‹ তারিখ › তীর
+// নেভিগেশন + 🖨️ প্রিন্ট। কোনো রেঞ্জ/এগ্রিগেট মোড নেই — সবসময় একটাই নির্দিষ্ট
+// দিন বা একটাই নির্দিষ্ট মাস ব্রাউজ হয়। ──────────────────────────────────────
+const bnDayLabel = (dk) => {
+  if (!dk) return "";
+  const d = new Date(dk + "T00:00:00");
+  if (isNaN(d.getTime())) return dk;
+  return `${d.getDate()} ${MONTH_NAMES_BN[d.getMonth()]}, ${d.getFullYear()}`;
+};
+const bnMonthLabel = (mk) => {
+  const [y, m] = (mk || "").split("-");
+  return m ? `${MONTH_NAMES_BN[parseInt(m, 10) - 1]} ${y}` : (mk || "");
+};
 
-function useDashModalRange() {
-  const [range, setRange]       = React.useState("today");
-  const [customDate, setCD]     = React.useState(() => todayEn());
+function useUnifiedDayMonthNav() {
+  const todayKey     = todayEn();
+  const monthKeyNow  = _monthKeyOf(new Date());
+  const [mode,     setMode]     = React.useState("day");        // "day" | "month"
+  const [dateKey,  setDateKeyR] = React.useState(todayKey);      // YYYY-MM-DD
+  const [monthKey, setMonthKeyR] = React.useState(monthKeyNow);  // YYYY-MM
 
-  const todayKey = todayEn();
-  // 🔴 ফিক্স: রাত ২টার বিজনেস-রুল বাদ, এখন _dateKeyOf-এর (সরল GMT+6 মধ্যরাত)
-  // সাথে সিঙ্কড — বাকি অ্যাপের সব dateKey হিসাবের সাথে মিলবে।
-  const toKey = (d) => _dateKeyOf(d);
+  const setDateKey  = (v) => { if (v) setDateKeyR(v); };
+  const setMonthKey = (v) => { if (v) setMonthKeyR(v); };
 
-  let startKey, endKey, label;
-  const now = new Date();
-  if (range === "today") {
-    startKey = endKey = todayKey; label = "আজকের";
-  } else if (range === "yesterday") {
-    const y = new Date(now); y.setDate(y.getDate() - 1);
-    startKey = endKey = toKey(y); label = "গতকালের";
-  } else if (range === "week") {
-    // 🔴 ফিক্স: now.getDay() ডিভাইসের local timezone-এর day-of-week দিতো — এখন
-    // _bdLocalDate দিয়ে বাংলাদেশ-ক্যালেন্ডার-তারিখ অনুযায়ী সপ্তাহের শুরু বের হয়।
-    const bdNow = _bdLocalDate(now);
-    const dow = bdNow.getDay(); // 0=Sun
-    const mon = new Date(bdNow); mon.setDate(bdNow.getDate() - dow);
-    startKey = toKey(mon); endKey = todayKey; label = "এই সপ্তাহের";
-  } else if (range === "month") {
-    // 🔴 ফিক্স: now.getFullYear()/getMonth() ডিভাইসের local timezone ব্যবহার করতো
-    const { y: _my, m: _mm } = _bdParts(now);
-    const monthStart = new Date(_my, _mm, 1);
-    startKey = toKey(monthStart); endKey = todayKey; label = "এই মাসের";
-  } else {
-    startKey = endKey = customDate || todayKey;
-    const dateLabel = (() => {
-      try { return new Date(startKey + "T00:00:00").toLocaleDateString("en-US", { day: "numeric", month: "long", year: "numeric" }); }
-      catch { return startKey; }
-    })();
-    label = startKey === todayKey ? "আজকের" : `${dateLabel} তারিখের`;
-  }
+  const shiftDay = React.useCallback((delta) => {
+    setDateKeyR(prev => {
+      const d = new Date((prev || todayEn()) + "T00:00:00");
+      d.setDate(d.getDate() + delta);
+      const nk = _dateKeyOf(d);
+      return nk <= todayEn() ? nk : prev;
+    });
+  }, []);
+  const shiftMonth = React.useCallback((delta) => {
+    setMonthKeyR(prev => {
+      const [y, m] = (prev || _monthKeyOf(new Date())).split("-").map(Number);
+      const d = new Date(y, (m - 1) + delta, 1);
+      const nk = _monthKeyOf(d);
+      return nk <= _monthKeyOf(new Date()) ? nk : prev;
+    });
+  }, []);
 
-  const inRange = (dk) => dk >= startKey && dk <= endKey;
-  const shiftCustomDate = (days) => {
-    const d = new Date((customDate || todayKey) + "T00:00:00");
-    d.setDate(d.getDate() + days);
-    const nk = toKey(d);
-    if (nk <= todayKey) setCD(nk);
-  };
-  return { range, setRange, customDate, setCD, shiftCustomDate, startKey, endKey, label, inRange, todayKey };
+  const label    = mode === "day" ? bnDayLabel(dateKey) : bnMonthLabel(monthKey);
+  const startKey = mode === "day" ? dateKey : `${monthKey}-01`;
+  const endKey   = mode === "day" ? dateKey : (() => {
+    const [y, m] = monthKey.split("-").map(Number);
+    return _dateKeyOf(new Date(y, m, 0)); // মাসের শেষ দিন
+  })();
+  const inRange  = (dk) => mode === "day" ? dk === dateKey : (dk || "").startsWith(monthKey);
+  const reset    = React.useCallback(() => { setMode("day"); setDateKeyR(todayEn()); setMonthKeyR(_monthKeyOf(new Date())); }, []);
+
+  return { mode, setMode, dateKey, setDateKey, monthKey, setMonthKey, shiftDay, shiftMonth, startKey, endKey, label, inRange, todayKey, reset };
 }
 
-function DashModalDateRangePicker({ hook, accentColor = "#1fd15e", T }) {
-  const { range, setRange, customDate, setCD, shiftCustomDate, todayKey } = hook;
-  const isCustomToday = customDate === todayKey;
+function UnifiedDayMonthNav({ hook, accentColor = "#1fd15e", T, onPrint }) {
+  const { mode, setMode, dateKey, monthKey, shiftDay, shiftMonth, label, todayKey } = hook;
   return (
     <div style={{ marginBottom: 12 }}>
-      <div style={{ display:"flex", gap:5, overflowX:"auto", paddingBottom:4, WebkitOverflowScrolling:"touch", scrollbarWidth:"none" }}>
-        {DASH_MODAL_RANGES.map(r => (
-          <button key={r.key} onClick={() => setRange(r.key)}
-            style={{
-              flexShrink:0, padding:"6px 12px", borderRadius:20, fontSize:11, fontWeight:800,
-              fontFamily:"inherit", cursor:"pointer", whiteSpace:"nowrap", border:"none",
-              background: range === r.key ? `linear-gradient(135deg,${accentColor},${accentColor}cc)` : "rgba(255,255,255,0.06)",
-              color: range === r.key ? "#04210f" : "#94a3b8",
-              boxShadow: range === r.key ? `0 2px 10px ${accentColor}44` : "none",
-              transition: "all 0.15s",
-            }}>
-            {r.label}
+      <div style={{ display: "flex", justifyContent: "center", gap: 6, marginBottom: 10 }}>
+        {[["day", "দিন"], ["month", "মাস"]].map(([key, lbl]) => (
+          <button key={key} type="button" onClick={() => setMode(key)}
+            style={{ padding: "5px 18px", borderRadius: 16, border: `1.5px solid ${mode === key ? accentColor : "#334155"}`,
+              background: mode === key ? `${accentColor}22` : "transparent",
+              color: mode === key ? accentColor : "#94a3b8",
+              fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+            {lbl}
           </button>
         ))}
       </div>
-      {range === "custom" && (
-        <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:8, background:"rgba(255,255,255,0.03)", border:`1px solid ${accentColor}33`, borderRadius:14, padding:"8px 10px" }}>
-          <button onClick={() => shiftCustomDate(-1)}
-            style={{ width:34, height:34, borderRadius:10, background:`${accentColor}1f`, border:`1px solid ${accentColor}4d`, color:"#fff", fontSize:16, fontWeight:900, cursor:"pointer", flexShrink:0 }}>‹</button>
-          <input type="date" value={customDate} max={todayKey}
-            onChange={e => e.target.value && setCD(e.target.value)}
-            style={{ flex:1, background:"transparent", color:"#fff", border:"none",
-              fontSize:12, fontWeight:800, fontFamily:"inherit", colorScheme:"dark", textAlign:"center", cursor:"pointer" }} />
-          <button onClick={() => shiftCustomDate(1)} disabled={isCustomToday}
-            style={{ width:34, height:34, borderRadius:10, background:`${accentColor}1f`, border:`1px solid ${accentColor}4d`, color: isCustomToday ? "#4b4566" : "#fff", fontSize:16, fontWeight:900, cursor: isCustomToday ? "default" : "pointer", flexShrink:0 }}>›</button>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <button type="button" onClick={() => mode === "day" ? shiftDay(-1) : shiftMonth(-1)}
+          style={{ background: "rgba(255,255,255,0.08)", border: "none", borderRadius: 8, width: 32, height: 32, flexShrink: 0,
+            color: "#fff", fontSize: 17, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>‹</button>
+
+        <div style={{ position: "relative", flex: 1, textAlign: "center" }}>
+          <div style={{ color: "#fff", fontWeight: 800, fontSize: 13.5 }}>📅 {label}</div>
+          <input
+            type={mode === "day" ? "date" : "month"}
+            value={mode === "day" ? dateKey : monthKey}
+            max={mode === "day" ? todayKey : todayKey.slice(0, 7)}
+            onChange={e => { if (!e.target.value) return; mode === "day" ? hook.setDateKey(e.target.value) : hook.setMonthKey(e.target.value); }}
+            style={{ position: "absolute", inset: 0, opacity: 0, width: "100%", height: "100%", cursor: "pointer", border: "none" }}
+          />
         </div>
-      )}
+
+        <button type="button" onClick={() => mode === "day" ? shiftDay(1) : shiftMonth(1)}
+          style={{ background: "rgba(255,255,255,0.08)", border: "none", borderRadius: 8, width: 32, height: 32, flexShrink: 0,
+            color: "#fff", fontSize: 17, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>›</button>
+
+        {onPrint && (
+          <button type="button" onClick={onPrint} title="প্রিন্ট"
+            style={{ background: `${accentColor}22`, border: `1px solid ${accentColor}44`, borderRadius: 8, width: 34, height: 32, flexShrink: 0,
+              color: accentColor, fontSize: 15, cursor: "pointer", fontFamily: "inherit" }}>🖨️</button>
+        )}
+      </div>
     </div>
   );
 }
@@ -19362,7 +19371,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
 
 // ── Profit Statement Card ─────────────────────────────────────────────────────
 function ProfitStatementCard({ T, S, invoices, products, shopName, expenses = [] }) {
-  const [range,    setRange]    = React.useState("month"); // today|week|month|3m|6m|year|all
+  const pnlNav = useUnifiedDayMonthNav(); // 🆕 একক দিন/মাস নেভিগেটর (আগের today/week/month/3m/6m/year/all চিপ বাদ)
   const [showDetail, setShowDetail] = React.useState(false);
 
   const fmt  = n => fmtMoney(n);
@@ -19370,29 +19379,13 @@ function ProfitStatementCard({ T, S, invoices, products, shopName, expenses = []
 
   const prodMap = React.useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
 
-  // ── Date range compute ────────────────────────────────────────────────────
-  const { fromKey, label } = React.useMemo(() => {
-    const now = new Date();
-    if (range === "today")  return { fromKey: _dateKeyOf(now), label: "আজকের" };
-    if (range === "week")   return { fromKey: _dateKeyOf(new Date(now - 7*86400000)), label: "৭ দিনের" };
-    if (range === "month")  return { fromKey: _monthKeyOf(now), label: "এই মাসের" };
-    if (range === "3m")     return { fromKey: _dateKeyOf(new Date(now.setMonth(now.getMonth()-3))), label: "৩ মাসের" };
-    if (range === "6m")     return { fromKey: _dateKeyOf(new Date(now.setMonth(now.getMonth()-3))), label: "৬ মাসের" };
-    if (range === "year")   return { fromKey: _bdParts(new Date()).y + "-01-01", label: "এই বছরের" }; // 🔴 ফিক্স: BD বছর
-    return { fromKey: "", label: "সব সময়ের" };
-  }, [range]);
+  // ── নির্বাচিত দিন/মাসের লেবেল ─────────────────────────────────────────────
+  const label = pnlNav.mode === "day" ? `${pnlNav.label}` : `${pnlNav.label} মাসের`;
 
   // ── Full P&L calculation ──────────────────────────────────────────────────
   const pnl = React.useMemo(() => {
-    const filtInv = invoices.filter(inv => {
-      if (!fromKey) return true;
-      const d = inv.dateKey || (inv.createdAt||"").split("T")[0];
-      return range === "month" ? d.startsWith(fromKey) : d >= fromKey;
-    });
-    const filtExp = expenses.filter(e => {
-      if (!fromKey) return true;
-      return range === "month" ? (e.dateKey||e.date||"").startsWith(fromKey) : (e.dateKey||e.date||"") >= fromKey;
-    });
+    const filtInv = invoices.filter(inv => pnlNav.inRange(inv.dateKey || (inv.createdAt||"").split("T")[0]));
+    const filtExp = expenses.filter(e => pnlNav.inRange(e.dateKey || e.date || ""));
 
     let revenue = 0, cogs = 0, cashSales = 0, bakiSales = 0;
     const dailyMap = {};
@@ -19453,7 +19446,7 @@ function ProfitStatementCard({ T, S, invoices, products, shopName, expenses = []
       invoiceCount: filtInv.length, expenseCount: filtExp.length,
       dailyRows, topProds, expByCat,
     };
-  }, [invoices, expenses, prodMap, fromKey, range]);
+  }, [invoices, expenses, prodMap, pnlNav.mode, pnlNav.dateKey, pnlNav.monthKey]);
 
   // ── Print ─────────────────────────────────────────────────────────────────
   const handlePrint = React.useCallback(() => {
@@ -19483,13 +19476,6 @@ function ProfitStatementCard({ T, S, invoices, products, shopName, expenses = []
     const html = buildPdfHtml(summary, shopName, `P&L Statement — ${label}`);
     openPrintWindow(html);
   }, [pnl, label, shopName]);
-
-  const RANGES = [
-    { id:"today", label:"আজ" }, { id:"week", label:"৭ দিন" },
-    { id:"month", label:"এই মাস" }, { id:"3m", label:"৩ মাস" },
-    { id:"6m", label:"৬ মাস" }, { id:"year", label:"এই বছর" },
-    { id:"all", label:"সব" },
-  ];
 
   const isProfit = pnl.netProfit >= 0;
 
@@ -19527,17 +19513,9 @@ function ProfitStatementCard({ T, S, invoices, products, shopName, expenses = []
         </div>
       </div>
 
-      {/* Range selector */}
-      <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginBottom:14, position:"relative" }}>
-        {RANGES.map(r => (
-          <button key={r.id} onClick={() => setRange(r.id)}
-            style={{ padding:"5px 10px", borderRadius:16, border:`1px solid ${range===r.id?"#a855f7":"#7c3aed44"}`,
-              background: range===r.id ? "linear-gradient(135deg,#7c3aed,#a855f7)" : "rgba(139,92,246,0.1)",
-              color: range===r.id ? "#fff" : "#c4b5fd",
-              fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit", transition:"all 0.15s" }}>
-            {r.label}
-          </button>
-        ))}
+      {/* একক দিন/মাস নেভিগেটর */}
+      <div style={{ position:"relative", marginBottom:14 }}>
+        <UnifiedDayMonthNav hook={pnlNav} accentColor="#a855f7" T={T} />
       </div>
 
       {/* Net Profit Hero */}
@@ -20132,12 +20110,10 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   const [cashType,    setCashType]    = useState("owner"); // "owner" | "supplier" | "expense" | "other"
   const [cashParty,   setCashParty]   = useState(""); // কোম্পানি/পক্ষের নাম (supplier/other এর জন্য)
   const [cashPartyOpen, setCashPartyOpen] = useState(false); // 🆕 সাপ্লায়ার নাম অটো-সাজেস্ট ড্রপডাউন খোলা/বন্ধ
-  const [cashHistoryDate, setCashHistoryDate] = useState(() => todayEn()); // হিস্ট্রি পেজের সিলেক্টেড তারিখ
-  const [cashHistDateTo,  setCashHistDateTo]  = useState(() => todayEn()); // কাস্টম রেঞ্জ end date
-  const [cashHistRangeMode, setCashHistRangeMode] = useState(false); // true = date range mode
+  const cashHistNav = useUnifiedDayMonthNav(); // 🆕 হিস্ট্রি পেজের একক দিন/মাস নেভিগেটর
 
   // ── 📅 dashModal ডিটেইলস পেজের তারিখ রেঞ্জ state — Rules of Hooks অনুযায়ী top-level এ unconditional call ──
-  const dmRange = useDashModalRange();
+  const dmRange = useUnifiedDayMonthNav();
   // ক্যাশ হিস্ট্রি Print/WhatsApp বাটনের busy-state — আগে cashModal==="history" ব্লকের ভিতরে conditionally call হতো যা Rules of Hooks ভঙ্গ করে React error #310 (Rendered more hooks than during the previous render) সৃষ্টি করছিল
   const [cashHistBusy, setCashHistBusy] = React.useState(false);
 
@@ -20175,31 +20151,8 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   // সরাসরি Firestore-এ dateKey রেঞ্জ query চালিয়ে সেই নির্দিষ্ট রেঞ্জের সম্পূর্ণ
   // ডেটা আনা হয়। Rules of Hooks অনুযায়ী top-level এ unconditional call।
   const [cashHistFull, setCashHistFull] = React.useState({ key: null, rows: null });
-  const cashHistRangeKeys = (() => {
-    const isPeriodModeTop = cashHistoryDate.startsWith("period:");
-    const activePeriodTop = isPeriodModeTop ? cashHistoryDate.replace("period:", "") : "custom";
-    const customDateValTop = isPeriodModeTop ? todayKeyStr : cashHistoryDate;
-    const toKeyTop = (d) => _dateKeyOf(d); // 🔴 ফিক্স: রাত ২টার রুল বাদ, সরল GMT+6 মধ্যরাত
-    const nowTop = new Date();
-    const bdNowTop = _bdLocalDate(nowTop); // 🔴 ফিক্স: device-local getDay/getFullYear/getMonth-এর বদলে BD ক্যালেন্ডার
-    let hsKey, heKey;
-    if (activePeriodTop === "today" || (activePeriodTop === "custom" && customDateValTop === todayKeyStr)) {
-      hsKey = heKey = todayKeyStr;
-    } else if (activePeriodTop === "yesterday") {
-      const y = new Date(bdNowTop); y.setDate(y.getDate() - 1); hsKey = heKey = toKeyTop(y);
-    } else if (activePeriodTop === "week") {
-      const dow = bdNowTop.getDay(); const mon = new Date(bdNowTop); mon.setDate(bdNowTop.getDate() - dow);
-      hsKey = toKeyTop(mon); heKey = todayKeyStr;
-    } else if (activePeriodTop === "month") {
-      const m = new Date(bdNowTop.getFullYear(), bdNowTop.getMonth(), 1); hsKey = toKeyTop(m); heKey = todayKeyStr;
-    } else if (activePeriodTop === "year") {
-      const y = new Date(bdNowTop.getFullYear(), 0, 1); hsKey = toKeyTop(y); heKey = todayKeyStr;
-    } else {
-      hsKey = heKey = customDateValTop;
-      if (activePeriodTop === "custom" && cashHistRangeMode) heKey = cashHistDateTo < customDateValTop ? customDateValTop : cashHistDateTo;
-    }
-    return { hsKey, heKey };
-  })();
+  // 🆕 একক দিন/মাস নেভিগেটর থেকে সরাসরি startKey/endKey — আর কোনো period/custom-range লজিক লাগে না
+  const cashHistRangeKeys = { hsKey: cashHistNav.startKey, heKey: cashHistNav.endKey };
   const cashHistKeyStr = `${cashHistRangeKeys.hsKey}_${cashHistRangeKeys.heKey}`;
   React.useEffect(() => {
     if (cashModal !== "history" || !fssReady || !FSS._db) return;
@@ -20306,12 +20259,12 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     if (!dashModal) {
       setViewInv(null); setViewPayInv(null);
       // ডিটেইলস পেজের কাস্টম তারিখ রেঞ্জ রিসেট — ড্যাশবোর্ডে ফিরলে আবার ডিফল্ট "আজ" দেখাবে
-      if (dmRange.range !== "today") dmRange.setRange("today");
+      if (dmRange.mode !== "day" || dmRange.dateKey !== dmRange.todayKey) dmRange.reset();
     }
   }, [dashModal]);
   // ক্যাশ মোডাল বন্ধ হলে (ফিরুন বাটন/ফোনের ব্যাক/নেভিগেশন হোম) হিস্ট্রির সিলেক্টেড তারিখ রিসেট — ডিফল্ট আজকের হিস্ট্রি
   React.useEffect(() => {
-    if (!cashModal && cashHistoryDate !== todayKeyStr) { setCashHistoryDate(todayKeyStr); setCashHistDateTo(todayKeyStr); setCashHistRangeMode(false); }
+    if (!cashModal && (cashHistNav.mode !== "day" || cashHistNav.dateKey !== todayKeyStr)) cashHistNav.reset();
   }, [cashModal]);
   // Inventory data (memoized for performance)
   const allStock      = React.useMemo(() => products.filter(p => (p.stock||0) > 0).sort((a,b) => b.stock-a.stock), [products]);
@@ -20632,63 +20585,15 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
 
   // ══ 💰 ক্যাশ ড্রয়ার — ফুলস্ক্রিন: হিস্ট্রি (যেকোনো দিনের) ══
   if (cashModal === "history") {
-    // ── পিরিয়ড ফিল্টার state ──
-    const CASH_HIST_PERIODS = [
-      { key: "custom",    label: "📅 কাস্টম" },
-      { key: "today",     label: "আজ" },
-      { key: "yesterday", label: "গতকাল" },
-      { key: "week",      label: "সপ্তাহ" },
-      { key: "month",     label: "মাস" },
-      { key: "year",      label: "বছর" },
-    ];
-    // cashHistPeriod ও cashHistPeriodKey local state (useState already declared above: cashHistoryDate)
-    // আমরা cashHistoryDate এর সাথে একটি period ট্র্যাক করতে prefix ব্যবহার করি:
-    // cashHistoryDate format: "YYYY-MM-DD" (custom) অথবা period key stored in a shadow ref
-    // সহজ সমাধান: period আলাদা state ছাড়া cashHistoryDate থেকে infer করব না — বরং
-    // cashHistoryDate-এর প্রথম অংশে period embed করব না। বরং একটি derived approach:
-    // আমরা histPeriod কে cashHistoryDate prefix দিয়ে encode করব: "period:today" etc.
-    // যদি cashHistoryDate "period:" দিয়ে শুরু হয় → period mode, নইলে custom date mode।
-    const isPeriodMode = cashHistoryDate.startsWith("period:");
-    const activePeriod = isPeriodMode ? cashHistoryDate.replace("period:", "") : "custom";
-    const customDateVal = isPeriodMode ? todayKeyStr : cashHistoryDate;
+    // 🆕 একক দিন/মাস নেভিগেটর — cashHistNav (আগের period-chip + custom range সিস্টেম বাদ)
+    const histStartKey = cashHistNav.startKey;
+    const histEndKey   = cashHistNav.endKey;
+    const isRangeMode  = cashHistNav.mode === "month"; // মাস মোড হলে একাধিক দিনের যোগফল দেখাবে
+    const isHistToday  = cashHistNav.mode === "day" && histStartKey === todayKeyStr;
 
-    // কাস্টম range mode: from→to
-    const isCustomRange = activePeriod === "custom" && cashHistRangeMode;
-    const customDateFrom = customDateVal;
-    const customDateToVal = cashHistDateTo < customDateFrom ? customDateFrom : cashHistDateTo;
-
-    const toKey = (d) => _dateKeyOf(d); // 🔴 ফিক্স: রাত ২টার রুল বাদ, সরল GMT+6 মধ্যরাত
-    const now = new Date();
-    const bdNow = _bdLocalDate(now); // 🔴 ফিক্স: device-local getDay/getFullYear/getMonth-এর বদলে BD ক্যালেন্ডার
-
-    // পিরিয়ড অনুযায়ী startKey–endKey নির্ধারণ
-    let histStartKey, histEndKey;
-    if (activePeriod === "today" || (activePeriod === "custom" && customDateVal === todayKeyStr)) {
-      histStartKey = histEndKey = todayKeyStr;
-    } else if (activePeriod === "yesterday") {
-      const y = new Date(bdNow); y.setDate(y.getDate() - 1);
-      histStartKey = histEndKey = toKey(y);
-    } else if (activePeriod === "week") {
-      const dow = bdNow.getDay();
-      const mon = new Date(bdNow); mon.setDate(bdNow.getDate() - dow);
-      histStartKey = toKey(mon); histEndKey = todayKeyStr;
-    } else if (activePeriod === "month") {
-      const m = new Date(bdNow.getFullYear(), bdNow.getMonth(), 1);
-      histStartKey = toKey(m); histEndKey = todayKeyStr;
-    } else if (activePeriod === "year") {
-      const y = new Date(bdNow.getFullYear(), 0, 1);
-      histStartKey = toKey(y); histEndKey = todayKeyStr;
-    } else {
-      // custom single date
-      histStartKey = histEndKey = customDateVal;
-      if (isCustomRange) histEndKey = customDateToVal;
-    }
-
-    const isRangeMode = histStartKey !== histEndKey;
-    // ৩৫ দিনের windowed লোকাল cashLogs-এর বাইরের রেঞ্জ চাইলে (সপ্তাহ/মাস/বছর/পুরনো
-    // কাস্টম তারিখ) উপরের on-demand Firestore ফেচ (cashHistFull) থেকে ডেটা আসে।
-    // এখনো লোড হয়নি/অফলাইনে ব্যর্থ হলে windowed লোকাল ডেটাতেই fallback করে, যাতে
-    // পেজ খালি না দেখায়।
+    // ৩৫ দিনের windowed লোকাল cashLogs-এর বাইরের রেঞ্জ চাইলে (মাস মোড/পুরনো দিন)
+    // উপরের on-demand Firestore ফেচ (cashHistFull) থেকে ডেটা আসে। এখনো লোড হয়নি/
+    // অফলাইনে ব্যর্থ হলে windowed লোকাল ডেটাতেই fallback করে, যাতে পেজ খালি না দেখায়।
     const histRangeKeyLocal = `${histStartKey}_${histEndKey}`;
     const histEntries = (cashHistFull.key === histRangeKeyLocal && cashHistFull.rows)
       ? cashHistFull.rows
@@ -20698,39 +20603,17 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     // সারসংক্ষেপ হিসাব
     const histOpeningEntries = histEntries.filter(c => c.type === "opening");
     const histOpeningTotal = histOpeningEntries.reduce((s, c) => s + (c.amount || 0), 0);
-    // single-day: শেষ opening entry; range: সব opening এর যোগফল
+    // দিন মোড: শেষ opening entry; মাস মোড: সব opening এর যোগফল
     const histOpening = isRangeMode ? null : histOpeningEntries.slice(-1)[0];
     const histWithdrawals = histEntries.filter(c => c.type === "withdrawal");
     const histWithdrawTotal = histWithdrawals.reduce((s, c) => s + (c.amount || 0), 0);
 
-    const histDateLabel = (() => {
-      if (isRangeMode) {
-        const s = new Date(histStartKey + "T00:00:00").toLocaleDateString("en-US", { day: "numeric", month: "short" });
-        const e = new Date(histEndKey + "T00:00:00").toLocaleDateString("en-US", { day: "numeric", month: "short", year: "numeric" });
-        return `${s} – ${e}`;
-      }
-      try { return new Date(histStartKey + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", day: "numeric", month: "long", year: "numeric" }); }
-      catch { return histStartKey; }
-    })();
-    const isHistToday = !isRangeMode && histStartKey === todayKeyStr;
+    const histDateLabel = cashHistNav.label;
 
-    const shiftDate = (days) => {
-      const base = isPeriodMode ? todayKeyStr : customDateVal;
-      const d = new Date(base + "T00:00:00");
-      d.setDate(d.getDate() + days);
-      const nk = toKey(d);
-      if (nk <= todayKeyStr) setCashHistoryDate(nk);
-    };
-
-    const setPeriod = (key) => {
-      setCashHistRangeMode(false);
-      if (key === "custom") setCashHistoryDate(todayKeyStr);
-      else setCashHistoryDate("period:" + key);
-    };
 
     // ── Print/WhatsApp HTML builder ──
     const buildCashHistHtml = () => {
-      const periodLabel = activePeriod === "custom" ? histDateLabel : (CASH_HIST_PERIODS.find(p=>p.key===activePeriod)?.label || histDateLabel);
+      const periodLabel = histDateLabel;
       const entryRows = histEntries.map((c, i) => {
         const meta = c.type === "opening" ? { label:"ওপেনিং ক্যাশ", icon:"🪙" } : (CASH_TYPE_META[c.cashType] || CASH_TYPE_META.other);
         const timeStr = c.createdAt ? new Date(c.createdAt).toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit", timeZone: "Asia/Dhaka" }) : "";
@@ -20784,69 +20667,8 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           </div>
         </div>
 
-        {/* ── দ্রুত পিরিয়ড বাটন ── */}
-        <div style={{ display:"flex", gap:6, overflowX:"auto", paddingBottom:4, WebkitOverflowScrolling:"touch", scrollbarWidth:"none", marginBottom:10 }}>
-          {CASH_HIST_PERIODS.map(p => (
-            <button key={p.key} onClick={() => setPeriod(p.key)}
-              style={{
-                flexShrink:0, padding:"6px 13px", borderRadius:20, fontSize:11.5, fontWeight:800,
-                fontFamily:"inherit", cursor:"pointer", whiteSpace:"nowrap", border:"none",
-                background: activePeriod === p.key
-                  ? "linear-gradient(135deg,#a78bfa,#7c3aed)"
-                  : "rgba(167,139,250,0.10)",
-                color: activePeriod === p.key ? "#fff" : "#a78bfa",
-                boxShadow: activePeriod === p.key ? "0 2px 10px #7c3aed55" : "none",
-                transition:"all 0.15s",
-              }}>{p.label}</button>
-          ))}
-        </div>
-
-        {/* কাস্টম তারিখ সিলেক্টর — শুধু custom mode-এ দেখাবে */}
-        {activePeriod === "custom" && (
-          <div style={{ marginBottom:12 }}>
-            {/* Single / Range toggle */}
-            <div style={{ display:"flex", gap:6, marginBottom:8 }}>
-              <button onClick={() => setCashHistRangeMode(false)}
-                style={{ flex:1, padding:"6px 0", borderRadius:10, fontSize:11, fontWeight:800, fontFamily:"inherit", cursor:"pointer", border:"none",
-                  background: !cashHistRangeMode ? "linear-gradient(135deg,#a78bfa,#7c3aed)" : "rgba(167,139,250,0.10)",
-                  color: !cashHistRangeMode ? "#fff" : "#a78bfa" }}>📅 নির্দিষ্ট দিন</button>
-              <button onClick={() => { setCashHistRangeMode(true); if (cashHistDateTo < customDateVal) setCashHistDateTo(customDateVal); }}
-                style={{ flex:1, padding:"6px 0", borderRadius:10, fontSize:11, fontWeight:800, fontFamily:"inherit", cursor:"pointer", border:"none",
-                  background: cashHistRangeMode ? "linear-gradient(135deg,#a78bfa,#7c3aed)" : "rgba(167,139,250,0.10)",
-                  color: cashHistRangeMode ? "#fff" : "#a78bfa" }}>📆 তারিখ রেঞ্জ</button>
-            </div>
-
-            {!cashHistRangeMode ? (
-              /* single date picker */
-              <div style={{ display:"flex", alignItems:"center", gap:8, background:"rgba(255,255,255,0.03)", border:"1px solid rgba(167,139,250,0.2)", borderRadius:14, padding:"10px 12px" }}>
-                <button onClick={() => shiftDate(-1)}
-                  style={{ width:36, height:36, borderRadius:10, background:"rgba(167,139,250,0.12)", border:"1px solid rgba(167,139,250,0.3)", color:"#ddd6fe", fontSize:16, fontWeight:900, cursor:"pointer", flexShrink:0 }}>‹</button>
-                <div style={{ flex:1, position:"relative" }}>
-                  <input type="date" value={customDateVal} max={todayKeyStr} onChange={e => e.target.value && setCashHistoryDate(e.target.value)}
-                    style={{ width:"100%", background:"transparent", border:"none", color:"#f1edff", fontSize:13, fontWeight:800, fontFamily:"inherit", colorScheme:"dark", textAlign:"center", cursor:"pointer" }} />
-                </div>
-                <button onClick={() => shiftDate(1)} disabled={isHistToday}
-                  style={{ width:36, height:36, borderRadius:10, background:"rgba(167,139,250,0.12)", border:"1px solid rgba(167,139,250,0.3)", color: isHistToday ? "#4b4566" : "#ddd6fe", fontSize:16, fontWeight:900, cursor: isHistToday ? "default" : "pointer", flexShrink:0 }}>›</button>
-              </div>
-            ) : (
-              /* date range picker */
-              <div style={{ display:"flex", flexDirection:"column", gap:8, background:"rgba(255,255,255,0.03)", border:"1px solid rgba(167,139,250,0.2)", borderRadius:14, padding:"12px" }}>
-                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                  <div style={{ color:"#a78bfa", fontSize:10.5, fontWeight:800, width:36, flexShrink:0, textAlign:"center" }}>থেকে</div>
-                  <input type="date" value={customDateFrom} max={todayKeyStr}
-                    onChange={e => { if (e.target.value) { setCashHistoryDate(e.target.value); if (cashHistDateTo < e.target.value) setCashHistDateTo(e.target.value); } }}
-                    style={{ flex:1, background:"rgba(167,139,250,0.08)", border:"1px solid rgba(167,139,250,0.25)", borderRadius:10, color:"#f1edff", fontSize:13, fontWeight:800, fontFamily:"inherit", colorScheme:"dark", textAlign:"center", cursor:"pointer", padding:"8px 6px" }} />
-                </div>
-                <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-                  <div style={{ color:"#a78bfa", fontSize:10.5, fontWeight:800, width:36, flexShrink:0, textAlign:"center" }}>পর্যন্ত</div>
-                  <input type="date" value={customDateToVal} min={customDateFrom} max={todayKeyStr}
-                    onChange={e => e.target.value && setCashHistDateTo(e.target.value)}
-                    style={{ flex:1, background:"rgba(167,139,250,0.08)", border:"1px solid rgba(167,139,250,0.25)", borderRadius:10, color:"#f1edff", fontSize:13, fontWeight:800, fontFamily:"inherit", colorScheme:"dark", textAlign:"center", cursor:"pointer", padding:"8px 6px" }} />
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+        {/* ── একক দিন/মাস নেভিগেটর ── */}
+        <UnifiedDayMonthNav hook={cashHistNav} accentColor="#a78bfa" T={T} />
 
         {/* তারিখ লেবেল */}
         <div style={{ textAlign:"center", color:"#94a3b8", fontSize:12, fontWeight:700, marginBottom:14 }}>
@@ -22577,7 +22399,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           <div style={{ color:T.text, fontWeight:700, fontSize:16, marginBottom:10, textAlign:"center" }}>{dashModal.baseTitle || dashModal.title}</div>
 
           {/* তারিখ রেঞ্জ সিলেক্টর */}
-          <DashModalDateRangePicker hook={dmRange} accentColor="#8b5cf6" T={T} />
+          <UnifiedDayMonthNav hook={dmRange} accentColor="#8b5cf6" T={T} />
 
           {/* WhatsApp + Print বাটন */}
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:14 }}>
@@ -22817,7 +22639,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           <button style={S.textBtn} onClick={() => setDashModal(null)}>← ড্যাশবোর্ডে ফিরুন</button>
           <div style={{ color: T.text, fontWeight: 700, fontSize: 16, marginBottom: 10 }}>{dashModal.baseTitle || dashModal.title}</div>
           {/* তারিখ রেঞ্জ সিলেক্টর */}
-          <DashModalDateRangePicker hook={dmRange} accentColor="#1fd15e" T={T} />
+          <UnifiedDayMonthNav hook={dmRange} accentColor="#1fd15e" T={T} />
           {/* Admin-only: নগদ বিক্রয়ে মোট লাভ/লস banner */}
           {_isCashModal && currentUser?.role !== "staff" && rangedItems.length > 0 && (
             <div style={{
@@ -22977,7 +22799,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           <button style={S.textBtn} onClick={() => setDashModal(null)}>← ড্যাশবোর্ডে ফিরুন</button>
           <div style={{ color: T.text, fontWeight: 700, fontSize: 16, marginBottom: 10 }}>{dashModal.title}</div>
           {/* তারিখ রেঞ্জ সিলেক্টর */}
-          <DashModalDateRangePicker hook={dmRange} accentColor="#22c55e" T={T} />
+          <UnifiedDayMonthNav hook={dmRange} accentColor="#22c55e" T={T} />
           {/* সারসংক্ষেপ */}
           <div style={{ color: T.sub, fontSize: 12, marginBottom: 10 }}>
             {filteredItems.length}টি রশিদ · মোট: <b style={{ color:"#4ade80" }}>৳{fmt(rangeTotal)}</b>
