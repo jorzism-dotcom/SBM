@@ -992,7 +992,7 @@
           <div id="upd-shop-selected" style="font-size:12px;margin-top:8px;color:var(--sub)"></div>
         </div>
 
-        <button class="btn-primary violet" onclick="publishUpdate()">
+        <button class="btn-primary violet" id="upd-publish-btn" onclick="publishUpdate()">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
           আপডেট প্রকাশ করুন
         </button>
@@ -1387,6 +1387,18 @@ function toast(msg, type = "info", ms = 3200) {
   setTimeout(() => { el.style.opacity = '0'; el.style.transform = 'translateY(8px)'; el.style.transition = 'all .25s'; setTimeout(() => el.remove(), 260); }, ms);
 }
 window._toast = toast;
+
+// ── গ্লোবাল এরর ক্যাচ (ডিবাগিং ফিক্স) ─────────────────────────────────────────
+// এতদিন কোনো unhandled JS error বা রিজেক্টেড Promise থাকলে সেটা শুধু browser
+// console-এ যেত — ট্যাবলেটে devtools না থাকায় সেটা দেখার কোনো উপায় ছিল না,
+// ফলে "কিছুই হচ্ছে না" মনে হতো (আসলে একটা silent error হচ্ছিল)। এখন থেকে
+// এই ধরনের যেকোনো error লাল toast হিসেবে স্ক্রিনে দেখাবে।
+window.addEventListener('error', (e) => {
+  try { toast('⚠️ JS Error: ' + (e.message || e.error?.message || 'unknown'), 'err', 7000); } catch(_) {}
+});
+window.addEventListener('unhandledrejection', (e) => {
+  try { toast('⚠️ Promise Error: ' + (e.reason?.message || e.reason || 'unknown'), 'err', 7000); } catch(_) {}
+});
 
 // ── Crypto helpers ────────────────────────────────────────────────────────────
 async function hashPin(plain) {
@@ -2430,32 +2442,45 @@ window.toggleKillSwitch = async function(checked) {
 };
 
 window.publishUpdate = async function() {
-  const version = document.getElementById('upd-version').value.trim();
-  const url     = document.getElementById('upd-url').value.trim();
-  const notes   = document.getElementById('upd-notes').value.trim();
-  const mandatory = document.getElementById('upd-mandatory').checked;
-  const rollbackMode = document.getElementById('upd-rollback').checked;
+  const btn = document.getElementById('upd-publish-btn');
   const msg = document.getElementById('updMsg');
-  if (!/^\d+\.\d+\.\d+$/.test(version)) { msg.style.color = '#f87171'; msg.textContent = '⚠️ ভার্সন অবশ্যই x.y.z ফরম্যাটে হতে হবে (যেমন: 1.1.0)'; return; }
-  if (!url) { msg.style.color = '#f87171'; msg.textContent = '⚠️ ডাউনলোড লিংক আবশ্যক'; return; }
-  const targetPhones = updSelectedPhones.slice();
-  const confirmMsg = (rollbackMode ? '⏪ রোলব্যাক মোড চালু আছে — ভার্সন-তুলনা উপেক্ষা করে সবাইকে (বা বাছাই করা দোকানে) দেখানো হবে।\n\n' : '')
-    + (targetPhones.length
-      ? `শুধু ${targetPhones.length}টি নির্দিষ্ট দোকানে এই আপডেট পাঠাবেন?`
-      : `কোনো দোকান বাছা হয়নি — এই আপডেট সব দোকানে যাবে। নিশ্চিত?`);
-  if (!confirm(confirmMsg)) return;
   try {
+    const version = document.getElementById('upd-version').value.trim();
+    const url     = document.getElementById('upd-url').value.trim();
+    const notes   = document.getElementById('upd-notes').value.trim();
+    const mandatory = document.getElementById('upd-mandatory').checked;
+    const rollbackMode = document.getElementById('upd-rollback').checked;
+    if (!/^\d+\.\d+\.\d+$/.test(version)) { msg.style.color = '#f87171'; msg.textContent = '⚠️ ভার্সন অবশ্যই x.y.z ফরম্যাটে হতে হবে (যেমন: 1.1.0)'; return; }
+    if (!url) { msg.style.color = '#f87171'; msg.textContent = '⚠️ ডাউনলোড লিংক আবশ্যক'; return; }
+    const targetPhones = updSelectedPhones.slice();
+    const confirmMsg = (rollbackMode ? '⏪ রোলব্যাক মোড চালু আছে — ভার্সন-তুলনা উপেক্ষা করে সবাইকে (বা বাছাই করা দোকানে) দেখানো হবে।\n\n' : '')
+      + (targetPhones.length
+        ? `শুধু ${targetPhones.length}টি নির্দিষ্ট দোকানে এই আপডেট পাঠাবেন?`
+        : `কোনো দোকান বাছা হয়নি — এই আপডেট সব দোকানে যাবে। নিশ্চিত?`);
+    if (!confirm(confirmMsg)) return;
+
+    // সাথে সাথে ফিডব্যাক — যাতে বোঝা যায় ক্লিক আসলেই কাজ করেছে, "কিছুই হচ্ছে না" মনে না হয়
+    if (btn) { btn.disabled = true; btn.dataset.origText = btn.innerHTML; btn.innerHTML = '⏳ প্রকাশ করা হচ্ছে...'; }
+    msg.style.color = '#93c5fd'; msg.textContent = '⏳ Firestore-এ লেখা হচ্ছে...';
+    console.log('[publishUpdate] শুরু —', { version, url, targetPhones });
+
     await setDoc(doc(db, "admin_config", "appVersion"), {
       version, updateUrl: url, updateNotesBn: notes, forceUpdate: mandatory, rollbackMode,
       targetPhones,
       publishedAt: new Date().toISOString()
     }, { merge: true });
+
+    console.log('[publishUpdate] setDoc সম্পন্ন');
     msg.style.color = '#6ee7b7'; msg.textContent = '✅ প্রকাশিত হয়েছে — কোনো notification যায়নি, শুধু দোকানদারের Settings-এ নীরবে দেখা যাবে।';
     setTimeout(() => msg.textContent = '', 5000);
     toast('🚀 আপডেট প্রকাশিত হয়েছে', 'ok', 4000);
     await loadCurrentUpdate();
   } catch(e) {
-    msg.style.color = '#f87171'; msg.textContent = '❌ প্রকাশ ব্যর্থ: ' + e.message;
+    console.error('[publishUpdate] এরর:', e);
+    msg.style.color = '#f87171'; msg.textContent = '❌ প্রকাশ ব্যর্থ: ' + (e?.message || e);
+    toast('❌ প্রকাশ ব্যর্থ: ' + (e?.message || e), 'err', 7000);
+  } finally {
+    if (btn) { btn.disabled = false; if (btn.dataset.origText) btn.innerHTML = btn.dataset.origText; }
   }
 };
 window.unpublishUpdate = async function() {
