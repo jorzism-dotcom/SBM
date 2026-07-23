@@ -164,7 +164,7 @@ service cloud.firestore {
 
     // ── purchaseOrders / stockMovements / cashLogs / paymentInvoices ──
     // এখনো সাধারণ shape validation (amount/qty ঋণাত্মক না) — বিস্তারিত rule পরে বাড়ানো যায়
-    function validPO(data) { return !("totalAmount" in data) || isNonNegNum(data.totalAmount); }
+    function validPO(data) { return !("totalCost" in data) || isNonNegNum(data.totalCost); }
     match /purchaseOrders/{id} {
       allow read: if true;
       allow create, update: if validPO(request.resource.data);
