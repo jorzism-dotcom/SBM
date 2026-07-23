@@ -10389,7 +10389,7 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
     const todayKeyEn = todayEn();
     const _voidedIds = new Set((invoices || []).filter(i => i.status === "voided").map(i => i.id));
     const todayBakiIncurred = txnAll.filter(t => t.dateKey === todayKeyEn && t.type === "baki" && t.invoiceId && !_voidedIds.has(t.invoiceId)).reduce((s, t) => s + (t.amount || 0), 0);
-    const todayJoma = txnAll.filter(t => t.dateKey === todayKeyEn && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale").reduce((s, t) => s + (t.amount || 0), 0);
+    const todayJoma = txnAll.filter(t => t.dateKey === todayKeyEn && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((s, t) => s + (t.amount || 0), 0);
 
     const cashLogsAll = cashLogs || [];
     const openingCashToday = cashLogsAll.filter(c => c.type === "opening" && c.dateKey === todayKeyEn).reduce((s, c) => s + (c.amount || 0), 0);
@@ -10687,7 +10687,7 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
   const todayKeyEn = todayEn();
   const _voidedIds = new Set((invoices || []).filter(i => i.status === "voided").map(i => i.id));
   const todayBakiIncurred = txnAll.filter(t => t.dateKey === todayKeyEn && t.type === "baki" && t.invoiceId && !_voidedIds.has(t.invoiceId)).reduce((s, t) => s + (t.amount || 0), 0);
-  const todayJoma = txnAll.filter(t => t.dateKey === todayKeyEn && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale").reduce((s, t) => s + (t.amount || 0), 0);
+  const todayJoma = txnAll.filter(t => t.dateKey === todayKeyEn && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((s, t) => s + (t.amount || 0), 0);
 
   // ── ক্যাশ ড্রয়ার — ওপেনিং/উইথড্রয়াল/বর্তমান ক্যাশ ────────────────────────
   const cashLogsAll = cashLogs || [];
@@ -11484,7 +11484,7 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
             </div>
             {[
               { label: "বিক্রয় লক্ষ্য", current: weekSale, target: dailyAvg * 7, color: "#22c55e" },
-              { label: "বাকি আদায়", current: txnAll.filter(t => t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && (t.dateKey >= d7 || t.date >= d7)).reduce((s, t) => s + t.amount, 0), target: totalBaki * 0.15, color: "#3b82f6" },
+              { label: "বাকি আদায়", current: txnAll.filter(t => t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust" && (t.dateKey >= d7 || t.date >= d7)).reduce((s, t) => s + t.amount, 0), target: totalBaki * 0.15, color: "#3b82f6" },
             ].map((item, i) => {
               const p = Math.min(100, item.target > 0 ? Math.round((item.current / item.target) * 100) : 0);
               return (
@@ -14575,7 +14575,7 @@ function SmartBusinessMgmt() {
         id: uid(), type: "deposit", cashType: "other", party: "",
         amount: cashRefundedAmount,
         note: `ভয়েড-রিভার্সাল — ইনভয়েস ${inv.invoiceNo || inv.id.slice(-6).toUpperCase()}-এর আগের নগদ রিটার্ন-রিফান্ড বাতিল`,
-        date: todayStr(), dateKey: inv.dateKey || todayEn(),
+        date: todayStr(), dateKey: todayEn(),
         createdAt: new Date().toISOString(),
         by: currentUser?.name || "মালিক",
       };
@@ -14624,12 +14624,21 @@ function SmartBusinessMgmt() {
     });
 
     // ── Phase 1.3: Stats doc update — void-এ negative delta দিয়ে total কমাও ─
+    // 🔴 ফিক্স (ডাবল-সাবট্রাক্ট বাগ): processReturn() এখন প্রতিটা আংশিক রিটার্নের
+    // সময়েই stats doc থেকে refundAmount বিয়োগ করে দেয়। এই ইনভয়েসে আগে কোনো
+    // আংশিক রিটার্ন হয়ে থাকলে সেটা এখানে (alreadyReturnedBakiAmount/
+    // cashRefundedAmount — দুটোই উপরে ইতিমধ্যে গণনা করা) বাদ না দিলে, পুরো
+    // ইনভয়েস ভয়েড করার সময় সেই একই অংশ stats doc থেকে দ্বিতীয়বার বিয়োগ হয়ে
+    // stats doc প্রকৃত হিসাবের চেয়ে কম দেখাত (নতুন drift)।
     if (FSS.isReady() && inv.dateKey && !inv.isSelfUse) {
-      const saleAmt = inv.total || 0;
-      const cashAmt = inv.payType === "cash" ? saleAmt
+      const alreadyReturnedTotal = alreadyReturnedBakiAmount + cashRefundedAmount;
+      const saleAmt = Math.max(0, (inv.total || 0) - alreadyReturnedTotal);
+      const cashAmtFull = inv.payType === "cash" ? (inv.total || 0)
                     : inv.payType === "partial" ? (inv.paidAmount || 0) : 0;
-      const bakiAmt = inv.payType === "baki"   ? saleAmt
+      const bakiAmtFull = inv.payType === "baki"   ? (inv.total || 0)
                     : inv.payType === "partial" ? (inv.bakiAmount || 0) : 0;
+      const cashAmt = Math.max(0, cashAmtFull - cashRefundedAmount);
+      const bakiAmt = Math.max(0, bakiAmtFull - alreadyReturnedBakiAmount);
       FSS.updateStats(inv.dateKey, { sale: -saleAmt, cash: -cashAmt, baki: -bakiAmt, profit: 0 });
     }
     } catch (e) {
@@ -14797,6 +14806,23 @@ function SmartBusinessMgmt() {
     pushReturnEntry(retEntry);
     setReturns(prev => [retEntry, ...(prev || [])]);
 
+    // 🔴 ফিক্স (বাগ #৩ — stats doc drift): voidInvoice()-এর মতোই processReturn()-ও
+    // এখন Firestore-এর দৈনিক stats doc আপডেট করছে। আগে এই কলটা মিসিং ছিল বলে
+    // stats doc আস্তে আস্তে লোকাল প্রকৃত হিসাব থেকে সরে যেত (Sync Diagnostics-এ
+    // "অমিল" ধরা পড়ত)। profit: 0 রাখা হয়েছে ইচ্ছাকৃতভাবে — createInvoice()/
+    // voidInvoice() দুটোই এখনো stats doc-এ profit সবসময় 0 পাঠায় (আসল profit
+    // ট্র্যাকিং এখনো implement হয়নি, ভবিষ্যৎ phase-এর জন্য রাখা), তাই এখানে একাই
+    // নন-জিরো profit delta পাঠালে stats.totalProfit শুধু রিটার্নের কারণে
+    // ক্রমাগত ভুল দিকে সরে যেত — বাকি সিস্টেমের সাথে সামঞ্জস্যপূর্ণ রাখতে 0-ই ঠিক।
+    if (FSS.isReady() && !inv.isSelfUse) {
+      FSS.updateStats(todayKey, {
+        sale: -refundAmount,
+        cash: mode === "cash" ? -refundAmount : 0,
+        baki: mode === "baki" ? -refundAmount : 0,
+        profit: 0,
+      });
+    }
+
     auditLog?.("PRODUCT_RETURN", {
       invoiceId: inv.id,
       invoiceNo: inv.invoiceNo || inv.id,
@@ -14840,7 +14866,7 @@ function SmartBusinessMgmt() {
     const txnBaki = txns.filter(t => t.dateKey === key && t.type === "baki" && t.invoiceId && !voidedInvIds.has(t.invoiceId)).reduce((s, t) => s + t.amount, 0);
     return txnBaki;
   }, [txns, invoices]);
-  const todayJoma  = useMemo(() => { const key = todayEn(); return txns.filter(t => t.dateKey === key && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale").reduce((s, t) => s + t.amount, 0); }, [txns]);
+  const todayJoma  = useMemo(() => { const key = todayEn(); return txns.filter(t => t.dateKey === key && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((s, t) => s + t.amount, 0); }, [txns]);
   const todayInvs  = useMemo(() => { const key = todayEn(); return invoices.filter(i => i.dateKey === key && !i.isSelfUse && i.status !== "voided"); }, [invoices]);
   // 🔴 ফিক্স (রুট কজ — আংশিক ফেরত নিলে ড্যাশবোর্ডের কোনো সংখ্যাই কমে না): আগে
   // todayTotal/todayCashSale/todayProfit কোনোটাই `returns` অ্যারে ব্যবহার করত না —
@@ -15476,6 +15502,7 @@ function SmartBusinessMgmt() {
               products={products}
               purchaseOrders={purchaseOrders}
               voidInvoice={voidInvoice}
+              processReturn={processReturn}
               currentUser={currentUser}
               setProducts={setProducts}
               setStockMovements={setStockMovements}
@@ -20211,8 +20238,10 @@ function InvoiceVoidModal({ inv, returns = [], products = [], customers = [], cu
   const [reason, setReason] = React.useState("");
   const [pinInput, setPinInput] = React.useState("");
   const [busy, setBusy] = React.useState(false);
-  const [selItemId, setSelItemId] = React.useState(null);
-  const [qtyInput, setQtyInput] = React.useState("");
+  // 🆕 একাধিক পণ্য একসাথে আংশিক ফেরত — আগে একবারে শুধু একটা পণ্য সিলেক্ট করা যেত
+  // (selItemId একবচন)। এখন cart অবজেক্টে { [productId]: qtyString } রাখা হচ্ছে,
+  // যাতে চেকবক্স দিয়ে একাধিক পণ্য বেছে প্রতিটার আলাদা qty দিয়ে একবারেই ফেরত নেওয়া যায়।
+  const [cart, setCart] = React.useState({}); // { [productId]: qtyString }
   const [refundMode, setRefundMode] = React.useState("cash");
 
   if (!inv) return null;
@@ -20221,7 +20250,7 @@ function InvoiceVoidModal({ inv, returns = [], products = [], customers = [], cu
 
   const close = () => {
     setStage("choice"); setReason(""); setPinInput(""); setBusy(false);
-    setSelItemId(null); setQtyInput(""); setRefundMode("cash");
+    setCart({}); setRefundMode("cash");
     onClose?.();
   };
 
@@ -20451,58 +20480,88 @@ function InvoiceVoidModal({ inv, returns = [], products = [], customers = [], cu
 
   // ══ আংশিক ফেরত — ধাপ ১: পণ্য/পরিমাণ/মোড নির্বাচন + প্রিভিউ ══
   if (stage === "partial1") {
-    const selItem = returnableItems.find(it => it.productId === selItemId) || returnableItems[0] || null;
-    if (selItem && selItemId == null) setSelItemId(selItem.productId);
-    const qtyNum = parseFloat(qtyInput) || 0;
-    const validQty = selItem && qtyNum > 0 && qtyNum <= selItem.remainingQty;
-    const previewRefund = (selItem && validQty) ? calcReturnRefundAmount(inv, selItem, qtyNum) : 0;
+    // cart-এ থাকা প্রতিটা এন্ট্রির জন্য বৈধতা যাচাই (qty > 0 এবং remainingQty-এর মধ্যে)
+    const cartEntries = Object.keys(cart)
+      .map(pid => ({ item: returnableItems.find(it => it.productId === pid), qty: parseFloat(cart[pid]) || 0 }))
+      .filter(e => e.item);
+    const validEntries = cartEntries.filter(e => e.qty > 0 && e.qty <= e.item.remainingQty);
+    const hasInvalidQty = cartEntries.some(e => e.qty > 0 && e.qty > e.item.remainingQty);
+    const previewRefundTotal = validEntries.reduce((s, e) => s + calcReturnRefundAmount(inv, e.item, e.qty), 0);
+    const canProceed = validEntries.length > 0 && !hasInvalidQty;
+    const toggleItem = (pid, remainingQty) => {
+      setCart(prev => {
+        const next = { ...prev };
+        if (pid in next) delete next[pid];
+        else next[pid] = String(remainingQty); // ডিফল্টে পুরো ফেরতযোগ্য পরিমাণ প্রি-ফিল
+        return next;
+      });
+    };
     return (
       <div style={overlayStyle} onClick={close}>
         <div style={boxStyleFor("#0ea5e9")} onClick={e => e.stopPropagation()}>
           <div style={topBar("#0ea5e9")} />
           <StageHeader icon="🔄" accent="#0ea5e9" title="পণ্য ফেরত নিন" step={1} />
           <div style={{ textAlign: "center", marginTop: -12, marginBottom: 16, color: "#94a3b8", fontSize: 11 }}>{inv.customerName} · {invCode}</div>
-          <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 6, fontWeight: 600 }}>কোন পণ্য ফেরত নেবেন:</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12, maxHeight: 160, overflowY: "auto" }}>
+          <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 6, fontWeight: 600 }}>কোন কোন পণ্য ফেরত নেবেন (একাধিক বাছাই করা যায়):</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12, maxHeight: 260, overflowY: "auto" }}>
             {returnableItems.map(it => {
               const already = getReturnedQtyForInvoice(returns, inv.id, it.productId);
+              const selected = it.productId in cart;
+              const entryQty = cart[it.productId] ?? "";
+              const overMax = selected && parseFloat(entryQty) > it.remainingQty;
               return (
-                <button key={it.productId} onClick={() => { setSelItemId(it.productId); setQtyInput(""); }}
-                  style={{ textAlign: "left", background: selItemId === it.productId ? "#0ea5e922" : "#1e293b", border: `1px solid ${selItemId === it.productId ? "#0ea5e955" : "#334155"}`, borderRadius: 10, padding: "9px 12px", cursor: "pointer", fontFamily: "inherit" }}>
-                  <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 13 }}>{it.name || it.productName}</div>
-                  <div style={{ color: "#94a3b8", fontSize: 11, marginTop: 2 }}>বিক্রি: {it.qty}{it.unit || ""} · ফেরতযোগ্য: {it.remainingQty}{it.unit || ""}{already > 0 ? ` · আগে ফেরত: ${already}` : ""}</div>
-                </button>
+                <div key={it.productId}
+                  style={{ background: selected ? "#0ea5e922" : "#1e293b", border: `1px solid ${selected ? "#0ea5e955" : "#334155"}`, borderRadius: 10, padding: "9px 12px" }}>
+                  <button onClick={() => toggleItem(it.productId, it.remainingQty)}
+                    style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", padding: 0 }}>
+                    <span style={{
+                      width: 18, height: 18, borderRadius: 5, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                      background: selected ? "#0ea5e9" : "transparent", border: `1.5px solid ${selected ? "#0ea5e9" : "#475569"}`,
+                    }}>
+                      {selected && <span style={{ color: "#fff", fontSize: 12, fontWeight: 900 }}>✓</span>}
+                    </span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 13 }}>{it.name || it.productName}</div>
+                      <div style={{ color: "#94a3b8", fontSize: 11, marginTop: 2 }}>বিক্রি: {it.qty}{it.unit || ""} · ফেরতযোগ্য: {it.remainingQty}{it.unit || ""}{already > 0 ? ` · আগে ফেরত: ${already}` : ""}</div>
+                    </div>
+                  </button>
+                  {selected && (
+                    <div style={{ marginTop: 8 }}>
+                      <input type="number" placeholder={`পরিমাণ (সর্বোচ্চ ${it.remainingQty})`} value={entryQty}
+                        onClick={e => e.stopPropagation()}
+                        onChange={e => setCart(prev => ({ ...prev, [it.productId]: e.target.value }))}
+                        style={{ width: "100%", background: "#0f172a", border: `1px solid ${overMax ? "#ef4444" : "#334155"}`, borderRadius: 8, padding: "8px 10px", color: "#f1f5f9", fontSize: 13, fontFamily: "inherit", outline: "none", boxSizing: "border-box" }} />
+                      {overMax && <div style={{ color: "#ef4444", fontSize: 10.5, marginTop: 3 }}>সর্বোচ্চ {it.remainingQty}{it.unit || ""}</div>}
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>
-          {selItem && (
+          {validEntries.length > 0 && (
             <>
-              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                <input type="number" placeholder={`পরিমাণ (সর্বোচ্চ ${selItem.remainingQty})`} value={qtyInput} onChange={e => setQtyInput(e.target.value)}
-                  style={{ flex: 1, background: "#0f172a", border: "1px solid #334155", borderRadius: 10, padding: "10px 12px", color: "#f1f5f9", fontSize: 13, fontFamily: "inherit", outline: "none", boxSizing: "border-box" }} />
+              <div style={{ marginBottom: 8 }}>
                 <select value={refundMode} onChange={e => setRefundMode(e.target.value)}
-                  style={{ flex: "none", width: 130, background: "#0f172a", border: "1px solid #334155", borderRadius: 10, padding: "10px 8px", color: "#f1f5f9", fontSize: 12, fontFamily: "inherit", outline: "none" }}>
-                  <option value="cash">নগদ ফেরত</option>
-                  {cust && <option value="baki">বাকি সমন্বয়</option>}
+                  style={{ width: "100%", background: "#0f172a", border: "1px solid #334155", borderRadius: 10, padding: "10px 8px", color: "#f1f5f9", fontSize: 12, fontFamily: "inherit", outline: "none" }}>
+                  <option value="cash">নগদ ফেরত (সব পণ্যের জন্য)</option>
+                  {cust && <option value="baki">বাকি সমন্বয় (সব পণ্যের জন্য)</option>}
                 </select>
               </div>
-              {validQty && (
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 10, background: "#0ea5e90e", border: "1px solid #0ea5e922", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
-                  <span style={{ fontSize: 16, flexShrink: 0 }}>📦</span>
-                  <div>
-                    <div style={{ color: "#0ea5e9", fontWeight: 700, fontSize: 12 }}>স্টকে যোগ হবে ও রিফান্ড</div>
-                    <div style={{ color: "#94a3b8", fontSize: 11, marginTop: 2 }}>
-                      {qtyNum}{selItem.unit || ""} ইনভেন্টরিতে ফিরবে, ৳{fmt(previewRefund)} {refundMode === "baki" ? "বাকি থেকে বাদ যাবে" : "নগদ ফেরত হবে"}
-                    </div>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 10, background: "#0ea5e90e", border: "1px solid #0ea5e922", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+                <span style={{ fontSize: 16, flexShrink: 0 }}>📦</span>
+                <div>
+                  <div style={{ color: "#0ea5e9", fontWeight: 700, fontSize: 12 }}>{validEntries.length}টি পণ্য ফেরত — ইনভেন্টরিতে যোগ ও রিফান্ড</div>
+                  <div style={{ color: "#94a3b8", fontSize: 11, marginTop: 2 }}>
+                    মোট ৳{fmt(previewRefundTotal)} {refundMode === "baki" ? "বাকি থেকে বাদ যাবে" : "নগদ ফেরত হবে"}
                   </div>
                 </div>
-              )}
+              </div>
             </>
           )}
           <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
             <button onClick={() => setStage("choice")} style={backBtn}>← পেছনে</button>
-            <button disabled={!validQty} onClick={() => setStage("partial2")}
-              style={{ flex: 1, padding: "12px 0", borderRadius: 12, border: "none", background: validQty ? "linear-gradient(135deg,#0369a1,#0ea5e9)" : "#1e293b", color: validQty ? "#fff" : "#4b5563", fontWeight: 700, fontSize: 14, cursor: validQty ? "pointer" : "not-allowed", boxShadow: validQty ? "0 4px 16px #0ea5e940" : "none", fontFamily: "inherit" }}>
+            <button disabled={!canProceed} onClick={() => setStage("partial2")}
+              style={{ flex: 1, padding: "12px 0", borderRadius: 12, border: "none", background: canProceed ? "linear-gradient(135deg,#0369a1,#0ea5e9)" : "#1e293b", color: canProceed ? "#fff" : "#4b5563", fontWeight: 700, fontSize: 14, cursor: canProceed ? "pointer" : "not-allowed", boxShadow: canProceed ? "0 4px 16px #0ea5e940" : "none", fontFamily: "inherit" }}>
               পরের ধাপ →
             </button>
           </div>
@@ -20541,21 +20600,28 @@ function InvoiceVoidModal({ inv, returns = [], products = [], customers = [], cu
     </div>
   );
 
-  // ══ আংশিক ফেরত — ধাপ ৩: চূড়ান্ত নিশ্চিত ══
+  // ══ আংশিক ফেরত — ধাপ ৩: চূড়ান্ত নিশ্চিত (একাধিক পণ্য একসাথে) ══
   if (stage === "partial3") {
-    const selItem = returnableItems.find(it => it.productId === selItemId);
-    const qtyNum = parseFloat(qtyInput) || 0;
-    if (!selItem) { setStage("partial1"); return null; }
-    const previewRefund = calcReturnRefundAmount(inv, selItem, qtyNum);
+    const cartItems = Object.keys(cart)
+      .map(pid => ({ item: returnableItems.find(it => it.productId === pid), qty: parseFloat(cart[pid]) || 0 }))
+      .filter(e => e.item && e.qty > 0 && e.qty <= e.item.remainingQty);
+    if (cartItems.length === 0) { setStage("partial1"); return null; }
+    const previewRefundTotal = cartItems.reduce((s, e) => s + calcReturnRefundAmount(inv, e.item, e.qty), 0);
     return (
       <div style={overlayStyle} onClick={close}>
         <div style={boxStyleFor("#a855f7")} onClick={e => e.stopPropagation()}>
           <div style={topBar("#a855f7")} />
           <StageHeader icon="✅" accent="#a855f7" title="চূড়ান্ত নিশ্চিতকরণ" step={3} />
           <div style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 12, padding: "12px 14px", marginBottom: 16 }}>
-            <div style={{ color: "#94a3b8", fontSize: 11, marginBottom: 4 }}>ফেরত নেওয়া হবে:</div>
-            <div style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 14 }}>{selItem.name || selItem.productName} × {qtyNum}{selItem.unit || ""}</div>
-            <div style={{ color: "#0ea5e9", fontWeight: 900, fontSize: 16 }}>৳{fmt(previewRefund)} — {refundMode === "baki" ? "বাকি সমন্বয়" : "নগদ ফেরত"}</div>
+            <div style={{ color: "#94a3b8", fontSize: 11, marginBottom: 6 }}>ফেরত নেওয়া হবে ({cartItems.length}টি পণ্য):</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 8 }}>
+              {cartItems.map(e => (
+                <div key={e.item.productId} style={{ color: "#f1f5f9", fontWeight: 700, fontSize: 13 }}>
+                  {e.item.name || e.item.productName} × {e.qty}{e.item.unit || ""}
+                </div>
+              ))}
+            </div>
+            <div style={{ color: "#0ea5e9", fontWeight: 900, fontSize: 16 }}>৳{fmt(previewRefundTotal)} — {refundMode === "baki" ? "বাকি সমন্বয়" : "নগদ ফেরত"}</div>
             {reason && <div style={{ color: "#f59e0b", fontSize: 12, marginTop: 6 }}>📝 কারণ: {reason}</div>}
           </div>
           <div style={{ display: "flex", gap: 10 }}>
@@ -20563,9 +20629,19 @@ function InvoiceVoidModal({ inv, returns = [], products = [], customers = [], cu
             <button disabled={busy}
               onClick={() => {
                 setBusy(true);
-                Promise.resolve(processReturn(inv, selItem, qtyInput, refundMode, reason))
-                  .catch(e => logErrorToCentral?.("processReturn:call", e, { invoiceId: inv.id }))
-                  .finally(() => close());
+                // 🆕 প্রতিটা পণ্যের জন্য আলাদা processReturn() কল হয় (ফাংশনটা একবচন
+                // প্যারামিটার নেয়), কিন্তু ইউজারকে একবারই কারণ/কনফার্ম করতে হয় —
+                // sequentially await করা হচ্ছে যাতে একই productId-তে race condition
+                // (দুইবার একসাথে স্টক-রিস্টোর কল) না হয়।
+                (async () => {
+                  for (const e of cartItems) {
+                    try {
+                      await processReturn(inv, e.item, String(e.qty), refundMode, reason);
+                    } catch (err) {
+                      logErrorToCentral?.("processReturn:call", err, { invoiceId: inv.id, productId: e.item.productId });
+                    }
+                  }
+                })().finally(() => close());
               }}
               style={{ flex: 1, padding: "12px 0", borderRadius: 12, border: "none", background: !busy ? "linear-gradient(135deg,#0369a1,#0ea5e9)" : "#1e293b", color: !busy ? "#fff" : "#4b5563", fontWeight: 800, fontSize: 14, cursor: !busy ? "pointer" : "not-allowed", boxShadow: !busy ? "0 4px 20px #0ea5e950" : "none", fontFamily: "inherit" }}>
               {busy ? "প্রসেস হচ্ছে..." : "✅ ফেরত নিশ্চিত করুন"}
@@ -23081,6 +23157,10 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             {rangedItems.map((inv, i) => {
               // payType অনুযায়ী card accent color
               const isVoided   = inv.status === "voided";
+              // 🆕 ফিক্স #২ — আংশিক পণ্য ফেরত হয়ে থাকলে সেটা এখন কার্ডেই দৃশ্যমান
+              // (আগে এই তথ্য কোথাও দেখানো হতো না, void modal খুললেই শুধু বোঝা যেত)
+              const _invReturns = !isVoided ? (returns || []).filter(r => r.invoiceId === inv.id) : [];
+              const _hasPartialReturn = _invReturns.length > 0;
               // 🔒 Admin-only: প্রতিটি ইনভয়েস কার্ডে নেট লাভ — স্টাফ দেখতে পাবে না, শুধু ইনভয়েস দেখতে পারবে
               const _showNetProfit = currentUser?.role !== "staff" && !isVoided;
               const _cardNetProfit = _showNetProfit ? calcInvoiceProfit(inv, _cashProdMap) : 0;
@@ -23133,6 +23213,11 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                         {inv.items?.length}টি পণ্য · {inv.date}
                         {timeLabel && <span style={{ color: isVoided?"#6b7280":isBaki?"#fca5a5":isPartial?"#fde68a":"#86efac", fontWeight:700, marginLeft:5 }}>· ⏰ {timeLabel}</span>}
                       </div>
+                      {_hasPartialReturn && (
+                        <div style={{ color: "#eab308", fontSize: 10, fontWeight: 700, marginTop: 2 }}>
+                          🔄 {_invReturns.length}টি পণ্য ফেরত হয়েছে
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div>
@@ -23462,7 +23547,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               idx:2,
               sub:`${bakiCustomers.length}জন কাস্টমারের বাকি`,
               iconPath: <><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20"/><path d="M7 15h2"/><path d="M12 15h5"/></>,
-              modal: { title:"বাকি আছে এমন কাস্টমার", type:"customer-breakdown", rows: bakiCustomers.map(c => { const cTxns = txnsByCustForBaki.get(c.id) || []; return { name:c.name, mobile:c.mobile, balance:c.balance, baki:cTxns.filter(t=>t.type==="baki").reduce((s,t)=>s+t.amount,0), joma:cTxns.filter(t=>t.type==="joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale").reduce((s,t)=>s+t.amount,0) }; }).sort((a,b)=>b.balance-a.balance) },
+              modal: { title:"বাকি আছে এমন কাস্টমার", type:"customer-breakdown", rows: bakiCustomers.map(c => { const cTxns = txnsByCustForBaki.get(c.id) || []; return { name:c.name, mobile:c.mobile, balance:c.balance, baki:cTxns.filter(t=>t.type==="baki").reduce((s,t)=>s+t.amount,0), joma:cTxns.filter(t=>t.type==="joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((s,t)=>s+t.amount,0) }; }).sort((a,b)=>b.balance-a.balance) },
             },
             {
               label:"আজকের বাকি আদায়", value:`৳${fmt(todayJoma)}`,
@@ -24082,7 +24167,13 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
                   পরে বাকি: ৳{fmt(t.balanceAfter)} {t.note && `· ${t.note}`}
                 </div>
                 {inv && (
-                  <div style={{ display: "flex", gap: 6 }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {(returns || []).some(r => r.invoiceId === inv.id) && inv.status !== "voided" && (
+                      <div style={{ color: "#eab308", fontSize: 10.5, fontWeight: 700 }}>
+                        🔄 {(returns || []).filter(r => r.invoiceId === inv.id).length}টি পণ্য ফেরত হয়েছে
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 6 }}>
                     <button style={{ ...S.invBtn, flex: 3 }} onClick={() => setViewInv(inv)}>
                       <IcInvoice /><span>ক্রয় ইনভয়েস দেখুন</span>
                       <span style={{ marginLeft: "auto", color: T.sub }}>{inv.items.length}টি পণ্য · ৳{fmt(inv.total)}</span>
@@ -24097,6 +24188,7 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
                         <span style={{ fontSize: 10, fontWeight: 700 }}>ভয়েড</span>
                       </button>
                     )}
+                    </div>
                   </div>
                 )}
                 {payInv && (
@@ -27625,12 +27717,13 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
                 {invHistRows.map((inv, i) => {
                   const cust = custMap.get(inv.customerId);
                   const badge = inv.payType === "baki" ? { label:"বাকি", color:"#ef4444" } : inv.payType === "partial" ? { label:"আংশিক", color:"#f59e0b" } : { label:"নগদ", color:"#22c55e" };
+                  const hasReturn = inv.status !== "voided" && (returns || []).some(r => r.invoiceId === inv.id);
                   return (
                     <div key={inv.id || i} onClick={() => setDetailInv(inv)}
                       style={{ background: T.bg, border:`1px solid ${T.border}`, borderRadius:12, padding:"11px 13px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, cursor:"pointer" }}>
                       <div style={{ minWidth:0 }}>
                         <div style={{ color:T.text, fontWeight:800, fontSize:13, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{cust?.name || inv.customerName || "ওয়াক-ইন"}</div>
-                        <div style={{ color:T.sub, fontSize:10.5, marginTop:2 }}>{inv.date || inv.dateKey || "—"} · {inv.invoiceNo || inv.id}{inv.status==="voided" ? " · ❌ বাতিল" : ""}</div>
+                        <div style={{ color:T.sub, fontSize:10.5, marginTop:2 }}>{inv.date || inv.dateKey || "—"} · {inv.invoiceNo || inv.id}{inv.status==="voided" ? " · ❌ বাতিল" : ""}{hasReturn ? " · 🔄 ফেরত হয়েছে" : ""}</div>
                       </div>
                       <div style={{ textAlign:"right", flexShrink:0 }}>
                         <div style={{ color:T.text, fontWeight:900, fontSize:13 }}>৳{fmt(inv.total || 0)}</div>
@@ -28430,7 +28523,7 @@ function buildDailySummaryData({ invoices = [], txns = [], customers = [], produ
   }, 0);
   const _voidedIds2   = new Set((invoices||[]).filter(i=>i.status==="voided").map(i=>i.id));
   const bakiToday     = (txns || []).filter(t => t.dateKey === todayKey && t.type === "baki" && t.invoiceId && !_voidedIds2.has(t.invoiceId)).reduce((s, t) => s + t.amount, 0);
-  const jomaToday     = (txns || []).filter(t => t.dateKey === todayKey && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale").reduce((s, t) => s + t.amount, 0);
+  const jomaToday     = (txns || []).filter(t => t.dateKey === todayKey && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((s, t) => s + t.amount, 0);
   const totalBakiNow  = (customers || []).reduce((s, c) => s + (c.balance || 0), 0);
   // 🟢 আজকের লাভ ও 🔴 আজকের লস — invoice-level আলাদা করে হিসাব
   const prodMap   = new Map((products || []).map(p => [p.id, p]));
