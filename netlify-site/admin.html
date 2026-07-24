@@ -2464,11 +2464,16 @@ window.publishUpdate = async function() {
     msg.style.color = '#93c5fd'; msg.textContent = '⏳ Firestore-এ লেখা হচ্ছে...';
     console.log('[publishUpdate] শুরু —', { version, url, targetPhones });
 
-    await setDoc(doc(db, "admin_config", "appVersion"), {
-      version, updateUrl: url, updateNotesBn: notes, forceUpdate: mandatory, rollbackMode,
-      targetPhones,
-      publishedAt: new Date().toISOString()
-    }, { merge: true });
+    await Promise.race([
+      setDoc(doc(db, "admin_config", "appVersion"), {
+        version, updateUrl: url, updateNotesBn: notes, forceUpdate: mandatory, rollbackMode,
+        targetPhones,
+        publishedAt: new Date().toISOString()
+      }, { merge: true }),
+      new Promise((_, reject) => setTimeout(() => {
+        reject(new Error(`Firestore ২০ সেকেন্ডেও সাড়া দেয়নি (network: ${navigator.onLine ? 'অনলাইন দেখাচ্ছে কিন্তু firestore.googleapis.com-এ পৌঁছানো যাচ্ছে না' : 'অফলাইন'}) — VPN/ফায়ারওয়াল/DNS চেক করুন অথবা পেজ রিলোড করে আবার চেষ্টা করুন।`));
+      }, 20000))
+    ]);
 
     console.log('[publishUpdate] setDoc সম্পন্ন');
     msg.style.color = '#6ee7b7'; msg.textContent = '✅ প্রকাশিত হয়েছে — কোনো notification যায়নি, শুধু দোকানদারের Settings-এ নীরবে দেখা যাবে।';
