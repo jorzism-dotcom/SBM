@@ -337,6 +337,37 @@ export function scaleBatchBreakdownForVoid(batchBreakdown, alreadyReturnedQty) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ২৪ জুলাই ২০২৬ ফিক্স — আংশিক ফেরতের পর পুরো ইনভয়েস voided হলে "আজকের বিক্রয়"
+// ঋণাত্মক দেখানো বাগ। App.jsx-এর একাধিক জায়গায় ছড়িয়ে থাকা
+// `new Set(invoices.filter(i => i.status === "voided").map(i => i.id))` +
+// `returns.filter(r => !voidedIds.has(r.invoiceId))` প্যাটার্নটা এখানে শেয়ার্ড
+// হেল্পার হিসেবে একত্র করা হলো (pure, tests/logic-tests.mjs থেকে টেস্টযোগ্য)।
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * যেসব ইনভয়েস ইতিমধ্যে voided, তাদের id-র Set রিটার্ন করে।
+ * @param {Array<{id?:string, status?:string}>} invoices
+ * @returns {Set<string>}
+ */
+export function getVoidedInvoiceIds(invoices) {
+  return new Set((invoices || []).filter(i => i && i.status === "voided").map(i => i.id));
+}
+
+/**
+ * returns[] থেকে সেই রিটার্নগুলো বাদ দেয় যেগুলো ইতিমধ্যে voided হওয়া কোনো
+ * ইনভয়েসের সাথে যুক্ত (কারণ সেই ইনভয়েসের পুরো টাকাই এমনিতেই বাদ পড়ে গেছে,
+ * তাই আগের আংশিক-ফেরতের refundAmount আলাদাভাবে আবার বাদ দিলে ডাবল-কাউন্ট হয়ে
+ * "আজকের বিক্রয়" ঋণাত্মক দেখাত)।
+ * @param {Array<{invoiceId?:string}>} returns
+ * @param {Set<string>} voidedInvoiceIds
+ * @returns {Array}
+ */
+export function filterReturnsExcludingVoided(returns, voidedInvoiceIds) {
+  const voided = voidedInvoiceIds instanceof Set ? voidedInvoiceIds : new Set(voidedInvoiceIds || []);
+  return (returns || []).filter(r => r && !voided.has(r.invoiceId));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ENTERPRISE_MONITORING_PLAN.md ফেজ D / D1 — প্রোডাকশন রানটাইম ইনভ্যারিয়েন্ট-চেক
 // ═══════════════════════════════════════════════════════════════════════════
 // এই ফাংশন সম্পূর্ণ pure (কোনো Firestore/React কল না) — App.jsx একটা periodic
