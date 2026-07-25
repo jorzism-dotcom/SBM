@@ -3584,26 +3584,16 @@ function SubscriptionGate({ children }) {
   }
 
   // ── Offline Lock — internet নেই বা Firebase পৌঁছানো যাচ্ছে না ─────────────
-  if (status === "offline_lock") return (
-    <div style={S.wrap}>
-      <div style={{ fontSize: 48, marginBottom: 10 }}>📡</div>
-      <div style={S.title}>ইন্টারনেট প্রয়োজন</div>
-      <div style={{ ...S.sub, marginBottom: 18 }}>
-        সাবস্ক্রিপশন যাচাই করতে ইন্টারনেট সংযোগ দরকার।<br />
-        সংযোগ দিয়ে আবার চেষ্টা করুন।
-      </div>
-      <div className="qc-gradient-card" style={S.card}>
-        <div style={{ color: "#94a3b8", fontSize: 13, textAlign: "center", marginBottom: 16, lineHeight: 1.6 }}>
-          📞 সমস্যা হলে যোগাযোগ করুন:<br />
-          <span style={{ color: "#fff", fontWeight: 700 }}>{BKASH_NUMBER}</span>
-        </div>
-        <button style={S.btn} onClick={() => {
-          setStatus("loading");
-          checkSubscription(myPhone);
-        }}>🔄 আবার চেষ্টা করুন</button>
-      </div>
-    </div>
-  );
+  // 🔴 ফিক্স (২৫ জুলাই ২০২৬ — সচল সাবস্ক্রিপশন সত্ত্বেও ভুলভাবে লক): এই স্ট্যাটাস
+  // অনিশ্চয়তা থেকে আসে (ক্যাশ নেই + নেট নেই/Firestore পৌঁছানো যায়নি), নিশ্চিত
+  // "expired"/"blocked" থেকে না। আগে এটা পুরো অ্যাপ ব্লক করে দিত — কিন্তু ক্যাশ
+  // না থাকার একটা সাধারণ কারণ: সাবস্ক্রিপশন grace/expired হয়ে তারপর আবার active
+  // হয়েছে (renew), আর ডিভাইসটা renew-এর পর একবারও সফল অনলাইন চেক পায়নি — তখন
+  // সাবস্ক্রিপশন সত্যিই সচল থাকা সত্ত্বেও কাস্টমার লক দেখতেন। এখন fail-open:
+  // অনিশ্চিত অবস্থায় অ্যাপ চলতে দেওয়া হয় (কোনো নোটিফিকেশন ছাড়াই) — সত্যিকারের
+  // expired/blocked স্ট্যাটাস অনলাইনে নিশ্চিত হলে (উপরের if (d.status === "blocked")
+  // বা diff <= -7 ব্লক) তখনই স্বাভাবিকভাবে "expired" স্ক্রিন দেখাবে, এটা অপরিবর্তিত।
+  if (status === "offline_lock") return <>{children}</>;
 
   // ── গ্রেস পিরিয়ড ───────────────────────────────────────────────────────────
   if (status === "grace") return (
@@ -15064,6 +15054,17 @@ function SmartBusinessMgmt() {
     setShowBizSwitcherList(false);
     setShowMoreMenu(false);
     setSwitchingBusiness(true);
+    // 🔴 ফিক্স (বিজনেস-সুইচ করলে ইনভয়েস মডিউল পুরোনো কার্ট/কাস্টমার মনে রাখা):
+    // ইনভয়েস স্টেপ ১/২-এ থাকা অবস্থায় বিজনেস টাইপ সুইচ করলে আগে tab অপরিবর্তিত
+    // থাকায় SmartInvoiceBuilder রিমাউন্ট হতো না — items/selCust পুরোনো
+    // বিজনেসেরটাই থেকে যেত, অথচ products/customers নতুন বিজনেসের হয়ে যেত।
+    // এখানে setTab()-এর মতোই invoiceKey বাড়িয়ে জোর করে রিমাউন্ট করানো হচ্ছে,
+    // যাতে সুইচের পর ইনভয়েস মডিউল সবসময় ফ্রেশ (খালি) অবস্থায় শুরু হয়।
+    if (tab === "invoice") {
+      _set("invoiceKey", (k) => k + 1);
+      _set("preselectedCust", null);
+      _set("preselectedType", null);
+    }
     setBusinessType(newType);
     const isMultiBusiness = Array.isArray(enabledBusinessTypes) && enabledBusinessTypes.length > 1;
     const prefix = isMultiBusiness ? (BUSINESS_TYPE_REGISTRY[newType]?.collectionPrefix || null) : null;
@@ -15091,7 +15092,7 @@ function SmartBusinessMgmt() {
       FSS.flushPendingVoidRestores({ setProducts, setCustomers });
     }
     setSwitchingBusiness(false);
-  }, [businessType, businessTypeLocked, enabledBusinessTypes, setBusinessType]);
+  }, [businessType, businessTypeLocked, enabledBusinessTypes, setBusinessType, tab, _set]);
 
   // Hide HTML splash screen once React is fully ready (data loaded + auth checked)
   useEffect(() => {
@@ -18101,8 +18102,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
               const shopNameLocal = inv.shopName || shopName || "SBM";
               const itemRows = (inv.items||[]).map((item,i) => {
                 const _g = item.qty*item.price, _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0,0), _g);
-                const _p = _g > 0 ? Math.round((_d / _g) * 10000) / 100 : 0;
-                return `<tr><td class="serial">${i+1}</td><td>${item.name}</td><td class="num">${item.qty}</td><td class="num">৳${fmtMoney(item.price)}</td><td class="num" style="color:#16a34a;">${_d>0?`–৳${fmtMoney(_d)}${_p>0?` (${_p}%)`:""}`:"—"}</td><td class="amount" style="color:#3b82f6;">৳${fmtMoney(_g-_d)}</td></tr>`;
+                return `<tr><td class="serial">${i+1}</td><td>${item.name}</td><td class="num">${item.qty}</td><td class="num">৳${fmtMoney(item.price)}</td><td class="amount" style="color:#3b82f6;">৳${fmtMoney(_g-_d)}</td></tr>`;
               }).join("");
               const content = `
                 <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
@@ -18117,8 +18117,11 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                     <div style="color:#666;font-size:11px;">${inv.date||""}</div>
                   </div>
                 </div>
-                <table><thead><tr><th class="serial">#</th><th>পণ্য</th><th class="num">পরিমাণ</th><th class="num">দাম</th><th class="num">ছাড়</th><th class="num">মোট</th></tr></thead><tbody>${itemRows}</tbody></table>
+                <table><thead><tr><th class="serial">#</th><th>পণ্য</th><th class="num">পরিমাণ</th><th class="num">দাম</th><th class="num">মোট</th></tr></thead><tbody>${itemRows}</tbody></table>
                 <div style="margin-top:14px;background:#0369a115;border-radius:10px;padding:12px 16px;">
+                  ${((inv.itemDiscount||0) > 0 || (inv.discount||0) > 0) ? `<div class="info-row"><span class="info-label">সর্বমোট:</span><span class="info-val">৳${fmtMoney(inv.subtotal||inv.total||0)}</span></div>` : ""}
+                  ${(inv.itemDiscount||0) > 0 ? `<div class="info-row"><span class="info-label" style="color:#22c55e;">পণ্যভিত্তিক ডিসকাউন্ট:</span><span class="info-val" style="color:#22c55e;">– ৳${fmtMoney(inv.itemDiscount||0)}</span></div>` : ""}
+                  ${(inv.discount||0) > 0 ? `<div class="info-row"><span class="info-label" style="color:#22c55e;">ডিসকাউন্ট:</span><span class="info-val" style="color:#22c55e;">– ৳${fmtMoney(inv.discount||0)}</span></div>` : ""}
                   <div class="info-row"><span class="info-label">মোট খরচ:</span><span class="info-val" style="font-size:18px;font-weight:800;">৳${fmtMoney(inv.total||0)}</span></div>
                   <div class="info-row"><span class="info-label">পরিশোধ পদ্ধতি:</span><span class="info-val">${inv.payType==="baki"?"বাকি":inv.payType==="partial"?"আংশিক":"নগদ"}</span></div>
                   ${inv.payType==="partial"?`
@@ -24828,8 +24831,7 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
     const shopName = inv.shopName || "SBM";
     const itemRows = (inv.items||[]).map((item,i) => {
       const _g = item.qty*item.price, _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0,0), _g);
-      const _p = _g > 0 ? Math.round((_d / _g) * 10000) / 100 : 0;
-      return `<tr><td class="serial">${i+1}</td><td>${medBadgeHtmlStr(item.dosageForm)}${item.name}</td><td class="num">${item.qty}</td><td class="num">৳${fmtMoney(item.price)}</td><td class="num" style="color:#16a34a;">${_d>0?`–৳${fmtMoney(_d)}${_p>0?` (${_p}%)`:""}`:"—"}</td><td class="amount" style="color:#3b82f6;">৳${fmtMoney(_g-_d)}</td></tr>`;
+      return `<tr><td class="serial">${i+1}</td><td>${medBadgeHtmlStr(item.dosageForm)}${item.name}</td><td class="num">${item.qty}</td><td class="num">৳${fmtMoney(item.price)}</td><td class="amount" style="color:#3b82f6;">৳${fmtMoney(_g-_d)}</td></tr>`;
     }).join("");
     const content = `
       ${inv.status === "voided" ? `<div style="margin-bottom:10px;background:#ef444422;border:1px solid #ef444455;border-radius:8px;padding:6px 12px;display:inline-block;"><span style="color:#ef4444;font-weight:800;font-size:13px;">❌ বাতিলকৃত</span>${inv.voidReason ? ` <span style="color:#ef4444cc;font-size:12px;">— ${inv.voidReason}</span>` : ""}</div>` : ""}
@@ -24847,7 +24849,7 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
           <div style="color:#666;font-size:11px;">${isBuyer?"ক্রেতার কপি":"বিক্রেতার কপি"}</div>
         </div>
       </div>
-      <table><thead><tr><th class="serial">#</th><th>পণ্য</th><th class="num">পরিমাণ</th><th class="num">দাম</th><th class="num">ছাড়</th><th class="num">মোট</th></tr></thead><tbody>${itemRows}</tbody></table>
+      <table><thead><tr><th class="serial">#</th><th>পণ্য</th><th class="num">পরিমাণ</th><th class="num">দাম</th><th class="num">মোট</th></tr></thead><tbody>${itemRows}</tbody></table>
       <div style="margin-top:14px;background:#0369a115;border-radius:10px;padding:12px 16px;">
         <div class="info-row"><span class="info-label">সর্বমোট:</span><span class="info-val">৳${fmtMoney(inv.subtotal||inv.total||0)}</span></div>
         ${(inv.itemDiscount||0) > 0 ? `<div class="info-row"><span class="info-label" style="color:#22c55e;">পণ্যভিত্তিক ডিসকাউন্ট:</span><span class="info-val" style="color:#22c55e;">– ৳${fmtMoney(inv.itemDiscount||0)}</span></div>` : ""}
@@ -25071,14 +25073,13 @@ function InvoiceReceiptPrint({ inv, customer, type }) {
       {customer?.address && <div style={{ fontSize: 11 }}>ঠিকানা: {customer.address}</div>}
       <div className="line" />
       <table>
-        <thead><tr><th>#</th><th>পণ্য</th><th className="right">পরিমাণ</th><th className="right">দাম</th><th className="right">ছাড়</th><th className="right">মোট</th></tr></thead>
+        <thead><tr><th>#</th><th>পণ্য</th><th className="right">পরিমাণ</th><th className="right">দাম</th><th className="right">মোট</th></tr></thead>
         <tbody>
           {inv.items.map((item, i) => {
             const _g = item.qty * item.price;
             const _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0, 0), _g);
-            const _p = _g > 0 ? Math.round((_d / _g) * 10000) / 100 : 0;
             return (
-              <tr key={i}><td style={{ color: "#666", fontSize: 10 }}>{i+1}</td><td><DosageBadge dosageForm={item.dosageForm} />{item.name}</td><td className="right">{item.qty}</td><td className="right">৳{fmtMoney(item.price)}</td><td className="right" style={{ color: "#16a34a" }}>{_d>0?`–৳${fmtMoney(_d)}${_p>0?` (${_p}%)`:""}`:"—"}</td><td className="right" style={{ color: "#3b82f6" }}>৳{fmtMoney(_g-_d)}</td></tr>
+              <tr key={i}><td style={{ color: "#666", fontSize: 10 }}>{i+1}</td><td><DosageBadge dosageForm={item.dosageForm} />{item.name}</td><td className="right">{item.qty}</td><td className="right">৳{fmtMoney(item.price)}</td><td className="right" style={{ color: "#3b82f6" }}>৳{fmtMoney(_g-_d)}</td></tr>
             );
           })}
         </tbody>
