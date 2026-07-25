@@ -28,6 +28,7 @@ import {
   calcInvoiceTotal, calcVoidNetChange, calcCashDrawer, restoreBatchQty,
   runInvariantChecks, getReturnedQtyForInvoice, getReturnedAmountForInvoice,
   calcReturnRefundAmount, scaleBatchBreakdownForVoid,
+  getVoidedInvoiceIds, filterReturnsExcludingVoided,
 } from "./logic.js";
 // 🧪 Schema validation (zod) — Firestore write-এর আগে টাকা/স্টক-সংক্রান্ত
 // ফিল্ডে NaN/undefined ঢুকে যাচ্ছে কিনা যাচাই করে। দেখুন src/schemas.js-এর
@@ -5410,6 +5411,8 @@ const FSS = {
 
   // একটা collection-এর সব ডকুমেন্ট রিয়েল-টাইমে শোনে — যেকোনো ফোনে কোনো রেকর্ড
   // change হলেই (millisecond-এ) callback(array) ফায়ার করে।
+  _lastAnySnapshotAt: 0, // 🔴 ফিক্স (quota/cost — heartbeat blind resubscribe): নিচে ব্যবহৃত হয়
+  // heartbeat-এ blind resubscribe-এর বদলে real staleness check করার জন্য।
   subscribeCollection(name, callback, onError = null) {
     if (!this._db) return () => {};
     this.unsubscribe(name);
@@ -5440,6 +5443,9 @@ const FSS = {
       // 🔴 ফিক্স (অপশন ১): snap.metadata.fromCache পাস করি, যাতে caller বুঝতে
       // পারে এই স্ন্যাপশট লোকাল ক্যাশ থেকে এসেছে নাকি সার্ভার-কনফার্মড।
       callback(arr, snap.metadata.fromCache);
+      // 🔴 ফিক্স (quota/cost): প্রতিটা snapshot (cache বা server, যেকোনো) আসা
+      // মানেই listener জীবিত — heartbeat staleness-check এইটা ব্যবহার করবে।
+      this._lastAnySnapshotAt = Date.now();
       // 🆕 Business Switcher waiter: শুধু server-confirmed স্ন্যাপশটেই নোটিফাই
       // করা হয়, cache-এর সম্ভাব্য stale/আগের-বিজনেসের ডেটায় না।
       if (!snap.metadata.fromCache) this._notifySnapshotWaiters(name);
@@ -6433,18 +6439,40 @@ function _initGlobalResyncListenersOnce() {
   if (typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.()) {
     import("@capacitor/app").then(({ App }) => { App.addListener("resume", _bumpGlobalResync); }).catch(() => {});
   }
-  // 🔴 ফিক্স (রিয়েল-টাইম সিঙ্ক delay — এন্টারপ্রাইজ হার্ডেনিং): আগে এই heartbeat
-  // ছিল ২ মিনিটে একবার। Android WebView-তে অ্যাপ ফোরগ্রাউন্ড+স্ক্রিন-অন থাকা
-  // অবস্থাতেও onSnapshot listener-এর underlying নেটওয়ার্ক কানেকশন (gRPC stream)
-  // মাঝেমধ্যে নীরবে মরে যায় — কোনো "offline" ইভেন্ট ছাড়াই, তাই online/
-  // visibilitychange trigger-ও ফায়ার হয় না। সেক্ষেত্রে recovery-র একমাত্র উপায়
-  // ছিল এই heartbeat — মানে listener মরে যাওয়ার পর থেকে পরের heartbeat না আসা
-  // পর্যন্ত (worst-case প্রায় ২ মিনিট) কোনো আপডেটই আসত না। এখন ২০ সেকেন্ডে
-  // নামিয়ে আনা হলো — worst-case delay-ও একই অনুপাতে কমে আসবে। প্রতিটা resync
-  // শুধু listener re-attach করে (Firestore নিজের persistent cache ব্যবহার করে,
-  // তাই পুরো ডেটা আবার ডাউনলোড হয় না) — তাই এই ফ্রিকোয়েন্সিতেও খরচ/পারফরম্যান্স
-  // ঝুঁকি নগণ্য।
-  setInterval(() => { if (document.visibilityState === "visible") _bumpGlobalResync(); }, 20000); // ২০ সেকেন্ড heartbeat (আগে ২ মিনিট ছিল)
+  // 🔴 ফিক্স (quota exceeded — ২০২৬-০৭-২৫): আগের ভার্সনে এই heartbeat প্রতি ২০
+  // সেকেন্ডে blindly _bumpGlobalResync() কল করত, যেটা প্রতিটা বড় collection
+  // (customers/products/invoices/stockMovements/cashLogs...)-এর onSnapshot
+  // সম্পূর্ণ unsubscribe+resubscribe করত। এটা resume token ছাড়া একদম নতুন
+  // listen target তৈরি করে — Firestore পুরো collection-এর বর্তমান অবস্থা আবার
+  // সার্ভার থেকে পাঠায়, আর প্রতিটা ডকুমেন্টই read হিসেবে বিল হয় (যদিও কিছুই
+  // বদলায়নি)। ১৮+ collection × দিনে হাজার হাজার সাইকেল = লাখ লাখ read →
+  // Firestore no-cost quota এক দিনেই exceed হয়ে গিয়েছিল (দেখুন Firebase
+  // Console usage গ্রাফ)।
+  //
+  // আসল সমস্যা (silent gRPC stream death, নিচের পুরনো কমেন্টে বর্ণিত) সত্যি,
+  // কিন্তু blind polling সেটার ভুল সমাধান ছিল। প্রকৃত offline→online
+  // transition-এ recovery already তাৎক্ষণিক (online/visibilitychange/resume
+  // ইভেন্ট সরাসরি _bumpGlobalResync() কল করে, এই setInterval-এর অপেক্ষা
+  // ছাড়াই — উপরে দেখুন) — তাই সাধারণ ব্যবহারে এই heartbeat আসলে অপ্রয়োজনীয়।
+  // এটা শুধু বিরল silent-death কেসের জন্য একটা সেফটি-নেট হিসেবে দরকার, যেখানে
+  // ওই ইভেন্টগুলোর একটাও ফায়ার করে না।
+  //
+  // তাই এখন heartbeat প্রতি ২০ সেকেন্ডে চেক করে কিন্তু শুধু তখনই bump করে যখন
+  // FSS._lastAnySnapshotAt সত্যিই স্টেল (৯০ সেকেন্ডের বেশি কোনো snapshot আসেনি,
+  // কোনো collection থেকেই) — অর্থাৎ listener আসলেই আটকে গেছে বলে সন্দেহ করার
+  // কারণ আছে। স্বাভাবিক/সুস্থ অবস্থায় (দোকানে নিয়মিত write/read চলছে, বা এমনকি
+  // idle থাকলেও metadata sync থেকেই snapshot আসতে থাকে) কোনো bump হয় না,
+  // ফলে read খরচ প্রায় শূন্যে নেমে আসে। সত্যিকার silent-death হলে worst-case
+  // recovery delay ~৯০-১১০ সেকেন্ড (আগের ২০ সেকেন্ডের চেয়ে বেশি, কিন্তু আগের
+  // ২ মিনিটের চেয়ে অনেক কম) — আর এটা একটা বিরল কেস, তাই এই ট্রেড-অফ যুক্তিসঙ্গত।
+  const STALE_MS = 90000;
+  setInterval(() => {
+    if (document.visibilityState !== "visible") return;
+    const last = FSS._lastAnySnapshotAt || 0;
+    // বুট হওয়ার পর প্রথম ৯০ সেকেন্ডে false-positive এড়াতে (তখনো প্রথম snapshot
+    // নাও আসতে পারে) — last===0 হলে চেক স্কিপ করি, শুধু grace period-এর জন্য।
+    if (last && (Date.now() - last) > STALE_MS) _bumpGlobalResync();
+  }, 20000);
 }
 function useResyncTick() {
   const [tick, setTick] = useState(_resyncTickGlobal);
@@ -10349,10 +10377,13 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
     // ইনভয়েস বাদ পড়ায়, আরেকবার returns-এর কারণে) — "আজকের বিক্রয়" ঋণাত্মক হয়ে
     // যেত। এখন যে ইনভয়েস ইতিমধ্যে voided, তার সাথে যুক্ত returns এখানে বাদ
     // দেওয়া হচ্ছে (সেই ইনভয়েসের পুরো টাকাই তো এমনিতেই বাদ পড়ে গেছে)।
-    const voidedInvIdsForReturns = new Set((invoices || []).filter(i => i.status === "voided").map(i => i.id));
+    // 🔴 ফিক্স (২৪ জুলাই ২০২৬, পরে src/logic.js-এ শেয়ার্ড হেল্পারে সরানো হলো):
+    // দেখুন getVoidedInvoiceIds/filterReturnsExcludingVoided-এর JSDoc।
+    const voidedInvIdsForReturns = getVoidedInvoiceIds(invoices);
     const returnsAll = returns || [];
-    const todayReturns = returnsAll.filter(r => r.dateKey === todayKey && !voidedInvIdsForReturns.has(r.invoiceId));
-    const monthReturns = returnsAll.filter(r => (r.dateKey || "") >= monthStartKey && !voidedInvIdsForReturns.has(r.invoiceId));
+    const returnsActive = filterReturnsExcludingVoided(returnsAll, voidedInvIdsForReturns);
+    const todayReturns = returnsActive.filter(r => r.dateKey === todayKey);
+    const monthReturns = returnsActive.filter(r => (r.dateKey || "") >= monthStartKey);
     const todayReturnsRefund = todayReturns.reduce((s, r) => s + (r.refundAmount || 0), 0);
     const monthReturnsRefund = monthReturns.reduce((s, r) => s + (r.refundAmount || 0), 0);
     const todayReturnsProfitImpact = todayReturns.reduce((s, r) => s + ((r.refundAmount || 0) - (r.costPrice || 0) * (r.qty || 0)), 0);
@@ -10630,11 +10661,17 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
   // 🔴 ফিক্স (২৪ জুলাই ২০২৬ — নেগেটিভ বিক্রয় বাগ, useKpiStats-এর মতোই): আংশিক
   // ফেরতের পর ইনভয়েস ভয়েড হলে সেই আংশিক-ফেরতের returns এন্ট্রি এখানেও বাদ
   // দেওয়া দরকার — নাহলে একই টাকা দুইবার বাদ যায়।
-  const voidedInvIdsForReturnsAI = new Set((invoices || []).filter(i => i.status === "voided").map(i => i.id));
+  // 🔴 ফিক্স (২৪ জুলাই ২০২৬, পরে src/logic.js-এ শেয়ার্ড হেল্পারে সরানো হলো — দেখুন
+  // getVoidedInvoiceIds/filterReturnsExcludingVoided-এর JSDoc): এই একই ফিল্টার
+  // লজিক এতদিন এখানে ও useKpiStats-এ আলাদা-আলাদা কপি হিসেবে ছিল, তাই একটাতে
+  // ফিক্স করলে অন্যটা মিস হওয়ার ঝুঁকি ছিল (এই ফাইলেই আগের একটা কমেন্টে সেটা
+  // ঠিক এইভাবেই ঘটেছিল)। এখন দুই জায়গাতেই একই সোর্স-অফ-ট্রুথ ফাংশন কল হয়।
+  const voidedInvIdsForReturnsAI = getVoidedInvoiceIds(invoices);
   const returnsAll = returns || [];
-  const todayReturns = returnsAll.filter(r => r.dateKey === todayKey && !voidedInvIdsForReturnsAI.has(r.invoiceId));
-  const weekReturns = returnsAll.filter(r => (r.dateKey || "") >= d7 && !voidedInvIdsForReturnsAI.has(r.invoiceId));
-  const monthReturns = returnsAll.filter(r => (r.dateKey || "") >= monthStartKey && !voidedInvIdsForReturnsAI.has(r.invoiceId));
+  const returnsActiveAI = filterReturnsExcludingVoided(returnsAll, voidedInvIdsForReturnsAI);
+  const todayReturns = returnsActiveAI.filter(r => r.dateKey === todayKey);
+  const weekReturns = returnsActiveAI.filter(r => (r.dateKey || "") >= d7);
+  const monthReturns = returnsActiveAI.filter(r => (r.dateKey || "") >= monthStartKey);
   const todayReturnsRefund = todayReturns.reduce((s, r) => s + (r.refundAmount || 0), 0);
   const weekReturnsRefund = weekReturns.reduce((s, r) => s + (r.refundAmount || 0), 0);
   const monthReturnsRefund = monthReturns.reduce((s, r) => s + (r.refundAmount || 0), 0);
@@ -19964,6 +20001,13 @@ function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, set
   const [peForm, setPeForm] = React.useState(EMPTY_PE);
   const [toast,  setToast]  = React.useState(null);
   const [searchOpen, setSearchOpen] = React.useState(false);
+  // 🔴 ফিক্স (২৪ জুলাই ২০২৬ — ক্রয় এন্ট্রি ডাবল-সাবমিট বাগ): savePE() async
+  // (FSS.transactionAddStock await করে), কিন্তু বাটনে আগে কোনো disable/guard
+  // ছিল না — দ্রুত একাধিকবার ট্যাপ করলে প্রথম কলটার await শেষ হওয়ার আগেই
+  // দ্বিতীয় কলটাও শুরু হয়ে যেত, ফলে একই ক্রয় এন্ট্রি দুই/তিনবার সেভ হয়ে
+  // স্টক ভুলভাবে বেড়ে যেত। এই isSaving গার্ড দিয়ে সেভ চলাকালীন বাটন
+  // disabled/no-op থাকবে।
+  const [isSaving, setIsSaving] = React.useState(false);
 
   const showToast = (msg, color = "#22c55e") => {
     setToast({ msg, color });
@@ -19994,10 +20038,13 @@ function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, set
   ), [products, peForm.productSearch]);
 
   const savePE = async () => {
+    if (isSaving) return; // 🔴 ফিক্স — ইতিমধ্যে সেভ চলছে, দ্বিতীয় ক্লিক উপেক্ষা করা হচ্ছে
     if (!peForm.productId) { showToast("পণ্য নির্বাচন করুন", "#ef4444"); return; }
     if (!peForm.qty || parseFloat(peForm.qty) <= 0) { showToast("পরিমাণ দিন", "#ef4444"); return; }
     const prod = products.find(p => p.id === peForm.productId);
     if (!prod) return;
+    setIsSaving(true);
+    try {
     const qty      = parseFloat(peForm.qty);
     const unitCost = peForm.isFreeStock ? 0 : (parseFloat(peForm.unitCost) || prod.costPrice || 0);
     const unitSell = parseFloat(peForm.unitSell) || prod.price || 0;
@@ -20077,6 +20124,9 @@ function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, set
     setPurchaseOrders(prev => [entry, ...prev]);
     setPeForm(f => ({ ...EMPTY_PE, supplier: f.supplier }));
     showToast(`✅ ${prod.name} — ${qty} ${prod.unit||"পিস"} স্টকে যোগ হয়েছে`, "#a78bfa");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const todayEntries = allEntries.filter(e => e.dateKey === todayKey);
@@ -20247,10 +20297,10 @@ function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, set
           <span style={{ color:T.sub, fontSize:11 }}>🏷️ ব্যাচ নম্বর — স্বয়ংক্রিয়ভাবে যুক্ত হবে</span>
         </div>
 
-        <button onClick={savePE}
-          style={{ width:"100%", marginTop:4, padding:"13px 0", borderRadius:14, border:"none", background:"linear-gradient(135deg,#7c3aed,#a78bfa)", color:"#fff", fontSize:15, fontWeight:800, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:8, boxShadow:"0 4px 18px #a78bfa44" }}>
+        <button onClick={savePE} disabled={isSaving}
+          style={{ width:"100%", marginTop:4, padding:"13px 0", borderRadius:14, border:"none", background:"linear-gradient(135deg,#7c3aed,#a78bfa)", color:"#fff", fontSize:15, fontWeight:800, cursor: isSaving ? "not-allowed" : "pointer", opacity: isSaving ? 0.6 : 1, fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:8, boxShadow:"0 4px 18px #a78bfa44" }}>
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-          ক্রয় এন্ট্রি সেভ করুন
+          {isSaving ? "সেভ হচ্ছে..." : "ক্রয় এন্ট্রি সেভ করুন"}
         </button>
       </div>
 
@@ -25134,6 +25184,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   // ── Mandatory field validation — নতুন পণ্য/সার্ভিস ফর্ম ও ক্রয় এন্ট্রি ফর্মের জন্য ──
   const [formErrors, setFormErrors] = useState({}); // { name, price }
   const [peFormErrors, setPeFormErrors] = useState({}); // { productId, qty }
+  // 🔴 ফিক্স (২৪ জুলাই ২০২৬ — ক্রয় এন্ট্রি ডাবল-সাবমিট বাগ, দেখুন
+  // DashPurchaseEntryModal-এর একই ফিক্সের কমেন্ট): savePE()/নতুন-পণ্য-তৈরির
+  // ব্লক দুটোই async কল করে কিন্তু বাটনে কোনো গার্ড ছিল না — দ্রুত একাধিকবার
+  // ট্যাপে একই ক্রয় এন্ট্রি একাধিকবার সেভ হয়ে যেত।
+  const [peSaving, setPeSaving] = useState(false);
   // ── ক্রয় এন্ট্রি ট্যাবের ভারী হিসাব — memo করা, যাতে প্রতি keystroke/re-render-এ পুরো array স্ক্যান না হয় ──
   const peAllEntries = useMemo(() => purchaseOrders.filter(p => p._type === "pe"), [purchaseOrders]);
   const peSelProdForBatch = useMemo(() => products.find(p => p.id === peForm.productId), [products, peForm.productId]);
@@ -25660,8 +25715,12 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
         // গ্যারান্টি লাগত না, এখন transaction থাকায় সিরিয়াল না চালালে একই পণ্যের
         // একাধিক লাইনের মাঝে batchNo হিন্ট স্টেল থেকে যেতে পারত)।
         const confirmInvoiceItems = async () => {
+          // 🔴 ফিক্স (২৪ জুলাই ২০২৬ — একই ডাবল-সাবমিট বাগ, বাল্ক-ইমপোর্টেও):
+          if (peSaving) return;
           const toSave = (peInvoiceItems || []).filter(it => it.include && it.productId && parseFloat(it.qty) > 0);
           if (!toSave.length) { showToast("অন্তত একটা পণ্য টিক দিন", "#ef4444"); return; }
+          setPeSaving(true);
+          try {
           let successCount = 0;
           for (const it of toSave) {
             const r = await applyPurchaseBatch({
@@ -25679,6 +25738,9 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           setPeInvoiceItems(null);
           setPeInvoiceSupplier("");
           showToast(`✅ ${successCount}টা পণ্য স্টকে যোগ হয়েছে`, "#a78bfa");
+          } finally {
+            setPeSaving(false);
+          }
         };
 
         const displayed  = peDisplayed;
@@ -25826,9 +25888,9 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                     style={{ flex:1, padding:"11px", borderRadius:10, border:`1px solid ${T.border}`, background:"transparent", color:T.sub, fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>
                     বাতিল
                   </button>
-                  <button type="button" onClick={confirmInvoiceItems}
-                    style={{ flex:2, padding:"11px", borderRadius:10, border:"none", background:"linear-gradient(135deg,#7c3aed,#a78bfa)", color:"#fff", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>
-                    ✅ টিক দেওয়া সব পণ্য স্টকে যোগ করুন
+                  <button type="button" onClick={confirmInvoiceItems} disabled={peSaving}
+                    style={{ flex:2, padding:"11px", borderRadius:10, border:"none", background:"linear-gradient(135deg,#7c3aed,#a78bfa)", color:"#fff", fontWeight:800, fontSize:13, cursor: peSaving ? "not-allowed" : "pointer", opacity: peSaving ? 0.6 : 1, fontFamily:"inherit" }}>
+                    {peSaving ? "সেভ হচ্ছে..." : "✅ টিক দেওয়া সব পণ্য স্টকে যোগ করুন"}
                   </button>
                 </div>
               </div>
@@ -26206,7 +26268,17 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
 
               {/* সেভ বাটন */}
               <button
-                onClick={() => {
+                disabled={peSaving}
+                onClick={async () => {
+                  // 🔴 ফিক্স (২৪ জুলাই ২০২৬ — ক্রয় এন্ট্রি ডাবল-সাবমিট বাগ):
+                  // এই বাটনে আগে কোনো re-entrancy গার্ড ছিল না — দ্রুত একাধিকবার
+                  // ট্যাপ করলে (নতুন-পণ্য ব্রাঞ্চ পুরোপুরি সিঙ্ক্রোনাস হলেও, বা
+                  // savePE()-এর async transaction চলাকালীন) একই ক্রয় এন্ট্রি/
+                  // পণ্য একাধিকবার তৈরি হয়ে যেত। এখন peSaving গার্ড পুরো
+                  // হ্যান্ডলারকে re-entrant হওয়া থেকে আটকায়।
+                  if (peSaving) return;
+                  setPeSaving(true);
+                  try {
                   if (peNewProduct) {
                     // নতুন পণ্য mode: নতুন পণ্য + ক্রয় এন্ট্রি একসাথে সেভ
                     const name = peNewProduct.name?.trim();
@@ -26264,12 +26336,15 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                     setPeCompanyCustom(false);
                     showToast("নতুন পণ্য যোগ ও ক্রয় এন্ট্রি সেভ হয়েছে ✓");
                   } else {
-                    savePE();
+                    await savePE();
+                  }
+                  } finally {
+                    setPeSaving(false);
                   }
                 }}
-                style={{ width: "100%", marginTop: 4, padding: "13px 0", borderRadius: 14, border: "none", background: "linear-gradient(135deg,#7c3aed,#a78bfa)", color: "#fff", fontSize: 15, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: "0 4px 18px #a78bfa44" }}>
+                style={{ width: "100%", marginTop: 4, padding: "13px 0", borderRadius: 14, border: "none", background: "linear-gradient(135deg,#7c3aed,#a78bfa)", color: "#fff", fontSize: 15, fontWeight: 800, cursor: peSaving ? "not-allowed" : "pointer", opacity: peSaving ? 0.6 : 1, fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: "0 4px 18px #a78bfa44" }}>
                 <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-                ক্রয় এন্ট্রি সেভ করুন
+                {peSaving ? "সেভ হচ্ছে..." : "ক্রয় এন্ট্রি সেভ করুন"}
               </button>
             </div>
             )}{/* end peShowForm */}
