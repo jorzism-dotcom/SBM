@@ -8715,9 +8715,9 @@ function UnifiedDayMonthNav({ hook, accentColor = "#1fd15e", T, onPrint }) {
       <div style={{ display: "flex", justifyContent: "center", gap: 6, marginBottom: 10 }}>
         {[["day", "দিন"], ["month", "মাস"]].map(([key, lbl]) => (
           <button key={key} type="button" onClick={() => setMode(key)}
-            style={{ padding: "5px 18px", borderRadius: 16, border: `1.5px solid ${mode === key ? accentColor : "#334155"}`,
+            style={{ padding: "5px 18px", borderRadius: 16, border: `1.5px solid ${mode === key ? accentColor : (T?.border || "#334155")}`,
               background: mode === key ? `${accentColor}22` : "transparent",
-              color: mode === key ? accentColor : "#94a3b8",
+              color: mode === key ? accentColor : (T?.sub || "#94a3b8"),
               fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
             {lbl}
           </button>
@@ -8725,11 +8725,11 @@ function UnifiedDayMonthNav({ hook, accentColor = "#1fd15e", T, onPrint }) {
       </div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
         <button type="button" onClick={() => mode === "day" ? shiftDay(-1) : shiftMonth(-1)}
-          style={{ background: "rgba(255,255,255,0.08)", border: "none", borderRadius: 8, width: 32, height: 32, flexShrink: 0,
-            color: "#fff", fontSize: 17, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>‹</button>
+          style={{ background: T?.cardAlt || "rgba(255,255,255,0.08)", border: `1px solid ${T?.border || "transparent"}`, borderRadius: 8, width: 32, height: 32, flexShrink: 0,
+            color: T?.text || "#fff", fontSize: 17, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>‹</button>
 
         <div style={{ position: "relative", flex: 1, textAlign: "center" }}>
-          <div style={{ color: "#fff", fontWeight: 800, fontSize: 13.5 }}>📅 {label}</div>
+          <div style={{ color: T?.headingColor || T?.text || "#fff", fontWeight: 800, fontSize: 13.5 }}>📅 {label}</div>
           <input
             type={mode === "day" ? "date" : "month"}
             value={mode === "day" ? dateKey : monthKey}
@@ -8740,8 +8740,8 @@ function UnifiedDayMonthNav({ hook, accentColor = "#1fd15e", T, onPrint }) {
         </div>
 
         <button type="button" onClick={() => mode === "day" ? shiftDay(1) : shiftMonth(1)}
-          style={{ background: "rgba(255,255,255,0.08)", border: "none", borderRadius: 8, width: 32, height: 32, flexShrink: 0,
-            color: "#fff", fontSize: 17, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>›</button>
+          style={{ background: T?.cardAlt || "rgba(255,255,255,0.08)", border: `1px solid ${T?.border || "transparent"}`, borderRadius: 8, width: 32, height: 32, flexShrink: 0,
+            color: T?.text || "#fff", fontSize: 17, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>›</button>
 
         {onPrint && (
           <button type="button" onClick={onPrint} title="প্রিন্ট"
@@ -8758,7 +8758,7 @@ function UnifiedDayMonthNav({ hook, accentColor = "#1fd15e", T, onPrint }) {
 // নেভিগেটর দেখায় (◄ [তারিখ] ►) — DashModalDateRangePicker-এর কাস্টম-তারিখ
 // ইনপুটেরই একই প্যাটার্ন: লেবেলের ওপর একটা অদৃশ্য native <input type="date">
 // বসানো, তাই ট্যাপ করলেই নেটিভ ক্যালেন্ডার খোলে। ভবিষ্যতের তারিখ max দিয়ে আটকানো। ──
-function OldEntryDateNav({ dateKey, setDateKey, accentColor = "#8b5cf6" }) {
+function OldEntryDateNav({ dateKey, setDateKey, accentColor = "#8b5cf6", T }) {
   const todayKey = todayEn();
   const isToday = dateKey === todayKey;
   const shift = (days) => {
@@ -8772,17 +8772,17 @@ function OldEntryDateNav({ dateKey, setDateKey, accentColor = "#8b5cf6" }) {
     catch { return dateKey; }
   })();
   return (
-    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom: 10, background:"rgba(255,255,255,0.03)", border:`1px solid ${accentColor}33`, borderRadius:14, padding:"8px 10px" }}>
+    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom: 10, background: T?.cardAlt || "rgba(255,255,255,0.03)", border:`1px solid ${accentColor}33`, borderRadius:14, padding:"8px 10px" }}>
       <button type="button" onClick={() => shift(-1)}
-        style={{ width:34, height:34, borderRadius:10, background:`${accentColor}1f`, border:`1px solid ${accentColor}4d`, color:"#fff", fontSize:16, fontWeight:900, cursor:"pointer", flexShrink:0 }}>‹</button>
+        style={{ width:34, height:34, borderRadius:10, background:`${accentColor}1f`, border:`1px solid ${accentColor}4d`, color: T?.text || "#fff", fontSize:16, fontWeight:900, cursor:"pointer", flexShrink:0 }}>‹</button>
       <div style={{ flex:1, position:"relative", textAlign:"center" }}>
-        <div style={{ color:"#fff", fontSize:12, fontWeight:800 }}>📅 {isToday ? "আজ" : dateLabel}</div>
+        <div style={{ color: T?.headingColor || T?.text || "#fff", fontSize:12, fontWeight:800 }}>📅 {isToday ? "আজ" : dateLabel}</div>
         <input type="date" value={dateKey} max={todayKey}
           onChange={e => e.target.value && setDateKey(e.target.value)}
           style={{ position:"absolute", inset:0, opacity:0, width:"100%", height:"100%", border:"none", cursor:"pointer" }} />
       </div>
       <button type="button" onClick={() => shift(1)} disabled={isToday}
-        style={{ width:34, height:34, borderRadius:10, background:`${accentColor}1f`, border:`1px solid ${accentColor}4d`, color: isToday ? "#4b4566" : "#fff", fontSize:16, fontWeight:900, cursor: isToday ? "default" : "pointer", flexShrink:0 }}>›</button>
+        style={{ width:34, height:34, borderRadius:10, background:`${accentColor}1f`, border:`1px solid ${accentColor}4d`, color: isToday ? (T?.sub || "#4b4566") : (T?.text || "#fff"), fontSize:16, fontWeight:900, cursor: isToday ? "default" : "pointer", flexShrink:0 }}>›</button>
     </div>
   );
 }
@@ -12239,7 +12239,7 @@ function SmartBusinessMgmt() {
 
   // ── Permission helper ────────────────────────────────────────────────────
   // স্টাফের tempPermissions চেক: { key, expiresAt } — সময় পেরিয়ে গেলে false
-  const hasPerm = (user, key) => {
+  const hasPerm = useCallback((user, key) => {
     if (!user || user.role === "admin" || user.role === "owner") return true;
     const tempOk = (user.tempPermissions || []).some(
       p => p.key === key && new Date(p.expiresAt) > new Date()
@@ -12248,31 +12248,23 @@ function SmartBusinessMgmt() {
     // ⏰ অটো-শিডিউল: এডমিনের সেট করা দৈনিক সময়সীমার মধ্যে থাকলে অটোমেটিক অনুমতি
     const sched = (user.autoSchedules || []).find(s => s.key === key);
     return isAutoScheduleActive(sched);
-  };
+  }, []);
 
-  // ── tab setter — route guard সহ ───────────────────────────────────────────
-  const setTab = (newTab) => {
-    const STAFF_RESTRICTED = ["sms", "ai", "returns", "supplier"];
-    if (currentUser?.role === "staff" && STAFF_RESTRICTED.includes(newTab)) {
-      showToast?.("স্টাফ অ্যাকাউন্টে এই পেজ অ্যাক্সেস নেই", "error");
-      return;
-    }
-    // "এক্সপেন্স ট্রেকার" শুধু Admin রোল অ্যাক্সেস করতে পারবে
-    if (newTab === "expense" && currentUser?.role !== "admin" && currentUser?.role !== "owner") {
-      showToast?.("এই পেজ শুধু Admin অ্যাক্সেস করতে পারবে", "error");
-      return;
-    }
-    if (tab === "invoice" && newTab !== "invoice") {
-      _set("invoiceKey", (k) => k + 1);
-      _set("preselectedCust",  null);
-      _set("preselectedType",  null);
-    }
-    _set("tab", newTab);
-  };
   const tab = useAppStore((s) => s.tab);
+  // ── tab setter — route guard সহ ───────────────────────────────────────────
+  // 🆕 পারফরম্যান্স ফিক্স (২৫ জুলাই ২০২৬): setTab-কে useCallback দিয়ে স্থিতিশীল
+  // রেফারেন্স করা হয়েছে, কিন্তু ⚠️ সংজ্ঞাটা এখানে না রেখে showToast-এর
+  // declaration-এর ঠিক পরে বসানো হয়েছে (নিচে দেখুন) — কারণ showToast এই
+  // ফাইলে অনেক পরে declare হয়, আর dependency array-তে সেটা এখানে রাখলে
+  // "Cannot access 'showToast' before initialization" TDZ ক্র্যাশ হতো (এই
+  // ফাইলে আগেও একবার এই ক্লাসের বাগ ফিক্স করা হয়েছিল)।
 
   const currentPreset = THEME_PRESETS.find(p => p.id === activeTheme) || THEME_PRESETS[0];
-  const T = currentPreset.dark ? {
+  // 🆕 পারফরম্যান্স ফিক্স (২৫ জুলাই ২০২৬ — শপকিপার ল্যাগ তদন্ত): T আগে প্রতি রেন্ডারে
+  // নতুন অবজেক্ট রেফারেন্স তৈরি করত (Firestore listener আপডেটে ~২০+ বার/মিনিট),
+  // যা সব চাইল্ড কম্পোনেন্টকে ভুল "props বদলেছে" সিগনাল পাঠাত। এখন useMemo দিয়ে
+  // activeTheme/enabledBusinessTypes/businessType না বদলালে একই রেফারেন্স থাকে।
+  const T = useMemo(() => (currentPreset.dark ? {
     ...DARK,
     accent: currentPreset.accent, accentDark: currentPreset.accentDark || currentPreset.accent, accentGlow: currentPreset.accent + "33", accentPill: currentPreset.accent + "22",
     nav: currentPreset.nav, navActive: currentPreset.navActive, navPill: currentPreset.navActive + "18",
@@ -12292,7 +12284,7 @@ function SmartBusinessMgmt() {
     stepActive: currentPreset.accent, stepDone: currentPreset.accent,
     bg: currentPreset.bg, card: currentPreset.card,
     text: currentPreset.text, sub: currentPreset.sub,
-  };
+  }), [activeTheme, currentPreset]);
   const isDark = currentPreset.dark;
 
   // 🆕 রিডিজাইন (২০ জুলাই ২০২৬ — "থিম রাখার লাভ কী?" ফিডব্যাক): আগে multi-business
@@ -12636,6 +12628,51 @@ function SmartBusinessMgmt() {
     const dur = (color === "#f59e0b" || color === "#ef4444") ? 8000 : 3200;
     setToast({ msg, color }); safeTimeout(() => setToast(null), dur);
   }, [safeTimeout]);
+
+  // 🆕 setTab (পারফরম্যান্স ফিক্স ২৫ জুলাই ২০২৬): এখানে বসানো হয়েছে কারণ এটা
+  // showToast-এর উপর নির্ভর করে (dependency array-তে) — showToast-এর আগে
+  // রাখলে TDZ ক্র্যাশ হতো।
+  const setTab = useCallback((newTab) => {
+    const STAFF_RESTRICTED = ["sms", "ai", "returns", "supplier"];
+    if (currentUser?.role === "staff" && STAFF_RESTRICTED.includes(newTab)) {
+      showToast?.("স্টাফ অ্যাকাউন্টে এই পেজ অ্যাক্সেস নেই", "error");
+      return;
+    }
+    // "এক্সপেন্স ট্রেকার" শুধু Admin রোল অ্যাক্সেস করতে পারবে
+    if (newTab === "expense" && currentUser?.role !== "admin" && currentUser?.role !== "owner") {
+      showToast?.("এই পেজ শুধু Admin অ্যাক্সেস করতে পারবে", "error");
+      return;
+    }
+    if (tab === "invoice" && newTab !== "invoice") {
+      _set("invoiceKey", (k) => k + 1);
+      _set("preselectedCust",  null);
+      _set("preselectedType",  null);
+    }
+    _set("tab", newTab);
+  }, [currentUser, showToast, tab, _set]);
+
+  // 🆕 কম্পোজিট কলব্যাক (পারফরম্যান্স ফিক্স ২৫ জুলাই ২০২৬): আগে JSX-এ ইনলাইন
+  // arrow function হিসেবে পাস হতো (প্রতি রেন্ডারে নতুন রেফারেন্স তৈরি হতো,
+  // যেটা React.memo-কে অকেজো করে দিত)। এখন useCallback দিয়ে স্থিতিশীল রেফারেন্স।
+  const goToPurchaseEntry = useCallback(() => {
+    setDashModal({ type: "purchase-entry" });
+  }, [setDashModal]);
+
+  const openCustomerDetail = useCallback((id) => {
+    setDetailCId(id);
+  }, [setDetailCId]);
+
+  const goToInvoiceFromCustomers = useCallback((c, type) => {
+    setPreselectedCust(c); setPreselectedType(type || null); setTab("invoice");
+  }, [setPreselectedCust, setPreselectedType, setTab]);
+
+  const goToInvoiceFromDetail = useCallback((c, type) => {
+    setPreselectedCust(c); setPreselectedType(type || null); setTab("invoice"); setDetailCId(null);
+  }, [setPreselectedCust, setPreselectedType, setTab, setDetailCId]);
+
+  const clearPreselected = useCallback(() => {
+    setPreselectedCust(null); setPreselectedType(null);
+  }, [setPreselectedCust, setPreselectedType]);
 
   // 🔴 ফিক্স (রুট কজ ৩ — রিকনেক্ট-পরবর্তী ড্রিফট-অ্যালার্ট): অফলাইন রেসের সব
   // কোণা কখনোই ১০০% প্রুফ করা যাবে না (উপরের void/return/createInvoice
@@ -13086,6 +13123,20 @@ function SmartBusinessMgmt() {
     })();
     return () => { cancelled = true; };
   }, [detailCId, fssReady]);
+  // 🆕 পারফরম্যান্স ফিক্স (২৫ জুলাই ২০২৬ — কাস্টমার ডিটেইল পেজ ল্যাগ): আগে এই
+  // filter()-গুলো সরাসরি JSX-এ ইনলাইন হতো, ফলে প্রতি re-render-এ নতুন array
+  // রেফারেন্স তৈরি হতো এবং CustomerDetail-এর React.memo সম্পূর্ণ অকেজো হয়ে
+  // যেত (props সবসময় "বদলেছে" মনে হতো)। এখন useMemo দিয়ে স্থিতিশীল রেফারেন্স।
+  const detailTxns = useMemo(
+    () => (customerTxnsFull.customerId === detailCId && customerTxnsFull.rows)
+      ? customerTxnsFull.rows
+      : txns.filter(t => t.customerId === detailCId),
+    [customerTxnsFull, detailCId, txns]
+  );
+  const detailPaymentInvoices = useMemo(
+    () => paymentInvoices.filter(p => p.customerId === detailCId),
+    [paymentInvoices, detailCId]
+  );
   // 🔴 ফিক্স (products/customers-এর মতোই সুরক্ষা): smsLog-এ প্রতিটা নতুন SMS
   // পাঠানোর সময় ৯০ দিনের বেশি পুরনো এন্ট্রি লোকালি ছাঁটাই হয় (sendSMS দেখুন) —
   // এটা নিছক লোকাল স্টোরেজ ম্যানেজমেন্ট, ইউজারের ইচ্ছাকৃত ডিলিট না। syncDeletes
@@ -15549,7 +15600,7 @@ function SmartBusinessMgmt() {
       <main style={{ ...S.main, ...(tab === "invoice" ? { overflowY: "hidden", paddingBottom: 0, contain: "layout style", display: "flex", flexDirection: "column", minHeight: 0 } : {}) }}>
         {tab === "dashboard" && (
           <ErrorBoundary T={T}>
-            <Dashboard T={T} S={S}
+            <MemoDashboard T={T} S={S}
               businessType={businessType}
               customers={customers} invoices={invoices} totalBaki={totalBaki}
               todayBaki={todayBaki} todayJoma={todayJoma} todayTotal={todayTotal}
@@ -15579,18 +15630,18 @@ function SmartBusinessMgmt() {
               supplierPayments={supplierPayments}
               setSupplierPayments={setSupplierPayments}
               returns={returns}
-              onGoToPurchaseEntry={() => { setDashModal({ type: "purchase-entry" }); }}
+              onGoToPurchaseEntry={goToPurchaseEntry}
             />
           </ErrorBoundary>
         )}
         {tab === "customers" && !showDetail && (
           <ErrorBoundary T={T}>
-            <Customers T={T} S={S}
+            <MemoCustomers T={T} S={S}
               customers={customers} setCustomers={setCustomers}
               showToast={showToast} setModal={setModal}
-              onOpenDetail={id => setDetailCId(id)}
+              onOpenDetail={openCustomerDetail}
               deletedCustomers={deletedCustomers} setDeletedCustomers={setDeletedCustomers}
-              onGoToInvoice={(c, type) => { setPreselectedCust(c); setPreselectedType(type || null); setTab("invoice"); }}
+              onGoToInvoice={goToInvoiceFromCustomers}
               currentUser={currentUser} hasPerm={hasPerm}
               auditLog={auditLog}
               invoices={invoices}
@@ -15600,12 +15651,12 @@ function SmartBusinessMgmt() {
         )}
         {showDetail && (
           <ErrorBoundary T={T}>
-            <CustomerDetail T={T} S={S}
+            <MemoCustomerDetail T={T} S={S}
               customer={detailCust}
-              txns={(customerTxnsFull.customerId === detailCId && customerTxnsFull.rows) ? customerTxnsFull.rows : txns.filter(t => t.customerId === detailCId)}
-              invoices={invoices} customers={customers} paymentInvoices={paymentInvoices.filter(p => p.customerId === detailCId)}
+              txns={detailTxns}
+              invoices={invoices} customers={customers} paymentInvoices={detailPaymentInvoices}
               shopName={shopName}
-              onGoToInvoice={(c, type) => { setPreselectedCust(c); setPreselectedType(type || null); setTab("invoice"); setDetailCId(null); }}
+              onGoToInvoice={goToInvoiceFromDetail}
               setModal={setModal}
               products={products} returns={returns} currentUser={currentUser} showToast={showToast}
               voidInvoice={voidInvoice} processReturn={processReturn}
@@ -15614,7 +15665,7 @@ function SmartBusinessMgmt() {
         )}
         {tab === "invoice" && (
           <ErrorBoundary T={T}>
-            <SmartInvoiceBuilder key={invoiceKey} T={T} S={S}
+            <MemoSmartInvoiceBuilder key={invoiceKey} T={T} S={S}
               customers={customers} products={products}
               setCustomers={setCustomers} setInvoices={setInvoices} setProducts={setProducts}
               sendSMS={sendSMS} showToast={showToast} addTxn={addTxn} shopName={shopName}
@@ -15626,13 +15677,13 @@ function SmartBusinessMgmt() {
               purchaseOrders={purchaseOrders}
               currentUser={currentUser}
               businessType={businessType}
-              onDone={() => { setPreselectedCust(null); setPreselectedType(null); }}
+              onDone={clearPreselected}
             />
           </ErrorBoundary>
         )}
         {tab === "products" && (
           <ErrorBoundary T={T}>
-            <Products T={T} S={S} products={products} setProducts={setProducts} showToast={showToast}
+            <MemoProducts T={T} S={S} products={products} setProducts={setProducts} showToast={showToast}
               stockMovements={stockMovements} setStockMovements={setStockMovements}
               purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders}
               deletedProducts={deletedProducts} setDeletedProducts={setDeletedProducts}
@@ -20738,6 +20789,8 @@ function InvoiceVoidModal({ inv, returns = [], products = [], customers = [], cu
 
   return null;
 }
+// ✅ React.memo — SmartInvoiceBuilder: props না বদলালে re-render নেই (২৫ জুলাই ২০২৬ পারফরম্যান্স ফিক্স)
+const MemoSmartInvoiceBuilder = React.memo(SmartInvoiceBuilder);
 
 // ── Dashboard ──────────────────────────────────────────────────────────────────
 function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, processReturn, currentUser, onGoToPurchaseEntry, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, supplierPayments = [], setSupplierPayments, returns = [] }) {
@@ -23731,6 +23784,8 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     </div>
   );
 }
+// ✅ React.memo — Dashboard: props না বদলালে re-render নেই (২৫ জুলাই ২০২৬ পারফরম্যান্স ফিক্স)
+const MemoDashboard = React.memo(Dashboard);
 
 // ── Customers List ─────────────────────────────────────────────────────────────
 function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenDetail, deletedCustomers, setDeletedCustomers, onGoToInvoice, currentUser, hasPerm, auditLog, invoices = [], txns = [] }) {
@@ -24074,6 +24129,8 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
     </div>
   );
 }
+// ✅ React.memo — Customers: props না বদলালে re-render নেই (২৫ জুলাই ২০২৬ পারফরম্যান্স ফিক্স)
+const MemoCustomers = React.memo(Customers);
 
 // ── Customer Detail ────────────────────────────────────────────────────────────
 function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvoices, shopName = "SBM", onGoToInvoice, setModal, products = [], returns = [], currentUser, showToast, voidInvoice, processReturn }) {
@@ -24684,7 +24741,7 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
         {showOldEntry && (
           <>
             <OldEntryDateNav dateKey={entryDateKey} setDateKey={setEntryDateKey}
-              accentColor={mode === "baki" ? "#ef4444" : "#22c55e"} />
+              accentColor={mode === "baki" ? "#ef4444" : "#22c55e"} T={T} />
             <label style={{ display:"flex", alignItems:"center", gap:8, marginTop:-4, marginBottom: 10, color: T.sub, fontSize: 11, cursor:"pointer" }}>
               <input type="checkbox" checked={sendSmsBackdated} onChange={e => setSendSmsBackdated(e.target.checked)} />
               কাস্টমারকে SMS পাঠান
@@ -27002,6 +27059,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     </div>
   );
 }
+// ✅ React.memo — Products: props না বদলালে re-render নেই (২৫ জুলাই ২০২৬ পারফরম্যান্স ফিক্স)
+const MemoProducts = React.memo(Products);
 
 
 // ══════════════════════════════════════════════════════════════════════════════
