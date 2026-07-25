@@ -8963,7 +8963,7 @@ function UnifiedDayMonthNav({ hook, accentColor = "#1fd15e", T, onPrint }) {
             color: T?.text || "#fff", fontSize: 17, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>‹</button>
 
         <div style={{ position: "relative", flex: 1, textAlign: "center" }}>
-          <div style={{ color: T?.headingColor || T?.text || "#fff", fontWeight: 800, fontSize: 13.5 }}>📅 {label}</div>
+          <div style={{ color: T?.text || "#fff", fontWeight: 800, fontSize: 13.5 }}>📅 {label}</div>
           <input
             type={mode === "day" ? "date" : "month"}
             value={mode === "day" ? dateKey : monthKey}
@@ -9010,7 +9010,7 @@ function OldEntryDateNav({ dateKey, setDateKey, accentColor = "#8b5cf6", T }) {
       <button type="button" onClick={() => shift(-1)}
         style={{ width:34, height:34, borderRadius:10, background:`${accentColor}1f`, border:`1px solid ${accentColor}4d`, color: T?.text || "#fff", fontSize:16, fontWeight:900, cursor:"pointer", flexShrink:0 }}>‹</button>
       <div style={{ flex:1, position:"relative", textAlign:"center" }}>
-        <div style={{ color: T?.headingColor || T?.text || "#fff", fontSize:12, fontWeight:800 }}>📅 {isToday ? "আজ" : dateLabel}</div>
+        <div style={{ color: T?.text || "#fff", fontSize:12, fontWeight:800 }}>📅 {isToday ? "আজ" : dateLabel}</div>
         <input type="date" value={dateKey} max={todayKey}
           onChange={e => e.target.value && setDateKey(e.target.value)}
           style={{ position:"absolute", inset:0, opacity:0, width:"100%", height:"100%", border:"none", cursor:"pointer" }} />
@@ -16387,7 +16387,7 @@ function SmartBusinessMgmt() {
                   </span>
                   <div style={{ flex:1 }}>
                     <div style={{ color:businessAccentColor, fontWeight:800, fontSize:12.5, letterSpacing:0.2 }}>সক্রিয় বিজনেস</div>
-                    <div style={{ color:T.headingColor, fontWeight:700, fontSize:13.5 }}>{BUSINESS_TYPE_REGISTRY[businessType]?.label || businessType}</div>
+                    <div style={{ color:T.text, fontWeight:700, fontSize:13.5 }}>{BUSINESS_TYPE_REGISTRY[businessType]?.label || businessType}</div>
                   </div>
                   <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={businessAccentColor} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" style={{ transform: showBizSwitcherList ? "rotate(180deg)" : "none", transition:"transform 0.25s cubic-bezier(0.34,1.56,0.64,1)" }}><polyline points="6 9 12 15 18 9"/></svg>
                 </button>
@@ -16468,7 +16468,7 @@ function SmartBusinessMgmt() {
             border:`3px solid ${businessAccentColor || T.accent}33`, borderTopColor: businessAccentColor || T.accent,
             animation:"spin 0.8s linear infinite, glow 1.6s ease-in-out infinite",
           }} />
-          <div style={{ color:T.headingColor, fontWeight:700, fontSize:13.5, animation:"fadeUp 0.25s ease" }}>বিজনেস পরিবর্তন হচ্ছে…</div>
+          <div style={{ color:T.text, fontWeight:700, fontSize:13.5, animation:"fadeUp 0.25s ease" }}>বিজনেস পরিবর্তন হচ্ছে…</div>
         </div>
       )}
 
