@@ -851,6 +851,10 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
       Firebase Deploy
     </div>
+    <div class="tab" onclick="switchTab('reconcile')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      রিকনসিলিয়েশন
+    </div>
   </div>
 
 
@@ -1123,6 +1127,56 @@
               📜 Deploy Log
             </div>
             <div id="fbLog" style="font-family:monospace;font-size:14px;line-height:2.1;min-height:200px;max-height:600px;overflow-y:auto;background:rgba(0,0,0,0.35);padding:16px;white-space:pre-wrap"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ Reconciliation ══ -->
+    <div id="tab-reconcile" style="display:none">
+      <div class="glass card card-hi">
+        <h4 style="margin-bottom:10px">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          দোকানের ডেটা রিকনসিলিয়েশন স্ক্যান
+        </h4>
+        <p style="font-size:12px;color:var(--sub2);margin-bottom:12px;line-height:1.7">
+          এটা invoice নম্বরিং গ্যাপ, ডুপ্লিকেট cashLog, stockMovement ছাড়া invoice, ও orphaned cashLog খুঁজে বের করে। একই Google account ব্যবহার হয় যেটা Firebase Deploy ট্যাবে সংযুক্ত করেছেন (আলাদা করে sign-in লাগবে না, যদি ইতিমধ্যে সংযুক্ত থাকেন)।
+        </p>
+
+        <div id="rcAuthBox">
+          <button class="btn-primary" onclick="fbConnect()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20z"/></svg>
+            Google Account দিয়ে সংযুক্ত করুন
+          </button>
+          <div id="rcAuthStatus" style="font-size:12px;color:var(--sub2);margin-top:8px"></div>
+        </div>
+
+        <div id="rcWorkArea" style="display:none;margin-top:16px">
+          <div class="form-group">
+            <label>Firebase Project ID *</label>
+            <input id="rcProjectId" placeholder="যেমন: niramoy-pharmacy-705">
+          </div>
+
+          <div class="form-row2" style="margin-bottom:12px">
+            <div class="form-group"><label>শুরু (ঐচ্ছিক, ISO)</label><input id="rcStart" placeholder="2026-07-23T18:00:00+06:00"></div>
+            <div class="form-group"><label>শেষ (ঐচ্ছিক, ISO)</label><input id="rcEnd" placeholder="খালি রাখলে পুরো ইতিহাস"></div>
+          </div>
+
+          <button class="btn-primary" style="margin-bottom:10px;background:linear-gradient(135deg,#0ea5e9,#0284c7)" onclick="rcRunScan()">
+            🔍 স্ক্যান শুরু করুন
+          </button>
+
+          <div id="rcSummary" style="display:none;margin-bottom:14px" class="glass" style="padding:12px"></div>
+
+          <button id="rcApplyBtn" class="btn" style="width:100%;display:none;background:linear-gradient(135deg,#f59e0b,#d97706)" onclick="rcApplyFix()">
+            🔧 শুধু ডুপ্লিকেট cashLog ফিক্স করুন (reversal এন্ট্রি যোগ হবে, কিছু মোছা হবে না)
+          </button>
+
+          <div class="glass" style="margin-top:18px;padding:0;border-radius:14px;overflow:hidden;border:1px solid var(--border)">
+            <div style="padding:10px 14px;background:rgba(255,255,255,0.04);border-bottom:1px solid var(--border);font-size:13px;font-weight:700;display:flex;align-items:center;gap:8px">
+              📜 স্ক্যান লগ
+            </div>
+            <div id="rcLog" style="font-family:monospace;font-size:13px;line-height:2.0;min-height:200px;max-height:600px;overflow-y:auto;background:rgba(0,0,0,0.35);padding:16px;white-space:pre-wrap"></div>
           </div>
         </div>
       </div>
@@ -2515,7 +2569,7 @@ window.unpublishUpdate = async function() {
 };
 
 // ── Tab switcher ──────────────────────────────────────────────────────────────
-const TAB_ORDER = ['dashboard','users','payments','alerts','errors','update','settings','fbdeploy'];
+const TAB_ORDER = ['dashboard','users','payments','alerts','errors','update','settings','fbdeploy','reconcile'];
 window.switchTab = function(tab) {
   TAB_ORDER.forEach(t => { document.getElementById('tab-'+t).style.display = t === tab ? 'block' : 'none'; });
   document.querySelectorAll('.tab').forEach((el,i) => el.classList.toggle('active', TAB_ORDER[i] === tab));
@@ -2525,6 +2579,7 @@ window.switchTab = function(tab) {
   if (tab === 'update')   { loadCurrentUpdate(); loadKillSwitchStatus(); renderUpdShopPicker(); }
   if (tab === 'settings') loadBizTypeAuditLog();
   if (tab === 'fbdeploy') fbInitTab();
+  if (tab === 'reconcile') rcInitTab();
 };
 
 const FB_DEPLOY_CLIENT_ID = '359825185312-0df3s1j88lpalbi80m48sqbopfepli9t.apps.googleusercontent.com';
@@ -3214,6 +3269,238 @@ async function fbApiFetch(url, options) {
   }
   return data;
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// ── রিকনসিলিয়েশন ট্যাব — Firebase Deploy ট্যাবের একই OAuth token
+// (fbAccessToken, cloud-platform scope) পুনর্ব্যবহার করে Firestore REST API
+// দিয়ে সরাসরি দোকানের ডেটা পড়ে/লেখে — কোনো service account key বা
+// আলাদা টুল লাগে না। reconcile.mjs-এর একই যুক্তি, শুধু browser-এ চলে। ──
+// ══════════════════════════════════════════════════════════════════════
+let rcLastScan = null; // { projectId, duplicateGroups: [{key, ids, docs}] }
+
+function rcLog(msg, type) {
+  const box = document.getElementById('rcLog');
+  const color = type === 'err' ? '#f87171' : type === 'ok' ? '#6ee7b7' : type === 'warn' ? '#fcd34d' : '#93a3b8';
+  const line = document.createElement('div');
+  line.style.color = color;
+  line.textContent = (type === 'ok' ? '✅ ' : type === 'err' ? '❌ ' : type === 'warn' ? '⚠️ ' : '• ') + msg;
+  box.appendChild(line);
+  box.scrollTop = box.scrollHeight;
+}
+
+window.rcInitTab = function() {
+  const authBox = document.getElementById('rcAuthBox');
+  const work = document.getElementById('rcWorkArea');
+  if (fbAccessToken) {
+    authBox.style.display = 'none';
+    work.style.display = 'block';
+    document.getElementById('rcAuthStatus').textContent = '✅ সংযুক্ত: ' + (fbConnectedEmail || '');
+  } else {
+    authBox.style.display = 'block';
+    work.style.display = 'none';
+  }
+  // fbdeploy ট্যাব থেকে projectId আগে থেকে বসানো থাকলে সেটাই ব্যবহার করি
+  const fbPid = document.getElementById('fbProjectId');
+  if (fbPid && fbPid.value && !document.getElementById('rcProjectId').value) {
+    document.getElementById('rcProjectId').value = fbPid.value;
+  }
+};
+
+// Firestore REST API-এর typed value ({stringValue:...} ইত্যাদি) → plain JS মান
+function rcFsValueToJs(v) {
+  if (v == null) return null;
+  if ('stringValue' in v) return v.stringValue;
+  if ('integerValue' in v) return Number(v.integerValue);
+  if ('doubleValue' in v) return v.doubleValue;
+  if ('booleanValue' in v) return v.booleanValue;
+  if ('nullValue' in v) return null;
+  if ('timestampValue' in v) return v.timestampValue;
+  if ('arrayValue' in v) return (v.arrayValue.values || []).map(rcFsValueToJs);
+  if ('mapValue' in v) return rcFsFieldsToObj(v.mapValue.fields || {});
+  return null;
+}
+function rcFsFieldsToObj(fields) {
+  const out = {};
+  Object.keys(fields || {}).forEach((k) => { out[k] = rcFsValueToJs(fields[k]); });
+  return out;
+}
+function rcFsDocToObj(doc) {
+  const obj = rcFsFieldsToObj(doc.fields || {});
+  obj.id = doc.name.split('/').pop();
+  return obj;
+}
+
+// plain JS মান → Firestore REST API-এর typed value ফরম্যাট (শুধু যেসব টাইপ
+// এই স্ক্রিপ্টের লেখা ডেটায় লাগে তার জন্য — সীমিত কিন্তু যথেষ্ট)
+function rcJsToFsValue(v) {
+  if (typeof v === 'string') return { stringValue: v };
+  if (typeof v === 'number') return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
+  if (typeof v === 'boolean') return { booleanValue: v };
+  if (v instanceof Date) return { timestampValue: v.toISOString() };
+  return { stringValue: String(v) };
+}
+function rcJsToFsFields(obj) {
+  const fields = {};
+  Object.keys(obj).forEach((k) => { fields[k] = rcJsToFsValue(obj[k]); });
+  return fields;
+}
+
+async function rcFetchCollection(projectId, collName) {
+  const base = 'https://firestore.googleapis.com/v1/projects/' + projectId + '/databases/(default)/documents/' + collName;
+  let all = [];
+  let pageToken = '';
+  do {
+    const url = base + '?pageSize=300' + (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : '');
+    const data = await fbApiFetch(url, { method: 'GET' });
+    all = all.concat((data.documents || []).map(rcFsDocToObj));
+    pageToken = data.nextPageToken || '';
+  } while (pageToken);
+  return all;
+}
+
+function rcToDate(v) {
+  if (!v) return null;
+  const d = new Date(v);
+  return isNaN(d) ? null : d;
+}
+
+window.rcRunScan = async function() {
+  const projectId = document.getElementById('rcProjectId').value.trim();
+  if (!projectId) { rcLog('আগে Project ID লিখুন।', 'err'); return; }
+  if (!fbAccessToken) { rcLog('আগে Google account দিয়ে সংযুক্ত করুন।', 'err'); return; }
+
+  document.getElementById('rcLog').innerHTML = '';
+  document.getElementById('rcSummary').style.display = 'none';
+  document.getElementById('rcApplyBtn').style.display = 'none';
+  rcLastScan = null;
+
+  const startVal = document.getElementById('rcStart').value.trim();
+  const endVal = document.getElementById('rcEnd').value.trim();
+  const startDate = startVal ? rcToDate(startVal) : null;
+  const endDate = endVal ? rcToDate(endVal) : null;
+  rcLog('স্ক্যান শুরু হচ্ছে — পরিসর: ' + (startDate || endDate ? (startVal || 'শুরু থেকে') + ' → ' + (endVal || 'এখন পর্যন্ত') : 'পুরো ইতিহাস'));
+
+  function inWindow(rec) {
+    if (!startDate && !endDate) return true;
+    const d = rcToDate(rec._serverTs || rec.date || rec.createdAt);
+    if (!d) return false;
+    if (startDate && d < startDate) return false;
+    if (endDate && d > endDate) return false;
+    return true;
+  }
+
+  try {
+    rcLog('invoices পড়া হচ্ছে...');
+    const invoices = await rcFetchCollection(projectId, 'invoices');
+    rcLog('stockMovements পড়া হচ্ছে...');
+    const stockMovements = await rcFetchCollection(projectId, 'stockMovements');
+    rcLog('cashLogs পড়া হচ্ছে...');
+    const cashLogs = await rcFetchCollection(projectId, 'cashLogs');
+    rcLog('customers পড়া হচ্ছে...');
+    const customers = await rcFetchCollection(projectId, 'customers');
+
+    const wInvoices = invoices.filter(inWindow);
+    const wStock = stockMovements.filter(inWindow);
+    const wCash = cashLogs.filter(inWindow);
+
+    rcLog('মোট — invoices: ' + invoices.length + ', stockMovements: ' + stockMovements.length + ', cashLogs: ' + cashLogs.length + ', customers: ' + customers.length, 'ok');
+    rcLog('পরিসরের ভেতরে — invoices: ' + wInvoices.length + ', stockMovements: ' + wStock.length + ', cashLogs: ' + wCash.length);
+
+    // ১) invoice নম্বরিং গ্যাপ
+    const nums = invoices.map((r) => Number(r.invoiceNo)).filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
+    const gaps = [];
+    for (let i = 1; i < nums.length; i++) {
+      if (nums[i] - nums[i - 1] > 1) gaps.push({ from: nums[i - 1], to: nums[i], missing: nums[i] - nums[i - 1] - 1 });
+    }
+    rcLog('invoice নম্বরিং গ্যাপ: ' + gaps.length + 'টা (তথ্যের জন্য, স্বয়ংক্রিয় ফিক্স নেই)', gaps.length ? 'warn' : 'ok');
+    gaps.slice(0, 10).forEach((g) => rcLog('  #' + g.from + ' → #' + g.to + ' (' + g.missing + 'টা অনুপস্থিত)', 'warn'));
+
+    // ২) stockMovement ছাড়া invoice
+    const stockByInvoice = new Set(wStock.map((s) => s.invoiceId || s.refId));
+    const missingStock = wInvoices.filter((inv) => !inv.isVoided && !inv.isPersonalUse && !stockByInvoice.has(inv.id));
+    rcLog('stockMovement ছাড়া invoice: ' + missingStock.length + 'টা (ম্যানুয়াল যাচাই দরকার)', missingStock.length ? 'warn' : 'ok');
+    missingStock.slice(0, 10).forEach((inv) => rcLog('  invoice #' + (inv.invoiceNo || inv.id), 'warn'));
+
+    // ৩) ডুপ্লিকেট cashLog — একমাত্র auto-fixable আইটেম
+    const byMinute = {};
+    wCash.forEach((c) => {
+      const d = rcToDate(c._serverTs || c.date);
+      if (!d) return;
+      const key = c.type + '|' + c.amount + '|' + d.toISOString().slice(0, 16);
+      (byMinute[key] = byMinute[key] || []).push(c);
+    });
+    const dupeGroups = Object.entries(byMinute).filter(([, arr]) => arr.length > 1);
+    rcLog('ডুপ্লিকেট cashLog গ্রুপ: ' + dupeGroups.length + 'টা', dupeGroups.length ? 'warn' : 'ok');
+    dupeGroups.forEach(([key, arr]) => rcLog('  ' + key + ' — ' + arr.length + 'টা এন্ট্রি (ids: ' + arr.map((a) => a.id).join(', ') + ')', 'warn'));
+
+    // ৪) orphaned cashLog
+    const custIds = new Set(customers.map((c) => c.id));
+    const invIds = new Set(invoices.map((i) => i.id));
+    const orphaned = wCash.filter((c) => (c.customerId && !custIds.has(c.customerId)) || (c.invoiceId && !invIds.has(c.invoiceId)));
+    rcLog('orphaned cashLog: ' + orphaned.length + 'টা', orphaned.length ? 'warn' : 'ok');
+    orphaned.slice(0, 10).forEach((c) => rcLog('  ' + c.id + ' — type:' + c.type + ' amount:' + c.amount, 'warn'));
+
+    // সারাংশ
+    const sum = document.getElementById('rcSummary');
+    sum.style.display = 'block';
+    sum.innerHTML =
+      '<div style="font-size:13px;line-height:1.9">' +
+      '<b>সারাংশ</b><br>invoice গ্যাপ: ' + gaps.length +
+      '<br>stockMovement-বিহীন invoice: ' + missingStock.length +
+      '<br>ডুপ্লিকেট cashLog গ্রুপ: ' + dupeGroups.length +
+      '<br>orphaned cashLog: ' + orphaned.length + '</div>';
+
+    rcLastScan = { projectId, dupeGroups };
+    if (dupeGroups.length > 0) {
+      document.getElementById('rcApplyBtn').style.display = 'block';
+    }
+    rcLog('স্ক্যান শেষ।', 'ok');
+  } catch (e) {
+    rcLog('স্ক্যান ব্যর্থ: ' + e.message, 'err');
+  }
+};
+
+window.rcApplyFix = async function() {
+  if (!rcLastScan || !rcLastScan.dupeGroups || !rcLastScan.dupeGroups.length) {
+    rcLog('প্রথমে স্ক্যান চালান।', 'err');
+    return;
+  }
+  const totalDupes = rcLastScan.dupeGroups.reduce((s, [, arr]) => s + (arr.length - 1), 0);
+  const ok = confirm(
+    'এটা ' + totalDupes + 'টা নতুন cashLog reversal এন্ট্রি যোগ করবে (মূল কোনো এন্ট্রি মুছবে না বা বদলাবে না, শুধু নতুন সংশোধনী এন্ট্রি যোগ হবে)।\n\nচালিয়ে যেতে চান?'
+  );
+  if (!ok) { rcLog('বাতিল করা হলো।', 'warn'); return; }
+
+  const projectId = rcLastScan.projectId;
+  const createUrl = 'https://firestore.googleapis.com/v1/projects/' + projectId + '/databases/(default)/documents/cashLogs';
+  let fixedCount = 0;
+  for (const [key, arr] of rcLastScan.dupeGroups) {
+    const extras = arr.slice(1); // প্রথমটা আসল ধরে রাখা হয়
+    for (const dupe of extras) {
+      const reversalType = (dupe.type === 'withdrawal' || dupe.type === 'baki') ? 'joma' : 'withdrawal_reversal';
+      const payload = {
+        fields: rcJsToFsFields({
+          type: reversalType,
+          amount: dupe.amount,
+          source: 'reconciliation-reversal',
+          reversalOf: dupe.id,
+          note: 'admin.html reconciliation টুল দ্বারা যোগ করা — সন্দেহভাজন ডুপ্লিকেট (গ্রুপ: ' + key + ') নিরপেক্ষ করতে। মূল এন্ট্রি (' + dupe.id + ') মোছা হয়নি।',
+          createdBy: 'reconcile-admin-tool',
+          _serverTs: new Date(),
+        })
+      };
+      try {
+        await fbApiFetch(createUrl, { method: 'POST', body: JSON.stringify(payload) });
+        fixedCount++;
+        rcLog('reversal যোগ হলো cashLog ' + dupe.id + '-এর জন্য', 'ok');
+      } catch (e) {
+        rcLog('cashLog ' + dupe.id + '-এর reversal লিখতে ব্যর্থ: ' + e.message, 'err');
+      }
+    }
+  }
+  rcLog('মোট ' + fixedCount + 'টা reversal এন্ট্রি যোগ হলো। মূল কোনো ডেটা মোছা/বদলানো হয়নি।', 'ok');
+  document.getElementById('rcApplyBtn').style.display = 'none';
+};
 
 // ── প্রজেক্ট থেকে apiKey/databaseURL/projectId খুঁজে বের করা ──
 window.fbFetchConfig = async function() {
