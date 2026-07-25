@@ -6202,6 +6202,20 @@ const FSS = {
                 return r ? { ...p, stock: r.stock, batches: r.batches, costPrice: r.costPrice } : p;
               }));
             }
+            // 🆕 ফিক্স (স্টক ড্রিফট false-positive — অফলাইন-কিউ পাথ): অনলাইন
+            // createInvoice()-এর মতোই, অফলাইনে করা বিক্রি reconnect-এ flush হওয়ার
+            // সময়ও source:"sale" মুভমেন্ট-লগ এন্ট্রি লেখা হচ্ছে।
+            const _mvNow = new Date().toISOString(), _mvDateKey = _dateKeyOf(new Date());
+            for (const sold of item.stockItems) {
+              const r = resMap.get(sold.productId);
+              if (!r) continue;
+              pushStockMovement({
+                id: "sm_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+                productId: sold.productId, productName: sold.name || "",
+                stock: r.stock, prevStock: r.stock + (sold.qty || 0),
+                delta: -(sold.qty || 0), at: _mvNow, dateKey: _mvDateKey, source: "sale", invoiceId: item.invoiceId || null,
+              });
+            }
             if (item.invoiceId && setInvoices) {
               let itemsChanged = false;
               let correctedInv = null;
@@ -18317,6 +18331,24 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                 const r = resMap.get(p.id);
                 return r ? { ...p, stock: r.stock, batches: r.batches, costPrice: r.costPrice } : p;
               }));
+              // 🆕 ফিক্স (স্টক ড্রিফট false-positive): স্বাভাবিক বিক্রিতে আগে কোনো
+              // stockMovements এন্ট্রি লেখা হতো না, ফলে Settings-এর "ডেটা সিঙ্ক
+              // মিসম্যাচ চেক" প্রতিটা বিক্রি-হওয়া পণ্যকেই "ড্রিফট" হিসেবে দেখাত
+              // (আসল stock ঠিক থাকা সত্ত্বেও)। এখন প্রতিটা সফল স্টক-ডিডাকশনের সাথে
+              // source:"sale" ট্যাগ দিয়ে একটা মুভমেন্ট-লগ এন্ট্রিও লেখা হচ্ছে, যাতে
+              // ওই চেক সঠিকভাবে "সিঙ্ক্‌ড" দেখায়।
+              const _mvNow = new Date().toISOString(), _mvDateKey = _dateKeyOf(new Date());
+              for (const sold of sellableItems) {
+                const r = resMap.get(sold.productId);
+                if (!r) continue;
+                const mv = pushStockMovement({
+                  id: "sm_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+                  productId: sold.productId, productName: sold.name || "",
+                  stock: r.stock, prevStock: r.stock + (sold.qty || 0),
+                  delta: -(sold.qty || 0), at: _mvNow, dateKey: _mvDateKey, source: "sale", invoiceId: inv.id,
+                });
+                setStockMovements(prev => [mv, ...(prev || [])]);
+              }
               let itemsChanged = false;
               const correctedItems = inv.items.map(it => {
                 const r = resMap.get(it.productId);
@@ -29842,10 +29874,10 @@ function NotificationCenterModule({ T, S, currentUser, showToast, products = [],
           ↻ রিফ্রেশ
         </button>
       </div>
-      <div style={{ color: `${T.headingColor}80`, fontSize: 11, marginBottom: 14 }}>সর্বশেষ চেক: {timeAgo(refreshedAt) || "এইমাত্র"}</div>
+      <div style={{ color: T.sub, fontSize: 11, marginBottom: 14 }}>সর্বশেষ চেক: {timeAgo(refreshedAt) || "এইমাত্র"}</div>
 
       {items.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "40px 20px", color: T.sub || `${T.headingColor}90` }}>
+        <div style={{ textAlign: "center", padding: "40px 20px", color: T.sub }}>
           <div style={{ fontSize: 36, marginBottom: 8 }}>✅</div>
           <div style={{ fontWeight: 700 }}>সব ঠিক আছে — কোনো নোটিফিকেশন নেই</div>
         </div>
@@ -29861,7 +29893,7 @@ function NotificationCenterModule({ T, S, currentUser, showToast, products = [],
                 <span style={{ fontSize: 18, lineHeight: 1 }}>{it.icon}</span>
                 <div style={{ flex: 1 }}>
                   <div style={{ color: T.text, fontWeight: 800, fontSize: 13.5 }}>{it.title}</div>
-                  <div style={{ color: `${T.headingColor}90`, fontSize: 12, marginTop: 3, lineHeight: 1.5 }}>{it.msg}</div>
+                  <div style={{ color: T.sub, fontSize: 12, marginTop: 3, lineHeight: 1.5 }}>{it.msg}</div>
                 </div>
               </div>
             </div>
