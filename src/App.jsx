@@ -43,6 +43,15 @@ import {
   hashString, hashRecord, hashCollection, buildContentHashes,
   diffChangedFields, effectiveTs, mergeCollection,
 } from "./sync.js";
+// 🔴 ফিক্স (Firestore read-quota — ২৫ জুলাই ২০২৬): "ফুল চেকাপ চালান" বাটন
+// (runSyncDiagnostics) stockMovements/txns/cashLogs/users-এর সম্পূর্ণ
+// আনউইন্ডোড getDocs() করে (কোনো date-window/limit ছাড়াই পুরো কালেকশন read) —
+// লাইভ দোকানে এই কালেকশনগুলো সময়ের সাথে হাজার হাজার ডকুমেন্টে পৌঁছায়, ফলে
+// একটা মাত্র বাটন-চাপেই দৈনিক ৫০,০০০ read কোটার বড় অংশ শেষ হয়ে যেতে পারে।
+// পুরো ফিচার/ফাংশন কোড রেখে দেওয়া হলো (ভবিষ্যতে সীমিত/সেফ ভার্সনে দরকার
+// পড়তে পারে), শুধু বাটন+প্যানেল UI থেকে সাময়িকভাবে hide করা হয়েছে এই flag
+// দিয়ে — অ্যাডমিন ও স্টাফ দুই জায়গাতেই একই flag প্রযোজ্য।
+const SHOW_FULL_CHECKUP_BUTTON = false;
 // 🔴 recharts — শুধু AI পেজের "Analytics & Report" ট্যাবে ব্যবহার হয় (ডিফল্ট স্ক্রিন নয়),
 // তাই স্ট্যাটিক import না রেখে নিচে lazy dynamic import() দিয়ে লোড করা হচ্ছে (useRecharts হুক) —
 // প্রতি অ্যাপ-ওপেনে এই চার্ট লাইব্রেরির parse/eval খরচ আর বহন করতে হবে না।
@@ -4424,8 +4433,18 @@ const ArchiveDB = {
   _db: null,
   async open() {
     if (this._db) return this._db;
-    return new Promise((resolve, reject) => {
+    const openPromise = new Promise((resolve, reject) => {
       const req = indexedDB.open(this.DB_NAME, this.VERSION);
+      // 🔴 ফিক্স (হ্যাং প্রতিরোধ — লোকাল পার্সিস্টেন্স হ্যাং রুট কজ): VERSION বাড়লে
+      // (মাল্টি-বিজনেস মাইগ্রেশনের সময় যেমন হয়েছিল) অন্য কোনো ট্যাব/WebView
+      // instance এখনো পুরনো ভার্সনে এই DB খোলা রাখলে ব্রাউজার "blocked" ইভেন্ট
+      // দেয় — onupgradeneeded তখন কখনো ফায়ার করে না, req নিজে থেকে
+      // resolve/reject কোনোটাই হয় না। আগে হ্যান্ডলার না থাকায় এই promise
+      // চিরকাল pending থেকে যেত, আর যেকোনো await this.open() কল (আর্কাইভ
+      // save/read) নীরবে ঝুলে থাকত। নিচের টাইমআউট এটা ধরবে।
+      req.onblocked = () => {
+        logErrorToCentral?.("indexedDB:blocked", new Error("open blocked by another connection"), { db: this.DB_NAME });
+      };
       req.onupgradeneeded = e => {
         const db = e.target.result;
         const tx = e.target.transaction;
@@ -4477,6 +4496,26 @@ const ArchiveDB = {
       req.onsuccess = e => { this._db = e.target.result; resolve(this._db); };
       req.onerror   = () => reject(req.error);
     });
+    // 🔴 ফিক্স (হ্যাং প্রতিরোধ, চলমান): onblocked-এ resolve/reject কিছুই হয় না
+    // বলে openPromise নিজে থেকে কখনো শেষ হয় না — এখানে ৫s টাইমআউট দিয়ে race
+    // করে null রিটার্ন করা হচ্ছে (উপরের সব caller ইতিমধ্যে try/catch + db-null-হলে
+    // থ্রো-হওয়া TypeError ধরে fallback করে, তাই null নিরাপদ)। আসল open() পরে
+    // (দেরিতে) সফল হলেও req.onsuccess হ্যান্ডলার this._db সেট করে দেবে — পরের
+    // .open() কল তখন ক্যাশড db সাথে সাথে পাবে।
+    // 🔴 ফিক্স (দৃশ্যমানতা — নীরব হ্যাং যেন অলক্ষিত না থাকে): আসল open() টাইমআউটের
+    // আগেই সফল/ব্যর্থ হলে নিচের লগ স্কিপ হয় (_settledByOpen flag) — শুধু প্রকৃত
+    // টাইমআউট (blocked/অস্বাভাবিক ধীর) ঘটলেই app_errors-এ লগ হবে, false-positive না।
+    // ৫s থেকে ৮s করা হয়েছে — খুব পুরনো/ধীর ডিভাইসেও স্বাভাবিক open() সময়মতো শেষ
+    // হওয়ার সুযোগ পায়, সত্যিকারের blocked অবস্থাতেও ৮ সেকেন্ডের বেশি অপেক্ষা করতে হয় না।
+    let _settledByOpen = false;
+    openPromise.then(() => { _settledByOpen = true; }, () => { _settledByOpen = true; });
+    const timeoutGuard = new Promise(resolve => setTimeout(() => {
+      if (!_settledByOpen) {
+        logErrorToCentral?.("indexedDB:openTimeout", new Error("open() exceeded 8s — likely blocked by another tab/connection"), { db: this.DB_NAME });
+      }
+      resolve(null);
+    }, 8000));
+    return Promise.race([openPromise.catch(() => null), timeoutGuard]);
   },
   // dated_snapshots ও worm_archive-এর আসল প্রাইমারি-কী এখন "prefix::naturalKey"
   // (naturalKey = dateKey বা monthKey)। field_change_log-এর কী আগে থেকেই
@@ -5990,9 +6029,41 @@ const FSS = {
   // 📊 Phase 1.3: Stats/Aggregation — invoice save/void-এ running total update
   // Dashboard totals-এর জন্য সব invoice scan না করে একটা ছোট doc থেকে পড়া যায়।
   // delta = { sale: ±N, profit: ±N, baki: ±N, cash: ±N } — void-এ negative delta দিন।
+  // 🔴 ফিক্স (নীরব ডেটা-লস দৃশ্যমান করা, শেয়ার্ড হেল্পার): queuePendingSalesTxn()/
+  // queuePendingVoidRestore()-এর ঠিক একই ক্যাপ-ও-লগ প্যাটার্ন — updateStats()-এর
+  // দুই জায়গা থেকেই (Firestore এখনো রেডি না, ও write সত্যিই ব্যর্থ) একই কোড কল করে।
+  _queuePendingStatsDelta(dateKey, monthKey, delta) {
+    try {
+      const q = JSON.parse(localStorage.getItem("sbm_pending_stats") || "[]");
+      // 🔴 ফিক্স (মাল্টি-বিজনেস ক্রস-কনটামিনেশন): এই delta কোন বিজনেসের stats
+      // doc-এর জন্য তা রেকর্ড করা হচ্ছে (queuePendingSalesTxn()-এর কমেন্ট দ্রষ্টব্য)।
+      q.push({ dateKey, monthKey, delta, prefix: this._businessPrefix || null, at: Date.now() });
+      // 🔴 ফিক্স (নীরব ডেটা-লস দৃশ্যমান করা): queuePendingSalesTxn()/
+      // queuePendingVoidRestore()-এর ঠিক একই প্যাটার্ন — ক্যাপের বেশি হলে
+      // সবচেয়ে পুরনো delta-গুলো আগে নীরবে বাদ পড়ে যেত, ড্যাশবোর্ড টোটাল
+      // Firestore-এ চিরতরে ভুল থেকে যেত কোনো ট্রেস ছাড়াই।
+      if (q.length > 2000) {
+        const dropped = q.slice(0, q.length - 2000);
+        logErrorToCentral?.(
+          "updateStats:overflow",
+          new Error(`${dropped.length} pending stats delta permanently dropped (queue > 2000)`),
+          { droppedDateKeys: dropped.map(d => d.dateKey).filter(Boolean).slice(0, 20) }
+        );
+      }
+      localStorage.setItem("sbm_pending_stats", JSON.stringify(q.slice(-2000)));
+    } catch {}
+  },
+
   async updateStats(dateKey, delta) {
-    if (!this._db || !dateKey) return;
+    if (!dateKey) return;
     const monthKey = dateKey.slice(0, 7); // "2026-06"
+    // 🔴 ফিক্স (রুট কজ — createInvoice/voidInvoice/processReturn তিন জায়গাতেই
+    // `if (FSS.isReady())`-এ গার্ড করা থাকায় stats delta চিরতরে হারানো): আগে
+    // এখানে `if (!this._db || !dateKey) return;` ছিল — Firestore এখনো রেডি না
+    // হলে এই delta কোথাও জমা না রেখেই নিঃশব্দে ফেরত যেত (queue শুধু নিচের catch
+    // ব্লকে, মানে write সত্যিই চেষ্টা করে ব্যর্থ হলে, ভরত হতো)। এখন _db না থাকলেও
+    // সরাসরি একই রিট্রাই-কিউতে জমা হয় — flushPendingStats() পরে reconcile করবে।
+    if (!this._db) { this._queuePendingStatsDelta(dateKey, monthKey, delta); return; }
     const upd = {};
     if (delta.sale   !== undefined) upd.totalSale   = increment(delta.sale);
     if (delta.profit !== undefined) upd.totalProfit = increment(delta.profit);
@@ -6011,13 +6082,7 @@ const FSS = {
       // পড়া ৳ অমিলের মূল কারণ)। এখন ব্যর্থ delta localStorage-এ একটা রিট্রাই
       // কিউতে জমা রাখা হয় — পরের successful updateStats() কল বা app চালু/অনলাইন
       // হওয়ার সময় flushPendingStats() সেটা আবার চেষ্টা করবে, একদম হারাবে না।
-      try {
-        const q = JSON.parse(localStorage.getItem("sbm_pending_stats") || "[]");
-        // 🔴 ফিক্স (মাল্টি-বিজনেস ক্রস-কনটামিনেশন): এই delta কোন বিজনেসের stats
-        // doc-এর জন্য তা রেকর্ড করা হচ্ছে (queuePendingSalesTxn()-এর কমেন্ট দ্রষ্টব্য)।
-        q.push({ dateKey, monthKey, delta, prefix: this._businessPrefix || null, at: Date.now() });
-        localStorage.setItem("sbm_pending_stats", JSON.stringify(q.slice(-200)));
-      } catch {}
+      this._queuePendingStatsDelta(dateKey, monthKey, delta);
     }
   },
 
@@ -6068,7 +6133,19 @@ const FSS = {
       // ফেললে ভিন্ন হতে পারত) সেটা দিয়েই replay হতো, ফলে ভুল বিজনেসের
       // কালেকশনে stock/balance আপডেট প্রয়োগ হয়ে যেতে পারত।
       q.push({ ...entry, prefix: this._businessPrefix || null, at: Date.now() });
-      localStorage.setItem("sbm_pending_sales_txns", JSON.stringify(q.slice(-200)));
+      // 🔴 ফিক্স (নীরব ডেটা-লস দৃশ্যমান করা): queuePendingVoidRestore()-এর ঠিক
+      // একই প্যাটার্ন — ক্যাপের বেশি হলে সবচেয়ে পুরনো এন্ট্রিগুলো আগে নীরবে বাদ
+      // পড়ে যেত। এখন app_errors-এ লগ হয় (কোন invoiceId-এর স্টক/বাকি রিকনসিলিয়েশন
+      // হারিয়ে গেল, সেই তালিকাসহ)।
+      if (q.length > 2000) {
+        const dropped = q.slice(0, q.length - 2000);
+        logErrorToCentral?.(
+          "queuePendingSalesTxn:overflow",
+          new Error(`${dropped.length} pending sales stock/balance entry permanently dropped (queue > 2000)`),
+          { droppedInvoiceIds: dropped.map(d => d.invoiceId).filter(Boolean).slice(0, 20) }
+        );
+      }
+      localStorage.setItem("sbm_pending_sales_txns", JSON.stringify(q.slice(-2000)));
     } catch {}
   },
 
@@ -6176,7 +6253,29 @@ const FSS = {
       // 🔴 ফিক্স (মাল্টি-বিজনেস ক্রস-কনটামিনেশন) — queuePendingSalesTxn()-এর
       // ঠিক একই কারণে prefix রেকর্ড করা হচ্ছে।
       q.push({ ...entry, prefix: this._businessPrefix || null, at: Date.now() });
-      localStorage.setItem("sbm_pending_void_restores", JSON.stringify(q.slice(-200)));
+      // 🔴 ফিক্স (নীরব ডেটা-লস দৃশ্যমান করা): ২০০-এর বেশি হলে সবচেয়ে পুরনো
+      // এন্ট্রিগুলো (মানে যেগুলো সবচেয়ে বেশিদিন ধরে reconcile হতে পারছে না —
+      // সম্ভবত permanent failure, transient না) আগে নীরবে বাদ পড়ে যেত, কোনো
+      // ট্রেস না রেখে। এখন সেটা app_errors-এ লগ হচ্ছে (কোন invoiceId-এর
+      // স্টক/ব্যালেন্স-সংশোধন হারিয়ে গেল, সেই তালিকাসহ) যাতে অ্যাডমিন-প্যানেল
+      // থেকে ধরা পড়ে ও ম্যানুয়ালি ঠিক করা যায় — এই কিউ নিজে কখনো সাইলেন্টলি
+      // ডেটা হারায় এমনটা যেন আর অলক্ষিত না থাকে।
+      // 🔴 ফিক্স (ছোট গ্যাপ — পেমেন্ট-কালেকশন এন্ট্রি লগে অদৃশ্য): পেমেন্ট
+      // কালেকশন মোডাল থেকে আসা এন্ট্রিতে invoiceId: null (কোনো ইনভয়েসের সাথে
+      // যুক্ত না বলে) — শুধু invoiceId দিয়ে ফিল্টার করলে এই এন্ট্রি ড্রপ হলে কোন
+      // কাস্টমারের ক্ষতি হলো তা লগে দেখা যেত না, শুধু সংখ্যা দেখা যেত। এখন
+      // invoiceId না থাকলে balanceUpdate.customerId ফলব্যাক হিসেবে দেখানো হচ্ছে।
+      if (q.length > 2000) {
+        const dropped = q.slice(0, q.length - 2000);
+        logErrorToCentral?.(
+          "queuePendingVoidRestore:overflow",
+          new Error(`${dropped.length} pending restore/balance entry permanently dropped (queue > 2000)`),
+          {
+            droppedInvoiceIds: dropped.map(d => d.invoiceId || (d.balanceUpdate?.customerId ? `customer:${d.balanceUpdate.customerId}` : null)).filter(Boolean).slice(0, 20)
+          }
+        );
+      }
+      localStorage.setItem("sbm_pending_void_restores", JSON.stringify(q.slice(-2000)));
     } catch {}
   },
 
@@ -6263,6 +6362,73 @@ const FSS = {
       }
     }
     try { localStorage.setItem("sbm_pending_void_restores", JSON.stringify(remaining)); } catch {}
+  },
+
+  // 🔴 ফিক্স (রুট কজ — ক্রয় এন্ট্রিতে কোনো রিট্রাই-কিউ না থাকা): এতদিন
+  // transactionAddStock() ব্যর্থ হলে (FSS.isReady() false বা transaction
+  // exception) শুধু applyLocalFallback() চলত — ফোনের স্ক্রিনে স্টক বেড়ে
+  // দেখাত, কিন্তু Firestore-এ কখনো পৌঁছাত না, আর কোনো ট্রেসও থাকত না।
+  // queuePendingSalesTxn()/queuePendingVoidRestore()-এর ঠিক একই
+  // localStorage-কিউ প্যাটার্ন — এখন ব্যর্থ ক্রয়-স্টক-আপডেট এখানে জমা থাকে,
+  // reconnect হলে (boot + 'online' ইভেন্ট) আসল atomic transaction দিয়ে
+  // reconcile হবে।
+  queuePendingPurchaseStock(entry) {
+    try {
+      const q = JSON.parse(localStorage.getItem("sbm_pending_purchase_stock") || "[]");
+      // 🔴 ফিক্স (মাল্টি-বিজনেস ক্রস-কনটামিনেশন): queuePendingSalesTxn()-এর
+      // ঠিক একই কারণে prefix রেকর্ড করা হচ্ছে।
+      q.push({ ...entry, prefix: this._businessPrefix || null, at: Date.now() });
+      // 🔴 ফিক্স (নীরব ডেটা-লস দৃশ্যমান করা): অন্য কিউগুলোর ঠিক একই প্যাটার্ন —
+      // ক্যাপের বেশি হলে সবচেয়ে পুরনো এন্ট্রিগুলো app_errors-এ লগ হয়ে বাদ পড়ে।
+      if (q.length > 2000) {
+        const dropped = q.slice(0, q.length - 2000);
+        logErrorToCentral?.(
+          "queuePendingPurchaseStock:overflow",
+          new Error(`${dropped.length} pending purchase stock entry permanently dropped (queue > 2000)`),
+          { droppedEntryIds: dropped.map(d => d.entryId).filter(Boolean).slice(0, 20) }
+        );
+      }
+      localStorage.setItem("sbm_pending_purchase_stock", JSON.stringify(q.slice(-2000)));
+    } catch {}
+  },
+
+  // 🔁 কিউতে জমে থাকা ক্রয়-স্টক আপডেট আবার চেষ্টা করে — flushPendingSalesTxns()/
+  // flushPendingVoidRestores()-এর ঠিক পাশাপাশি, FSS রেডি হওয়ার পরে ও নেট
+  // ফিরে এলে কল করা উচিত। সফল হলে local products/purchaseOrders স্টেটও
+  // (পাস করা setter থাকলে) সার্ভারের চূড়ান্ত মান দিয়ে সাইলেন্টলি আপডেট করে।
+  async flushPendingPurchaseStock({ setProducts, setPurchaseOrders } = {}) {
+    if (!this._db) return;
+    let q = [];
+    try { q = JSON.parse(localStorage.getItem("sbm_pending_purchase_stock") || "[]"); } catch { return; }
+    if (!q.length) return;
+    const remaining = [];
+    const currentPrefix = this._businessPrefix || null;
+    for (const item of q) {
+      // 🔴 ফিক্স (মাল্টি-বিজনেস ক্রস-কনটামিনেশন): অন্য বিজনেসের এন্ট্রি হলে
+      // কিউতেই অপরিবর্তিত রেখে দেওয়া হয় — flushPendingSalesTxns()-এর মতোই।
+      const itemPrefix = Object.prototype.hasOwnProperty.call(item, "prefix") ? item.prefix : null;
+      if (itemPrefix !== currentPrefix) { remaining.push(item); continue; }
+      try {
+        const txResult = await this.transactionAddStock(item.productId, {
+          qty: item.qty, unitCost: item.unitCost, unitSell: item.unitSell,
+          expiryDate: item.expiryDate, supplier: item.supplier, note: item.note,
+          isFreeStock: item.isFreeStock, batchNoHint: item.batchNoHint,
+        });
+        if (!txResult) { remaining.push(item); continue; } // transient — পরের চেষ্টায় আবার হবে
+        if (setProducts) {
+          setProducts(prev => prev.map(p => p.id === item.productId
+            ? { ...p, stock: txResult.stock, costPrice: txResult.costPrice, batches: txResult.batches }
+            : p));
+        }
+        if (item.entryId && txResult.batchNo && txResult.batchNo !== item.batchNoHint && setPurchaseOrders) {
+          setPurchaseOrders(prev => prev.map(e => e.id === item.entryId ? { ...e, batch: txResult.batchNo } : e));
+        }
+      } catch (e) {
+        logErrorToCentral?.("flushPendingPurchaseStock", e, { productId: item.productId, entryId: item.entryId });
+        remaining.push(item);
+      }
+    }
+    try { localStorage.setItem("sbm_pending_purchase_stock", JSON.stringify(remaining)); } catch {}
   },
 
   // 🩹 ড্রিফট-প্রুফ রিপেয়ার: increment()-এর বদলে সরাসরি প্রকৃত ইনভয়েস/txn ডেটা
@@ -6529,8 +6695,14 @@ const SyncOutbox = {
   _db: null,
   async open() {
     if (this._db) return this._db;
-    return new Promise((resolve, reject) => {
+    const openPromise = new Promise((resolve, reject) => {
       const req = indexedDB.open(this.DB_NAME, this.VERSION);
+      // 🔴 ফিক্স (হ্যাং প্রতিরোধ — ArchiveDB.open()-এর ঠিক একই কারণে/প্যাটার্নে):
+      // ভবিষ্যতে VERSION বাড়লে অন্য ট্যাব/WebView এই DB খোলা রাখলে "blocked"
+      // ইভেন্ট আসবে, হ্যান্ডলার ছাড়া promise চিরকাল pending থাকত।
+      req.onblocked = () => {
+        logErrorToCentral?.("indexedDB:blocked", new Error("open blocked by another connection"), { db: this.DB_NAME });
+      };
       req.onupgradeneeded = e => {
         const db = e.target.result;
         if (!db.objectStoreNames.contains(this.STORE)) {
@@ -6541,6 +6713,20 @@ const SyncOutbox = {
       req.onsuccess = e => { this._db = e.target.result; resolve(this._db); };
       req.onerror   = () => reject(req.error);
     });
+    // 🔴 ফিক্স (দৃশ্যমানতা — নীরব হ্যাং যেন অলক্ষিত না থাকে): আসল open() টাইমআউটের
+    // আগেই সফল/ব্যর্থ হলে নিচের লগ স্কিপ হয় (_settledByOpen flag) — শুধু প্রকৃত
+    // টাইমআউট (blocked/অস্বাভাবিক ধীর) ঘটলেই app_errors-এ লগ হবে, false-positive না।
+    // ৫s থেকে ৮s করা হয়েছে — খুব পুরনো/ধীর ডিভাইসেও স্বাভাবিক open() সময়মতো শেষ
+    // হওয়ার সুযোগ পায়, সত্যিকারের blocked অবস্থাতেও ৮ সেকেন্ডের বেশি অপেক্ষা করতে হয় না।
+    let _settledByOpen = false;
+    openPromise.then(() => { _settledByOpen = true; }, () => { _settledByOpen = true; });
+    const timeoutGuard = new Promise(resolve => setTimeout(() => {
+      if (!_settledByOpen) {
+        logErrorToCentral?.("indexedDB:openTimeout", new Error("open() exceeded 8s — likely blocked by another tab/connection"), { db: this.DB_NAME });
+      }
+      resolve(null);
+    }, 8000));
+    return Promise.race([openPromise.catch(() => null), timeoutGuard]);
   },
   // 🔴 ফিক্স (মাল্টি-বিজনেস কন্টামিনেশন): প্রতিটা এন্ট্রি জমা হওয়ার সময়েই তার
   // বিজনেস-প্রিফিক্স ট্যাগ করে রাখা হয় (sbm_pending_sales_txns/void_restores/
@@ -12723,6 +12909,9 @@ function SmartBusinessMgmt() {
     // 🔴 ফিক্স: অফলাইনে ভয়েড/রিটার্ন করা হলে জমে থাকা স্টক-রিস্টোর/ব্যালেন্স-
     // রিভার্সাল কিউ — দেখুন FSS.queuePendingVoidRestore()-এর কমেন্ট
     FSS.flushPendingVoidRestores({ setProducts, setCustomers });
+    // 🔴 ফিক্স (রুট কজ — ক্রয় এন্ট্রিতে রিট্রাই-কিউ না থাকা): দেখুন
+    // FSS.queuePendingPurchaseStock()-এর কমেন্ট
+    FSS.flushPendingPurchaseStock({ setProducts, setPurchaseOrders });
     // 🔴 ফিক্স (রুট কজ ৩): flush-গুলো শেষ হওয়ার সময় দিয়ে ১৫ সেকেন্ড পর ব্যালেন্স
     // ড্রিফট চেক — দেখুন autoBalanceDriftCheck()-এর কমেন্ট
     setTimeout(() => autoBalanceDriftCheck(), 15000);
@@ -12746,6 +12935,7 @@ function SmartBusinessMgmt() {
         FSS.flushPendingStats();
         FSS.flushPendingSalesTxns({ setProducts, setCustomers, setInvoices });
         FSS.flushPendingVoidRestores({ setProducts, setCustomers });
+        FSS.flushPendingPurchaseStock({ setProducts, setPurchaseOrders });
         // 🔴 ফিক্স (রুট কজ ৩): দেখুন autoBalanceDriftCheck()-এর কমেন্ট
         setTimeout(() => autoBalanceDriftCheck(), 15000);
       }
@@ -14454,9 +14644,17 @@ function SmartBusinessMgmt() {
           ? scaleBatchBreakdownForVoid(soldItem.batchBreakdown, alreadyReturnedQty)
           : [];
         const hasBreakdown = adjustedBatchBreakdown.length > 0;
-        if (isOffline) {
-          // অফলাইনে transaction অ্যাটেম্পটই করা হচ্ছে না — সরাসরি কিউতে জমা,
-          // reconnect-এর পর আসল atomic transaction দিয়ে reconcile হবে।
+        // 🔴 ফিক্স (রুট কজ — isOffline/isReady()-এর মাঝের ফাঁক): আগে এখানে
+        // `if (isOffline) {...} else if (FSS.isReady()) {...}` ছিল — isOffline
+        // false অথচ FSS.isReady()-ও false এই মাঝের অবস্থায় (অ্যাপ বুট হওয়ার
+        // প্রথম মুহূর্তে) দুইটা ব্র্যাঞ্চের কোনোটাই না চলে সরাসরি নিচের
+        // local-fallback-এ পড়ে যেত, যেটা কোনো queue এন্ট্রি রাখে না — স্টক-রিস্টোর
+        // চিরতরে হারিয়ে যেত। এখন isOffline-এর শর্তে `|| !FSS.isReady()`ও ধরা
+        // হচ্ছে, তাই এই মাঝের অবস্থাতেও ঠিকভাবে কিউতে জমা হবে।
+        if (isOffline || !FSS.isReady()) {
+          // অফলাইনে/FSS রেডি না থাকলে transaction অ্যাটেম্পটই করা হচ্ছে না —
+          // সরাসরি কিউতে জমা, reconnect-এর পর আসল atomic transaction দিয়ে
+          // reconcile হবে।
           pendingVoidStockItems.push({
             productId: soldItem.productId, qty: restoredQty, batchNo: soldBatchNo,
             costPrice: soldItem.costPrice || localP?.costPrice || 0,
@@ -14464,7 +14662,7 @@ function SmartBusinessMgmt() {
             batchBreakdown: hasBreakdown ? adjustedBatchBreakdown : undefined,
             voidAdjBatchNo: `VOID-ADJ-${inv.id.slice(-6)}`,
           });
-        } else if (FSS.isReady()) {
+        } else {
           const txResult = hasBreakdown
             ? await FSS.transactionRestoreStockBatches(soldItem.productId, adjustedBatchBreakdown, `VOID-ADJ-${inv.id.slice(-6)}`)
             : await FSS.transactionRestoreStock(soldItem.productId, restoredQty, soldBatchNo, {
@@ -14618,7 +14816,15 @@ function SmartBusinessMgmt() {
         // transaction অ্যাটেম্পটই না করে সরাসরি pendingVoidBalanceUpdate-এ জমা
         // রাখা হচ্ছে, reconnect হলে flushPendingVoidRestores() রিট্রাই করবে।
         const txBal = isOffline ? null : await balanceTxPromise;
-        if (isOffline) pendingVoidBalanceUpdate = { customerId: inv.customerId, netChange };
+        // 🔴 ফিক্স (রুট কজ — অনলাইনে থেকেও transient ট্রানজেকশন-ব্যর্থতায় ভয়েড-
+        // রিভার্সাল হারিয়ে যাওয়া, ক্রস-ডিভাইস ব্যালেন্স গরমিল): আগে শুধু isOffline
+        // হলে queue হতো। অনলাইনে থেকেও balanceTxPromise transient কারণে (নেটওয়ার্ক/
+        // সার্ভার) null রিটার্ন করলে এই রিভার্সাল শুধু এই ডিভাইসের লোকাল স্টেটে থেকে
+        // যেত, কখনো Firestore-এ পৌঁছাত না — অন্য ডিভাইস পুরনো ব্যালেন্সই দেখত, আর
+        // পরের রিসিঙ্কে এই ডিভাইসও পুরনো (ভুল) মানে ফিরে যেত। এখন isOffline বা
+        // txBal === null — দুই ক্ষেত্রেই queue হবে, ঠিক উপরের স্টক-রিস্টোরের (বাগ ৪)
+        // মতো একই ট্রিটমেন্ট।
+        if (isOffline || txBal === null) pendingVoidBalanceUpdate = { customerId: inv.customerId, netChange };
         setCustomers(prev => {
           const updated = prev.map(c => {
             if (c.id !== inv.customerId) return c;
@@ -14712,7 +14918,12 @@ function SmartBusinessMgmt() {
     // cashRefundedAmount — দুটোই উপরে ইতিমধ্যে গণনা করা) বাদ না দিলে, পুরো
     // ইনভয়েস ভয়েড করার সময় সেই একই অংশ stats doc থেকে দ্বিতীয়বার বিয়োগ হয়ে
     // stats doc প্রকৃত হিসাবের চেয়ে কম দেখাত (নতুন drift)।
-    if (FSS.isReady() && inv.dateKey && !inv.isSelfUse) {
+    // 🔴 ফিক্স (রুট কজ — ড্যাশবোর্ড টোটাল চিরতরে হারানো): আগে এখানে
+    // `if (FSS.isReady() && ...)` ছিল — FSS.isReady() false হলে FSS.updateStats()
+    // কখনো কলই হতো না, কোনো queue-তেও জমা হতো না। এখন updateStats() নিজেই _db
+    // না থাকলে queue করে (দেখুন তার কমেন্ট), তাই এখানে isReady() গার্ড সরিয়ে
+    // দেওয়া হয়েছে — শুধু dateKey/isSelfUse চেক থাকছে।
+    if (inv.dateKey && !inv.isSelfUse) {
       const alreadyReturnedTotal = alreadyReturnedBakiAmount + cashRefundedAmount;
       const saleAmt = Math.max(0, (inv.total || 0) - alreadyReturnedTotal);
       const cashAmtFull = inv.payType === "cash" ? (inv.total || 0)
@@ -14824,12 +15035,17 @@ function SmartBusinessMgmt() {
         expiryDate: item.expiryDate || "",
         voidAdjBatchNo: `RETURN-ADJ-${inv.id.slice(-6)}`,
       }];
-      if (restoreItems.length || (mode === "baki" && cust)) {
-        FSS.queuePendingVoidRestore({
-          invoiceId: inv.id,
-          restoreItems,
-          balanceUpdate: (mode === "baki" && cust) ? { customerId: cust.id, netChange: refundAmount } : null,
-        });
+      // 🔴 ফিক্স (ডাবল-রিভার্সাল ঝুঁকি — রুট কজ): balanceUpdate ইচ্ছাকৃতভাবে এখানে
+      // queue করা হয় না। এই মুহূর্তে ব্যালেন্স-ট্রানজেকশন এখনো চেষ্টাই করা হয়নি (হবে
+      // নিচের mode === "baki" ব্লকে) — আগে এখানে transientFailure (যেটা আসলে শুধু
+      // *স্টক* ট্রানজেকশনের ব্যর্থতা বোঝাত) সত্যি হলেই একটা balanceUpdate entry queue
+      // হয়ে যেত, even though নিচের আসল ব্যালেন্স-ট্রানজেকশনটা (isOffline false হলে)
+      // সফলভাবে চলত। ফলে ব্যালেন্স সঠিকভাবে সার্ভারে আপডেট হওয়ার পরেও একটা ভুয়া
+      // queue-এন্ট্রি থেকে যেত, যেটা পরের flush-এ আবার প্রয়োগ হয়ে গ্রাহকের বাকি
+      // দ্বিতীয়বার কমিয়ে দিত (ডাবল-রিভার্সাল)। এখন ব্যালেন্স-নির্দিষ্ট queue শুধু
+      // নিচে txBal-এর প্রকৃত ফলাফল জানার পরেই (ব্যর্থ হলে) তৈরি হয়।
+      if (restoreItems.length) {
+        FSS.queuePendingVoidRestore({ invoiceId: inv.id, restoreItems, balanceUpdate: null });
       }
     }
     if (productDeleted) {
@@ -14837,6 +15053,20 @@ function SmartBusinessMgmt() {
     }
     if (mode === "baki" && cust) {
       const txBal = isOffline ? null : await FSS.transactionUpdateBalance(cust.id, (serverBal) => Math.max(0, serverBal - refundAmount));
+      // 🔴 ফিক্স (রুট কজ — অনলাইনে থেকেও transient ব্যর্থতায় রিটার্ন-রিফান্ড
+      // সমন্বয় হারিয়ে যাওয়া): আগে শুধু isOffline হলে queue হতো। অনলাইনে থেকেও
+      // transactionUpdateBalance() নেটওয়ার্ক/সার্ভার সমস্যায় null রিটার্ন করলে
+      // (isOffline false) এই সমন্বয়টা শুধু এই ডিভাইসের লোকাল স্টেটে থেকে যেত,
+      // কখনো Firestore-এ পৌঁছাত না। এখন isOffline বা txBal === null — দুই
+      // ক্ষেত্রেই queue হবে, reconnect/পরের flush-এ flushPendingVoidRestores()
+      // রিট্রাই করবে (উপরের ব্লক থেকে সরিয়ে আনা — দেখুন সেখানকার কমেন্ট)।
+      if (isOffline || txBal === null) {
+        FSS.queuePendingVoidRestore({
+          invoiceId: inv.id,
+          restoreItems: [],
+          balanceUpdate: { customerId: cust.id, netChange: refundAmount },
+        });
+      }
       setCustomers(prev => prev.map(c => {
         if (c.id !== cust.id) return c;
         const newBal = txBal !== null ? txBal : Math.max(0, (c.balance || 0) - refundAmount);
@@ -14904,7 +15134,10 @@ function SmartBusinessMgmt() {
     // ট্র্যাকিং এখনো implement হয়নি, ভবিষ্যৎ phase-এর জন্য রাখা), তাই এখানে একাই
     // নন-জিরো profit delta পাঠালে stats.totalProfit শুধু রিটার্নের কারণে
     // ক্রমাগত ভুল দিকে সরে যেত — বাকি সিস্টেমের সাথে সামঞ্জস্যপূর্ণ রাখতে 0-ই ঠিক।
-    if (FSS.isReady() && !inv.isSelfUse) {
+    // 🔴 ফিক্স (রুট কজ — ড্যাশবোর্ড টোটাল চিরতরে হারানো): voidInvoice()-এর ঠিক
+    // একই কারণে isReady() গার্ড সরানো হয়েছে — updateStats() নিজেই _db না
+    // থাকলে queue করে।
+    if (!inv.isSelfUse) {
       FSS.updateStats(todayKey, {
         sale: -refundAmount,
         cash: mode === "cash" ? -refundAmount : 0,
@@ -15090,6 +15323,7 @@ function SmartBusinessMgmt() {
       FSS.flushPendingStats();
       FSS.flushPendingSalesTxns({ setProducts, setCustomers, setInvoices });
       FSS.flushPendingVoidRestores({ setProducts, setCustomers });
+      FSS.flushPendingPurchaseStock({ setProducts, setPurchaseOrders });
     }
     setSwitchingBusiness(false);
   }, [businessType, businessTypeLocked, enabledBusinessTypes, setBusinessType, tab, _set]);
@@ -17856,7 +18090,13 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     setInvoices(prev => [inv, ...prev]);
 
     // ── Phase 1.3: Stats doc update — invoice save-এ running total বাড়াও (fire-and-forget) ──
-    if (FSS.isReady()) {
+    // 🔴 ফিক্স (রুট কজ — ড্যাশবোর্ড টোটাল চিরতরে হারানো): voidInvoice()/
+    // processReturn()-এর ঠিক একই কারণে isReady() গার্ড সরানো হয়েছে —
+    // updateStats() নিজেই _db না থাকলে queue করে (দেখুন তার কমেন্ট)। আগে এখানে
+    // `if (FSS.isReady())` থাকায় অ্যাপ বুট হওয়ার প্রথম মুহূর্তে (Firestore init
+    // শেষ হওয়ার আগে) বিক্রি হলে সেই ইনভয়েসের stats-অবদান চিরতরে হারিয়ে যেত,
+    // কোনো queue-তেও জমা হতো না।
+    {
       const saleAmt   = inv.isSelfUse ? 0 : (inv.total || 0);
       const cashAmt   = inv.payType === "cash" ? saleAmt
                       : inv.payType === "partial" ? (inv.paidAmount || 0) : 0;
@@ -17944,8 +18184,15 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     // ফিরলে (FSS init/'online' ইভেন্টে) আবার চেষ্টা করবে। আর অনলাইনে থেকেও
     // (ফ্লাকি কানেকশনে) কোনো আইটেম ব্যর্থ হলে শুধু সেই ব্যর্থ অংশটুকুই একই
     // কিউতে জমা হয় — সফল অংশ দ্বিতীয়বার প্রয়োগ হয় না (ডাবল-ডিডাকশন এড়াতে)।
-    if (FSS.isReady()) {
-      const isOffline = typeof navigator !== "undefined" && navigator.onLine === false;
+    // 🔴 ফিক্স ২ (রুট কজ — একই বাগের ক্রয় সংস্করণ): আগে এই পুরো ব্লকটাই
+    // `if (FSS.isReady())`-এর ভেতরে ছিল — isOffline চেক ও queuePendingSalesTxn()
+    // কলটাও তার ভেতরে থাকায়, FSS.isReady() false হলে (অ্যাপ বুট হওয়ার প্রথম
+    // মুহূর্তে Firestore init শেষ না হলে) কোনো ব্র্যাঞ্চই চলত না — স্টক/বাকি
+    // রিকনসিলিয়েশন কিউতেও জমা হতো না, সম্পূর্ণ স্কিপ হয়ে যেত। এখন বাইরের
+    // isReady() গার্ড সরিয়ে isOffline চেকের সাথে `|| !FSS.isReady()` যোগ করা
+    // হয়েছে — isReady() false থাকলেও এখন queue-তে ঠিকভাবে জমা হবে।
+    {
+      const isOffline = (typeof navigator !== "undefined" && navigator.onLine === false) || !FSS.isReady();
       const balanceUpdates = [
         ...(walkInCustMode === "existing" && walkInExistingId && walkInHasBaki && walkInBakiAmt > 0
           ? [{ customerId: walkInExistingId, delta: walkInBakiAmt }] : []),
@@ -20141,19 +20388,33 @@ function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, set
     setPeForm(f => ({ ...EMPTY_PE, supplier: f.supplier }));
     showToast(`✅ ${prod.name} — ${qty} ${prod.unit||"পিস"} স্টকে যোগ হয়েছে`, "#a78bfa");
 
+    // 🔴 ফিক্স (রুট কজ — ক্রয় এন্ট্রিতে রিট্রাই-কিউ না থাকা): FSS.isReady()
+    // false বা transaction ব্যর্থ/exception হলে এখন queuePendingPurchaseStock()-এ
+    // জমা থাকে — boot/online ইভেন্টে flushPendingPurchaseStock() রিট্রাই করবে,
+    // দেখুন সেই ফাংশনগুলোর কমেন্ট।
+    const pendingEntry = {
+      entryId, productId: peForm.productId, qty, unitCost, unitSell,
+      expiryDate: peForm.expiryDate, supplier: peForm.supplier,
+      note: noteText, isFreeStock: peForm.isFreeStock, batchNoHint: newBatch.batchNo,
+    };
     if (FSS.isReady()) {
       FSS.transactionAddStock(peForm.productId, {
         qty, unitCost, unitSell, expiryDate: peForm.expiryDate, supplier: peForm.supplier,
         note: noteText, isFreeStock: peForm.isFreeStock, batchNoHint: newBatch.batchNo,
       }).then(txResult => {
-        if (!txResult) return; // ব্যর্থ হলে optimistic local মানই থেকে যাবে
+        if (!txResult) { FSS.queuePendingPurchaseStock(pendingEntry); return; } // ব্যর্থ হলে রিট্রাই-কিউতে
         setProducts(prev => prev.map(p => p.id === peForm.productId
           ? { ...p, stock: txResult.stock, costPrice: txResult.costPrice, batches: txResult.batches }
           : p));
         if (txResult.batchNo && txResult.batchNo !== newBatch.batchNo) {
           setPurchaseOrders(prev => prev.map(e => e.id === entryId ? { ...e, batch: txResult.batchNo } : e));
         }
-      }).catch(e => logErrorToCentral?.("transaction:addStock:bg", e, { productId: peForm.productId, qty }));
+      }).catch(e => {
+        logErrorToCentral?.("transaction:addStock:bg", e, { productId: peForm.productId, qty });
+        FSS.queuePendingPurchaseStock(pendingEntry);
+      });
+    } else {
+      FSS.queuePendingPurchaseStock(pendingEntry);
     }
     } finally {
       setIsSaving(false);
@@ -24561,6 +24822,25 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
       customer.id,
       (serverBal) => mode === "baki" ? (serverBal + amt) : Math.max(0, serverBal - amt)
     );
+    // 🔴 ফিক্স (রুট কজ — পেমেন্ট কালেকশন/বাকি-সংযোজন ট্রানজেকশন ব্যর্থ হলে হারিয়ে
+    // যাওয়া, ক্রস-ডিভাইস ব্যালেন্স গরমিল): এটাই অ্যাপের সবচেয়ে বেশি ব্যবহৃত
+    // ব্যালেন্স-write পাথ (প্রতিটা বাকি/জমা এন্ট্রি)। আগে txBal === null হলে
+    // (অফলাইন অথবা অনলাইনে transient নেটওয়ার্ক/সার্ভার সমস্যা — দুটোই এখানে একই
+    // ফলাফল দেয়, কারণ transactionUpdateBalance() ভেতরেই isOffline চেক করে না)
+    // শুধু নিচের লোকাল fallback হিসাব বসানো হতো — Firestore-এ কখনো লেখা হতো না,
+    // আর কোনো retry-queue-ও ছিল না। ফলে একটা সাধারণ নেটওয়ার্ক ফ্লিকারেই একটা
+    // ডিভাইসের গ্রাহক-ব্যালেন্স অন্য সব ডিভাইস থেকে স্থায়ীভাবে আলাদা হয়ে যেতে
+    // পারত। এখন voidInvoice()/processReturn()-এর একই queuePendingVoidRestore()/
+    // flushPendingVoidRestores() মেকানিজম পুনর্ব্যবহার করা হচ্ছে — সেই ফাংশন সবসময়
+    // "serverBal - netChange" সূত্রে প্রয়োগ করে, তাই "বাকি" মোডে (ব্যালেন্স বাড়ে)
+    // ঋণাত্মক netChange পাঠানো হচ্ছে যাতে দুই মোডেই সঠিক দিকে প্রয়োগ হয়।
+    if (txBal === null) {
+      FSS.queuePendingVoidRestore({
+        invoiceId: null,
+        restoreItems: [],
+        balanceUpdate: { customerId: customer.id, netChange: mode === "baki" ? -amt : amt },
+      });
+    }
     let newBalance;
     if (txBal !== null) {
       newBalance = txBal;
@@ -25689,28 +25969,49 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           // অক্ষুণ্ণ থাকে, শুধু ইউজারকে আর অপেক্ষা করতে হয় না। বাল্ক চালান-কনফার্ম
           // (একই পণ্যের একাধিক লাইন থাকতে পারে) আগের মতোই awaitServer:true
           // (ডিফল্ট) দিয়ে সিরিয়ালি চলে — batchNo/cost হিসাব সঠিক রাখতে।
+          // 🔴 ফিক্স (রুট কজ — ক্রয় এন্ট্রিতে রিট্রাই-কিউ না থাকা): FSS.isReady()
+          // false বা transaction ব্যর্থ/exception হলে এখন
+          // queuePendingPurchaseStock()-এ জমা থাকে — দেখুন সেই ফাংশনের কমেন্ট।
           if (!awaitServer) {
             applyLocalFallback();
+            const pendingEntryAsync = {
+              entryId, productId, qty, unitCost: cost, unitSell: sell, expiryDate, supplier,
+              note, isFreeStock, batchNoHint: newBatch.batchNo,
+            };
             if (FSS.isReady()) {
               FSS.transactionAddStock(productId, {
                 qty, unitCost: cost, unitSell: sell, expiryDate, supplier, note, isFreeStock, batchNoHint: newBatch.batchNo,
               }).then(txResult => {
-                if (!txResult) return; // ব্যর্থ হলে optimistic local মানই থেকে যাবে
+                if (!txResult) { FSS.queuePendingPurchaseStock(pendingEntryAsync); return; }
                 setProducts(prev => prev.map(p => p.id === productId
                   ? { ...p, stock: txResult.stock, costPrice: txResult.costPrice, batches: txResult.batches }
                   : p));
                 if (txResult.batchNo && txResult.batchNo !== newBatch.batchNo) {
                   setPurchaseOrders(prev => prev.map(e => e.id === entryId ? { ...e, batch: txResult.batchNo } : e));
                 }
-              }).catch(e => logErrorToCentral?.("transaction:addStock:bg", e, { productId, qty }));
+              }).catch(e => {
+                logErrorToCentral?.("transaction:addStock:bg", e, { productId, qty });
+                FSS.queuePendingPurchaseStock(pendingEntryAsync);
+              });
+            } else {
+              FSS.queuePendingPurchaseStock(pendingEntryAsync);
             }
           } else {
             // 🔴 ফিক্স #১০ (মাল্টি-ডিভাইস স্টক lost-update race) — বাল্ক পাথ,
             // অপরিবর্তিত: সার্ভার transaction শেষ না হওয়া পর্যন্ত await করে,
             // সিরিয়ালি একটার পর একটা লাইন প্রসেস হয় বলে batchNo/cost সঠিক থাকে।
-            const txResult = FSS.isReady() ? await FSS.transactionAddStock(productId, {
-              qty, unitCost: cost, unitSell: sell, expiryDate, supplier, note, isFreeStock, batchNoHint: batchNo,
-            }) : null;
+            let txThrew = false;
+            let txResult = null;
+            if (FSS.isReady()) {
+              try {
+                txResult = await FSS.transactionAddStock(productId, {
+                  qty, unitCost: cost, unitSell: sell, expiryDate, supplier, note, isFreeStock, batchNoHint: batchNo,
+                });
+              } catch (e) {
+                logErrorToCentral?.("transaction:addStock:bulk", e, { productId, qty });
+                txThrew = true;
+              }
+            }
             if (txResult) {
               newBatch.batchNo = txResult.batchNo;
               entry.batch = txResult.batchNo;
@@ -25721,7 +26022,15 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                     lastUpdated: now, expiryDate: expiryDate || p.expiryDate, batches: txResult.batches }
                 : p));
             } else {
+              // FSS.isReady() false ছিল, transaction null রিটার্ন করেছে (ব্যর্থ),
+              // বা exception হয়েছে — সব ক্ষেত্রেই local fallback + রিট্রাই-কিউ,
+              // যাতে সার্ভারে এই স্টক-আপডেট চিরতরে হারিয়ে না যায়।
               applyLocalFallback();
+              FSS.queuePendingPurchaseStock({
+                entryId, productId, qty, unitCost: cost, unitSell: sell, expiryDate, supplier,
+                note, isFreeStock, batchNoHint: newBatch.batchNo,
+              });
+              void txThrew;
             }
           }
           const mvBulk = pushStockMovement({
@@ -30643,7 +30952,7 @@ function Settings_({ T, S, shopName,
       await FSS.setStatsAbsolute(dayKey, dayVals);
       await FSS.setStatsAbsolute(monthKey, monthVals);
       showToast("✅ Stats doc রিক্যালকুলেট হয়েছে — প্রকৃত ইনভয়েস ডেটার সাথে এখন মিলছে");
-      runSyncDiagnostics();
+      if (SHOW_FULL_CHECKUP_BUTTON) runSyncDiagnostics();
     } catch (e) {
       showToast("রিক্যালকুলেট ব্যর্থ হয়েছে: " + (e?.message || "unknown error"), "#ef4444");
     } finally {
@@ -30667,13 +30976,30 @@ function Settings_({ T, S, shopName,
   const [mismatchScan, setMismatchScan] = useState(null); // null | {running:true} | {ranAt, rows:[...], totalIssues}
   const [mismatchFixing, setMismatchFixing] = useState(false);
 
+  // 🔴 ফিক্স (রিসারেকশন গ্যাপ — hard-delete হওয়া রেকর্ড): products/customers-এর
+  // deleteRecord() hard-delete করে, কোনো tombstone না রাখলে "orphanedLocal"
+  // লজিক ইচ্ছাকৃতভাবে ডিলিট করা রেকর্ডকেও "sync হয়নি" ভেবে আবার push করে
+  // ফেলত (resurrection)। এখানে বিদ্যমান deletedProducts/deletedCustomers
+  // tombstone লিস্ট (আগে থেকেই backup-restore merge-এ একই কাজে ব্যবহৃত) রেফারেন্স
+  // হিসেবে দেওয়া হলো, যাতে স্ক্যান ওই id-গুলো orphan হিসেবে না ধরে।
+  // cashLogs-এর জন্য এখনো কোনো tombstone লিস্ট নেই (deleteRecord("cashLogs",...)
+  // হয় কিন্তু tombstone log হয় না) — তাই noAutoResurrect: true দিয়ে auto-fix-কে
+  // এই কালেকশনে "orphanedLocal" রেকর্ড আবার push করা থেকে বিরত রাখা হলো;
+  // স্ক্যানে দেখাবে কিন্তু "ম্যানুয়ালি যাচাই করুন" হিসেবে, স্বয়ংক্রিয়ভাবে ফিরিয়ে আনবে না।
   const MISMATCH_TARGETS = [
     { key: "invoices",       label: "ইনভয়েস",          local: invoices,       setLocal: setInvoices,       windowDays: 30, dateField: "dateKey" },
     { key: "txns",            label: "বাকি/জমা লেনদেন",  local: txns,           setLocal: setTxns,           windowDays: 30, dateField: "dateKey" },
     { key: "stockMovements",  label: "স্টক মুভমেন্ট",     local: stockMovements, setLocal: setStockMovements, windowDays: 30, dateField: "dateKey" },
-    { key: "cashLogs",        label: "ক্যাশ লগ",         local: cashLogs,       setLocal: setCashLogs,       windowDays: 35, dateField: "dateKey" },
-    { key: "customers",       label: "কাস্টমার",         local: customers,      setLocal: setCustomers,      windowDays: null },
-    { key: "products",        label: "পণ্য",             local: products,       setLocal: setProducts,       windowDays: null },
+    { key: "cashLogs",        label: "ক্যাশ লগ",         local: cashLogs,       setLocal: setCashLogs,       windowDays: 35, dateField: "dateKey", noAutoResurrect: true },
+    // 🔴 ফিক্স (read-quota): products/customers আগে পুরো কালেকশন পড়ত (windowDays
+    // null), যা বড় দোকানে (হাজার হাজার পণ্য) একবার ক্লিকেই বিশাল read খরচ করত।
+    // এখন গত ৭ দিনে touched (_updatedAt millisecond timestamp — সাধারণ এডিট,
+    // স্টক-কমা, ব্যালেন্স-বদলানো সব জায়গাতেই এই ফিল্ড আপডেট হয়) রেকর্ডে সীমিত।
+    // dateField numeric (ms) বলে dateKey স্ট্রিং তুলনার বদলে numericCutoff দিয়ে
+    // আলাদা কোড-পাথ ব্যবহার করা হচ্ছে (নিচে দ্রষ্টব্য)। লোকাল আর cloud দুই দিকেই
+    // একই window বসানো হলো — নাহলে পুরনো লোকাল রেকর্ড ভুলভাবে "orphaned" মনে হতো।
+    { key: "customers",       label: "কাস্টমার",         local: customers,      setLocal: setCustomers,      windowDays: 7, dateField: "_updatedAt", numericCutoff: true, tombstone: deletedCustomers },
+    { key: "products",        label: "পণ্য",             local: products,       setLocal: setProducts,       windowDays: 7, dateField: "_updatedAt", numericCutoff: true, tombstone: deletedProducts },
   ];
 
   const runMismatchScan = async () => {
@@ -30681,14 +31007,37 @@ function Settings_({ T, S, shopName,
     setMismatchScan({ running: true });
     const rows = [];
     let totalIssues = 0;
+    // 🔴 ফিক্স (ফিল্ড-ড্রিফট শনাক্তকরণ): উপরের ID-ভিত্তিক তুলনা শুধু "রেকর্ড
+    // আছে কিনা" ধরে — কাস্টমার/পণ্য দুই জায়গাতেই থাকলেও ভেতরের balance/stock
+    // ফিল্ডের মান আলাদা হতে পারে (যেমন sbm_pending_sales_txns/void_restores
+    // কিউ ওভারফ্লো হয়ে কোনো রিকনসিলিয়েশন এন্ট্রি হারিয়ে গেলে)। সেটা ধরতে
+    // customers/txns ও products/stockMovements-এর cloud কপি এখানে ধরে রাখা হচ্ছে।
+    let cloudCustomers = [], cloudTxns = [], cloudProducts = [], cloudStockMovements = [];
     for (const t of MISMATCH_TARGETS) {
       try {
-        const outboxItems = await SyncOutbox.getAll(t.key);
+        // 🔴 ফিক্স (মাল্টি-বিজনেস কন্টামিনেশন): বাকি ৬টা outbox-flush সাইটের
+        // (boot/online/business-switch flush ইত্যাদি) মতোই, এই কালেকশনের নামে
+        // জমা থাকা outbox এন্ট্রি অন্য বিজনেস-প্রিফিক্সেরও হতে পারে (স্টাফ অফলাইনে
+        // veterinary মোডে এন্ট্রি করে পরে pharmacy-তে সুইচ করলে)। প্রিফিক্স না
+        // মেলালে সেই এন্ট্রি ভুল বিজনেসের Firestore কালেকশনে গিয়ে লিখে ফেলত।
+        const currentPrefix = FSS._businessPrefix || null;
+        const outboxItemsAllBiz = await SyncOutbox.getAll(t.key);
+        const outboxItems = outboxItemsAllBiz.filter(i => {
+          const itemPrefix = Object.prototype.hasOwnProperty.call(i, "prefix") ? i.prefix : null;
+          return itemPrefix === currentPrefix;
+        });
         const pendingIds = new Set(outboxItems.map(i => String(i.recordId)));
         const staleStuck = outboxItems.filter(i => Date.now() - (i.ts || 0) > 10 * 60 * 1000).length;
 
         let cloudDocsSnap;
-        if (t.windowDays) {
+        if (t.windowDays && t.numericCutoff) {
+          // 🔴 ফিক্স: _updatedAt একটা raw millisecond timestamp (dateKey-এর মতো
+          // "YYYY-MM-DD" স্ট্রিং না), তাই cutoff-ও সরাসরি একটা ms নম্বর হিসেবে
+          // পাঠাতে হবে — _dateKeyOf() দিয়ে স্ট্রিং-এ রূপান্তর করলে ভুল তুলনা হতো।
+          const cutoffMs = Date.now() - t.windowDays * 86400000;
+          const q = query(FSS.col(t.key), where(t.dateField, ">=", cutoffMs), orderBy(t.dateField, "desc"));
+          cloudDocsSnap = await getDocs(q);
+        } else if (t.windowDays) {
           const cutoffDate = new Date();
           cutoffDate.setDate(cutoffDate.getDate() - t.windowDays);
           const cutoff = _dateKeyOf(cutoffDate);
@@ -30700,21 +31049,88 @@ function Settings_({ T, S, shopName,
         const cloudRecords = cloudDocsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
         const cloudIds = new Set(cloudRecords.map(r => String(r.id)));
 
+        if (t.key === "customers") cloudCustomers = cloudRecords;
+        else if (t.key === "txns") cloudTxns = cloudRecords;
+        else if (t.key === "products") cloudProducts = cloudRecords;
+        else if (t.key === "stockMovements") cloudStockMovements = cloudRecords;
+
         const localList = t.windowDays
-          ? (t.local || []).filter(r => r[t.dateField] && r[t.dateField] >= _dateKeyOf(new Date(Date.now() - t.windowDays * 86400000)))
+          ? (t.numericCutoff
+              ? (t.local || []).filter(r => r[t.dateField] && r[t.dateField] >= (Date.now() - t.windowDays * 86400000))
+              : (t.local || []).filter(r => r[t.dateField] && r[t.dateField] >= _dateKeyOf(new Date(Date.now() - t.windowDays * 86400000))))
           : (t.local || []);
         const localIds = new Set(localList.map(r => String(r.id)));
 
-        const orphanedLocal = localList.filter(r => r?.id != null && !cloudIds.has(String(r.id)) && !pendingIds.has(String(r.id)));
+        const orphanedLocalRaw = localList.filter(r => r?.id != null && !cloudIds.has(String(r.id)) && !pendingIds.has(String(r.id)));
+        // tombstone-এ থাকা মানে রেকর্ডটা ইচ্ছাকৃতভাবে ডিলিট করা হয়েছে, "সিঙ্ক
+        // হয়নি" না — এদের বাদ দেওয়া হলো যাতে auto-fix এগুলো আবার push না করে।
+        const tombstoneIds = t.tombstone ? new Set((t.tombstone || []).map(x => String(x.id))) : null;
+        const orphanedLocal = tombstoneIds ? orphanedLocalRaw.filter(r => !tombstoneIds.has(String(r.id))) : orphanedLocalRaw;
         const cloudOnly = cloudRecords.filter(r => !localIds.has(String(r.id)));
 
         const issues = orphanedLocal.length + cloudOnly.length + staleStuck;
         totalIssues += issues;
-        rows.push({ key: t.key, label: t.label, pendingCount: outboxItems.length, staleStuck, orphanedLocal, cloudOnly });
+        rows.push({ key: t.key, label: t.label, pendingCount: outboxItems.length, staleStuck, orphanedLocal, cloudOnly, needsManualReview: !!t.noAutoResurrect && orphanedLocal.length > 0 });
       } catch (err) {
         rows.push({ key: t.key, label: t.label, error: err?.message || "চেক ব্যর্থ" });
       }
     }
+
+    // 🔴 ফিক্স (কাস্টমার ব্যালেন্স ড্রিফট — cloud-vs-cloud): প্রতিটা cloud কাস্টমারের
+    // সবচেয়ে সাম্প্রতিক cloud txn.balanceAfter, তার cloud customer.balance-এর
+    // সাথে মেলা উচিত — না মিললে মানে সেই কাস্টমারের কোনো balance-রিকনসিলিয়েশন
+    // Firestore-এ কখনো পৌঁছায়নি (রেকর্ড দুই জায়গাতেই আছে, শুধু মান ভুল)।
+    try {
+      const lastTxnByCust = new Map();
+      for (const t of cloudTxns) {
+        if (!t.customerId) continue;
+        const prev = lastTxnByCust.get(t.customerId);
+        const key = `${t.dateKey || ""}_${t.time || ""}_${t.at || 0}`;
+        const prevKey = prev ? `${prev.dateKey || ""}_${prev.time || ""}_${prev.at || 0}` : "";
+        if (!prev || key >= prevKey) lastTxnByCust.set(t.customerId, t);
+      }
+      const balanceDriftItems = [];
+      for (const c of cloudCustomers) {
+        const lastTxn = lastTxnByCust.get(c.id);
+        if (!lastTxn || lastTxn.balanceAfter === undefined || lastTxn.balanceAfter === null) continue;
+        const expected = lastTxn.balanceAfter || 0, actual = c.balance || 0;
+        if (Math.abs(expected - actual) > 1) {
+          balanceDriftItems.push({ id: c.id, name: c.name || c.id, expected, actual });
+        }
+      }
+      if (balanceDriftItems.length) totalIssues += balanceDriftItems.length;
+      rows.push({ key: "balanceDrift", label: "কাস্টমার ব্যালেন্স ড্রিফট", isDrift: true, driftItems: balanceDriftItems });
+    } catch (err) {
+      rows.push({ key: "balanceDrift", label: "কাস্টমার ব্যালেন্স ড্রিফট", error: err?.message || "চেক ব্যর্থ" });
+    }
+
+    // 🔴 ফিক্স (পণ্যের স্টক ড্রিফট — cloud-vs-cloud): একই প্যাটার্ন, stockMovements-
+    // এর `stock` ফিল্ড (movement-এর পরের স্টক) সবচেয়ে সাম্প্রতিকটা cloud
+    // product.stock-এর সাথে মেলা উচিত।
+    try {
+      const lastMvByProduct = new Map();
+      for (const m of cloudStockMovements) {
+        if (!m.productId) continue;
+        const prev = lastMvByProduct.get(m.productId);
+        const key = `${m.dateKey || ""}_${m.at || ""}`;
+        const prevKey = prev ? `${prev.dateKey || ""}_${prev.at || ""}` : "";
+        if (!prev || key >= prevKey) lastMvByProduct.set(m.productId, m);
+      }
+      const stockDriftItems = [];
+      for (const p of cloudProducts) {
+        const lastMv = lastMvByProduct.get(p.id);
+        if (!lastMv || lastMv.stock === undefined || lastMv.stock === null) continue;
+        const expected = lastMv.stock || 0, actual = p.stock || 0;
+        if (expected !== actual) {
+          stockDriftItems.push({ id: p.id, name: p.name || p.id, expected, actual });
+        }
+      }
+      if (stockDriftItems.length) totalIssues += stockDriftItems.length;
+      rows.push({ key: "stockDrift", label: "পণ্যের স্টক ড্রিফট", isDrift: true, driftItems: stockDriftItems });
+    } catch (err) {
+      rows.push({ key: "stockDrift", label: "পণ্যের স্টক ড্রিফট", error: err?.message || "চেক ব্যর্থ" });
+    }
+
     setMismatchScan({ ranAt: new Date().toISOString(), rows, totalIssues });
   };
 
@@ -30725,11 +31141,43 @@ function Settings_({ T, S, shopName,
     try {
       for (const row of mismatchScan.rows) {
         if (row.error) continue;
+
+        // 🔴 ফিক্স (ড্রিফট রো ফিক্স — balance/stock ফিল্ড সংশোধন): এই দুটো রো
+        // orphanedLocal/cloudOnly প্যাটার্ন অনুসরণ করে না, তাই আলাদাভাবে হ্যান্ডল
+        if (row.isDrift) {
+          if (row.key === "balanceDrift") {
+            for (const item of row.driftItems) {
+              try {
+                await setDoc(FSS.doc("customers", item.id), { balance: item.expected }, { merge: true });
+                setCustomers(prev => (prev || []).map(c => String(c.id) === String(item.id) ? { ...c, balance: item.expected } : c));
+                fixedCount++;
+              } catch { failCount++; }
+            }
+          } else if (row.key === "stockDrift") {
+            for (const item of row.driftItems) {
+              try {
+                await setDoc(FSS.doc("products", item.id), { stock: item.expected }, { merge: true });
+                setProducts(prev => (prev || []).map(p => String(p.id) === String(item.id) ? { ...p, stock: item.expected } : p));
+                fixedCount++;
+              } catch { failCount++; }
+            }
+          }
+          continue;
+        }
+
         const target = MISMATCH_TARGETS.find(t => t.key === row.key);
         if (!target) continue;
 
         // ১) outbox-এ আটকে থাকা সব এন্ট্রি এখনই জোর করে আবার পাঠানোর চেষ্টা
-        const outboxItems = await SyncOutbox.getAll(row.key);
+        // 🔴 ফিক্স (মাল্টি-বিজনেস কন্টামিনেশন): scan-এর মতোই এখানেও শুধু
+        // বর্তমান active বিজনেস-প্রিফিক্সের এন্ট্রি রিট্রাই করা হচ্ছে — নাহলে অন্য
+        // বিজনেসের queued এন্ট্রি এই বিজনেসের Firestore কালেকশনে লিখে ফেলত।
+        const currentPrefix = FSS._businessPrefix || null;
+        const outboxItemsAllBiz = await SyncOutbox.getAll(row.key);
+        const outboxItems = outboxItemsAllBiz.filter(it => {
+          const itemPrefix = Object.prototype.hasOwnProperty.call(it, "prefix") ? it.prefix : null;
+          return itemPrefix === currentPrefix;
+        });
         for (const it of outboxItems) {
           try {
             const flushFn = it.merge ? FSS.setRecordMerge : FSS.setRecord;
@@ -30740,13 +31188,20 @@ function Settings_({ T, S, shopName,
         }
 
         // ২) সত্যিকারের এতিম রেকর্ড — outbox-এ যোগ করে সাথে সাথে (আবার) পাঠানো
-        for (const rec of row.orphanedLocal) {
-          try {
-            await SyncOutbox.put(row.key, rec.id, rec);
-            const res = await FSS.setRecord(row.key, rec.id, rec);
-            if (res && res.ok !== false) { await SyncOutbox.remove(row.key, rec.id); fixedCount++; }
-            else failCount++;
-          } catch { failCount++; }
+        // 🔴 ফিক্স (রিসারেকশন গ্যাপ): products/customers-এর tombstone-এ থাকা id
+        // scan ধাপেই orphanedLocal থেকে বাদ পড়ে গেছে। cashLogs-এর কোনো tombstone
+        // নেই বলে সেখানে "সত্যিকারের অনাথ" আর "অন্য ডিভাইস থেকে ডিলিট করা"
+        // আলাদা করার উপায় নেই — তাই target.noAutoResurrect থাকলে push না করে
+        // শুধু স্ক্যান রেজাল্টে দেখানো হচ্ছে, ম্যানুয়ালি যাচাই করার জন্য।
+        if (!target.noAutoResurrect) {
+          for (const rec of row.orphanedLocal) {
+            try {
+              await SyncOutbox.put(row.key, rec.id, rec);
+              const res = await FSS.setRecord(row.key, rec.id, rec);
+              if (res && res.ok !== false) { await SyncOutbox.remove(row.key, rec.id); fixedCount++; }
+              else failCount++;
+            } catch { failCount++; }
+          }
         }
 
         // ৩) Firestore-এ আছে, লোকালে নেই — শুধু লোকাল স্টেটে যোগ (id দিয়ে ডুপ্লিকেট এড়িয়ে); কোনো নতুন Firestore write না
@@ -31458,7 +31913,10 @@ function Settings_({ T, S, shopName,
 
         {/* ── 🩺 ফুল অ্যাপ চেকআপ — স্টাফ ফোনেও দেখানো হচ্ছে, যাতে স্টাফ নিজেই
             নিজের ডিভাইসের Firestore Write→Read লাইভ টেস্ট চালিয়ে দেখতে পারে
-            সিঙ্ক আসলে কাজ করছে কিনা (আগে এটা শুধু owner/admin দেখতে পেত)। ── */}
+            সিঙ্ক আসলে কাজ করছে কিনা (আগে এটা শুধু owner/admin দেখতে পেত)।
+            🔴 SHOW_FULL_CHECKUP_BUTTON=false থাকলে পুরো কার্ড hidden — দেখুন
+            ফাইলের শুরুতে flag-এর কমেন্ট (read-quota risk)। ── */}
+        {SHOW_FULL_CHECKUP_BUTTON && (
         <div style={{ marginBottom:10, borderRadius:10, border:"1px solid #38bdf844", background:"#38bdf80f", padding:"10px 11px" }}>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
             <div style={{ display:"flex", alignItems:"center", gap:6 }}>
@@ -31522,6 +31980,7 @@ function Settings_({ T, S, shopName,
             );
           })()}
         </div>
+        )}
 
         {/* ── 🔍 ডেটা সিঙ্ক মিসম্যাচ চেক — স্টাফ ফোনেও (আগে এই ব্লকটা কোডে
             "সবসময় দেখা যাবে, স্টাফ ফোনেও" কমেন্ট নিয়ে লেখা ছিল, কিন্তু ভুলবশত
@@ -31562,6 +32021,20 @@ function Settings_({ T, S, shopName,
                   if (row.error) return (
                     <div key={row.key} style={{ color:"#ef4444", fontSize:9, marginBottom:3 }}>{row.label}: চেক ব্যর্থ — {row.error}</div>
                   );
+                  if (row.isDrift) {
+                    if (!row.driftItems.length) return null;
+                    return (
+                      <div key={row.key} style={{ fontSize:9, color:"#cbd5e1", marginBottom:4, paddingLeft:2 }}>
+                        <b>{row.label}</b> — {row.driftItems.length}টা মিলছে না
+                        {row.driftItems.slice(0, 5).map(d => (
+                          <div key={d.id} style={{ color:"#94a3b8", fontSize:8.5, marginTop:1, paddingLeft:8 }}>
+                            {d.name} — সংরক্ষিত {row.key === "stockDrift" ? d.actual : `৳${d.actual}`}, সঠিক {row.key === "stockDrift" ? d.expected : `৳${d.expected}`}
+                          </div>
+                        ))}
+                        {row.driftItems.length > 5 && <div style={{ color:"#94a3b8", fontSize:8.5, paddingLeft:8 }}>+আরও {row.driftItems.length - 5}টা</div>}
+                      </div>
+                    );
+                  }
                   if (!(row.orphanedLocal.length + row.cloudOnly.length + row.staleStuck) && !row.pendingCount) return null;
                   return (
                     <div key={row.key} style={{ fontSize:9, color:"#cbd5e1", marginBottom:4, paddingLeft:2 }}>
@@ -31569,6 +32042,11 @@ function Settings_({ T, S, shopName,
                       {row.pendingCount > 0 && <> — {row.pendingCount}টা পাঠানোর অপেক্ষায়{row.staleStuck ? ` (${row.staleStuck}টা ১০+ মিনিট আটকে আছে)` : ""}</>}
                       {row.orphanedLocal.length > 0 && <> · {row.orphanedLocal.length}টা এই ফোনে আছে কিন্তু ক্লাউডে পৌঁছায়নি</>}
                       {row.cloudOnly.length > 0 && <> · {row.cloudOnly.length}টা ক্লাউডে আছে কিন্তু এই ফোনে দেখাচ্ছে না</>}
+                      {row.needsManualReview && (
+                        <div style={{ color:"#f59e0b", fontSize:8.5, marginTop:2, paddingLeft:8 }}>
+                          ⚠️ এগুলো auto-fix স্বয়ংক্রিয়ভাবে পাঠাবে না — অন্য ডিভাইস থেকে ইচ্ছাকৃতভাবে ডিলিট করা হয়েছে কিনা তা এই কালেকশনে যাচাই করার উপায় নেই, তাই ভুল করে ডিলিট করা এন্ট্রি ফিরিয়ে আনার ঝুঁকি এড়াতে ম্যানুয়ালি চেক করে দেখুন।
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -32272,6 +32750,20 @@ function Settings_({ T, S, shopName,
                         if (row.error) return (
                           <div key={row.key} style={{ color:"#ef4444", fontSize:9, marginBottom:3 }}>{row.label}: চেক ব্যর্থ — {row.error}</div>
                         );
+                        if (row.isDrift) {
+                          if (!row.driftItems.length) return null;
+                          return (
+                            <div key={row.key} style={{ fontSize:9, color:"#cbd5e1", marginBottom:4, paddingLeft:2 }}>
+                              <b>{row.label}</b> — {row.driftItems.length}টা মিলছে না
+                              {row.driftItems.slice(0, 5).map(d => (
+                                <div key={d.id} style={{ color:"#94a3b8", fontSize:8.5, marginTop:1, paddingLeft:8 }}>
+                                  {d.name} — সংরক্ষিত {row.key === "stockDrift" ? d.actual : `৳${d.actual}`}, সঠিক {row.key === "stockDrift" ? d.expected : `৳${d.expected}`}
+                                </div>
+                              ))}
+                              {row.driftItems.length > 5 && <div style={{ color:"#94a3b8", fontSize:8.5, paddingLeft:8 }}>+আরও {row.driftItems.length - 5}টা</div>}
+                            </div>
+                          );
+                        }
                         if (!(row.orphanedLocal.length + row.cloudOnly.length + row.staleStuck) && !row.pendingCount) return null;
                         return (
                           <div key={row.key} style={{ fontSize:9, color:"#cbd5e1", marginBottom:4, paddingLeft:2 }}>
@@ -32368,6 +32860,7 @@ function Settings_({ T, S, shopName,
                   হিসাব/লজিক সঠিকতা (কাস্টমার ব্যালেন্স, ইনভয়েস total, ক্যাশ
                   ড্রয়ার, Firestore stats doc) — সবকিছু এক ক্লিকে নিজে থেকে
                   যাচাই করে ── */}
+              {SHOW_FULL_CHECKUP_BUTTON && (
               <div style={{ marginBottom:10, borderRadius:10, border:"1px solid #38bdf844", background:"#38bdf80f", padding:"10px 11px" }}>
                 <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 }}>
                   <div style={{ display:"flex", alignItems:"center", gap:6 }}>
@@ -32432,6 +32925,7 @@ function Settings_({ T, S, shopName,
                   );
                 })()}
               </div>
+              )}
 
               {/* ── 🧪 লজিক টেস্ট স্যুট — Firestore/নেটওয়ার্ক ছাড়াই, হাতে বানানো
                   fixture দিয়ে লাভ/টোটাল/ভয়েড-রিভার্সাল/ক্যাশ-ড্রয়ার/ব্যাচ-রিস্টোরের
@@ -36286,8 +36780,16 @@ const SnapshotDB = {
 
   async open() {
     if (this._db) return this._db;
-    return new Promise((resolve, reject) => {
+    const openPromise = new Promise((resolve, reject) => {
       const req = indexedDB.open(this.DB_NAME, this.VERSION);
+      // 🔴 ফিক্স (হ্যাং প্রতিরোধ — ArchiveDB.open()-এর ঠিক একই কারণে/প্যাটার্নে):
+      // এই DB সদ্য v1→v2 মাইগ্রেশনের মধ্য দিয়ে গেছে, তাই "blocked" হওয়ার ঝুঁকি
+      // এখানেই সবচেয়ে বেশি — অন্য কোনো পুরনো ট্যাব/WebView instance এখনো v1
+      // কানেকশন খোলা রাখলে onupgradeneeded কখনো ফায়ার করত না, আর স্ন্যাপশট
+      // save/read নীরবে চিরকাল ঝুলে থাকত।
+      req.onblocked = () => {
+        logErrorToCentral?.("indexedDB:blocked", new Error("open blocked by another connection"), { db: this.DB_NAME });
+      };
       req.onupgradeneeded = e => {
         const db = e.target.result;
         const tx = e.target.transaction;
@@ -36315,6 +36817,20 @@ const SnapshotDB = {
       req.onsuccess = e => { this._db = e.target.result; resolve(this._db); };
       req.onerror   = () => reject(req.error);
     });
+    // 🔴 ফিক্স (দৃশ্যমানতা — নীরব হ্যাং যেন অলক্ষিত না থাকে): আসল open() টাইমআউটের
+    // আগেই সফল/ব্যর্থ হলে নিচের লগ স্কিপ হয় (_settledByOpen flag) — শুধু প্রকৃত
+    // টাইমআউট (blocked/অস্বাভাবিক ধীর) ঘটলেই app_errors-এ লগ হবে, false-positive না।
+    // ৫s থেকে ৮s করা হয়েছে — খুব পুরনো/ধীর ডিভাইসেও স্বাভাবিক open() সময়মতো শেষ
+    // হওয়ার সুযোগ পায়, সত্যিকারের blocked অবস্থাতেও ৮ সেকেন্ডের বেশি অপেক্ষা করতে হয় না।
+    let _settledByOpen = false;
+    openPromise.then(() => { _settledByOpen = true; }, () => { _settledByOpen = true; });
+    const timeoutGuard = new Promise(resolve => setTimeout(() => {
+      if (!_settledByOpen) {
+        logErrorToCentral?.("indexedDB:openTimeout", new Error("open() exceeded 8s — likely blocked by another tab/connection"), { db: this.DB_NAME });
+      }
+      resolve(null);
+    }, 8000));
+    return Promise.race([openPromise.catch(() => null), timeoutGuard]);
   },
 
   async save(data) {
