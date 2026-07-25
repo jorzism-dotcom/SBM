@@ -6446,6 +6446,35 @@ const FSS = {
     try { localStorage.setItem("sbm_pending_purchase_stock", JSON.stringify(remaining)); } catch {}
   },
 
+  // 🆕 নোটিফিকেশন মডিউল/নেভ-ব্যাজের জন্য: সম্পূর্ণ লোকাল (localStorage) থেকে
+  // পড়ে, কোনো Firestore read/write হয় না। ৪টা রিকনসিলিয়েশন কিউ (sales/void/
+  // purchase/stats) মিলিয়ে মোট কতগুলো এন্ট্রি এখনো ক্লাউডে পৌঁছায়নি এবং তার
+  // মধ্যে কতগুলো "স্টেল" (staleMinutes-এর বেশি সময় ধরে আটকে) তা রিটার্ন করে।
+  getLocalPendingQueueCounts(staleMinutes = 10) {
+    const QUEUES = [
+      { key: "sbm_pending_sales_txns", label: "বিক্রি (স্টক/বাকি)" },
+      { key: "sbm_pending_void_restores", label: "ভয়েড/রিটার্ন রিস্টোর" },
+      { key: "sbm_pending_purchase_stock", label: "ক্রয় এন্ট্রি" },
+      { key: "sbm_pending_stats", label: "দৈনিক হিসাব (stats)" },
+    ];
+    const staleMs = staleMinutes * 60 * 1000;
+    const now = Date.now();
+    let total = 0, stale = 0, oldestAt = null;
+    const breakdown = [];
+    for (const { key, label } of QUEUES) {
+      let q = [];
+      try { q = JSON.parse(localStorage.getItem(key) || "[]"); } catch { q = []; }
+      if (!Array.isArray(q) || !q.length) continue;
+      const staleCount = q.filter(it => now - (it?.at || 0) > staleMs).length;
+      const localOldest = q.reduce((m, it) => (it?.at && (!m || it.at < m)) ? it.at : m, null);
+      total += q.length;
+      stale += staleCount;
+      if (localOldest && (!oldestAt || localOldest < oldestAt)) oldestAt = localOldest;
+      breakdown.push({ key, label, count: q.length, staleCount });
+    }
+    return { total, stale, oldestAt, breakdown };
+  },
+
   // 🩹 ড্রিফট-প্রুফ রিপেয়ার: increment()-এর বদলে সরাসরি প্রকৃত ইনভয়েস/txn ডেটা
   // থেকে হিসেব করা absolute মান দিয়ে stats doc সম্পূর্ণ ওভাররাইট (merge নয়) করে।
   // যেকোনো কারণে (silent-fail, race condition ইত্যাদি) drift হয়ে গেলে এটাই
@@ -12334,6 +12363,16 @@ function SmartBusinessMgmt() {
   const backupNeeded     = useAppStore(s => s.backupNeeded);
   const backupFailStreak = useAppStore(s => s.backupFailStreak);
   const lastBackupError  = useAppStore(s => s.lastBackupError);
+  // 🆕 নোটিফিকেশন ব্যাজ (নেভ-এ "অন্যান্য" ট্যাবে) — সম্পূর্ণ লোকাল storage চেক,
+  // Firestore সংযোগ থাকুক বা না থাকুক (fssReady-এর ওপর নির্ভরশীল না, কারণ পুরোপুরি
+  // অফলাইনেও এই ব্যাকলগ জমতে পারে, বরং তখনই সবচেয়ে বেশি প্রাসঙ্গিক)।
+  const [staleSyncCount, setStaleSyncCount] = useState(0);
+  useEffect(() => {
+    const check = () => setStaleSyncCount(FSS.getLocalPendingQueueCounts().stale);
+    check();
+    const t = setInterval(check, 20000);
+    return () => clearInterval(t);
+  }, []);
   const restoreTestAt       = useAppStore(s => s.restoreTestAt);       // #১৯
   const restoreTestOk       = useAppStore(s => s.restoreTestOk);       // #১৯
   const restoreTestDetail   = useAppStore(s => s.restoreTestDetail);   // #১৯
@@ -13009,6 +13048,22 @@ function SmartBusinessMgmt() {
             }
           });
         });
+      }
+      // 🔴 ফিক্স (স্টক/ব্যালেন্স রিকনসিলিয়েশন — periodic retry গ্যাপ): আগে
+      // flushPendingSalesTxns/VoidRestores/PurchaseStock/Stats শুধু boot,
+      // 'online' ইভেন্ট আর business-switch-এ রিট্রাই হতো — অ্যাপ খোলা থাকা
+      // অবস্থায় (অনলাইন কিন্তু ফ্লাকি নেটে) একবার ব্যর্থ হলে সেই এন্ট্রি পরের
+      // app-restart/online-toggle পর্যন্ত localStorage-এই আটকে থাকত, যদিও এই
+      // একই effect-এর heartbeat (appResyncTick, ~২০ সেকেন্ড) অন্য ৬টা
+      // windowed কালেকশনের outbox ঠিকই বারবার রিট্রাই করত। এখন একই heartbeat-এ
+      // এগুলোও যোগ করা হলো। প্রতিটা ফাংশনই কিউ খালি থাকলে সাথে সাথেই রিটার্ন
+      // করে (কোনো Firestore read/write হয় না) — তাই খালি কিউতে এটা প্রতি
+      // ২০ সেকেন্ডে ডাকলেও Firestore read কোটায় কোনো বাড়তি খরচ নেই।
+      if (!cancelled) {
+        FSS.flushPendingStats();
+        FSS.flushPendingSalesTxns({ setProducts, setCustomers, setInvoices });
+        FSS.flushPendingVoidRestores({ setProducts, setCustomers });
+        FSS.flushPendingPurchaseStock({ setProducts, setPurchaseOrders });
       }
     })();
     return () => { cancelled = true; };
@@ -15252,6 +15307,7 @@ function SmartBusinessMgmt() {
       { id: "customers", label: "কাস্টমার", icon: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" },
       { id: "invoice",   label: "ইনভয়েস",  icon: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6" },
       { id: "products",  label: "পণ্য",     icon: "M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4zM3 6h18" },
+      { id: "notifications", label: "নোটিফিকেশন", icon: "M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0" },
       { id: "dailySummary", label: "দৈনিক সারসংক্ষেপ", icon: "M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0" },
       { id: "expense",  label: "এক্সপেন্স ট্রেকার", icon: "M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" },
       { id: "returns",  label: "ইনভয়েস হিস্ট্রি", icon: "M3 3v5h5M3.05 13A9 9 0 1 0 6 5.3L3 8M12 7v5l4 2" },
@@ -16108,6 +16164,21 @@ function SmartBusinessMgmt() {
             </React.Suspense>
           </ErrorBoundary>
         )}
+        {tab === "notifications" && (
+          <ErrorBoundary T={T}>
+            <NotificationCenterModule T={T} S={S}
+              currentUser={currentUser}
+              showToast={showToast}
+              products={products}
+              backupNeeded={backupNeeded}
+              backupFailStreak={backupFailStreak}
+              lastBackupError={lastBackupError}
+              fssReady={fssReady}
+              firebaseEnabled={firebaseEnabled}
+              pendingConflicts={pendingConflicts}
+            />
+          </ErrorBoundary>
+        )}
         {tab === "dailySummary" && (
           <ErrorBoundary T={T}>
             <DailySummaryModule T={T} S={S}
@@ -16199,7 +16270,17 @@ function SmartBusinessMgmt() {
                 transition: "all 0.2s",
                 letterSpacing: isMoreActive ? 0.3 : 0,
               }}>অন্যান্য</span>
-              {backupNeeded && (
+              {staleSyncCount > 0 ? (
+                <span style={{
+                  minWidth: 15, height: 15, padding: "0 3px",
+                  background: "#ef4444", color: "#fff",
+                  borderRadius: 8, fontSize: 9, fontWeight: 800,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  position: "absolute", top: 3, right: "calc(50% - 16px)",
+                  boxShadow: "0 0 6px #ef444488",
+                  animation: "pulse 1.5s ease-in-out infinite",
+                }}>{staleSyncCount > 99 ? "99+" : staleSyncCount}</span>
+              ) : backupNeeded && (
                 <span style={{
                   width: 7, height: 7,
                   background: "#f59e0b",
@@ -29682,6 +29763,116 @@ function StaffCustomTimePicker({ T, staffName, onGrant }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+// 🔔 নোটিফিকেশন — অ্যাপের বিভিন্ন সতর্কতা (সিঙ্ক ব্যাকলগ, ব্যাকআপ, স্টক ইত্যাদি)
+// এক জায়গায় দেখানোর কেন্দ্রীয় মডিউল। সব ইনপুটই হয় ইতিমধ্যে-লোড-করা props
+// (products/backupNeeded ইত্যাদি) থেকে, নাহলে সম্পূর্ণ লোকাল storage থেকে —
+// এই স্ক্রিন খোলা/রিফ্রেশ করলে কোনো নতুন Firestore read হয় না।
+// ══════════════════════════════════════════════════════════════════════════
+function NotificationCenterModule({ T, S, currentUser, showToast, products = [], backupNeeded, backupFailStreak = 0, lastBackupError = null, fssReady = false, firebaseEnabled = false, pendingConflicts = [] }) {
+  const [pendingInfo, setPendingInfo] = useState(() => FSS.getLocalPendingQueueCounts());
+  const [refreshedAt, setRefreshedAt] = useState(Date.now());
+
+  const refresh = React.useCallback(() => {
+    setPendingInfo(FSS.getLocalPendingQueueCounts());
+    setRefreshedAt(Date.now());
+  }, []);
+
+  // প্রতি ১৫ সেকেন্ডে অটো-রিফ্রেশ — সম্পূর্ণ লোকাল হিসাব, Firestore খরচ শূন্য
+  useEffect(() => {
+    const t = setInterval(refresh, 15000);
+    return () => clearInterval(t);
+  }, [refresh]);
+
+  const timeAgo = (ms) => {
+    if (!ms) return "";
+    const diff = Math.max(0, Date.now() - ms);
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "এইমাত্র";
+    if (mins < 60) return `${mins} মিনিট আগে`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs} ঘণ্টা আগে`;
+    return `${Math.floor(hrs / 24)} দিন আগে`;
+  };
+
+  const lowStockCount = React.useMemo(
+    () => (products || []).filter(p => p.productType !== "service" && (p.stock || 0) > 0 && (p.stock || 0) <= (p.minStockAlert || 5)).length,
+    [products]
+  );
+
+  const items = React.useMemo(() => {
+    const list = [];
+    if (pendingInfo.stale > 0) {
+      list.push({
+        level: "critical", icon: "🔴",
+        title: `${pendingInfo.stale}টি এন্ট্রি সিঙ্ক আটকে আছে`,
+        msg: `ফায়ারস্টোরে পাঠানো যাচ্ছে না — সাধারণত ধীর/অস্থির নেট কানেকশনের কারণে। ${pendingInfo.oldestAt ? `সবচেয়ে পুরনোটি ${timeAgo(pendingInfo.oldestAt)} থেকে আটকে।` : ""} Settings-এ গিয়ে "মিসম্যাচ চেক" ও "অটো-ফিক্স" চালান।`,
+      });
+    } else if (pendingInfo.total > 0) {
+      list.push({
+        level: "info", icon: "🟡",
+        title: `${pendingInfo.total}টি এন্ট্রি পাঠানোর অপেক্ষায়`,
+        msg: "এটা স্বাভাবিক — কিছুক্ষণের মধ্যেই নিজে থেকে সিঙ্ক হয়ে যাবে।",
+      });
+    }
+    if (firebaseEnabled && !fssReady) {
+      list.push({ level: "warning", icon: "📡", title: "Firestore সংযোগ বিচ্ছিন্ন", msg: "ডেটা এখন শুধু ফোনে সেভ হচ্ছে, ক্লাউডে যাচ্ছে না — ইন্টারনেট/কনফিগ চেক করুন।" });
+    }
+    if (backupFailStreak >= 3) {
+      list.push({ level: "critical", icon: "☁️", title: `পরপর ${backupFailStreak} বার ব্যাকআপ ব্যর্থ হয়েছে`, msg: lastBackupError || "Google Drive ব্যাকআপ সেটিংস চেক করুন।" });
+    } else if (backupNeeded) {
+      list.push({ level: "info", icon: "☁️", title: "ব্যাকআপ বাকি আছে", msg: "সর্বশেষ পরিবর্তনের পর এখনো নতুন ব্যাকআপ নেওয়া হয়নি।" });
+    }
+    if ((pendingConflicts || []).length > 0) {
+      list.push({ level: "warning", icon: "⚠️", title: `${pendingConflicts.length}টি সিঙ্ক কনফ্লিক্ট`, msg: "পর্যালোচনার অপেক্ষায় আছে।" });
+    }
+    if (lowStockCount > 0) {
+      list.push({ level: "info", icon: "📦", title: `${lowStockCount}টি পণ্যে স্টক কম`, msg: "প্রয়োজনে ক্রয় এন্ট্রি দিন।" });
+    }
+    const order = { critical: 0, warning: 1, info: 2 };
+    return list.sort((a, b) => order[a.level] - order[b.level]);
+  }, [pendingInfo, firebaseEnabled, fssReady, backupFailStreak, lastBackupError, backupNeeded, pendingConflicts, lowStockCount]);
+
+  const levelColor = { critical: "#ef4444", warning: "#f59e0b", info: "#0ea5e9" };
+
+  return (
+    <div style={{ padding: "16px 14px 90px" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+        <span style={{ color: T.text, fontWeight: 900, fontSize: 24, letterSpacing: 0.3 }}>🔔 নোটিফিকেশন</span>
+        <button onClick={refresh} style={{ background: "transparent", border: `1px solid ${T.accent}55`, color: T.accent, borderRadius: 10, padding: "6px 12px", fontSize: 12, fontWeight: 700 }}>
+          ↻ রিফ্রেশ
+        </button>
+      </div>
+      <div style={{ color: `${T.headingColor}80`, fontSize: 11, marginBottom: 14 }}>সর্বশেষ চেক: {timeAgo(refreshedAt) || "এইমাত্র"}</div>
+
+      {items.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "40px 20px", color: T.sub || `${T.headingColor}90` }}>
+          <div style={{ fontSize: 36, marginBottom: 8 }}>✅</div>
+          <div style={{ fontWeight: 700 }}>সব ঠিক আছে — কোনো নোটিফিকেশন নেই</div>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {items.map((it, i) => (
+            <div key={i} style={{
+              background: `${levelColor[it.level]}14`,
+              border: `1px solid ${levelColor[it.level]}44`,
+              borderRadius: 14, padding: "12px 14px",
+            }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                <span style={{ fontSize: 18, lineHeight: 1 }}>{it.icon}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ color: T.text, fontWeight: 800, fontSize: 13.5 }}>{it.title}</div>
+                  <div style={{ color: `${T.headingColor}90`, fontSize: 12, marginTop: 3, lineHeight: 1.5 }}>{it.msg}</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // 📊 দৈনিক সারসংক্ষেপ — Settings থেকে সরিয়ে আলাদা মডিউল হিসেবে
 // ══════════════════════════════════════════════════════════════════════════
 function DailySummaryModule({ T, S, currentUser, shopName, showToast, customers = [], invoices = [], txns = [], cashLogs = [], products = [], purchaseOrders = [], expenses = [], stockMovements = [], returns = [] }) {
@@ -31036,7 +31227,7 @@ function Settings_({ T, S, shopName,
         // veterinary মোডে এন্ট্রি করে পরে pharmacy-তে সুইচ করলে)। প্রিফিক্স না
         // মেলালে সেই এন্ট্রি ভুল বিজনেসের Firestore কালেকশনে গিয়ে লিখে ফেলত।
         const currentPrefix = FSS._businessPrefix || null;
-        const outboxItemsAllBiz = await SyncOutbox.getAll(t.key);
+        const outboxItemsAllBiz = await withMismatchFixTimeout(SyncOutbox.getAll(t.key), `${t.key} outbox getAll (scan)`);
         const outboxItems = outboxItemsAllBiz.filter(i => {
           const itemPrefix = Object.prototype.hasOwnProperty.call(i, "prefix") ? i.prefix : null;
           return itemPrefix === currentPrefix;
