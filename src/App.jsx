@@ -5563,10 +5563,13 @@ const FSS = {
     markFieldTxPending("products", productId, ["stock", "batches"]);
     try {
       const ref = this.doc("products", productId);
+      let prevStock = null, productName = "";
       const result = await runTransaction(this._db, async (tx) => {
         const snap = await tx.get(ref);
         if (!snap.exists()) return null;
         const serverProduct = { id: snap.id, ...snap.data() };
+        prevStock = serverProduct.stock || 0;
+        productName = serverProduct.name || "";
         const { newStock, updatedBatches, batchNo, costPrice, expiryDate, batchBreakdown } = computeStockDeductionFIFO(serverProduct, deductQty);
         tx.update(ref, {
           stock: newStock, batches: updatedBatches, costPrice,
@@ -5574,6 +5577,18 @@ const FSS = {
         });
         return { stock: newStock, batches: updatedBatches, batchNo, costPrice, expiryDate, batchBreakdown };
       });
+      // 🔴 ফিক্স (স্টক ড্রিফট চেক-কে আবার অর্থবহ করা): আগে বিক্রিতে কোনো
+      // stockMovements এন্ট্রি লেখা হতো না়, তাই মিসম্যাচ-চেক প্রতিটা বিক্রি-হওয়া
+      // পণ্যকেই "ড্রিফট" ধরত (দ্র. runMismatchAutoFix-এর stockDrift কমেন্ট)। এখন
+      // transaction সফল হলে (retry-safe — tx callback-এর ভেতরে না, বাইরে) একটা
+      // source:"sale" মুভমেন্ট লেখা হয়, বাকি ৭টা creation site-এর প্যাটার্ন অনুসরণ করে।
+      if (result && prevStock !== null) {
+        const now = new Date().toISOString();
+        pushStockMovement({
+          id: uid(), productId, productName, stock: result.stock, prevStock,
+          delta: result.stock - prevStock, at: now, dateKey: now.split("T")[0], source: "sale",
+        });
+      }
       return result;
     } catch (e) {
       logErrorToCentral?.("transaction:stock", e, { productId, deductQty });
@@ -31188,13 +31203,14 @@ function Settings_({ T, S, shopName,
               } catch { failCount++; }
             });
           } else if (row.key === "stockDrift") {
-            await runMismatchFixPool(row.driftItems, async item => {
-              try {
-                await withMismatchFixTimeout(setDoc(FSS.doc("products", item.id), { stock: item.expected }, { merge: true }), "stockDrift setDoc");
-                setProducts(prev => (prev || []).map(p => String(p.id) === String(item.id) ? { ...p, stock: item.expected } : p));
-                fixedCount++;
-              } catch { failCount++; }
-            });
+            // 🔴 ফিক্স (সেল রিভার্সাল বাগ — অতি গুরুত্বপূর্ণ): এই চেক ধরে নেয় প্রতিটা
+            // স্টক পরিবর্তনের একটা stockMovements এন্ট্রি থাকে, কিন্তু createInvoice
+            // (স্বাভাবিক বিক্রি) কখনো stockMovements এন্ট্রি লেখে না (শুধু purchase/
+            // void/return/edit/quick/expired_removal-এ লেখা হয়)। ফলে বিক্রির পর
+            // "ড্রিফট" ধরা পড়ত (আসলে বিক্রিটাই আসল, movement-টাই অনুপস্থিত), আর
+            // অটো-ফিক্স চাপলে স্টককে বিক্রির-আগের পুরনো সংখ্যায় ফিরিয়ে দিত — অর্থাৎ
+            // বিক্রিটাই কার্যত বাতিল হয়ে যেত। তাই এখন আর অটো-ওভাররাইট করা হয় না,
+            // শুধু তথ্য হিসেবে দেখানো হয় (ম্যানুয়াল যাচাইয়ের জন্য)।
           }
           continue;
         }
@@ -32060,6 +32076,7 @@ function Settings_({ T, S, shopName,
                     return (
                       <div key={row.key} style={{ fontSize:9, color:"#cbd5e1", marginBottom:4, paddingLeft:2 }}>
                         <b>{row.label}</b> — {row.driftItems.length}টা মিলছে না
+                        {row.key === "stockDrift" && <div style={{ color:"#f59e0b", fontSize:8, marginTop:1 }}>ℹ️ শুধু তথ্যের জন্য — অটো-ফিক্স স্টক বদলায় না; বিক্রির পর মুভমেন্ট-লগ না থাকলে এখানে দেখাতে পারে</div>}
                         {row.driftItems.slice(0, 5).map(d => (
                           <div key={d.id} style={{ color:"#94a3b8", fontSize:8.5, marginTop:1, paddingLeft:8 }}>
                             {d.name} — সংরক্ষিত {row.key === "stockDrift" ? d.actual : `৳${d.actual}`}, সঠিক {row.key === "stockDrift" ? d.expected : `৳${d.expected}`}
@@ -32789,6 +32806,7 @@ function Settings_({ T, S, shopName,
                           return (
                             <div key={row.key} style={{ fontSize:9, color:"#cbd5e1", marginBottom:4, paddingLeft:2 }}>
                               <b>{row.label}</b> — {row.driftItems.length}টা মিলছে না
+                              {row.key === "stockDrift" && <div style={{ color:"#f59e0b", fontSize:8, marginTop:1 }}>ℹ️ শুধু তথ্যের জন্য — অটো-ফিক্স স্টক বদলায় না; বিক্রির পর মুভমেন্ট-লগ না থাকলে এখানে দেখাতে পারে</div>}
                               {row.driftItems.slice(0, 5).map(d => (
                                 <div key={d.id} style={{ color:"#94a3b8", fontSize:8.5, marginTop:1, paddingLeft:8 }}>
                                   {d.name} — সংরক্ষিত {row.key === "stockDrift" ? d.actual : `৳${d.actual}`}, সঠিক {row.key === "stockDrift" ? d.expected : `৳${d.expected}`}
