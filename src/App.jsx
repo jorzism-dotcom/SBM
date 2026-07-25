@@ -5091,7 +5091,6 @@ const BUSINESS_TYPE_REGISTRY = {
     color: "#22c55e",
     collectionPrefix: "pharmacy",
     hiddenFields: { productForm: [], purchaseForm: [], invoiceCard: [] },
-    bulkImageEntry: false,
     purchaseEntryRestrictToExisting: true,
     purchaseEntryListOrder: "newestFirst",
   },
@@ -5101,7 +5100,6 @@ const BUSINESS_TYPE_REGISTRY = {
     color: "#f59e0b",
     collectionPrefix: "veterinary",
     hiddenFields: { productForm: [], purchaseForm: [], invoiceCard: [] },
-    bulkImageEntry: false,
     purchaseEntryRestrictToExisting: true,
     purchaseEntryListOrder: "newestFirst",
   },
@@ -5115,7 +5113,6 @@ const BUSINESS_TYPE_REGISTRY = {
       purchaseForm: ["sp", "bonusStock", "expiryDate"],
       invoiceCard: ["purchasePrice"],
     },
-    bulkImageEntry: false,
     purchaseEntryRestrictToExisting: true,
     purchaseEntryAllFieldsMandatory: true,
     purchaseEntryListOrder: "newestFirst",
@@ -7833,54 +7830,6 @@ async function parseAiImageEntry(dataUrl, anthropicKey, { onStart, onDone, onErr
 // dataUrl: "data:image/jpeg;base64,...." ফরম্যাটে ক্যামেরা/গ্যালারি থেকে পাওয়া চালান/ইনভয়েসের ছবি।
 // একাধিক পণ্যের নাম+পরিমাণ+ক্রয়মূল্য (ও সম্ভব হলে সাপ্লায়ার নাম) একসাথে বের করে array আকারে দেয়।
 // এখানেও রিভিউ-কনফার্ম বাধ্যতামূলক থাকবে (কলার সাইডে) — সরাসরি সেভ হয় না।
-async function parseAiInvoiceImage(dataUrl, anthropicKey, { onStart, onDone, onError } = {}) {
-  if (onStart) onStart();
-  if (!anthropicKey) { if (onError) onError("সেটিংসে Anthropic API Key দিন"); return null; }
-  if (!dataUrl || !dataUrl.startsWith("data:")) { if (onError) onError("ছবি পাওয়া যায়নি, আবার চেষ্টা করুন"); return null; }
-  const m = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
-  if (!m) { if (onError) onError("ছবির ফরম্যাট সাপোর্টেড না"); return null; }
-  const [, mediaType, base64Data] = m;
-  const prompt = `তুমি একটি বাংলাদেশি ফার্মেসি/দোকানের ইনভেন্টরি সহকারী। এই ছবিতে সাপ্লায়ারের একটি কাগজের চালান/ইনভয়েস
-(হাতে-লেখা বা প্রিন্টেড) আছে, যেখানে একাধিক পণ্যের লাইন-আইটেম তালিকা আছে।
-ছবি থেকে যা দেখতে পাচ্ছ তাই বের করো — অনুমান করে সংখ্যা বানিও না, কোনো ফিল্ড অস্পষ্ট/অনুপস্থিত হলে null দাও।
-শুধু নিচের JSON ফরম্যাটে উত্তর দাও, অন্য কোনো টেক্সট/মার্কডাউন/ব্যাখ্যা ছাড়া:
-{"supplier": "চালানের উপরে/নিচে থাকা সাপ্লায়ার বা কোম্পানির নাম (string বা null)", "items": [{"name": "পণ্যের নাম ও পাওয়ার/সাইজ একসাথে (string)", "qty": সংখ্যা বা null, "unitCost": এক ইউনিটের ক্রয়মূল্য সংখ্যা বা null}]}
-নিয়ম: বাংলা সংখ্যা (০-৯) থাকলে ইংরেজি সংখ্যায় বদলাও। প্রতিটা লাইন-আইটেম আলাদা করে items অ্যারেতে দাও, বাদ দিও না।
-"name" ফিল্ডে চালানে যা লেখা আছে হুবহু তাই রাখো, বানান ঠিক করার চেষ্টা করো না। মোট/সাবটোটাল/ট্যাক্সের লাইন items-এ রেখো না, শুধু প্রকৃত পণ্যের লাইন। ছবি অস্পষ্ট/অপ্রাসঙ্গিক হলে items: [] দেবে।`;
-  try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": anthropicKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 2000,
-        messages: [{
-          role: "user",
-          content: [
-            { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } },
-            { type: "text", text: prompt },
-          ],
-        }],
-      }),
-    });
-    if (!res.ok) throw new Error(`API error ${res.status}`);
-    const d = await res.json();
-    const raw = (d.content?.[0]?.text || "").trim().replace(/^```json\s*|```$/g, "");
-    const parsed = JSON.parse(raw);
-    if (!parsed || !Array.isArray(parsed.items)) throw new Error("bad shape");
-    if (onDone) onDone(parsed);
-    return parsed;
-  } catch (e) {
-    if (onError) onError("AI থেকে উত্তর পাওয়া যায়নি — ছবি স্পষ্ট কিনা ও নেট সংযোগ/API Key চেক করুন");
-    return null;
-  }
-}
-
 // SMS via CapacitorHttp (bypasses WebView CORS) or fetch fallback
 async function httpPost(url, headers, body, isForm = false) {
   // Capacitor native HTTP — no CORS issues in APK
@@ -25207,12 +25156,6 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const [peNavDate,       setPeNavDate]       = useState(_dateKeyOf(new Date()));
   const [peNavMonth,      setPeNavMonth]      = useState(_monthKeyOf(new Date()));
   const [peSearch,        setPeSearch]        = useState("");
-  // ── #৭ AI ফিচার — চালান/ইনভয়েসের ছবি → বাল্ক ক্রয় এন্ট্রি ──────────────────
-  const [peInvoiceBusy,   setPeInvoiceBusy]   = useState(false);
-  const [peInvoiceErr,    setPeInvoiceErr]    = useState("");
-  const [peInvoiceItems,  setPeInvoiceItems]  = useState(null); // null = বন্ধ, array = রিভিউ চলছে
-  const [peInvoiceSupplier, setPeInvoiceSupplier] = useState("");
-  const peInvoiceInputRef = useRef(null);
 
   const [quickStockId, setQuickStockId]= useState(null); // product being quick-edited
   const [quickStockVal,setQuickStockVal]= useState("");
@@ -25335,17 +25278,15 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     try { localStorage.setItem("sbm_custom_units", JSON.stringify(units)); } catch {}
   };
   // 🆕 প্রোডাক্ট + ক্রয় এন্ট্রি (PO) মডিউলের নেস্টেড লেয়ার — শেয়ার্ড back-stack-এ।
-  // চালান রিভিউ (peInvoiceItems) সবচেয়ে ভেতরের লেয়ার, তারপর সার্চ ড্রপডাউন
-  // (peSearchOpen, ফর্মের ভেতরে), তারপর ক্রয় এন্ট্রি ফর্ম নিজেই (peShowForm)।
-  // প্রতিটা active হওয়ার সময়ই স্ট্যাকে যোগ হয়, তাই ব্যাক বাটনে সবচেয়ে পরে-খোলা
-  // লেয়ারটাই আগে বন্ধ হবে — কোড-অর্ডার নির্বিশেষে।
+  // সার্চ ড্রপডাউন (peSearchOpen, ফর্মের ভেতরে), তারপর ক্রয় এন্ট্রি ফর্ম নিজেই
+  // (peShowForm)। প্রতিটা active হওয়ার সময়ই স্ট্যাকে যোগ হয়, তাই ব্যাক বাটনে
+  // সবচেয়ে পরে-খোলা লেয়ারটাই আগে বন্ধ হবে — কোড-অর্ডার নির্বিশেষে।
   useBackHandler(showAdd,            () => { setShowAdd(false); setEditId(null); return true; });
   useBackHandler(showUnitMgr,        () => { setShowUnitMgr(false); return true; });
   useBackHandler(showAiQuickEntry,   () => { setShowAiQuickEntry(false); return true; });
   useBackHandler(!!quickStockId,     () => { setQuickStockId(null); return true; });
-  useBackHandler(!!peInvoiceItems,   () => { setPeInvoiceItems(null); return true; });
   useBackHandler(peSearchOpen,       () => { setPeSearchOpen(false); return true; });
-  useBackHandler(peShowForm && !peInvoiceItems, () => { setPeShowForm(false); return true; });
+  useBackHandler(peShowForm,         () => { setPeShowForm(false); return true; });
   // Virtuoso — pagination সরানো
   const lowStock = useMemo(() => products.filter(p => (p.stock || 0) <= 5 && (p.stock || 0) > 0), [products]);
   const outOfStock = useMemo(() => products.filter(p => (p.stock || 0) === 0), [products]);
@@ -25598,9 +25539,9 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
         // সর্বশেষ ব্যাচ যা বর্তমানে স্টকে আছে (তথ্যমূলক ব্যাজের জন্য) — nextBatchLabel থেকে আলাদা
         const latestBatchLabel = peLatestBatchLabel;
 
-        // 🔴 ফিক্স (বাল্ক-ইমপোর্ট বাগ): confirmInvoiceItems একই চালানের একাধিক
-        // লাইন-আইটেমে applyPurchaseBatch() সিঙ্ক্রোনাসভাবে forEach লুপে কল করে।
-        // একই পণ্য দুইবার (দুই ব্যাচ/এক্সপায়ারি) থাকলে calcNextBatch() stale
+        // 🔴 ফিক্স (বাল্ক-ইমপোর্ট বাগ, ঐতিহাসিক): আগে একটা বাল্ক-ইমপোর্ট ফিচার এই
+        // applyPurchaseBatch()-কে একই চালানের একাধিক লাইন-আইটেমে সিঙ্ক্রোনাসভাবে
+        // forEach লুপে কল করত। একই পণ্য দুইবার (দুই ব্যাচ/এক্সপায়ারি) থাকলে calcNextBatch() stale
         // `products`/`purchaseOrders` closure থেকে দুইবারই একই "next batch"
         // নম্বর হিসেব করত (কারণ লুপের মাঝে React state আপডেট হয় না) — দুইটা
         // ব্যাচ একই batchNo পেয়ে conflict করত। এই লোকাল কাউন্টার দিয়ে একই
@@ -25756,35 +25697,6 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
         // দেখতে পায় (আগে সব লাইন একসাথে fire হতো বলে transaction ছাড়াই এই
         // গ্যারান্টি লাগত না, এখন transaction থাকায় সিরিয়াল না চালালে একই পণ্যের
         // একাধিক লাইনের মাঝে batchNo হিন্ট স্টেল থেকে যেতে পারত)।
-        const confirmInvoiceItems = async () => {
-          // 🔴 ফিক্স (২৪ জুলাই ২০২৬ — একই ডাবল-সাবমিট বাগ, বাল্ক-ইমপোর্টেও):
-          if (peSaving) return;
-          const toSave = (peInvoiceItems || []).filter(it => it.include && it.productId && parseFloat(it.qty) > 0);
-          if (!toSave.length) { showToast("অন্তত একটা পণ্য টিক দিন", "#ef4444"); return; }
-          setPeSaving(true);
-          try {
-          let successCount = 0;
-          for (const it of toSave) {
-            const r = await applyPurchaseBatch({
-              productId: it.productId,
-              qty: parseFloat(it.qty),
-              unitCost: parseFloat(it.unitCost) || 0,
-              unitSell: 0,
-              expiryDate: "",
-              supplier: peInvoiceSupplier,
-              note: "🧾 চালানের ছবি থেকে বাল্ক এন্ট্রি",
-              isFreeStock: false,
-            });
-            if (r) successCount++;
-          }
-          setPeInvoiceItems(null);
-          setPeInvoiceSupplier("");
-          showToast(`✅ ${successCount}টা পণ্য স্টকে যোগ হয়েছে`, "#a78bfa");
-          } finally {
-            setPeSaving(false);
-          }
-        };
-
         const displayed  = peDisplayed;
         const displayedTotal = peDisplayedTotal;
         const selProd    = peSelProdForBatch;
@@ -25831,112 +25743,6 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               <span style={{ fontSize:18, lineHeight:1 }}>{peShowForm ? "✕" : "+"}</span>
               {peShowForm ? "ফর্ম বন্ধ করুন" : "আজকের ক্রয় এন্ট্রি করুন"}
             </button>
-
-            {/* ── #৭ AI ফিচার — চালান/ইনভয়েসের ছবি → বাল্ক ক্রয় এন্ট্রি ───────────────
-                 🆕 ধাপ ৪: semen business-এ সম্পূর্ণ বাদ (registry bulkImageEntry: false) */}
-            {!peInvoiceItems && bizCfg.bulkImageEntry && (
-              <button type="button" disabled={peInvoiceBusy}
-                onClick={() => peInvoiceInputRef.current?.click()}
-                style={{
-                  width:"100%", marginBottom:12, padding:"11px 14px", borderRadius:12,
-                  border:"1.5px solid #a78bfa66", background: peInvoiceBusy ? "#a78bfa22" : "transparent",
-                  color:"#a78bfa", fontWeight:800, fontSize:13, cursor: peInvoiceBusy ? "default" : "pointer",
-                  fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:8,
-                }}>
-                {peInvoiceBusy ? "⏳ চালান পড়া হচ্ছে..." : "🧾 চালান/ইনভয়েসের ছবি তুলে বাল্ক এন্ট্রি করুন"}
-              </button>
-            )}
-            <input ref={peInvoiceInputRef} type="file" accept="image/*" capture="environment" style={{ display:"none" }}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                e.target.value = "";
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = () => {
-                  parseAiInvoiceImage(reader.result, anthropicKey, {
-                    onStart: () => { setPeInvoiceBusy(true); setPeInvoiceErr(""); },
-                    onDone: (parsed) => {
-                      setPeInvoiceBusy(false);
-                      const items = parsed?.items || [];
-                      if (!items.length) { setPeInvoiceErr("চালান থেকে কোনো পণ্য পড়া যায়নি — স্পষ্ট ছবি তুলে আবার চেষ্টা করুন"); return; }
-                      // প্রতিটা লাইন-আইটেমের নামের সাথে সবচেয়ে কাছাকাছি বিদ্যমান পণ্য খুঁজে বের করা (smartMatch)
-                      const mapped = items.map((it, idx) => {
-                        let bestId = "", bestScore = 0;
-                        for (const p of products) {
-                          const s = Math.max(smartMatch(p.name, it.name || ""), smartMatch(it.name || "", p.name));
-                          if (s > bestScore) { bestScore = s; bestId = p.id; }
-                        }
-                        return {
-                          key: "inv_" + idx,
-                          rawName: it.name || "",
-                          productId: bestScore >= 1 ? bestId : "",
-                          qty: it.qty != null ? String(it.qty) : "",
-                          unitCost: it.unitCost != null ? String(it.unitCost) : "",
-                          include: bestScore >= 1, // ম্যাচ না পেলে ডিফল্ট আনচেক, ইউজারকে ম্যানুয়ালি বেছে নিতে হবে
-                        };
-                      });
-                      setPeInvoiceItems(mapped);
-                      setPeInvoiceSupplier(parsed?.supplier || "");
-                      showToast(`🧾 ${items.length}টা পণ্য পড়া হয়েছে — চেক করে কনফার্ম করুন`);
-                    },
-                    onError: (msg) => { setPeInvoiceBusy(false); setPeInvoiceErr(msg); },
-                  });
-                };
-                reader.readAsDataURL(file);
-              }} />
-            {peInvoiceErr && !peInvoiceItems && <div style={{ color:"#ef4444", fontSize:12, fontWeight:700, marginBottom:10 }}>⚠️ {peInvoiceErr}</div>}
-
-            {/* ── বাল্ক চালান রিভিউ প্যানেল — সরাসরি সেভ না, কনফার্ম বাধ্যতামূলক ────────── */}
-            {peInvoiceItems && (
-              <div className="qc-gradient-card" style={{ ...S.card, background:"linear-gradient(135deg,#2d1a5e18,#4c1d9518)", marginBottom:14 }}>
-                <div style={{ color:"#a78bfa", fontWeight:800, fontSize:14, marginBottom:8 }}>
-                  🧾 চালান রিভিউ — {peInvoiceItems.length}টা লাইন, চেক করে কনফার্ম করুন
-                </div>
-                <label style={S.label}>🏭 সাপ্লায়ার (পুরো চালানের জন্য)</label>
-                <input style={{ ...S.input, marginBottom:10 }} value={peInvoiceSupplier}
-                  onChange={e => setPeInvoiceSupplier(e.target.value)}
-                  placeholder="সাপ্লায়ার/কোম্পানির নাম" />
-                {peInvoiceItems.map((it, idx) => (
-                  <div key={it.key} style={{ border:`1px solid ${it.include ? "#a78bfa55" : T.border}`, borderRadius:10, padding:"8px 10px", marginBottom:8, opacity: it.include ? 1 : 0.55 }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
-                      <input type="checkbox" checked={it.include}
-                        onChange={e => setPeInvoiceItems(arr => arr.map((x,i) => i===idx ? { ...x, include: e.target.checked } : x))} />
-                      <div style={{ flex:1, fontSize:12, color: T.sub, fontWeight:700 }}>চালানে লেখা: "{it.rawName}"</div>
-                    </div>
-                    <label style={S.label}>মিলিয়ে দেখুন — কোন পণ্য?</label>
-                    <select
-                      value={it.productId}
-                      onChange={e => setPeInvoiceItems(arr => arr.map((x,i) => i===idx ? { ...x, productId: e.target.value, include: !!e.target.value && x.include !== false ? true : x.include } : x))}
-                      style={{ ...S.input, marginBottom:8, border: !it.productId && it.include ? "1.5px solid #ef4444" : S.input.border }}>
-                      <option value="">— পণ্য বেছে নিন —</option>
-                      {products.map(p => { const ta = medTypeAbbr(p.dosageForm); return <option key={p.id} value={p.id}>{ta ? `${ta.abbr}. ` : ""}{p.name}{p.unit ? ` (${p.unit})` : ""}</option>; })}
-                    </select>
-                    <div style={{ display:"flex", gap:8 }}>
-                      <div style={{ flex:1 }}>
-                        <label style={S.label}>পরিমাণ</label>
-                        <input type="number" inputMode="decimal" style={S.input} value={it.qty}
-                          onChange={e => setPeInvoiceItems(arr => arr.map((x,i) => i===idx ? { ...x, qty: e.target.value } : x))} />
-                      </div>
-                      <div style={{ flex:1 }}>
-                        <label style={S.label}>একক ক্রয়মূল্য</label>
-                        <input type="number" inputMode="decimal" style={S.input} value={it.unitCost}
-                          onChange={e => setPeInvoiceItems(arr => arr.map((x,i) => i===idx ? { ...x, unitCost: e.target.value } : x))} />
-                      </div>
-                    </div>
-                  </div>
-                ))}
-                <div style={{ display:"flex", gap:8, marginTop:4 }}>
-                  <button type="button" onClick={() => { setPeInvoiceItems(null); setPeInvoiceErr(""); }}
-                    style={{ flex:1, padding:"11px", borderRadius:10, border:`1px solid ${T.border}`, background:"transparent", color:T.sub, fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>
-                    বাতিল
-                  </button>
-                  <button type="button" onClick={confirmInvoiceItems} disabled={peSaving}
-                    style={{ flex:2, padding:"11px", borderRadius:10, border:"none", background:"linear-gradient(135deg,#7c3aed,#a78bfa)", color:"#fff", fontWeight:800, fontSize:13, cursor: peSaving ? "not-allowed" : "pointer", opacity: peSaving ? 0.6 : 1, fontFamily:"inherit" }}>
-                    {peSaving ? "সেভ হচ্ছে..." : "✅ টিক দেওয়া সব পণ্য স্টকে যোগ করুন"}
-                  </button>
-                </div>
-              </div>
-            )}
 
             {/* ── সারাংশ কার্ড (সাপ্লায়ার বাকি সরানো) ─────────────────────── */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
