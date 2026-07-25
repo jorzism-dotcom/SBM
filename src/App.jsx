@@ -5577,18 +5577,15 @@ const FSS = {
         });
         return { stock: newStock, batches: updatedBatches, batchNo, costPrice, expiryDate, batchBreakdown };
       });
-      // 🔴 ফিক্স (স্টক ড্রিফট চেক-কে আবার অর্থবহ করা): আগে বিক্রিতে কোনো
-      // stockMovements এন্ট্রি লেখা হতো না়, তাই মিসম্যাচ-চেক প্রতিটা বিক্রি-হওয়া
-      // পণ্যকেই "ড্রিফট" ধরত (দ্র. runMismatchAutoFix-এর stockDrift কমেন্ট)। এখন
-      // transaction সফল হলে (retry-safe — tx callback-এর ভেতরে না, বাইরে) একটা
-      // source:"sale" মুভমেন্ট লেখা হয়, বাকি ৭টা creation site-এর প্যাটার্ন অনুসরণ করে।
-      if (result && prevStock !== null) {
-        const now = new Date().toISOString();
-        pushStockMovement({
-          id: uid(), productId, productName, stock: result.stock, prevStock,
-          delta: result.stock - prevStock, at: now, dateKey: now.split("T")[0], source: "sale",
-        });
-      }
+      // 🔴 ফিক্স (ডাবল stockMovements এন্ট্রি — ২৬ জুলাই ২০২৬): আগে এখানে একটা
+      // source:"sale" মুভমেন্ট পুশ করা হতো "স্টক ড্রিফট false-positive" ঠিক
+      // করতে, কিন্তু এই ফাংশনের দুইটা caller-ই (createInvoice-এর অনলাইন পাথ ও
+      // flushPendingSalesTxns-এর অফলাইন-ফ্লাশ পাথ) এই কল করার পরপরই নিজেরা
+      // আরেকটা source:"sale" মুভমেন্ট পুশ করে (invoiceId-সহ, অনলাইন পাথে সাথে
+      // setStockMovements দিয়ে লোকাল স্টেটও সিঙ্ক করে) — ফলে প্রতিটা বিক্রিতে
+      // ১টার বদলে ২টা মুভমেন্ট ডকুমেন্ট Firestore-এ লেখা হচ্ছিল। এখানকার এই
+      // পুশটা বাদ দেওয়া হলো — caller-দের এন্ট্রিই এখন একমাত্র ও বেশি সম্পূর্ণ
+      // (invoiceId-সহ) সোর্স।
       return result;
     } catch (e) {
       logErrorToCentral?.("transaction:stock", e, { productId, deductQty });
@@ -6250,6 +6247,20 @@ const FSS = {
             const txBal = await this.transactionUpdateBalance(bu.customerId, (serverBal) => Math.max(0, serverBal + bu.delta));
             if (txBal === null) { failedBalanceUpdates.push(bu); continue; }
             if (setCustomers) setCustomers(prev => prev.map(c => c.id === bu.customerId ? { ...c, balance: txBal } : c));
+            // 🔴 ফিক্স (balanceAfter রিকনসিলিয়েশন — অফলাইন-ফ্লাশ পাথ, ২৬ জুলাই
+            // ২০২৬): অনলাইন পাথের (createInvoice) একই ফিক্সের প্যারালাল — addTxn()
+            // তখন optimistic balanceAfter দিয়ে txn লিখেছিল, এখন আসল txBal দিয়ে
+            // সংশ্লিষ্ট txn এন্ট্রি(গুলো) (invoiceId + customerId মিলিয়ে) প্যাচ করা
+            // হচ্ছে — এই FSS মেথড optimistic localGuess-এর মান জানে না, তাই সরাসরি
+            // মিলিয়ে দেখে (balanceAfter !== txBal) প্যাচ করা হয়।
+            if (item.invoiceId) {
+              const freshTxns = useAppStore.getState().txns || [];
+              freshTxns
+                .filter(t => t.invoiceId === item.invoiceId && t.customerId === bu.customerId)
+                .forEach(t => {
+                  if (t.balanceAfter !== txBal) pushDurable("txns", t.id, withTs({ ...t, balanceAfter: txBal }));
+                });
+            }
           }
         }
         if (failedStockItems.length || failedBalanceUpdates.length) {
@@ -18341,13 +18352,23 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
               for (const sold of sellableItems) {
                 const r = resMap.get(sold.productId);
                 if (!r) continue;
-                const mv = pushStockMovement({
+                // 🔴 ফিক্স (গুরুতর — no-undef রানটাইম ক্র্যাশ, ২৬ জুলাই ২০২৬): এখানে
+                // আগে pushStockMovement()-এর রেজাল্ট `mv`-তে ধরে
+                // `setStockMovements(prev => [mv, ...(prev||[])])` কল করা হতো,
+                // কিন্তু SmartInvoiceBuilder (এই ফাংশনের কম্পোনেন্ট) কখনোই
+                // setStockMovements প্রপ হিসেবে পায়নি — ফলে প্রতিটা অনলাইন বিক্রিতে
+                // ReferenceError ছুড়ত, যেটা নিচের catch ধরে পুরো ইনভয়েসের স্টক-
+                // আইটেমগুলোকে ভুলভাবে "ব্যর্থ" ধরে নিয়ে flushPendingSalesTxns()-এর
+                // রিট্রাই-কিউতে জমা করত — পরের ফ্লাশে একই স্টক দ্বিতীয়বার কমে যেত
+                // (ডাবল-ডিডাকশন)। অফলাইন-ফ্লাশ পাথের (flushPendingSalesTxns) মতোই
+                // এখন এখানে লোকাল push বাদ — windowed real-time listener Firestore
+                // থেকে এই এন্ট্রি এমনিতেই সিঙ্ক করে আনবে।
+                pushStockMovement({
                   id: "sm_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
                   productId: sold.productId, productName: sold.name || "",
                   stock: r.stock, prevStock: r.stock + (sold.qty || 0),
                   delta: -(sold.qty || 0), at: _mvNow, dateKey: _mvDateKey, source: "sale", invoiceId: inv.id,
                 });
-                setStockMovements(prev => [mv, ...(prev || [])]);
               }
               let itemsChanged = false;
               const correctedItems = inv.items.map(it => {
@@ -18383,6 +18404,24 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
               const localGuess = bu.customerId === walkInExistingId ? newWalkInBal : newBal;
               if (txBal !== localGuess) {
                 setCustomers(prev => prev.map(c => c.id === bu.customerId ? { ...c, balance: txBal } : c));
+                // 🔴 ফিক্স (balanceAfter রিকনসিলিয়েশন — ২৬ জুলাই ২০২৬): addTxn()
+                // এই ইনভয়েসের বাকি/জমা এন্ট্রি লেখার সময় balanceAfter হিসেবে
+                // optimistic localGuess ব্যবহার করেছিল (দুই ডিভাইস প্রায়
+                // একইসাথে একই কাস্টমারের বাকি/জমা করলে এটা আসল মানের চেয়ে ভিন্ন
+                // হতে পারে)। এখন আসল txBal ভিন্ন হলে সংশ্লিষ্ট txn এন্ট্রি(গুলো)
+                // (invoiceId + customerId মিলিয়ে) Firestore-এ প্যাচ করে দেওয়া হচ্ছে
+                // — নাহলে txn.balanceAfter চিরতরে ভুল থেকে যেত আর
+                // autoBalanceDriftCheck() মিথ্যা "ব্যালেন্স ড্রিফট" এলার্ম দিত।
+                // এখানে setTxns() নেই (এই কম্পোনেন্ট পায়নি — ঠিক উপরের
+                // stockMovements ফিক্সের কমেন্ট দ্রষ্টব্য, একই কারণ) — শুধু
+                // pushDurable() যথেষ্ট, windowed real-time listener লোকাল txns
+                // স্টেট নিজে থেকেই আপডেট করে আনবে।
+                const freshTxns = useAppStore.getState().txns || [];
+                freshTxns
+                  .filter(t => t.invoiceId === inv.id && t.customerId === bu.customerId)
+                  .forEach(t => {
+                    if (t.balanceAfter !== txBal) pushDurable("txns", t.id, withTs({ ...t, balanceAfter: txBal }));
+                  });
               }
             } catch (err) {
               logErrorToCentral?.("createInvoice:balanceReconcile", err, { invoiceId: inv.id, customerId: bu.customerId });
