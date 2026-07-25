@@ -31151,6 +31151,22 @@ function Settings_({ T, S, shopName,
     });
     return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
   };
+  // 🔴 ফিক্স (স্লো-নেট-এ কার্যত-অসীম অপেক্ষা): আগে প্রতিটা রেকর্ড sequential
+  // (একটার পর একটা) পাঠানো হতো — ৩৩৮টা আইটেমে, প্রতিটায় সর্বোচ্চ ৮s টাইমআউট
+  // ধরলে ওয়ার্স্ট-কেসে ৩০-৪৫ মিনিট লাগতে পারত, যেটা ইউজারের কাছে "স্টাক"-ই মনে
+  // হয়। এখন একসাথে সর্বোচ্চ CONCURRENCY-টা রিকোয়েস্ট সমান্তরালে পাঠানো হবে,
+  // ফলে একই ৩৩৮টা আইটেম কয়েক সেকেন্ড/মিনিটেই শেষ হবে।
+  const MISMATCH_FIX_CONCURRENCY = 12;
+  const runMismatchFixPool = async (items, worker) => {
+    let idx = 0;
+    const runners = new Array(Math.min(MISMATCH_FIX_CONCURRENCY, items.length)).fill(0).map(async () => {
+      while (idx < items.length) {
+        const myIdx = idx++;
+        await worker(items[myIdx]);
+      }
+    });
+    await Promise.all(runners);
+  };
 
   const runMismatchAutoFix = async () => {
     if (!mismatchScan || !mismatchScan.rows) return;
@@ -31164,21 +31180,21 @@ function Settings_({ T, S, shopName,
         // orphanedLocal/cloudOnly প্যাটার্ন অনুসরণ করে না, তাই আলাদাভাবে হ্যান্ডল
         if (row.isDrift) {
           if (row.key === "balanceDrift") {
-            for (const item of row.driftItems) {
+            await runMismatchFixPool(row.driftItems, async item => {
               try {
                 await withMismatchFixTimeout(setDoc(FSS.doc("customers", item.id), { balance: item.expected }, { merge: true }), "balanceDrift setDoc");
                 setCustomers(prev => (prev || []).map(c => String(c.id) === String(item.id) ? { ...c, balance: item.expected } : c));
                 fixedCount++;
               } catch { failCount++; }
-            }
+            });
           } else if (row.key === "stockDrift") {
-            for (const item of row.driftItems) {
+            await runMismatchFixPool(row.driftItems, async item => {
               try {
                 await withMismatchFixTimeout(setDoc(FSS.doc("products", item.id), { stock: item.expected }, { merge: true }), "stockDrift setDoc");
                 setProducts(prev => (prev || []).map(p => String(p.id) === String(item.id) ? { ...p, stock: item.expected } : p));
                 fixedCount++;
               } catch { failCount++; }
-            }
+            });
           }
           continue;
         }
@@ -31196,14 +31212,14 @@ function Settings_({ T, S, shopName,
           const itemPrefix = Object.prototype.hasOwnProperty.call(it, "prefix") ? it.prefix : null;
           return itemPrefix === currentPrefix;
         });
-        for (const it of outboxItems) {
+        await runMismatchFixPool(outboxItems, async it => {
           try {
             const flushFn = it.merge ? FSS.setRecordMerge : FSS.setRecord;
             const res = await withMismatchFixTimeout(flushFn.call(FSS, row.key, it.recordId, it.rec), `${row.key} outbox flush`);
             if (res && res.ok !== false) { await withMismatchFixTimeout(SyncOutbox.remove(row.key, it.recordId), `${row.key} outbox remove`); fixedCount++; }
             else failCount++;
           } catch { failCount++; }
-        }
+        });
 
         // ২) সত্যিকারের এতিম রেকর্ড — outbox-এ যোগ করে সাথে সাথে (আবার) পাঠানো
         // 🔴 ফিক্স (রিসারেকশন গ্যাপ): products/customers-এর tombstone-এ থাকা id
@@ -31212,14 +31228,14 @@ function Settings_({ T, S, shopName,
         // আলাদা করার উপায় নেই — তাই target.noAutoResurrect থাকলে push না করে
         // শুধু স্ক্যান রেজাল্টে দেখানো হচ্ছে, ম্যানুয়ালি যাচাই করার জন্য।
         if (!target.noAutoResurrect) {
-          for (const rec of row.orphanedLocal) {
+          await runMismatchFixPool(row.orphanedLocal, async rec => {
             try {
               await withMismatchFixTimeout(SyncOutbox.put(row.key, rec.id, rec), `${row.key} outbox put`);
               const res = await withMismatchFixTimeout(FSS.setRecord(row.key, rec.id, rec), `${row.key} setRecord`);
               if (res && res.ok !== false) { await withMismatchFixTimeout(SyncOutbox.remove(row.key, rec.id), `${row.key} outbox remove`); fixedCount++; }
               else failCount++;
             } catch { failCount++; }
-          }
+          });
         }
 
         // ৩) Firestore-এ আছে, লোকালে নেই — শুধু লোকাল স্টেটে যোগ (id দিয়ে ডুপ্লিকেট এড়িয়ে); কোনো নতুন Firestore write না
