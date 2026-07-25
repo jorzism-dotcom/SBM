@@ -20084,28 +20084,14 @@ function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, set
       ? `🎁 ফ্রি স্টক${peForm.note ? " — " + peForm.note : ""}`
       : peForm.note || "";
 
-    // 🔴 ফিক্স #১০ (মাল্টি-ডিভাইস স্টক lost-update race — Dashboard-এর কুইক
-    // পার্চেজ এন্ট্রি শর্টকাট): এই মডিউলটা মূল ক্রয় অর্ডার মডিউলের
-    // applyPurchaseBatch()-এর সম্পূর্ণ আলাদা/ডুপ্লিকেট একটা কপি — আগে এখানে
-    // batchNo কলিশন-প্রোটেকশনও (ফিক্স #৮) ছিল না, শুধু লোকাল React state থেকে
-    // stock/cost হিসেব করে পুরো ডকুমেন্ট ওভাররাইট হতো। এখন একই
-    // FSS.transactionAddStock() হেল্পার ব্যবহার করা হচ্ছে — সার্ভারের লাইভ
-    // কপির ওপর atomically stock/cost/batch যোগ হয়, batchNo কলিশনও একই
-    // transaction-এ resolve হয়। অফলাইন/ব্যর্থ হলে আগের local calculation-ই
-    // fallback।
-    const txResult = FSS.isReady() ? await FSS.transactionAddStock(peForm.productId, {
-      qty, unitCost, unitSell, expiryDate: peForm.expiryDate, supplier: peForm.supplier,
-      note: noteText, isFreeStock: peForm.isFreeStock, batchNoHint: batchNo,
-    }) : null;
-    if (txResult) batchNo = txResult.batchNo;
-
+    const entryId = "pe_" + Date.now();
     const newBatch = {
       batchNo, qty, costPrice: unitCost, sellPrice: unitSell,
       expiryDate: peForm.expiryDate || "", supplier: peForm.supplier || "",
       note: noteText, at: now, isFreeStock: peForm.isFreeStock || false,
     };
     const entry = {
-      id: "pe_" + Date.now(), _type: "pe",
+      id: entryId, _type: "pe",
       productId: peForm.productId, productName: prod.name,
       qty, unitCost, unitSell, totalCost: total,
       expiryDate: peForm.expiryDate || "",
@@ -20116,33 +20102,34 @@ function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, set
       at: now, dateKey: now.split("T")[0],
       unit: prod.unit || "",
     };
+
+    // 🆕 পারফরম্যান্স ফিক্স (২৫ জুলাই ২০২৬ — ক্রয় এন্ট্রি সেভ-এ ধীরগতি): আগে
+    // FSS.transactionAddStock() (Firestore সার্ভার transaction, নেটওয়ার্ক
+    // রাউন্ড-ট্রিপ) শেষ না হওয়া পর্যন্ত এই পুরো ফাংশন (ও তাই "সেভ" বাটন)
+    // await-ব্লকড থাকত। এখন আগে instant optimistic local calculation প্রয়োগ
+    // হয় (batchNo কলিশন-প্রোটেকশনসহ, ফিক্স #৮-এর মতোই) — ফর্ম/UI সাথে সাথে
+    // রিসেট হয়ে যায়, আর transaction ব্যাকগ্রাউন্ডে চলে গিয়ে সার্ভার-কনফার্মড
+    // মান দিয়ে পরে reconcile করে (ফিক্স #১০-এর atomic multi-device correctness
+    // অক্ষুণ্ণ রেখেই)।
     let newStock;
-    if (txResult) {
-      newStock = txResult.stock;
-      setProducts(prev => prev.map(p => p.id === peForm.productId
-        ? { ...p, stock: txResult.stock, costPrice: txResult.costPrice, price: unitSell || p.price,
-            lastUpdated: now, expiryDate: peForm.expiryDate || p.expiryDate, batches: txResult.batches }
-        : p));
-    } else {
-      const oldStock = prod.stock || 0;
-      const oldCost  = prod.costPrice || 0;
-      const newCostPrice = oldStock + qty > 0
-        ? (oldStock * oldCost + qty * unitCost) / (oldStock + qty)
-        : unitCost;
-      newStock = oldStock + qty;
-      setProducts(prev => prev.map(p => p.id === peForm.productId
-        ? {
-            ...p,
-            stock: newStock,
-            costPrice: Math.round(newCostPrice * 10000) / 10000,
-            price: unitSell || p.price,
-            lastUpdated: now,
-            expiryDate: peForm.expiryDate || p.expiryDate,
-            batches: [...(p.batches || []), newBatch],
-          }
-        : p
-      ));
-    }
+    const oldStock = prod.stock || 0;
+    const oldCost  = prod.costPrice || 0;
+    const newCostPrice = oldStock + qty > 0
+      ? (oldStock * oldCost + qty * unitCost) / (oldStock + qty)
+      : unitCost;
+    newStock = oldStock + qty;
+    setProducts(prev => prev.map(p => p.id === peForm.productId
+      ? {
+          ...p,
+          stock: newStock,
+          costPrice: Math.round(newCostPrice * 10000) / 10000,
+          price: unitSell || p.price,
+          lastUpdated: now,
+          expiryDate: peForm.expiryDate || p.expiryDate,
+          batches: [...(p.batches || []), newBatch],
+        }
+      : p
+    ));
     const mv1 = pushStockMovement({
       id: "sm_" + Date.now(), productId: peForm.productId,
       productName: prod.name, stock: newStock,
@@ -20153,6 +20140,21 @@ function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, set
     setPurchaseOrders(prev => [entry, ...prev]);
     setPeForm(f => ({ ...EMPTY_PE, supplier: f.supplier }));
     showToast(`✅ ${prod.name} — ${qty} ${prod.unit||"পিস"} স্টকে যোগ হয়েছে`, "#a78bfa");
+
+    if (FSS.isReady()) {
+      FSS.transactionAddStock(peForm.productId, {
+        qty, unitCost, unitSell, expiryDate: peForm.expiryDate, supplier: peForm.supplier,
+        note: noteText, isFreeStock: peForm.isFreeStock, batchNoHint: newBatch.batchNo,
+      }).then(txResult => {
+        if (!txResult) return; // ব্যর্থ হলে optimistic local মানই থেকে যাবে
+        setProducts(prev => prev.map(p => p.id === peForm.productId
+          ? { ...p, stock: txResult.stock, costPrice: txResult.costPrice, batches: txResult.batches }
+          : p));
+        if (txResult.batchNo && txResult.batchNo !== newBatch.batchNo) {
+          setPurchaseOrders(prev => prev.map(e => e.id === entryId ? { ...e, batch: txResult.batchNo } : e));
+        }
+      }).catch(e => logErrorToCentral?.("transaction:addStock:bg", e, { productId: peForm.productId, qty }));
+    }
     } finally {
       setIsSaving(false);
     }
@@ -25607,7 +25609,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
         const _peBatchOffset = {};
         // ── একটা পণ্যে একটা ব্যাচ যোগ করার কেন্দ্রীয় লজিক (Weighted Average Cost) —
         // এককভাবে savePE (নিচে) থেকে, আর বাল্ক চালান-কনফার্ম থেকেও এই একই ফাংশন কল হয় ──
-        const applyPurchaseBatch = async ({ productId, qty, unitCost, unitSell, expiryDate, supplier, note, isFreeStock, spPrice }) => {
+        const applyPurchaseBatch = async ({ productId, qty, unitCost, unitSell, expiryDate, supplier, note, isFreeStock, spPrice, awaitServer = true }) => {
           const prod = products.find(p => p.id === productId);
           if (!prod || !qty || qty <= 0) return null;
           const cost    = isFreeStock ? 0 : (unitCost || prod.costPrice || 0);
@@ -25622,28 +25624,13 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           }
           _peBatchOffset[productId] = seenCount + 1;
 
-          // 🔴 ফিক্স #১০ (মাল্টি-ডিভাইস স্টক lost-update race): আগে stock/
-          // batches লোকাল React state (`p`) থেকে হিসেব করে setProducts দিয়ে
-          // বসানো হতো, যেটা generic diff-push দিয়ে Firestore-এ পুরো ডকুমেন্ট
-          // absolute value হিসেবে ওভাররাইট হয়ে যেত (merge ছাড়া setDoc) — দুই
-          // ডিভাইস প্রায় একই সময়ে একই পণ্যে পার্চেজ দিলে একজনের write আরেকজনের
-          // stock-addition মুছে দিতে পারত (শুধু batchNo কলিশন না, আসল stock
-          // সংখ্যাও)। এখন FSS.transactionAddStock() দিয়ে সার্ভারের *সেই
-          // মুহূর্তের* product doc-এর ওপর atomically stock/cost/batch যোগ হয়
-          // (batchNo কলিশনও একই transaction-এ সার্ভারের লাইভ batches দিয়ে
-          // resolve হয়) — checkout/void/return-এর মতোই। অফলাইন/ব্যর্থ হলে
-          // আগের মতো লোকাল হিসাব-ই fallback হিসেবে থেকে যায়।
-          const txResult = FSS.isReady() ? await FSS.transactionAddStock(productId, {
-            qty, unitCost: cost, unitSell: sell, expiryDate, supplier, note, isFreeStock, batchNoHint: batchNo,
-          }) : null;
-          if (txResult) batchNo = txResult.batchNo;
-
+          const entryId = "pe_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
           const newBatch = {
             batchNo, qty, costPrice: cost, sellPrice: sell,
             expiryDate: expiryDate || "", supplier: supplier || "", note: note || "", at: now,
           };
           const entry = {
-            id: "pe_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+            id: entryId,
             _type: "pe",
             productId, productName: prod.name,
             qty, unitCost: cost, unitSell: sell, totalCost: total,
@@ -25653,16 +25640,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             at: now, dateKey: now.split("T")[0], unit: prod.unit || "",
           };
           let newStock = (prod.stock || 0) + qty; // fallback/লগের জন্য প্রাথমিক মান
-          if (txResult) {
-            newStock = txResult.stock;
-            setProducts(prev => prev.map(p => p.id === productId
-              ? { ...p, stock: txResult.stock, costPrice: txResult.costPrice, price: sell || p.price,
-                  spPrice: (spPrice !== undefined && spPrice !== "") ? (parseFloat(spPrice) || 0) : p.spPrice,
-                  lastUpdated: now, expiryDate: expiryDate || p.expiryDate, batches: txResult.batches }
-              : p));
-          } else {
-            // অফলাইন/সার্ভার-ব্যর্থ — আগের synchronous local calculation fallback,
-            // একই সিঙ্ক্রোনাস-লুপ collision-safety (_peBatchOffset + linear probing) সহ।
+
+          // অফলাইন/সার্ভার-ব্যর্থ (বা optimistic first-paint পাথ, নিচে দেখুন) —
+          // synchronous local calculation, সিঙ্ক্রোনাস-লুপ collision-safety
+          // (_peBatchOffset + linear probing) সহ।
+          const applyLocalFallback = () => {
             setProducts(prev => prev.map(p => {
               if (p.id !== productId) return p;
               const existingBatchNos = new Set((p.batches || []).map(b => b.batchNo));
@@ -25693,6 +25675,54 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                 batches: [...(p.batches || []), newBatch],
               };
             }));
+          };
+
+          // 🆕 পারফরম্যান্স ফিক্স (ক্রয় এন্ট্রি সেভ-এ ধীরগতি): আগে এখানে
+          // FSS.transactionAddStock() (Firestore সার্ভার transaction,
+          // নেটওয়ার্ক রাউন্ড-ট্রিপ, দুর্বল নেটে কয়েক সেকেন্ড লাগত) await না
+          // হওয়া পর্যন্ত পুরো "সেভ" বাটন/ফর্ম ব্লক থাকত — ইউজারকে "সেভ হচ্ছে..."
+          // দেখে বসে থাকতে হতো। এখন awaitServer:false (এককভাবে savePE থেকে
+          // কল হলে) দিলে আগে instant optimistic local calculation প্রয়োগ হয়
+          // (UI/ফর্ম সাথে সাথে রিসেট হয়ে যায়), আর transaction ব্যাকগ্রাউন্ডে
+          // চলে গিয়ে পরে সার্ভার-কনফার্মড মান দিয়ে reconcile করে — fix #১০-এর
+          // সার্ভার-সাইড atomic correctness (মাল্টি-ডিভাইস race protection)
+          // অক্ষুণ্ণ থাকে, শুধু ইউজারকে আর অপেক্ষা করতে হয় না। বাল্ক চালান-কনফার্ম
+          // (একই পণ্যের একাধিক লাইন থাকতে পারে) আগের মতোই awaitServer:true
+          // (ডিফল্ট) দিয়ে সিরিয়ালি চলে — batchNo/cost হিসাব সঠিক রাখতে।
+          if (!awaitServer) {
+            applyLocalFallback();
+            if (FSS.isReady()) {
+              FSS.transactionAddStock(productId, {
+                qty, unitCost: cost, unitSell: sell, expiryDate, supplier, note, isFreeStock, batchNoHint: newBatch.batchNo,
+              }).then(txResult => {
+                if (!txResult) return; // ব্যর্থ হলে optimistic local মানই থেকে যাবে
+                setProducts(prev => prev.map(p => p.id === productId
+                  ? { ...p, stock: txResult.stock, costPrice: txResult.costPrice, batches: txResult.batches }
+                  : p));
+                if (txResult.batchNo && txResult.batchNo !== newBatch.batchNo) {
+                  setPurchaseOrders(prev => prev.map(e => e.id === entryId ? { ...e, batch: txResult.batchNo } : e));
+                }
+              }).catch(e => logErrorToCentral?.("transaction:addStock:bg", e, { productId, qty }));
+            }
+          } else {
+            // 🔴 ফিক্স #১০ (মাল্টি-ডিভাইস স্টক lost-update race) — বাল্ক পাথ,
+            // অপরিবর্তিত: সার্ভার transaction শেষ না হওয়া পর্যন্ত await করে,
+            // সিরিয়ালি একটার পর একটা লাইন প্রসেস হয় বলে batchNo/cost সঠিক থাকে।
+            const txResult = FSS.isReady() ? await FSS.transactionAddStock(productId, {
+              qty, unitCost: cost, unitSell: sell, expiryDate, supplier, note, isFreeStock, batchNoHint: batchNo,
+            }) : null;
+            if (txResult) {
+              newBatch.batchNo = txResult.batchNo;
+              entry.batch = txResult.batchNo;
+              newStock = txResult.stock;
+              setProducts(prev => prev.map(p => p.id === productId
+                ? { ...p, stock: txResult.stock, costPrice: txResult.costPrice, price: sell || p.price,
+                    spPrice: (spPrice !== undefined && spPrice !== "") ? (parseFloat(spPrice) || 0) : p.spPrice,
+                    lastUpdated: now, expiryDate: expiryDate || p.expiryDate, batches: txResult.batches }
+                : p));
+            } else {
+              applyLocalFallback();
+            }
           }
           const mvBulk = pushStockMovement({
             id: "sm_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7), productId,
@@ -25741,6 +25771,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             note: peForm.note,
             isFreeStock: peForm.isFreeStock,
             spPrice: peForm.spPrice,
+            awaitServer: false, // 🆕 এককভাবে সেভ করলে সার্ভার transaction-এর জন্য বাটন আটকে থাকবে না
           });
           if (!result) return;
           setPeForm(f => ({ ...EMPTY_PE, supplier: f.supplier }));
@@ -31491,6 +31522,74 @@ function Settings_({ T, S, shopName,
             );
           })()}
         </div>
+
+        {/* ── 🔍 ডেটা সিঙ্ক মিসম্যাচ চেক — স্টাফ ফোনেও (আগে এই ব্লকটা কোডে
+            "সবসময় দেখা যাবে, স্টাফ ফোনেও" কমেন্ট নিয়ে লেখা ছিল, কিন্তু ভুলবশত
+            শুধু owner/admin-এর return পাথে বসানো ছিল — এই isStaffUser early-
+            return-এর কারণে স্টাফ কখনো ওই কোড পর্যন্ত পৌঁছাতোই না (dead code
+            for staff, "Read-only Sync Status" ব্লকে আগে যেই একই বাগ হয়েছিল)।
+            এখন staff branch-এও কপি করে দেওয়া হলো — ৯৯% এন্ট্রি স্টাফ ফোনেই
+            হয় বলে এই চেক ও ফিক্স সবচেয়ে বেশি দরকার এখানেই। এই বাটনের সব
+            অ্যাকশনই (outbox retry, নিজের-তৈরি রেকর্ড আবার পাঠানো, ক্লাউড থেকে
+            লোকালে টেনে আনা) স্টাফ নিজেই যা তৈরি করেছে সেটার ওপরই কাজ করে —
+            অন্য কারো ডেটা মোছা/ওভাররাইট করার কোনো পথ নেই, তাই স্টাফের হাতে
+            থাকা নিরাপদ। ── */}
+        <div style={{ marginBottom:10, borderRadius:10, border:"1px solid #a855f744", background:"#a855f70f", padding:"10px 11px" }}>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8, gap:8, flexWrap:"wrap" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                <span style={{ fontSize:13 }}>🔄</span>
+                <span style={{ color:"#a855f7", fontWeight:800, fontSize:10.5 }}>ডেটা সিঙ্ক মিসম্যাচ চেক</span>
+              </div>
+              <button
+                onClick={runMismatchScan}
+                disabled={mismatchScan?.running}
+                style={{ background:"#a855f722", border:"1px solid #a855f755", borderRadius:7, padding:"5px 11px", color:"#a855f7", fontSize:9.5, fontWeight:800, cursor: mismatchScan?.running ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: mismatchScan?.running ? 0.6 : 1 }}
+              >
+                {mismatchScan?.running ? "চেক হচ্ছে..." : "🔍 এখনই চেক করুন"}
+              </button>
+            </div>
+
+            {!mismatchScan && (
+              <div style={{ color:"#94a3b8", fontSize:9.5 }}>এই ফোনের লোকাল ডেটা আর Firestore ক্লাউডের মধ্যে গরমিল আছে কিনা যাচাই করে — ইনভয়েস, লেনদেন, স্টক মুভমেন্ট, ক্যাশ লগ, কাস্টমার ও পণ্য।</div>
+            )}
+
+            {mismatchScan && !mismatchScan.running && (
+              <>
+                <div style={{ color: mismatchScan.totalIssues ? "#f59e0b" : "#22c55e", fontSize:10.5, fontWeight:800, marginBottom:6 }}>
+                  {mismatchScan.totalIssues ? `⚠️ মোট ${mismatchScan.totalIssues}টা গরমিল পাওয়া গেছে` : "✅ কোনো গরমিল নেই — সব সিঙ্ক্‌ড"}
+                </div>
+                {mismatchScan.rows.map(row => {
+                  if (row.error) return (
+                    <div key={row.key} style={{ color:"#ef4444", fontSize:9, marginBottom:3 }}>{row.label}: চেক ব্যর্থ — {row.error}</div>
+                  );
+                  if (!(row.orphanedLocal.length + row.cloudOnly.length + row.staleStuck) && !row.pendingCount) return null;
+                  return (
+                    <div key={row.key} style={{ fontSize:9, color:"#cbd5e1", marginBottom:4, paddingLeft:2 }}>
+                      <b>{row.label}</b>
+                      {row.pendingCount > 0 && <> — {row.pendingCount}টা পাঠানোর অপেক্ষায়{row.staleStuck ? ` (${row.staleStuck}টা ১০+ মিনিট আটকে আছে)` : ""}</>}
+                      {row.orphanedLocal.length > 0 && <> · {row.orphanedLocal.length}টা এই ফোনে আছে কিন্তু ক্লাউডে পৌঁছায়নি</>}
+                      {row.cloudOnly.length > 0 && <> · {row.cloudOnly.length}টা ক্লাউডে আছে কিন্তু এই ফোনে দেখাচ্ছে না</>}
+                    </div>
+                  );
+                })}
+                <div style={{ color:"#64748b", fontSize:8, marginTop:2, marginBottom: mismatchScan.totalIssues ? 8 : 0 }}>
+                  সর্বশেষ চেক: {new Date(mismatchScan.ranAt).toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit", timeZone:"Asia/Dhaka" })}
+                </div>
+                {mismatchScan.totalIssues > 0 && (
+                  <button
+                    onClick={runMismatchAutoFix}
+                    disabled={mismatchFixing}
+                    style={{ width:"100%", background:"#f59e0b22", border:"1px solid #f59e0b55", borderRadius:7, padding:"7px 0", color:"#f59e0b", fontSize:10, fontWeight:800, cursor: mismatchFixing ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: mismatchFixing ? 0.6 : 1 }}
+                  >
+                    {mismatchFixing ? "ফিক্স হচ্ছে..." : "🔧 এক ক্লিকে অটো ফিক্স করুন"}
+                  </button>
+                )}
+              </>
+            )}
+            <div style={{ color:"#64748b", fontSize:8, marginTop:8, lineHeight:1.6 }}>
+              ⚠️ এই চেক শুধু এখন এই ফোনের মেমোরিতে যা আছে তার সাথে ক্লাউড তুলনা করে। কোনো ডেটা যদি কখনো এই ফোনেও সেভ না হয়ে থাকে (যেমন অ্যাপ ক্র্যাশ ঠিক তৈরির মুহূর্তে) — তার কোনো ট্রেস কোথাও থাকে না, তাই এই বাটনও সেটা ফিরিয়ে আনতে পারবে না।
+            </div>
+          </div>
 
         {/* ══ Theme Card ══ */}
         {(() => {
