@@ -30619,6 +30619,125 @@ function Settings_({ T, S, shopName,
       setStatsFixing(false);
     }
   };
+  // ── 🔍 ডেটা সিঙ্ক মিসম্যাচ চেক — ফোনের লোকাল স্টেট (এখন মেমোরিতে যা আছে) বনাম
+  // Firestore-এ আসলে কী পৌঁছেছে তার সরাসরি তুলনা। তিন ধরনের গরমিল ধরে:
+  // (ক) SyncOutbox-এ এখনো পাঠানোর অপেক্ষায় থাকা এন্ট্রি (নেট/সার্ভার সমস্যায়
+  //     পাঠানো যায়নি, ১০+ মিনিট আটকে থাকলে আলাদাভাবে দেখানো হয়),
+  // (খ) সত্যিকারের এতিম রেকর্ড — লোকালি আছে, outbox-এও নেই, অথচ Firestore-এ
+  //     নেই (স্বাভাবিক অবস্থায় এটা হওয়ার কথা না, যেহেতু প্রতিটা এডিট সাথে সাথে
+  //     outbox-এ persist হয় — কিন্তু কোনো bug/edge-case-এ হলে এটাই একমাত্র উপায়
+  //     এটা ধরার),
+  // (গ) Firestore-এ আছে কিন্তু এই ফোনের লোকাল স্টেটে নেই (সাধারণত নিরীহ — পরের
+  //     snapshot-এই নিজে থেকে চলে আসবে, এখানে সাথে সাথে টেনে আনা হয়)।
+  // ⚠️ সীমাবদ্ধতা (ইচ্ছাকৃতভাবে UI-তেও দেখানো আছে): এই চেক শুধু "এখন মেমোরিতে
+  // যা আছে" বনাম "Firestore-এ যা আছে" তুলনা করে। যে ডেটা কখনো outbox-এও persist
+  // হয়নি (যেমন অ্যাপ ক্র্যাশ/kill ঠিক রেকর্ড তৈরির মুহূর্তে, তারপর অ্যাপ রিস্টার্ট) —
+  // তার কোনো ট্রেস কোথাও থাকে না, তাই এই চেকও সেটা ধরতে/ফেরাতে পারবে না।
+  const [mismatchScan, setMismatchScan] = useState(null); // null | {running:true} | {ranAt, rows:[...], totalIssues}
+  const [mismatchFixing, setMismatchFixing] = useState(false);
+
+  const MISMATCH_TARGETS = [
+    { key: "invoices",       label: "ইনভয়েস",          local: invoices,       setLocal: setInvoices,       windowDays: 30, dateField: "dateKey" },
+    { key: "txns",            label: "বাকি/জমা লেনদেন",  local: txns,           setLocal: setTxns,           windowDays: 30, dateField: "dateKey" },
+    { key: "stockMovements",  label: "স্টক মুভমেন্ট",     local: stockMovements, setLocal: setStockMovements, windowDays: 30, dateField: "dateKey" },
+    { key: "cashLogs",        label: "ক্যাশ লগ",         local: cashLogs,       setLocal: setCashLogs,       windowDays: 35, dateField: "dateKey" },
+    { key: "customers",       label: "কাস্টমার",         local: customers,      setLocal: setCustomers,      windowDays: null },
+    { key: "products",        label: "পণ্য",             local: products,       setLocal: setProducts,       windowDays: null },
+  ];
+
+  const runMismatchScan = async () => {
+    if (!FSS.isReady()) { showToast("Firestore রেডি না — ইন্টারনেট/কনফিগ চেক করুন", "#ef4444"); return; }
+    setMismatchScan({ running: true });
+    const rows = [];
+    let totalIssues = 0;
+    for (const t of MISMATCH_TARGETS) {
+      try {
+        const outboxItems = await SyncOutbox.getAll(t.key);
+        const pendingIds = new Set(outboxItems.map(i => String(i.recordId)));
+        const staleStuck = outboxItems.filter(i => Date.now() - (i.ts || 0) > 10 * 60 * 1000).length;
+
+        let cloudDocsSnap;
+        if (t.windowDays) {
+          const cutoffDate = new Date();
+          cutoffDate.setDate(cutoffDate.getDate() - t.windowDays);
+          const cutoff = _dateKeyOf(cutoffDate);
+          const q = query(FSS.col(t.key), where(t.dateField, ">=", cutoff), orderBy(t.dateField, "desc"));
+          cloudDocsSnap = await getDocs(q);
+        } else {
+          cloudDocsSnap = await getDocs(FSS.col(t.key));
+        }
+        const cloudRecords = cloudDocsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const cloudIds = new Set(cloudRecords.map(r => String(r.id)));
+
+        const localList = t.windowDays
+          ? (t.local || []).filter(r => r[t.dateField] && r[t.dateField] >= _dateKeyOf(new Date(Date.now() - t.windowDays * 86400000)))
+          : (t.local || []);
+        const localIds = new Set(localList.map(r => String(r.id)));
+
+        const orphanedLocal = localList.filter(r => r?.id != null && !cloudIds.has(String(r.id)) && !pendingIds.has(String(r.id)));
+        const cloudOnly = cloudRecords.filter(r => !localIds.has(String(r.id)));
+
+        const issues = orphanedLocal.length + cloudOnly.length + staleStuck;
+        totalIssues += issues;
+        rows.push({ key: t.key, label: t.label, pendingCount: outboxItems.length, staleStuck, orphanedLocal, cloudOnly });
+      } catch (err) {
+        rows.push({ key: t.key, label: t.label, error: err?.message || "চেক ব্যর্থ" });
+      }
+    }
+    setMismatchScan({ ranAt: new Date().toISOString(), rows, totalIssues });
+  };
+
+  const runMismatchAutoFix = async () => {
+    if (!mismatchScan || !mismatchScan.rows) return;
+    setMismatchFixing(true);
+    let fixedCount = 0, failCount = 0;
+    try {
+      for (const row of mismatchScan.rows) {
+        if (row.error) continue;
+        const target = MISMATCH_TARGETS.find(t => t.key === row.key);
+        if (!target) continue;
+
+        // ১) outbox-এ আটকে থাকা সব এন্ট্রি এখনই জোর করে আবার পাঠানোর চেষ্টা
+        const outboxItems = await SyncOutbox.getAll(row.key);
+        for (const it of outboxItems) {
+          try {
+            const flushFn = it.merge ? FSS.setRecordMerge : FSS.setRecord;
+            const res = await flushFn.call(FSS, row.key, it.recordId, it.rec);
+            if (res && res.ok !== false) { await SyncOutbox.remove(row.key, it.recordId); fixedCount++; }
+            else failCount++;
+          } catch { failCount++; }
+        }
+
+        // ২) সত্যিকারের এতিম রেকর্ড — outbox-এ যোগ করে সাথে সাথে (আবার) পাঠানো
+        for (const rec of row.orphanedLocal) {
+          try {
+            await SyncOutbox.put(row.key, rec.id, rec);
+            const res = await FSS.setRecord(row.key, rec.id, rec);
+            if (res && res.ok !== false) { await SyncOutbox.remove(row.key, rec.id); fixedCount++; }
+            else failCount++;
+          } catch { failCount++; }
+        }
+
+        // ৩) Firestore-এ আছে, লোকালে নেই — শুধু লোকাল স্টেটে যোগ (id দিয়ে ডুপ্লিকেট এড়িয়ে); কোনো নতুন Firestore write না
+        if (row.cloudOnly.length) {
+          target.setLocal(prev => {
+            const existingIds = new Set((prev || []).map(r => String(r.id)));
+            const toAdd = row.cloudOnly.filter(r => !existingIds.has(String(r.id)));
+            return toAdd.length ? [...toAdd, ...(prev || [])] : prev;
+          });
+          fixedCount += row.cloudOnly.length;
+        }
+      }
+      showToast(
+        failCount ? `⚠️ ${fixedCount}টা ঠিক হয়েছে, ${failCount}টা ব্যর্থ (নেট চেক করে আবার চেষ্টা করুন)` : `✅ ${fixedCount}টা মিসম্যাচ ঠিক হয়েছে`,
+        failCount ? "#f59e0b" : "#22c55e"
+      );
+      await runMismatchScan(); // রিফ্রেশ করে দেখাও এখন কী বাকি আছে
+    } finally {
+      setMismatchFixing(false);
+    }
+  };
+
   const runSyncDiagnostics = async () => {
     setSyncDiag({ running: true });
     const checks = [];
@@ -32015,6 +32134,73 @@ function Settings_({ T, S, shopName,
                   ))}
                 </div>
               )}
+
+              {/* ── ডেটা সিঙ্ক মিসম্যাচ চেক — সবসময় দেখা যাবে, স্টাফ ফোনেও ────────────
+                  🔴 ইচ্ছাকৃতভাবে স্টাফ থেকে লুকানো হয়নি: এই চেক ও ফিক্স যে ফোনে
+                  চালানো হয় সেই ফোনেরই লোকাল মেমোরি বনাম ক্লাউড তুলনা করে — আর
+                  ৯৯% এন্ট্রি স্টাফ ফোনেই হয়, তাই সেখানে আটকে থাকা ডেটা মালিকের
+                  ফোন থেকে দেখাও যাবে না, ফিক্সও করা যাবে না (মালিকের ফোনের
+                  মেমোরিতে সেই রেকর্ডটাই নেই)। এই বাটনের সব অ্যাকশনই (outbox
+                  retry, নিজের-তৈরি রেকর্ড আবার পাঠানো, ক্লাউড থেকে লোকালে টেনে
+                  আনা) স্টাফ নিজেই যা তৈরি করেছে সেটার ওপরই কাজ করে — অন্য কারো
+                  ডেটা মোছা/ওভাররাইট করার কোনো পথ নেই, তাই স্টাফের হাতে থাকা
+                  নিরাপদ। ── */}
+              <div style={{ marginBottom:10, borderRadius:10, border:"1px solid #a855f744", background:"#a855f70f", padding:"10px 11px" }}>
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8, gap:8, flexWrap:"wrap" }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                      <span style={{ fontSize:13 }}>🔄</span>
+                      <span style={{ color:"#a855f7", fontWeight:800, fontSize:10.5 }}>ডেটা সিঙ্ক মিসম্যাচ চেক</span>
+                    </div>
+                    <button
+                      onClick={runMismatchScan}
+                      disabled={mismatchScan?.running}
+                      style={{ background:"#a855f722", border:"1px solid #a855f755", borderRadius:7, padding:"5px 11px", color:"#a855f7", fontSize:9.5, fontWeight:800, cursor: mismatchScan?.running ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: mismatchScan?.running ? 0.6 : 1 }}
+                    >
+                      {mismatchScan?.running ? "চেক হচ্ছে..." : "🔍 এখনই চেক করুন"}
+                    </button>
+                  </div>
+
+                  {!mismatchScan && (
+                    <div style={{ color:"#94a3b8", fontSize:9.5 }}>এই ফোনের লোকাল ডেটা আর Firestore ক্লাউডের মধ্যে গরমিল আছে কিনা যাচাই করে — ইনভয়েস, লেনদেন, স্টক মুভমেন্ট, ক্যাশ লগ, কাস্টমার ও পণ্য।</div>
+                  )}
+
+                  {mismatchScan && !mismatchScan.running && (
+                    <>
+                      <div style={{ color: mismatchScan.totalIssues ? "#f59e0b" : "#22c55e", fontSize:10.5, fontWeight:800, marginBottom:6 }}>
+                        {mismatchScan.totalIssues ? `⚠️ মোট ${mismatchScan.totalIssues}টা গরমিল পাওয়া গেছে` : "✅ কোনো গরমিল নেই — সব সিঙ্ক্‌ড"}
+                      </div>
+                      {mismatchScan.rows.map(row => {
+                        if (row.error) return (
+                          <div key={row.key} style={{ color:"#ef4444", fontSize:9, marginBottom:3 }}>{row.label}: চেক ব্যর্থ — {row.error}</div>
+                        );
+                        if (!(row.orphanedLocal.length + row.cloudOnly.length + row.staleStuck) && !row.pendingCount) return null;
+                        return (
+                          <div key={row.key} style={{ fontSize:9, color:"#cbd5e1", marginBottom:4, paddingLeft:2 }}>
+                            <b>{row.label}</b>
+                            {row.pendingCount > 0 && <> — {row.pendingCount}টা পাঠানোর অপেক্ষায়{row.staleStuck ? ` (${row.staleStuck}টা ১০+ মিনিট আটকে আছে)` : ""}</>}
+                            {row.orphanedLocal.length > 0 && <> · {row.orphanedLocal.length}টা এই ফোনে আছে কিন্তু ক্লাউডে পৌঁছায়নি</>}
+                            {row.cloudOnly.length > 0 && <> · {row.cloudOnly.length}টা ক্লাউডে আছে কিন্তু এই ফোনে দেখাচ্ছে না</>}
+                          </div>
+                        );
+                      })}
+                      <div style={{ color:"#64748b", fontSize:8, marginTop:2, marginBottom: mismatchScan.totalIssues ? 8 : 0 }}>
+                        সর্বশেষ চেক: {new Date(mismatchScan.ranAt).toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit", timeZone:"Asia/Dhaka" })}
+                      </div>
+                      {mismatchScan.totalIssues > 0 && (
+                        <button
+                          onClick={runMismatchAutoFix}
+                          disabled={mismatchFixing}
+                          style={{ width:"100%", background:"#f59e0b22", border:"1px solid #f59e0b55", borderRadius:7, padding:"7px 0", color:"#f59e0b", fontSize:10, fontWeight:800, cursor: mismatchFixing ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: mismatchFixing ? 0.6 : 1 }}
+                        >
+                          {mismatchFixing ? "ফিক্স হচ্ছে..." : "🔧 এক ক্লিকে অটো ফিক্স করুন"}
+                        </button>
+                      )}
+                    </>
+                  )}
+                  <div style={{ color:"#64748b", fontSize:8, marginTop:8, lineHeight:1.6 }}>
+                    ⚠️ এই চেক শুধু এখন এই ফোনের মেমোরিতে যা আছে তার সাথে ক্লাউড তুলনা করে। কোনো ডেটা যদি কখনো এই ফোনেও সেভ না হয়ে থাকে (যেমন অ্যাপ ক্র্যাশ ঠিক তৈরির মুহূর্তে) — তার কোনো ট্রেস কোথাও থাকে না, তাই এই বাটনও সেটা ফিরিয়ে আনতে পারবে না।
+                  </div>
+                </div>
 
               {/* ── ডেভেলপার/সাপোর্ট-ভিউ — বিস্তারিত টেকনিক্যাল ড্যাশবোর্ড ──────────
                   admin.html থেকে devPanelVisible ফ্ল্যাগ অন না করা পর্যন্ত এই পুরো
