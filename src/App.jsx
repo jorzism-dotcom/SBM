@@ -31036,15 +31036,15 @@ function Settings_({ T, S, shopName,
           // পাঠাতে হবে — _dateKeyOf() দিয়ে স্ট্রিং-এ রূপান্তর করলে ভুল তুলনা হতো।
           const cutoffMs = Date.now() - t.windowDays * 86400000;
           const q = query(FSS.col(t.key), where(t.dateField, ">=", cutoffMs), orderBy(t.dateField, "desc"));
-          cloudDocsSnap = await getDocs(q);
+          cloudDocsSnap = await withMismatchFixTimeout(getDocs(q), `${t.key} scan getDocs`);
         } else if (t.windowDays) {
           const cutoffDate = new Date();
           cutoffDate.setDate(cutoffDate.getDate() - t.windowDays);
           const cutoff = _dateKeyOf(cutoffDate);
           const q = query(FSS.col(t.key), where(t.dateField, ">=", cutoff), orderBy(t.dateField, "desc"));
-          cloudDocsSnap = await getDocs(q);
+          cloudDocsSnap = await withMismatchFixTimeout(getDocs(q), `${t.key} scan getDocs`);
         } else {
-          cloudDocsSnap = await getDocs(FSS.col(t.key));
+          cloudDocsSnap = await withMismatchFixTimeout(getDocs(FSS.col(t.key)), `${t.key} scan getDocs`);
         }
         const cloudRecords = cloudDocsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
         const cloudIds = new Set(cloudRecords.map(r => String(r.id)));
@@ -31134,6 +31134,24 @@ function Settings_({ T, S, shopName,
     setMismatchScan({ ranAt: new Date().toISOString(), rows, totalIssues });
   };
 
+  // 🔴 ফিক্স (অটো-ফিক্স হ্যাং — ধীর/আনস্টেবল নেটওয়ার্কে চিরকাল "ফিক্স হচ্ছে...")
+  // নিচের কোনো Firestore/SyncOutbox await-এই আগে কোনো টাইমআউট গার্ড ছিল না।
+  // দুর্বল কানেকশনে (কয়েক KB/s) একটামাত্র setDoc/setRecord কল কখনো resolve বা
+  // reject না হয়ে ঝুলে থাকতে পারে — তাতে পুরো sequential for-loop চিরকালের
+  // জন্য আটকে যায়, finally ব্লকও কখনো চলে না, ফলে mismatchFixing চিরকাল true
+  // থেকে যায় (বাটনে "ফিক্স হচ্ছে..." কখনো বদলায় না)। বাকি ফাইলের সব plugin/
+  // নেটওয়ার্ক কলের মতোই (দ্র. withTimeout, লাইন ~29228) এখানেও প্রতিটা write-কে
+  // একটা হার্ড টাইমআউট দিয়ে মুড়ে দেওয়া হলো — টাইমআউট হলে সেটা fail হিসেবে গোনা
+  // হবে আর লুপ পরের আইটেমে এগিয়ে যাবে, চিরকালের জন্য আটকে থাকবে না।
+  const MISMATCH_FIX_TIMEOUT_MS = 8000;
+  const withMismatchFixTimeout = (promise, label) => {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} — ${MISMATCH_FIX_TIMEOUT_MS / 1000}s এর মধ্যে সাড়া দেয়নি`)), MISMATCH_FIX_TIMEOUT_MS);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  };
+
   const runMismatchAutoFix = async () => {
     if (!mismatchScan || !mismatchScan.rows) return;
     setMismatchFixing(true);
@@ -31148,7 +31166,7 @@ function Settings_({ T, S, shopName,
           if (row.key === "balanceDrift") {
             for (const item of row.driftItems) {
               try {
-                await setDoc(FSS.doc("customers", item.id), { balance: item.expected }, { merge: true });
+                await withMismatchFixTimeout(setDoc(FSS.doc("customers", item.id), { balance: item.expected }, { merge: true }), "balanceDrift setDoc");
                 setCustomers(prev => (prev || []).map(c => String(c.id) === String(item.id) ? { ...c, balance: item.expected } : c));
                 fixedCount++;
               } catch { failCount++; }
@@ -31156,7 +31174,7 @@ function Settings_({ T, S, shopName,
           } else if (row.key === "stockDrift") {
             for (const item of row.driftItems) {
               try {
-                await setDoc(FSS.doc("products", item.id), { stock: item.expected }, { merge: true });
+                await withMismatchFixTimeout(setDoc(FSS.doc("products", item.id), { stock: item.expected }, { merge: true }), "stockDrift setDoc");
                 setProducts(prev => (prev || []).map(p => String(p.id) === String(item.id) ? { ...p, stock: item.expected } : p));
                 fixedCount++;
               } catch { failCount++; }
@@ -31173,7 +31191,7 @@ function Settings_({ T, S, shopName,
         // বর্তমান active বিজনেস-প্রিফিক্সের এন্ট্রি রিট্রাই করা হচ্ছে — নাহলে অন্য
         // বিজনেসের queued এন্ট্রি এই বিজনেসের Firestore কালেকশনে লিখে ফেলত।
         const currentPrefix = FSS._businessPrefix || null;
-        const outboxItemsAllBiz = await SyncOutbox.getAll(row.key);
+        const outboxItemsAllBiz = await withMismatchFixTimeout(SyncOutbox.getAll(row.key), `${row.key} outbox getAll`).catch(() => []);
         const outboxItems = outboxItemsAllBiz.filter(it => {
           const itemPrefix = Object.prototype.hasOwnProperty.call(it, "prefix") ? it.prefix : null;
           return itemPrefix === currentPrefix;
@@ -31181,8 +31199,8 @@ function Settings_({ T, S, shopName,
         for (const it of outboxItems) {
           try {
             const flushFn = it.merge ? FSS.setRecordMerge : FSS.setRecord;
-            const res = await flushFn.call(FSS, row.key, it.recordId, it.rec);
-            if (res && res.ok !== false) { await SyncOutbox.remove(row.key, it.recordId); fixedCount++; }
+            const res = await withMismatchFixTimeout(flushFn.call(FSS, row.key, it.recordId, it.rec), `${row.key} outbox flush`);
+            if (res && res.ok !== false) { await withMismatchFixTimeout(SyncOutbox.remove(row.key, it.recordId), `${row.key} outbox remove`); fixedCount++; }
             else failCount++;
           } catch { failCount++; }
         }
@@ -31196,9 +31214,9 @@ function Settings_({ T, S, shopName,
         if (!target.noAutoResurrect) {
           for (const rec of row.orphanedLocal) {
             try {
-              await SyncOutbox.put(row.key, rec.id, rec);
-              const res = await FSS.setRecord(row.key, rec.id, rec);
-              if (res && res.ok !== false) { await SyncOutbox.remove(row.key, rec.id); fixedCount++; }
+              await withMismatchFixTimeout(SyncOutbox.put(row.key, rec.id, rec), `${row.key} outbox put`);
+              const res = await withMismatchFixTimeout(FSS.setRecord(row.key, rec.id, rec), `${row.key} setRecord`);
+              if (res && res.ok !== false) { await withMismatchFixTimeout(SyncOutbox.remove(row.key, rec.id), `${row.key} outbox remove`); fixedCount++; }
               else failCount++;
             } catch { failCount++; }
           }
