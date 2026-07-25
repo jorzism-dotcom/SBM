@@ -6396,7 +6396,18 @@ const stripServerTs = (rec) => { if (!rec || rec._serverTs === undefined) return
 // useFSSCollection আর local→remote push করে না। প্রতিটা নতুন movement তৈরির
 // সময় এই হেল্পার দিয়ে সরাসরি Firestore-এ push করতে হয় (fire-and-forget)।
 const pushStockMovement = (entry) => {
-  if (FSS.isReady()) pushDurable("stockMovements", entry.id, withTs(entry));
+  // 🔴 ফিক্স (durability গ্যাপ — "FSS রেডি না হলে এন্ট্রি হারিয়ে যাওয়া"): আগে
+  // FSS.isReady() (মানে Firestore _db handle সেট হয়েছে কিনা) false থাকলে
+  // pushDurable() পুরোপুরি স্কিপ হতো — মানে SyncOutbox-এই কখনো জমা পড়ত না়।
+  // অ্যাপ চালুর প্রথম কয়েক সেকেন্ডে (Firestore init শেষ হওয়ার আগেই) বিক্রি/এন্ট্রি
+  // হলে সেটা কোনো durable queue ছাড়াই শুধু লোকাল state-এ থেকে যেত। pushDurable()
+  // নিজেই আগে SyncOutbox.put() (pure IndexedDB, Firestore-নির্ভর না) কল করে,
+  // তারপর FSS.setRecord() ট্রাই করে — _db না থাকলে setRecord() gracefully
+  // { ok:false } রিটার্ন করে (throw করে না, দেখুন FSS.setRecord), ফলে এন্ট্রি
+  // outbox-এই থেকে যায় এবং পরের boot/resume/online/heartbeat flush-এ আবার
+  // পাঠানোর চেষ্টা হয়। তাই isReady() গার্ড ছাড়াই সবসময় pushDurable() কল করা
+  // এখন নিরাপদ এবং প্রয়োজনীয়।
+  pushDurable("stockMovements", entry.id, withTs(entry));
   return entry;
 };
 
@@ -6405,7 +6416,8 @@ const pushStockMovement = (entry) => {
 // ReturnModule-এর processReturn-এ নগদ রিফান্ডের সময়) এই হেল্পার দিয়ে সরাসরি
 // Firestore-এ push করে।
 const pushCashLog = (entry) => {
-  if (FSS.isReady()) pushDurable("cashLogs", entry.id, withTs(entry));
+  // 🔴 ফিক্স (durability গ্যাপ) — দেখুন stockMovements-এর উপরের কমেন্ট, একই কারণ।
+  pushDurable("cashLogs", entry.id, withTs(entry));
   return entry;
 };
 
@@ -6413,7 +6425,8 @@ const pushCashLog = (entry) => {
 // useFSSCollection আর local→remote push করে না। processReturn()-এ নতুন রিটার্ন
 // এন্ট্রি তৈরির সময় এই হেল্পার দিয়ে সরাসরি Firestore-এ push হয়।
 const pushReturnEntry = (entry) => {
-  if (FSS.isReady()) pushDurable("returns", entry.id, withTs(entry));
+  // 🔴 ফিক্স (durability গ্যাপ) — দেখুন stockMovements-এর উপরের কমেন্ট, একই কারণ।
+  pushDurable("returns", entry.id, withTs(entry));
   return entry;
 };
 
@@ -14274,7 +14287,8 @@ function SmartBusinessMgmt() {
       date: dkOverride ? dateStrFromKey(dkOverride) : todayStr(), dateKey, time: nowStr(),
       ...(isHistorical ? { isHistorical: true } : {}),
     };
-    if (FSS.isReady()) pushDurable("txns", entry.id, withTs(entry));
+    // 🔴 ফিক্স (durability গ্যাপ) — দেখুন stockMovements-এর কমেন্ট (উপরে), একই কারণ।
+    pushDurable("txns", entry.id, withTs(entry));
     setTxns(prev => [entry, ...prev]);
     return entry;
   }, []);
@@ -14298,7 +14312,8 @@ function SmartBusinessMgmt() {
       time:     nowStr(),
       createdAt: new Date().toISOString(),
     };
-    if (FSS.isReady()) pushDurable("auditLogs", entry.id, withTs(entry));
+    // 🔴 ফিক্স (durability গ্যাপ) — দেখুন stockMovements-এর কমেন্ট (উপরে), একই কারণ।
+    pushDurable("auditLogs", entry.id, withTs(entry));
     setAuditLogs(prev => [entry, ...prev].slice(0, 2000)); // সর্বোচ্চ ২০০০টা রাখি — স্টোরেজ সীমিত রাখতে
     return entry;
   }, [currentUser, setAuditLogs]);
@@ -14355,7 +14370,9 @@ function SmartBusinessMgmt() {
     // করলে Firestore-এর পুরনো (non-voided) কপি দিয়ে local অবস্থা প্রতিস্থাপিত
     // হতো — ভয়েড করা invoice আবার "active" হয়ে ফিরে আসত, অথচ Dashboard-এর
     // total-এ সেটা বাদ হয়েই থাকত (আরেকটা গরমিল, উল্টো দিক থেকে)।
-    if (FSS.isReady()) pushDurable("invoices", voidedInv.id, withTs(voidedInv));
+    // 🔴 ফিক্স (durability গ্যাপ) — দেখুন createInvoice()-এর নিচের কমেন্ট, একই কারণ:
+    // isReady() false থাকলেও pushDurable() নিরাপদে SyncOutbox-এ জমা রাখবে।
+    pushDurable("invoices", voidedInv.id, withTs(voidedInv));
 
     // ── 2. Restore stock + batches for every item in the invoice ─────────────
     // 🔴 এন্টারপ্রাইজ-লেভেল ফিক্স (স্টক race condition — void পাথ): আগে এখানে
@@ -17848,9 +17865,18 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       FSS.updateStats(inv.dateKey, { sale: saleAmt, cash: cashAmt, baki: bakiAmtStat, profit: profitAmt });
     }
 
-    // পুরো ইনভয়েস (স্টক ব্যাচ/এক্সপায়ারি enrichment সহ) এখনই পুশ — offline হলে
-    // Firestore নিজের persistent write queue-তে রাখবে, নেট ফিরলে নিজে থেকেই sync হবে।
-    if (FSS.isReady()) pushDurable("invoices", inv.id, withTs(inv));
+    // পুরো ইনভয়েস (স্টক ব্যাচ/এক্সপায়ারি enrichment সহ) এখনই পুশ — offline হলে বা
+    // এখনো Firestore init শেষ না হলেও pushDurable() নিজেই আগে IndexedDB
+    // SyncOutbox-এ persist করে (Firestore-নির্ভর না), তারপর পাঠানোর চেষ্টা করে;
+    // নেট ফিরলে/init শেষ হলে outbox flush দিয়ে নিজে থেকেই sync হবে।
+    // 🔴 ফিক্স (durability গ্যাপ — "প্রথম কয়েক সেকেন্ডে বিক্রি করলে ইনভয়েস হারানো"):
+    // আগে এখানে `if (FSS.isReady())` গার্ড ছিল — অ্যাপ চালুর প্রথম মুহূর্তে
+    // (Firestore _db handle সেট হওয়ার আগে) ইনভয়েস তৈরি হলে pushDurable() পুরোপুরি
+    // স্কিপ হয়ে যেত, ফলে SyncOutbox-এও কখনো জমা পড়ত না — ইনভয়েসটা শুধু লোকাল
+    // state-এ থেকে যেত, কোনো ডিভাইসেই sync/cross-device visible হতো না। এখন
+    // isReady() যাই হোক, সবসময় pushDurable() কল হয় — _db না থাকলে FSS.setRecord()
+    // gracefully ব্যর্থ হয় (throw করে না), এন্ট্রি outbox-এই থেকে যায়।
+    pushDurable("invoices", inv.id, withTs(inv));
 
     if (!isWalkIn && !isSelfUse && (effectivePayType === "baki" || effectivePayType === "partial")) {
       if (bakiAmt > 0) addTxn(selCust.id, "baki", bakiAmt, newBal, inv.id, note);
@@ -22639,11 +22665,27 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               {allSelectedItems.length > 0 && <span style={{ color:PRINT.accent, fontWeight:800, marginLeft:8 }}>· {allSelectedItems.length}টি সিলেক্ট করা হয়েছে</span>}
             </div>
           </div>
-          <div style={{ flex:1, overflowY:"auto", padding:"12px 14px 16px" }} onClick={()=>{ if (poSupplierSuggestOpen) setPoSupplierSuggestOpen(false); }}>
-            {poFilteredProducts.length === 0 && <div style={{ color:PRINT.textMuted, textAlign:"center", marginTop:40, fontSize:14 }}>{poSupplierSelected ? "এই সাপ্লায়ারের কোনো মিলে যাওয়া পণ্য নেই" : "কোনো পণ্য নেই"}</div>}
-            <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
-              {poFilteredProducts.map((p, idx) => renderOrderProductCard(p, idx))}
-            </div>
+          <div style={{ flex:1, minHeight:0, padding: poFilteredProducts.length === 0 ? "12px 14px 16px" : "12px 0 0" }} onClick={()=>{ if (poSupplierSuggestOpen) setPoSupplierSuggestOpen(false); }}>
+            {poFilteredProducts.length === 0 ? (
+              <div style={{ color:PRINT.textMuted, textAlign:"center", marginTop:40, fontSize:14 }}>{poSupplierSelected ? "এই সাপ্লায়ারের কোনো মিলে যাওয়া পণ্য নেই" : "কোনো পণ্য নেই"}</div>
+            ) : (
+              // 🔴 ফিক্স (পারফরম্যান্স — ক্রয় অর্ডার স্ক্রিনে ২০০০+ পণ্যে ল্যাগ): আগে এখানে
+              // plain .map() দিয়ে ফিল্টার-করা সব পণ্য (সাপ্লায়ার সিলেক্ট না থাকলে পুরো
+              // ২০০০+ পণ্যের লিস্ট) একসাথে DOM-এ রেন্ডার হতো — প্রতিটা কার্ডে ইনপুট
+              // ফিল্ড/বাটন থাকায় এটা ভারী ছিল, তাই স্ক্রিন খুললেই ল্যাগ করত। এখন
+              // Virtuoso দিয়ে virtualized (মূল প্রোডাক্ট গ্রিডে VirtuosoGrid যেমন
+              // ব্যবহার হয়, একই প্যাটার্ন) — শুধু স্ক্রিনে দৃশ্যমান কার্ডগুলোই DOM-এ থাকে।
+              <Virtuoso
+                style={{ height: "100%" }}
+                data={poFilteredProducts}
+                overscan={600}
+                itemContent={(idx, p) => (
+                  <div style={{ padding: "0 14px 12px" }}>
+                    {renderOrderProductCard(p, idx)}
+                  </div>
+                )}
+              />
+            )}
           </div>
           <div style={{ position:"sticky", bottom:0, zIndex:50, background:"linear-gradient(0deg,#f8fafc 85%,transparent)", padding:"10px 14px 14px" }}>
             {allSelectedItems.length > 0 && (
