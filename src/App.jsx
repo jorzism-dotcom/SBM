@@ -16862,6 +16862,10 @@ function SmartBusinessMgmt() {
             overflowY:"auto",
           }}>
             <div style={{ color:T.headingColor, fontWeight:900, fontSize:15, padding:"4px 8px 14px" }}>অন্যান্য মডিউল</div>
+            {/* 🔴 ফিক্স (২৭ জুলাই ২০২৬ — ইউজার ফিডব্যাক): আগে এই কার্ডটা
+                নোটিফিকেশন সাব-স্ক্রিনের ভেতরে বসানো ছিল (২ ট্যাপ দূরে) —
+                এখন "অন্যান্য মডিউল" ড্রয়ারের একদম উপরে, সরাসরি দৃশ্যমান। */}
+            <StaffAdminSwitchCard T={T} S={S} showToast={showToast} users={users} currentUser={currentUser} setCurrentUser={setCurrentUser} masterResetHash={masterResetHash} />
             {/* 🆕 ধাপ ৩: Business Switcher — শুধু multi-business শপে (enabledBusinessTypes.length >= 2), staff দেখবে না */}
             {/* 🆕 রিডিজাইন (১৯ জুলাই ২০২৬ — "সোয়াপ বাটন ল্যাগি/স্লো" ফিডব্যাক): আগে
                 কোনো hover/press transition ছিল না (ট্যাপ করলে UI-তে কোনো তাৎক্ষণিক
@@ -30557,7 +30561,7 @@ function StaffAdminSwitchCard({ T, S, showToast, users = [], currentUser, setCur
       </div>
       <div style={{ display: "flex", gap: 8 }}>
         <button
-          onClick={() => { if (!isStaffNow) return; if (!soleStaff) { showToast("কোনো স্টাফ অ্যাকাউন্ট নেই", "#ef4444"); return; } setCurrentUser(soleStaff); showToast("✅ স্টাফে সুইচ হয়েছে"); }}
+          onClick={() => { if (isStaffNow) return; if (!soleStaff) { showToast("কোনো স্টাফ অ্যাকাউন্ট নেই", "#ef4444"); return; } setCurrentUser(soleStaff); showToast("✅ স্টাফে সুইচ হয়েছে"); }}
           disabled={isStaffNow}
           style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: `1.5px solid ${isStaffNow ? "#a855f7" : "#33415555"}`,
             background: isStaffNow ? "#a855f722" : "transparent", color: isStaffNow ? "#a855f7" : T.sub,
@@ -30565,7 +30569,7 @@ function StaffAdminSwitchCard({ T, S, showToast, users = [], currentUser, setCur
           স্টাফ {isStaffNow && "●"}
         </button>
         <button
-          onClick={() => { if (isStaffNow) return; startAdminSwitch(); }}
+          onClick={() => { if (!isStaffNow) return; startAdminSwitch(); }}
           disabled={!isStaffNow}
           style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: `1.5px solid ${!isStaffNow ? "#a855f7" : "#33415555"}`,
             background: !isStaffNow ? "#a855f722" : "transparent", color: !isStaffNow ? "#a855f7" : T.sub,
@@ -30758,7 +30762,6 @@ function NotificationCenterModule({ T, S, currentUser, setCurrentUser, users, ma
 
   return (
     <div style={{ padding: "16px 14px 90px" }}>
-      <StaffAdminSwitchCard T={T} S={S} showToast={showToast} users={users} currentUser={currentUser} setCurrentUser={setCurrentUser} masterResetHash={masterResetHash} />
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
         <span style={{ color: T.text, fontWeight: 900, fontSize: 24, letterSpacing: 0.3 }}>🔔 নোটিফিকেশন</span>
         <button onClick={refresh} style={{ background: "transparent", border: `1px solid ${T.accent}55`, color: T.accent, borderRadius: 10, padding: "6px 12px", fontSize: 12, fontWeight: 700 }}>
