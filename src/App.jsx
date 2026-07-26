@@ -5530,15 +5530,33 @@ const FSS = {
   // local state ও receipt/SMS-এর জন্য ব্যবহার করবে (client-এর নিজের stale
   // guess না)। Firebase বন্ধ থাকলে (local-only mode) null রিটার্ন করে — caller
   // তখন আগের মতো synchronous local calculation-এ fallback করবে।
-  async transactionUpdateBalance(customerId, deltaFn) {
+  // 🔴 ফিক্স (ডাবল-কাউন্টেড ব্যালেন্স — ২৬ জুলাই ২০২৬): এই ফাংশন সার্ভারের
+  // বর্তমান balance-এ delta *যোগ* করে — অর্থাৎ idempotent না, একই delta দুইবার
+  // চললে দুইবারই যোগ হয়ে যাবে। আগে এমনটা হতো: createInvoice()-এর অনলাইন পাথে
+  // transaction সার্ভারে সফল হয়ে গেলেও ফ্লাকি/রিকানেক্টিং নেটওয়ার্কে ক্লায়েন্ট
+  // response না পেলে সেটাকে "ব্যর্থ" ধরে failedBalanceUpdates-এ queue করত, আর
+  // পরের flushPendingSalesTxns সেই একই delta আবার প্রয়োগ করত — বাস্তবে
+  // দেখা গেছে দুই কাস্টমারের বাকি ঠিক তাদের সর্বশেষ ইনভয়েসের সমান পরিমাণে
+  // দ্বিগুণ হয়ে গিয়েছিল। এখন caller ঐচ্ছিকভাবে একটা স্থিতিশীল opId (যেমন
+  // `${invoiceId}:${customerId}`) পাঠাতে পারে — সেটা কাস্টমার ডকুমেন্টেই একটা
+  // ছোট (সর্বোচ্চ ৩০টা, নতুনগুলো রেখে পুরনোগুলো বাদ) "সম্প্রতি প্রয়োগ হওয়া
+  // op" তালিকায় (`_recentBalOps`) চেক করা হয় — একই opId আগেই থাকলে delta আর
+  // দ্বিতীয়বার যোগ হয় না, শুধু বর্তমান balance ফেরত দেওয়া হয়। opId না দিলে
+  // (voidInvoice/return-এর মতো অন্য caller-দের ক্ষেত্রে) আগের আচরণ অপরিবর্তিত।
+  async transactionUpdateBalance(customerId, deltaFn, opId = null) {
     if (!this._db || !customerId) return null;
     try {
       const ref = this.doc("customers", customerId);
       const finalBalance = await runTransaction(this._db, async (tx) => {
         const snap = await tx.get(ref);
-        const current = snap.exists() ? (snap.data().balance || 0) : 0;
+        const data = snap.exists() ? snap.data() : {};
+        const current = data.balance || 0;
+        const recentOps = Array.isArray(data._recentBalOps) ? data._recentBalOps : [];
+        if (opId && recentOps.includes(opId)) return current; // আগেই প্রয়োগ হয়েছে — আবার না
         const next = deltaFn(current);
-        tx.update(ref, { balance: next, _updatedAt: Date.now() });
+        const update = { balance: next, _updatedAt: Date.now() };
+        if (opId) update._recentBalOps = [...recentOps.filter(o => o !== opId), opId].slice(-30);
+        tx.update(ref, update);
         return next;
       });
       return finalBalance;
@@ -5558,7 +5576,10 @@ const FSS = {
   // stock/batches/batchNo/costPrice ফেরত দেয়, caller সেটাই receipt ও local
   // state-এ ব্যবহার করবে (নিজের stale guess না)। Firebase বন্ধ থাকলে null —
   // caller তখন আগের মতো synchronous local calculation-এ fallback করবে।
-  async transactionUpdateStock(productId, deductQty) {
+  // 🔴 ফিক্স (ডাবল-কাউন্টেড ব্যালেন্সের প্যারালাল, স্টকের জন্য): transactionUpdateBalance()-
+  // এর ঠিক একই idempotency গার্ড — caller ঐচ্ছিক opId (যেমন `${invoiceId}:${productId}`)
+  // দিলে একই deduction দ্বিতীয়বার (রিট্রাই/রি-কিউ হলে) প্রয়োগ হবে না।
+  async transactionUpdateStock(productId, deductQty, opId = null) {
     if (!this._db || !productId) return null;
     markFieldTxPending("products", productId, ["stock", "batches"]);
     try {
@@ -5570,11 +5591,18 @@ const FSS = {
         const serverProduct = { id: snap.id, ...snap.data() };
         prevStock = serverProduct.stock || 0;
         productName = serverProduct.name || "";
+        const recentOps = Array.isArray(serverProduct._recentStockOps) ? serverProduct._recentStockOps : [];
+        if (opId && recentOps.includes(opId)) {
+          // আগেই প্রয়োগ হয়েছে — বর্তমান stock/batches অপরিবর্তিত ফেরত দাও, আবার কাটা যাবে না
+          return { stock: serverProduct.stock, batches: serverProduct.batches, batchNo: null, costPrice: serverProduct.costPrice, expiryDate: "", batchBreakdown: [] };
+        }
         const { newStock, updatedBatches, batchNo, costPrice, expiryDate, batchBreakdown } = computeStockDeductionFIFO(serverProduct, deductQty);
-        tx.update(ref, {
+        const update = {
           stock: newStock, batches: updatedBatches, costPrice,
           lastUpdated: new Date().toISOString(), _updatedAt: Date.now(),
-        });
+        };
+        if (opId) update._recentStockOps = [...recentOps.filter(o => o !== opId), opId].slice(-30);
+        tx.update(ref, update);
         return { stock: newStock, batches: updatedBatches, batchNo, costPrice, expiryDate, batchBreakdown };
       });
       // 🔴 ফিক্স (ডাবল stockMovements এন্ট্রি — ২৬ জুলাই ২০২৬): আগে এখানে একটা
@@ -6186,7 +6214,7 @@ const FSS = {
       try {
         if (item.stockItems?.length) {
           const stockResults = await Promise.all(item.stockItems.map(async (sold) => {
-            const txResult = await this.transactionUpdateStock(sold.productId, sold.qty);
+            const txResult = await this.transactionUpdateStock(sold.productId, sold.qty, item.invoiceId ? `${item.invoiceId}:${sold.productId}` : null);
             if (!txResult) failedStockItems.push(sold);
             return txResult ? { id: sold.productId, ...txResult } : null;
           }));
@@ -6244,7 +6272,8 @@ const FSS = {
         }
         if (item.balanceUpdates?.length) {
           for (const bu of item.balanceUpdates) {
-            const txBal = await this.transactionUpdateBalance(bu.customerId, (serverBal) => Math.max(0, serverBal + bu.delta));
+            const opId = (bu.invoiceId || item.invoiceId) ? `${bu.invoiceId || item.invoiceId}:${bu.customerId}` : null;
+            const txBal = await this.transactionUpdateBalance(bu.customerId, (serverBal) => Math.max(0, serverBal + bu.delta), opId);
             if (txBal === null) { failedBalanceUpdates.push(bu); continue; }
             if (setCustomers) setCustomers(prev => prev.map(c => c.id === bu.customerId ? { ...c, balance: txBal } : c));
             // 🔴 ফিক্স (balanceAfter রিকনসিলিয়েশন — অফলাইন-ফ্লাশ পাথ, ২৬ জুলাই
@@ -18388,8 +18417,8 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       const isOffline = (typeof navigator !== "undefined" && navigator.onLine === false) || !FSS.isReady();
       const balanceUpdates = [
         ...(walkInCustMode === "existing" && walkInExistingId && walkInHasBaki && walkInBakiAmt > 0
-          ? [{ customerId: walkInExistingId, delta: walkInBakiAmt }] : []),
-        ...(needsBalanceTx ? [{ customerId: selCust.id, delta }] : []),
+          ? [{ customerId: walkInExistingId, delta: walkInBakiAmt, invoiceId: inv.id }] : []),
+        ...(needsBalanceTx ? [{ customerId: selCust.id, delta, invoiceId: inv.id }] : []),
       ];
       if (isOffline) {
         FSS.queuePendingSalesTxn({
@@ -18403,7 +18432,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
           const failedBalanceUpdates = [];
           try {
             const stockResults = await Promise.all(sellableItems.map(async (sold) => {
-              const txResult = await FSS.transactionUpdateStock(sold.productId, sold.qty);
+              const txResult = await FSS.transactionUpdateStock(sold.productId, sold.qty, `${inv.id}:${sold.productId}`);
               if (!txResult) failedStockItems.push({ productId: sold.productId, qty: sold.qty });
               return txResult ? { id: sold.productId, ...txResult } : null;
             }));
@@ -18471,7 +18500,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
 
           for (const bu of balanceUpdates) {
             try {
-              const txBal = await FSS.transactionUpdateBalance(bu.customerId, (serverBal) => Math.max(0, serverBal + bu.delta));
+              const txBal = await FSS.transactionUpdateBalance(bu.customerId, (serverBal) => Math.max(0, serverBal + bu.delta), `${bu.invoiceId}:${bu.customerId}`);
               if (txBal === null) { failedBalanceUpdates.push(bu); continue; }
               const localGuess = bu.customerId === walkInExistingId ? newWalkInBal : newBal;
               if (txBal !== localGuess) {
@@ -31628,13 +31657,25 @@ function Settings_({ T, S, shopName,
     // সাথে মেলা উচিত — না মিললে মানে সেই কাস্টমারের কোনো balance-রিকনসিলিয়েশন
     // Firestore-এ কখনো পৌঁছায়নি (রেকর্ড দুই জায়গাতেই আছে, শুধু মান ভুল)।
     try {
+      // 🔴 ফিক্স (ভুল "সর্বশেষ txn" নির্বাচন): আগে t.time (toLocaleString("en-US")
+      // দিয়ে বানানো, যেমন "9:15:23 AM") স্ট্রিং হিসেবে তুলনা করা হতো — এটা
+      // কালানুক্রমে সাজানোর উপযোগী না (যেমন "9:15 AM" স্ট্রিং হিসেবে "10:15 AM"-এর
+      // পরে পড়ে, কারণ '9' > '1')। ফলে একই দিনে একাধিক লেনদেন থাকা কাস্টমারের
+      // ক্ষেত্রে ভুল txn-কে "সর্বশেষ" ধরে ভুল expected balance বের হতো — auto-fix
+      // করলেও পরের স্ক্যানে আবার (ভুলভাবে) "ড্রিফট" দেখাত। এখন withTs()-এর
+      // numeric _updatedAt (Date.now()) দিয়ে সরাসরি তুলনা করা হচ্ছে, যেটা সবসময়
+      // সঠিক কালানুক্রমিক অর্ডার দেয়। পুরনো রেকর্ডে (এই ফিল্ড আসার আগের) _updatedAt
+      // না থাকলে dateKey+time ফলব্যাক হিসেবে থেকে যাচ্ছে।
       const lastTxnByCust = new Map();
       for (const t of cloudTxns) {
         if (!t.customerId) continue;
         const prev = lastTxnByCust.get(t.customerId);
-        const key = `${t.dateKey || ""}_${t.time || ""}_${t.at || 0}`;
-        const prevKey = prev ? `${prev.dateKey || ""}_${prev.time || ""}_${prev.at || 0}` : "";
-        if (!prev || key >= prevKey) lastTxnByCust.set(t.customerId, t);
+        const tKey = t._updatedAt || 0;
+        const prevKey = prev ? (prev._updatedAt || 0) : -1;
+        if (!prev || tKey > prevKey ||
+            (tKey === prevKey && `${t.dateKey || ""}_${t.time || ""}` >= `${prev.dateKey || ""}_${prev.time || ""}`)) {
+          lastTxnByCust.set(t.customerId, t);
+        }
       }
       const balanceDriftItems = [];
       for (const c of cloudCustomers) {
@@ -32099,12 +32140,17 @@ function Settings_({ T, S, shopName,
     try {
       // ৯ক) কাস্টমার ব্যালেন্স recompute — প্রতিটা কাস্টমারের গত ৩০ দিনের
       // সর্বশেষ txn.balanceAfter, স্টোর করা customer.balance-এর সাথে মেলা উচিত
+      // 🔴 ফিক্স: runMismatchScan-এর balanceDrift-এর মতোই একই কারণে (t.time
+      // লোকেল-স্ট্রিং কালানুক্রমে সাজানোর উপযোগী না) numeric _updatedAt দিয়ে
+      // তুলনা — দেখুন runMismatchScan-এর কমেন্ট।
       const lastTxnByCust = new Map();
       for (const t of (txns || [])) {
         if (!t.customerId) continue;
         const prev = lastTxnByCust.get(t.customerId);
-        if (!prev || (t.dateKey || "") > (prev.dateKey || "") ||
-            ((t.dateKey || "") === (prev.dateKey || "") && (t.time || "") >= (prev.time || ""))) {
+        const tKey = t._updatedAt || 0;
+        const prevKey = prev ? (prev._updatedAt || 0) : -1;
+        if (!prev || tKey > prevKey ||
+            (tKey === prevKey && `${t.dateKey || ""}_${t.time || ""}` >= `${prev.dateKey || ""}_${prev.time || ""}`)) {
           lastTxnByCust.set(t.customerId, t);
         }
       }
