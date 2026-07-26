@@ -18447,10 +18447,19 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       return { id: sold.productId, stock: newStock, batches: updatedBatches };
     });
     const stockUpdateMap = new Map(stockUpdates.filter(Boolean).map(u => [u.id, u]));
-    setProducts(prev => prev.map(p => {
-      const upd = stockUpdateMap.get(p.id);
-      return upd ? { ...p, stock: upd.stock, batches: upd.batches } : p;
-    }));
+    let _productsAfterSale = null;
+    setProducts(prev => {
+      const mapped = prev.map(p => {
+        const upd = stockUpdateMap.get(p.id);
+        return upd ? { ...p, stock: upd.stock, batches: upd.batches } : p;
+      });
+      _productsAfterSale = mapped;
+      return mapped;
+    });
+    // 🔴 ফিক্স (ক্রয় এন্ট্রি/নতুন পণ্যের ফিক্সের ঠিক একই কারণে): বিক্রির স্টক
+    // ডিডাকশনও সাথে সাথেই ডিস্কে সেভ — debounce উইন্ডোতে অফলাইনে অ্যাপ কিল হলে
+    // পরের বুটে স্টক আগের (বিক্রির আগের) মান দেখানো থেকে বাঁচাবে।
+    if (_productsAfterSale) save(LK(SK.products), _productsAfterSale);
 
     const inv = {
       id: invId, customerId: isSelfUse ? null : isWalkIn ? walkInCustId : selCust.id,
@@ -18492,7 +18501,16 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       isSelfUse,
       selfUseCost,
     };
-    setInvoices(prev => [inv, ...prev]);
+    let _invoicesAfterCreate = null;
+    setInvoices(prev => { _invoicesAfterCreate = [inv, ...prev]; return _invoicesAfterCreate; });
+    // 🔴 ফিক্স (একই রুট কজ — ক্রয় এন্ট্রি/নতুন পণ্যের অফলাইন-রিস্টার্ট ফিক্সের
+    // প্যাটার্ন): ইনভয়েসের নিজস্ব রেকর্ড pushDurable() দিয়ে আগে থেকেই সাথে সাথে
+    // IndexedDB SyncOutbox-এ persist হয় (নিচে দেখুন), কিন্তু বুট-টাইমে ব্যবহৃত
+    // লোকাল "invoices" ক্যাশ (LK(SK.invoices)) এতদিন 1500ms debounce করা হতো —
+    // অফলাইনে সেই উইন্ডোতেই অ্যাপ কিল হলে পরের বুটে ইনভয়েসটা তালিকায় সাময়িকভাবে
+    // দেখা যেত না (আসল ডেটা হারাত না, কারণ SyncOutbox-এ ঠিকই থাকত, শুধু UI-তে
+    // ভুল বার্তা দিত)। সাথে সাথেই সেভ করে দেওয়া হচ্ছে।
+    if (_invoicesAfterCreate) save(LK(SK.invoices), _invoicesAfterCreate);
 
     // ── Phase 1.3: Stats doc update — invoice save-এ running total বাড়াও (fire-and-forget) ──
     // 🔴 ফিক্স (রুট কজ — ড্যাশবোর্ড টোটাল চিরতরে হারানো): voidInvoice()/
@@ -21601,7 +21619,13 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     // কনকারেন্ট স্টক-পরিবর্তন হারিয়ে যেতে পারত। এখন FSS.transactionRemoveBatch()
     // দিয়ে সার্ভারের লাইভ batches থেকে atomically ব্যাচ বাদ দেওয়া হয় (checkout/
     // void/return/purchase-এর মতোই)। অফলাইন/ব্যর্থ হলে আগের local calculation-ই fallback।
-    const txResult = FSS.isReady() ? await FSS.transactionRemoveBatch(product.id, batch.batchNo || "", batch.expiryDate || "") : null;
+    // 🔴 ফিক্স (ক্রয় এন্ট্রির isOffline ফিক্সের ঠিক একই কারণে): FSS.isReady()
+    // শুধু Firebase init চেক করে, নেট কানেকশন না — সত্যিই অফলাইনে
+    // transactionRemoveBatch() (runTransaction) ঝুলে থেকে পরে নেট ফিরলে ডাবল-
+    // রিমুভ/রেস তৈরি করতে পারত। navigator.onLine চেক করে সত্যিই অফলাইনে থাকলে
+    // transaction শুরুই না করে সরাসরি queue-তে (নিচের else ব্রাঞ্চ) পাঠানো হচ্ছে।
+    const isOfflineExpRemoval = (typeof navigator !== "undefined" && navigator.onLine === false) || !FSS.isReady();
+    const txResult = !isOfflineExpRemoval ? await FSS.transactionRemoveBatch(product.id, batch.batchNo || "", batch.expiryDate || "") : null;
     let newStockFinal = 0;
     if (txResult) {
       newStockFinal = txResult.stock;
@@ -26277,7 +26301,13 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
         });
       });
       const prod = { ...prodFields, stock: totalStockVal, batches: initialBatches };
-      setProducts(prev => [...prev, { id: newId, ...prod }]);
+      const newProductRec = { id: newId, ...prod };
+      setProducts(prev => [...prev, newProductRec]);
+      // 🔴 ফিক্স (একই রুট কজ — ক্রয় এন্ট্রির "অফলাইনে অ্যাপ রিস্টার্টে স্টক
+      // পুরনো দেখানো" ফিক্সের প্যাটার্ন): নতুন পণ্য তৈরিতেও debounced (1500ms)
+      // সেভের বদলে সাথে সাথেই ডিস্কে সেভ — অফলাইনে অনেকগুলো নতুন পণ্য যোগ করার
+      // মাঝে অ্যাপ কিল হলেও পরের বুটে সঠিক তালিকা দেখা যাবে।
+      save(LK(SK.products), [...products, newProductRec]);
       learnMedicineEntry(businessType, form.name, form.unit === "__typing__" ? "" : form.unit, form.company); // 💊🐄 সেলফ-লার্নিং সাজেশন (দুই মোডেই)
       // নতুন পণ্যে initial stock লগ করো (delta = totalStockVal, prevStock = 0)
       if (totalStockVal > 0) {
@@ -26403,36 +26433,52 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           // synchronous local calculation, সিঙ্ক্রোনাস-লুপ collision-safety
           // (_peBatchOffset + linear probing) সহ।
           const applyLocalFallback = () => {
-            setProducts(prev => prev.map(p => {
-              if (p.id !== productId) return p;
-              const existingBatchNos = new Set((p.batches || []).map(b => b.batchNo));
-              if (existingBatchNos.has(newBatch.batchNo)) {
-                const m = /^(.*-)(\d+)$/.exec(newBatch.batchNo);
-                if (m) {
-                  let n = parseInt(m[2], 10);
-                  let candidate;
-                  do { n += 1; candidate = `${m[1]}${n}`; } while (existingBatchNos.has(candidate));
-                  newBatch.batchNo = candidate;
-                  entry.batch = candidate;
+            let computedArr = null;
+            setProducts(prev => {
+              const mapped = prev.map(p => {
+                if (p.id !== productId) return p;
+                const existingBatchNos = new Set((p.batches || []).map(b => b.batchNo));
+                if (existingBatchNos.has(newBatch.batchNo)) {
+                  const m = /^(.*-)(\d+)$/.exec(newBatch.batchNo);
+                  if (m) {
+                    let n = parseInt(m[2], 10);
+                    let candidate;
+                    do { n += 1; candidate = `${m[1]}${n}`; } while (existingBatchNos.has(candidate));
+                    newBatch.batchNo = candidate;
+                    entry.batch = candidate;
+                  }
                 }
-              }
-              const oldStock = p.stock || 0;
-              const oldCost  = p.costPrice || 0;
-              newStock = oldStock + qty;
-              const newCostPrice = oldStock + qty > 0
-                ? (oldStock * oldCost + qty * cost) / (oldStock + qty)
-                : cost;
-              return {
-                ...p,
-                stock: newStock,
-                costPrice: Math.round(newCostPrice * 10000) / 10000,
-                price: sell || p.price,
-                spPrice: (spPrice !== undefined && spPrice !== "") ? (parseFloat(spPrice) || 0) : p.spPrice,
-                lastUpdated: now,
-                expiryDate: expiryDate || p.expiryDate,
-                batches: [...(p.batches || []), newBatch],
-              };
-            }));
+                const oldStock = p.stock || 0;
+                const oldCost  = p.costPrice || 0;
+                newStock = oldStock + qty;
+                const newCostPrice = oldStock + qty > 0
+                  ? (oldStock * oldCost + qty * cost) / (oldStock + qty)
+                  : cost;
+                return {
+                  ...p,
+                  stock: newStock,
+                  costPrice: Math.round(newCostPrice * 10000) / 10000,
+                  price: sell || p.price,
+                  spPrice: (spPrice !== undefined && spPrice !== "") ? (parseFloat(spPrice) || 0) : p.spPrice,
+                  lastUpdated: now,
+                  expiryDate: expiryDate || p.expiryDate,
+                  batches: [...(p.batches || []), newBatch],
+                };
+              });
+              computedArr = mapped;
+              return mapped;
+            });
+            // 🔴 ফিক্স (রুট কজ — "অফলাইনে ক্রয় এন্ট্রির পর অ্যাপ রিস্টার্টে স্টক
+            // পুরনো/০ দেখানো"): products-এর ডিস্ক-সেভ এতদিন 1500ms debounce করা
+            // হতো (দেখুন SmartBusinessMgmt-এর debouncedSave effect)। অফলাইনে এই
+            // ফাংশন কল হওয়ার মানেই স্টক optimistically UI-তে বেড়ে গেছে — কিন্তু
+            // অ্যান্ড্রয়েড/লো-ব্যাটারিতে সেই 1.5 সেকেন্ডের ভেতরেই অ্যাপ প্রসেস
+            // কিল হয়ে গেলে debounced সেভ ডিস্কে পৌঁছাত না, পরের বুটে পুরনো
+            // (স্টক-বাড়ার-আগের) ক্যাশড মান লোড হতো — Firestore queue-তে ডেটা
+            // নিরাপদ থাকলেও UI-তে ভুলভাবে "হারিয়ে গেছে" মনে হতো। এখানে সাথে
+            // সাথেই (debounce এড়িয়ে) ডিস্কে সেভ করে দেওয়া হচ্ছে যাতে অ্যাপ যেকোনো
+            // মুহূর্তে কিল হলেও পরের বুটে সঠিক optimistic স্টকই দেখা যায়।
+            if (computedArr) save(LK(SK.products), computedArr);
           };
 
           // 🆕 পারফরম্যান্স ফিক্স (ক্রয় এন্ট্রি সেভ-এ ধীরগতি): আগে এখানে
@@ -26457,7 +26503,18 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               entryId, productId, qty, unitCost: cost, unitSell: sell, expiryDate, supplier,
               note, isFreeStock, batchNoHint: newBatch.batchNo,
             };
-            if (FSS.isReady()) {
+            // 🔴 ফিক্স (ডাবল-কাউন্ট/"কিছুক্ষণ পর আটকে যাওয়া" — অফলাইন ক্রয় এন্ট্রি):
+            // FSS.isReady() শুধু Firebase init হয়েছে কিনা দেখে, আসল নেট কানেকশন
+            // (navigator.onLine) দেখে না। Firestore-এর runTransaction() সাধারণ
+            // write()-এর মতো অফলাইনে queue হয় না — সত্যিই অফলাইনে থাকলে এটা নেট
+            // ফেরা পর্যন্ত নীরবে ঝুলে থাকে (না resolve, না reject), আর পরে হঠাৎ
+            // নেট ফিরলে জেগে উঠে সার্ভারে আবার স্টক যোগ করে দেয় — যেটা ততক্ষণে
+            // queue থেকে already-applied হওয়া একই এন্ট্রির সাথে ডাবল-কাউন্ট হয়ে
+            // যায় (এই ঝুলে-থাকা কলটার opId কখনো queue-এর dedup-এ ঢোকে না)।
+            // ইনভয়েস/বিক্রয় ফ্লো-তে ব্যবহৃত একই isOffline প্যাটার্ন এখানেও —
+            // সত্যিই অফলাইনে থাকলে transaction শুরুই না করে সরাসরি queue-তে পাঠানো।
+            const isOffline = (typeof navigator !== "undefined" && navigator.onLine === false) || !FSS.isReady();
+            if (!isOffline) {
               FSS.transactionAddStock(productId, {
                 qty, unitCost: cost, unitSell: sell, expiryDate, supplier, note, isFreeStock, batchNoHint: newBatch.batchNo,
               }, `purchase:${entryId}:${productId}`).then(txResult => {
@@ -26496,7 +26553,12 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             // সিরিয়ালি একটার পর একটা লাইন প্রসেস হয় বলে batchNo/cost সঠিক থাকে।
             let txThrew = false;
             let txResult = null;
-            if (FSS.isReady()) {
+            // 🔴 ফিক্স (একক-এন্ট্রি পাথের ঠিক একই কারণে — দেখুন উপরের isOffline
+            // কমেন্ট): সত্যিই অফলাইনে থাকলে runTransaction() শুরুই না করে সরাসরি
+            // local fallback + queue-তে যাওয়া, নাহলে এটা ঝুলে থেকে পরে নেট ফিরলে
+            // ডাবল-কাউন্ট করতে পারে।
+            const isOfflineBulk = (typeof navigator !== "undefined" && navigator.onLine === false) || !FSS.isReady();
+            if (!isOfflineBulk) {
               try {
                 txResult = await FSS.transactionAddStock(productId, {
                   qty, unitCost: cost, unitSell: sell, expiryDate, supplier, note, isFreeStock, batchNoHint: batchNo,
