@@ -13030,6 +13030,72 @@ function SmartBusinessMgmt() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, firebaseEnabled, firebaseConfig]);
 
+  // 🆕 নোটিফিকেশন মডিউল থেকে "এখনই সিঙ্ক করুন" — বিদ্যমান ৪টা flush ফাংশনই আবার
+  // কল করা হয় (এমনিতেই reconnect/heartbeat-এ যেগুলো চলে), শুধু ম্যানুয়ালি এখনই।
+  // এতে কোনো নতুন Firestore read নেই — শুধু localStorage-কিউতে জমে থাকা এন্ট্রি
+  // write করার চেষ্টা, যেটা এমনিতেই হতো।
+  const retryPendingSyncNow = useCallback(async () => {
+    if (!FSS.isReady()) { showToast("Firestore সংযোগ নেই — নেট চেক করুন", "#ef4444"); return; }
+    await FSS.flushPendingStats();
+    await FSS.flushPendingSalesTxns({ setProducts, setCustomers, setInvoices });
+    await FSS.flushPendingVoidRestores({ setProducts, setCustomers });
+    await FSS.flushPendingPurchaseStock({ setProducts, setPurchaseOrders });
+    showToast("✅ সিঙ্ক রিট্রাই করা হয়েছে");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 🆕 নোটিফিকেশন মডিউল থেকেও কনফ্লিক্ট রিজলভ করা যাবে — SettingsModule-এর
+  // resolveConflict-এর সাথে যুক্তি হুবহু একই (single source of truth রাখতে এখানে
+  // App-লেভেলে তোলা হলো, দুই জায়গা থেকেই কল করা যায়)। "remote" পছন্দে কোনো
+  // write নেই (শুধু dismiss); "local" পছন্দে conflict.local-এ যা captured আছে
+  // সেটাই সরাসরি write হয় — নতুন কোনো read লাগে না।
+  const conflictCollectionMapTop = {
+    customers, products, invoices, txns, purchaseOrders, cashLogs,
+    suppliers, expenses, returns, quotations, supplierPayments, paymentInvoices,
+  };
+  const resolveConflictTop = useCallback((conflict, choice) => {
+    if (choice === "remote") {
+      ConflictQueue.dismiss(conflict.collection, conflict.recordId);
+      showToast("✅ কনফ্লিক্ট সমাধান হয়েছে (সার্ভার ভার্সন বহাল)");
+      return;
+    }
+    const arr = conflictCollectionMapTop[conflict.collection] || [];
+    const current = arr.find(r => String(r.id) === conflict.recordId);
+    if (!current) {
+      showToast("রেকর্ড খুঁজে পাওয়া যায়নি — হয়তো মুছে ফেলা হয়েছে", "#ef4444");
+      ConflictQueue.dismiss(conflict.collection, conflict.recordId);
+      return;
+    }
+    const merged = { ...current };
+    conflict.fields.forEach(f => { merged[f.field] = conflict.local[f.field]; });
+    const finalRec = withTs(merged);
+    if (FSS.isReady()) FSS.setRecord(conflict.collection, conflict.recordId, finalRec);
+    ConflictQueue.dismiss(conflict.collection, conflict.recordId);
+    showToast("✅ এই ডিভাইসের ভার্সন প্রয়োগ হয়েছে");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customers, products, invoices, txns, purchaseOrders, cashLogs, suppliers, expenses, returns, quotations, supplierPayments, paymentInvoices, showToast]);
+
+
+  // localStorage-এ persist করা হয় যাতে ট্যাব বদলালে/অ্যাপ রিস্টার্ট হলেও
+  // সময়টা হারিয়ে না যায়। কোনো Firestore read/write নেই, সম্পূর্ণ লোকাল।
+  const [fssDisconnectedSince, setFssDisconnectedSince] = useState(() => {
+    try { return Number(localStorage.getItem("sbm_fss_disconnected_since")) || null; } catch { return null; }
+  });
+  useEffect(() => {
+    if (firebaseEnabled && !fssReady) {
+      setFssDisconnectedSince(prev => {
+        if (prev) return prev;
+        const now = Date.now();
+        try { localStorage.setItem("sbm_fss_disconnected_since", String(now)); } catch {}
+        return now;
+      });
+    } else if (fssDisconnectedSince) {
+      setFssDisconnectedSince(null);
+      try { localStorage.removeItem("sbm_fss_disconnected_since"); } catch {}
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fssReady, firebaseEnabled]);
+
   // 🔴 ফিক্স (হার্টবিট/resync কভারেজ গ্যাপ): useFSSCollection-এর ভেতরের ২০-সেকেন্ড
   // heartbeat + resume/online resync (useResyncTick) শুধু সেই হুক ব্যবহার করা
   // কালেকশনগুলোতেই (customers/products/ইত্যাদি) কাজ করত। কিন্তু resetMarker,
@@ -16201,6 +16267,12 @@ function SmartBusinessMgmt() {
               fssReady={fssReady}
               firebaseEnabled={firebaseEnabled}
               pendingConflicts={pendingConflicts}
+              onRetrySyncNow={retryPendingSyncNow}
+              onResolveConflict={resolveConflictTop}
+              fssDisconnectedSince={fssDisconnectedSince}
+              lastAutoBackup={lastAutoBackup}
+              lastLocalBackup={lastLocalBackup}
+              onBackupNow={performDriveBackup}
             />
           </ErrorBoundary>
         )}
@@ -29874,9 +29946,11 @@ function StaffCustomTimePicker({ T, staffName, onGrant }) {
 // (products/backupNeeded ইত্যাদি) থেকে, নাহলে সম্পূর্ণ লোকাল storage থেকে —
 // এই স্ক্রিন খোলা/রিফ্রেশ করলে কোনো নতুন Firestore read হয় না।
 // ══════════════════════════════════════════════════════════════════════════
-function NotificationCenterModule({ T, S, currentUser, showToast, products = [], backupNeeded, backupFailStreak = 0, lastBackupError = null, fssReady = false, firebaseEnabled = false, pendingConflicts = [] }) {
+function NotificationCenterModule({ T, S, currentUser, showToast, products = [], backupNeeded, backupFailStreak = 0, lastBackupError = null, fssReady = false, firebaseEnabled = false, pendingConflicts = [], onRetrySyncNow, onResolveConflict, fssDisconnectedSince = null, lastAutoBackup = null, lastLocalBackup = null, onBackupNow }) {
   const [pendingInfo, setPendingInfo] = useState(() => FSS.getLocalPendingQueueCounts());
   const [refreshedAt, setRefreshedAt] = useState(Date.now());
+  const [syncingNow, setSyncingNow] = useState(false);
+  const [backingUpNow, setBackingUpNow] = useState(false);
 
   const refresh = React.useCallback(() => {
     setPendingInfo(FSS.getLocalPendingQueueCounts());
@@ -29900,43 +29974,93 @@ function NotificationCenterModule({ T, S, currentUser, showToast, products = [],
     return `${Math.floor(hrs / 24)} দিন আগে`;
   };
 
-  const lowStockCount = React.useMemo(
-    () => (products || []).filter(p => p.productType !== "service" && (p.stock || 0) > 0 && (p.stock || 0) <= (p.minStockAlert || 5)).length,
+  const lowStockProducts = React.useMemo(
+    () => (products || []).filter(p => p.productType !== "service" && (p.stock || 0) > 0 && (p.stock || 0) <= (p.minStockAlert || 5)),
     [products]
   );
+  const lowStockCount = lowStockProducts.length;
+
+  const handleRetrySync = async () => {
+    if (!onRetrySyncNow || syncingNow) return;
+    setSyncingNow(true);
+    try { await onRetrySyncNow(); refresh(); } finally { setSyncingNow(false); }
+  };
+  const handleBackupNow = async () => {
+    if (!onBackupNow || backingUpNow) return;
+    setBackingUpNow(true);
+    try { await onBackupNow(); } finally { setBackingUpNow(false); }
+  };
+
+  const lastBackupAt = Math.max(lastAutoBackup || 0, lastLocalBackup || 0) || null;
 
   const items = React.useMemo(() => {
     const list = [];
-    if (pendingInfo.stale > 0) {
-      list.push({
-        level: "critical", icon: "🔴",
-        title: `${pendingInfo.stale}টি এন্ট্রি সিঙ্ক আটকে আছে`,
-        msg: `ফায়ারস্টোরে পাঠানো যাচ্ছে না — সাধারণত ধীর/অস্থির নেট কানেকশনের কারণে। ${pendingInfo.oldestAt ? `সবচেয়ে পুরনোটি ${timeAgo(pendingInfo.oldestAt)} থেকে আটকে।` : ""} Settings-এ গিয়ে "মিসম্যাচ চেক" ও "অটো-ফিক্স" চালান।`,
-      });
-    } else if (pendingInfo.total > 0) {
-      list.push({
-        level: "info", icon: "🟡",
-        title: `${pendingInfo.total}টি এন্ট্রি পাঠানোর অপেক্ষায়`,
-        msg: "এটা স্বাভাবিক — কিছুক্ষণের মধ্যেই নিজে থেকে সিঙ্ক হয়ে যাবে।",
-      });
+    if (pendingInfo.stale > 0 || pendingInfo.total > 0) {
+      const detailLines = (pendingInfo.breakdown || [])
+        .filter(b => b.count > 0)
+        .map(b => `${b.label}: ${b.count}টা${b.staleCount > 0 ? ` (${b.staleCount}টা ১০+ মিনিট আটকে)` : ""}`);
+      if (pendingInfo.stale > 0) {
+        list.push({
+          key: "sync-stale", level: "critical", icon: "🔴",
+          title: `${pendingInfo.stale}টি এন্ট্রি সিঙ্ক আটকে আছে`,
+          msg: `ফায়ারস্টোরে পাঠানো যাচ্ছে না — সাধারণত ধীর/অস্থির নেট কানেকশনের কারণে। ${pendingInfo.oldestAt ? `সবচেয়ে পুরনোটি ${timeAgo(pendingInfo.oldestAt)} থেকে আটকে।` : ""}`,
+          detailLines,
+          actionLabel: syncingNow ? "সিঙ্ক হচ্ছে..." : "🔁 এখনই সিঙ্ক করুন",
+          onAction: handleRetrySync, actionDisabled: syncingNow,
+        });
+      } else {
+        list.push({
+          key: "sync-pending", level: "info", icon: "🟡",
+          title: `${pendingInfo.total}টি এন্ট্রি পাঠানোর অপেক্ষায়`,
+          msg: "এটা স্বাভাবিক — কিছুক্ষণের মধ্যেই নিজে থেকে সিঙ্ক হয়ে যাবে।",
+          detailLines,
+          actionLabel: syncingNow ? "সিঙ্ক হচ্ছে..." : "🔁 এখনই সিঙ্ক করুন",
+          onAction: handleRetrySync, actionDisabled: syncingNow,
+        });
+      }
     }
     if (firebaseEnabled && !fssReady) {
-      list.push({ level: "warning", icon: "📡", title: "Firestore সংযোগ বিচ্ছিন্ন", msg: "ডেটা এখন শুধু ফোনে সেভ হচ্ছে, ক্লাউডে যাচ্ছে না — ইন্টারনেট/কনফিগ চেক করুন।" });
+      list.push({
+        key: "disconnected", level: "warning", icon: "📡", title: "Firestore সংযোগ বিচ্ছিন্ন",
+        msg: `ডেটা এখন শুধু ফোনে সেভ হচ্ছে, ক্লাউডে যাচ্ছে না — ইন্টারনেট/কনফিগ চেক করুন।${fssDisconnectedSince ? ` (${timeAgo(fssDisconnectedSince)} থেকে বিচ্ছিন্ন)` : ""}`,
+      });
     }
     if (backupFailStreak >= 3) {
-      list.push({ level: "critical", icon: "☁️", title: `পরপর ${backupFailStreak} বার ব্যাকআপ ব্যর্থ হয়েছে`, msg: lastBackupError || "Google Drive ব্যাকআপ সেটিংস চেক করুন।" });
+      list.push({
+        key: "backup-failed", level: "critical", icon: "☁️",
+        title: `পরপর ${backupFailStreak} বার ব্যাকআপ ব্যর্থ হয়েছে`,
+        msg: (lastBackupError || "Google Drive ব্যাকআপ সেটিংস চেক করুন।") + (lastBackupAt ? ` শেষ সফল ব্যাকআপ: ${timeAgo(lastBackupAt)}।` : ""),
+        actionLabel: backingUpNow ? "ব্যাকআপ হচ্ছে..." : "☁️ এখনই ব্যাকআপ নিন",
+        onAction: handleBackupNow, actionDisabled: backingUpNow,
+      });
     } else if (backupNeeded) {
-      list.push({ level: "info", icon: "☁️", title: "ব্যাকআপ বাকি আছে", msg: "সর্বশেষ পরিবর্তনের পর এখনো নতুন ব্যাকআপ নেওয়া হয়নি।" });
+      list.push({
+        key: "backup-needed", level: "info", icon: "☁️", title: "ব্যাকআপ বাকি আছে",
+        msg: "সর্বশেষ পরিবর্তনের পর এখনো নতুন ব্যাকআপ নেওয়া হয়নি।" + (lastBackupAt ? ` শেষ সফল ব্যাকআপ: ${timeAgo(lastBackupAt)}।` : ""),
+        actionLabel: backingUpNow ? "ব্যাকআপ হচ্ছে..." : "☁️ এখনই ব্যাকআপ নিন",
+        onAction: handleBackupNow, actionDisabled: backingUpNow,
+      });
     }
     if ((pendingConflicts || []).length > 0) {
-      list.push({ level: "warning", icon: "⚠️", title: `${pendingConflicts.length}টি সিঙ্ক কনফ্লিক্ট`, msg: "পর্যালোচনার অপেক্ষায় আছে।" });
+      list.push({
+        key: "conflicts", level: "warning", icon: "⚠️",
+        title: `${pendingConflicts.length}টি সিঙ্ক কনফ্লিক্ট`,
+        msg: "একই রেকর্ড দুই ডিভাইসে একসাথে বদলেছে — কোন ভার্সন রাখবেন বেছে নিন।",
+        conflicts: pendingConflicts,
+      });
     }
     if (lowStockCount > 0) {
-      list.push({ level: "info", icon: "📦", title: `${lowStockCount}টি পণ্যে স্টক কম`, msg: "প্রয়োজনে ক্রয় এন্ট্রি দিন।" });
+      list.push({
+        key: "low-stock", level: "info", icon: "📦", title: `${lowStockCount}টি পণ্যে স্টক কম`,
+        msg: "প্রয়োজনে ক্রয় এন্ট্রি দিন।",
+        detailLines: lowStockProducts.slice(0, 8).map(p => `${p.name} — স্টক ${p.stock}`)
+          .concat(lowStockCount > 8 ? [`+আরও ${lowStockCount - 8}টা`] : []),
+      });
     }
     const order = { critical: 0, warning: 1, info: 2 };
     return list.sort((a, b) => order[a.level] - order[b.level]);
-  }, [pendingInfo, firebaseEnabled, fssReady, backupFailStreak, lastBackupError, backupNeeded, pendingConflicts, lowStockCount]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingInfo, firebaseEnabled, fssReady, fssDisconnectedSince, backupFailStreak, lastBackupError, backupNeeded, lastBackupAt, pendingConflicts, lowStockCount, syncingNow, backingUpNow]);
 
   const levelColor = { critical: "#ef4444", warning: "#f59e0b", info: "#0ea5e9" };
 
@@ -29957,8 +30081,8 @@ function NotificationCenterModule({ T, S, currentUser, showToast, products = [],
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {items.map((it, i) => (
-            <div key={i} style={{
+          {items.map((it) => (
+            <div key={it.key} style={{
               background: `${levelColor[it.level]}14`,
               border: `1px solid ${levelColor[it.level]}44`,
               borderRadius: 14, padding: "12px 14px",
@@ -29968,6 +30092,46 @@ function NotificationCenterModule({ T, S, currentUser, showToast, products = [],
                 <div style={{ flex: 1 }}>
                   <div style={{ color: T.text, fontWeight: 800, fontSize: 13.5 }}>{it.title}</div>
                   <div style={{ color: T.sub, fontSize: 12, marginTop: 3, lineHeight: 1.5 }}>{it.msg}</div>
+
+                  {it.detailLines && it.detailLines.length > 0 && (
+                    <div style={{ marginTop: 6, paddingLeft: 2 }}>
+                      {it.detailLines.map((line, idx) => (
+                        <div key={idx} style={{ color: T.sub, fontSize: 11, opacity: 0.85, marginTop: 2 }}>· {line}</div>
+                      ))}
+                    </div>
+                  )}
+
+                  {it.conflicts && (
+                    <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+                      {it.conflicts.map(c => (
+                        <div key={`${c.collection}-${c.recordId}`} style={{ background: `${T.card}88`, border: `1px solid ${T.border}`, borderRadius: 10, padding: "8px 10px" }}>
+                          <div style={{ fontSize: 11.5, color: T.text, fontWeight: 700 }}>{c.collection} · {c.recordId}</div>
+                          {Array.isArray(c.fields) && c.fields.length > 0 && (
+                            <div style={{ fontSize: 10.5, color: T.sub, marginTop: 2 }}>
+                              {c.fields.map(f => `${f.field}: এই ফোনে ${c.local?.[f.field]}, সার্ভারে ${c.remote?.[f.field]}`).join(" · ")}
+                            </div>
+                          )}
+                          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                            <button onClick={() => onResolveConflict?.(c, "local")}
+                              style={{ flex: 1, background: "#22c55e18", border: "1px solid #22c55e55", borderRadius: 6, padding: "5px 0", color: "#22c55e", fontSize: 10.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+                              এই ফোনেরটা রাখুন
+                            </button>
+                            <button onClick={() => onResolveConflict?.(c, "remote")}
+                              style={{ flex: 1, background: "#3b82f618", border: "1px solid #3b82f655", borderRadius: 6, padding: "5px 0", color: "#60a5fa", fontSize: 10.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+                              সার্ভারেরটা রাখুন
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {it.onAction && (
+                    <button onClick={it.onAction} disabled={it.actionDisabled}
+                      style={{ marginTop: 8, background: `${levelColor[it.level]}18`, border: `1px solid ${levelColor[it.level]}55`, borderRadius: 6, padding: "6px 12px", color: levelColor[it.level], fontSize: 11, fontWeight: 800, cursor: it.actionDisabled ? "not-allowed" : "pointer", fontFamily: "inherit", opacity: it.actionDisabled ? 0.6 : 1 }}>
+                      {it.actionLabel}
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -31324,6 +31488,41 @@ function Settings_({ T, S, shopName,
     }
   };
 
+  // 🆕 গরমিলের তালিকা বড় হলে (যেমন ২৭০+ পণ্য) UI-তে শুধু প্রথম ৫টা দেখানো হতো,
+  // বাকিটা "+আরও Nটা" — দোকানদার/সাপোর্ট পুরো তালিকা দেখতে বা যাচাইয়ের জন্য
+  // কাউকে পাঠাতে পারতেন না। এখন প্রতিটা ড্রিফট-রো নিজে থেকে সম্পূর্ণ তালিকা
+  // দেখানো/লুকানো টগল করতে পারে, আর সেই সম্পূর্ণ তালিকা এক-ক্লিকে টেক্সট হিসেবে
+  // শেয়ার (WhatsApp ইত্যাদি) করা যায় — যাতে ফিক্সের আগে/পরে দোকানদার নিজে চোখে
+  // মিলিয়ে দেখতে পারেন, শুধু "সলভ হয়েছে" বললে বিশ্বাস করতে না হয়।
+  const [expandedDriftRows, setExpandedDriftRows] = useState({});
+  const toggleDriftExpand = (key) => setExpandedDriftRows(prev => ({ ...prev, [key]: !prev[key] }));
+
+  const shareDriftList = async (row) => {
+    if (!row?.driftItems?.length) return;
+    const isStock = row.key === "stockDrift";
+    const header = `${row.label} — ${row.driftItems.length}টা মিলছে না (${new Date().toLocaleString("bn-BD")})\n\n`;
+    const lines = row.driftItems.map((d, i) =>
+      `${i + 1}. ${d.name} — সংরক্ষিত ${isStock ? d.actual : `৳${d.actual}`}, সঠিক ${isStock ? d.expected : `৳${d.expected}`}`
+    );
+    const text = header + lines.join("\n");
+    try {
+      const Share = window.Capacitor?.isNativePlatform?.() ? window.Capacitor?.Plugins?.Share : null;
+      if (Share) {
+        await Share.share({ title: row.label + " - স্টক গরমিল তালিকা", text, dialogTitle: "শেয়ার করুন" });
+        return;
+      }
+      if (navigator.share) { await navigator.share({ title: row.label, text }); return; }
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        showToast("তালিকা ক্লিপবোর্ডে কপি হয়েছে ✓", "#22c55e");
+        return;
+      }
+      showToast("এই ডিভাইসে শেয়ার/কপি সাপোর্ট নেই", "#ef4444");
+    } catch (e) {
+      if (!(e?.message || "").toLowerCase().includes("cancel")) showToast("শেয়ার করা যায়নি", "#ef4444");
+    }
+  };
+
   // 🔴 ফিক্স (রিসারেকশন গ্যাপ — hard-delete হওয়া রেকর্ড): products/customers-এর
   // deleteRecord() hard-delete করে, কোনো tombstone না রাখলে "orphanedLocal"
   // লজিক ইচ্ছাকৃতভাবে ডিলিট করা রেকর্ডকেও "sync হয়নি" ভেবে আবার push করে
@@ -32410,21 +32609,33 @@ function Settings_({ T, S, shopName,
                       <div key={row.key} style={{ fontSize:9, color:"#cbd5e1", marginBottom:4, paddingLeft:2 }}>
                         <b>{row.label}</b> — {row.driftItems.length}টা মিলছে না
                         {row.key === "stockDrift" && <div style={{ color:"#f59e0b", fontSize:8, marginTop:1 }}>ℹ️ শুধু তথ্যের জন্য — অটো-ফিক্স স্টক বদলায় না; বিক্রির পর মুভমেন্ট-লগ না থাকলে এখানে দেখাতে পারে</div>}
-                        {row.driftItems.slice(0, 5).map(d => (
+                        {(expandedDriftRows[row.key] ? row.driftItems : row.driftItems.slice(0, 5)).map(d => (
                           <div key={d.id} style={{ color:"#94a3b8", fontSize:8.5, marginTop:1, paddingLeft:8 }}>
                             {d.name} — সংরক্ষিত {row.key === "stockDrift" ? d.actual : `৳${d.actual}`}, সঠিক {row.key === "stockDrift" ? d.expected : `৳${d.expected}`}
                           </div>
                         ))}
-                        {row.driftItems.length > 5 && <div style={{ color:"#94a3b8", fontSize:8.5, paddingLeft:8 }}>+আরও {row.driftItems.length - 5}টা</div>}
-                        {row.key === "stockDrift" && (
-                          <button
-                            onClick={runStockLogResync}
-                            disabled={stockLogResyncing}
-                            style={{ width:"100%", marginTop:6, background:"#22c55e18", border:"1px solid #22c55e55", borderRadius:6, padding:"6px 0", color:"#22c55e", fontSize:9.5, fontWeight:800, cursor: stockLogResyncing ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: stockLogResyncing ? 0.6 : 1 }}
-                          >
-                            {stockLogResyncing ? "স্টক-লগ সিঙ্ক হচ্ছে..." : `📋 শুধু লগ সিঙ্ক করুন (${row.driftItems.length}টা — স্টক অপরিবর্তিত)`}
-                          </button>
+                        {row.driftItems.length > 5 && (
+                          <div onClick={() => toggleDriftExpand(row.key)} style={{ color:"#60a5fa", fontSize:8.5, paddingLeft:8, marginTop:2, cursor:"pointer", textDecoration:"underline" }}>
+                            {expandedDriftRows[row.key] ? "সংক্ষেপে দেখান" : `+আরও ${row.driftItems.length - 5}টা — সম্পূর্ণ তালিকা দেখুন`}
+                          </div>
                         )}
+                        <div style={{ display:"flex", gap:6, marginTop:6 }}>
+                          {row.key === "stockDrift" && (
+                            <button
+                              onClick={runStockLogResync}
+                              disabled={stockLogResyncing}
+                              style={{ flex:1, background:"#22c55e18", border:"1px solid #22c55e55", borderRadius:6, padding:"6px 0", color:"#22c55e", fontSize:9.5, fontWeight:800, cursor: stockLogResyncing ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: stockLogResyncing ? 0.6 : 1 }}
+                            >
+                              {stockLogResyncing ? "স্টক-লগ সিঙ্ক হচ্ছে..." : `📋 শুধু লগ সিঙ্ক করুন (${row.driftItems.length}টা — স্টক অপরিবর্তিত)`}
+                            </button>
+                          )}
+                          <button
+                            onClick={() => shareDriftList(row)}
+                            style={{ flex: row.key === "stockDrift" ? "0 0 auto" : 1, background:"#3b82f618", border:"1px solid #3b82f655", borderRadius:6, padding:"6px 10px", color:"#60a5fa", fontSize:9.5, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}
+                          >
+                            📤 শেয়ার করুন
+                          </button>
+                        </div>
                       </div>
                     );
                   }
@@ -33149,21 +33360,33 @@ function Settings_({ T, S, shopName,
                             <div key={row.key} style={{ fontSize:9, color:"#cbd5e1", marginBottom:4, paddingLeft:2 }}>
                               <b>{row.label}</b> — {row.driftItems.length}টা মিলছে না
                               {row.key === "stockDrift" && <div style={{ color:"#f59e0b", fontSize:8, marginTop:1 }}>ℹ️ শুধু তথ্যের জন্য — অটো-ফিক্স স্টক বদলায় না; বিক্রির পর মুভমেন্ট-লগ না থাকলে এখানে দেখাতে পারে</div>}
-                              {row.driftItems.slice(0, 5).map(d => (
+                              {(expandedDriftRows[row.key] ? row.driftItems : row.driftItems.slice(0, 5)).map(d => (
                                 <div key={d.id} style={{ color:"#94a3b8", fontSize:8.5, marginTop:1, paddingLeft:8 }}>
                                   {d.name} — সংরক্ষিত {row.key === "stockDrift" ? d.actual : `৳${d.actual}`}, সঠিক {row.key === "stockDrift" ? d.expected : `৳${d.expected}`}
                                 </div>
                               ))}
-                              {row.driftItems.length > 5 && <div style={{ color:"#94a3b8", fontSize:8.5, paddingLeft:8 }}>+আরও {row.driftItems.length - 5}টা</div>}
-                              {row.key === "stockDrift" && (
-                                <button
-                                  onClick={runStockLogResync}
-                                  disabled={stockLogResyncing}
-                                  style={{ width:"100%", marginTop:6, background:"#22c55e18", border:"1px solid #22c55e55", borderRadius:6, padding:"6px 0", color:"#22c55e", fontSize:9.5, fontWeight:800, cursor: stockLogResyncing ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: stockLogResyncing ? 0.6 : 1 }}
-                                >
-                                  {stockLogResyncing ? "স্টক-লগ সিঙ্ক হচ্ছে..." : `📋 শুধু লগ সিঙ্ক করুন (${row.driftItems.length}টা — স্টক অপরিবর্তিত)`}
-                                </button>
+                              {row.driftItems.length > 5 && (
+                                <div onClick={() => toggleDriftExpand(row.key)} style={{ color:"#60a5fa", fontSize:8.5, paddingLeft:8, marginTop:2, cursor:"pointer", textDecoration:"underline" }}>
+                                  {expandedDriftRows[row.key] ? "সংক্ষেপে দেখান" : `+আরও ${row.driftItems.length - 5}টা — সম্পূর্ণ তালিকা দেখুন`}
+                                </div>
                               )}
+                              <div style={{ display:"flex", gap:6, marginTop:6 }}>
+                                {row.key === "stockDrift" && (
+                                  <button
+                                    onClick={runStockLogResync}
+                                    disabled={stockLogResyncing}
+                                    style={{ flex:1, background:"#22c55e18", border:"1px solid #22c55e55", borderRadius:6, padding:"6px 0", color:"#22c55e", fontSize:9.5, fontWeight:800, cursor: stockLogResyncing ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: stockLogResyncing ? 0.6 : 1 }}
+                                  >
+                                    {stockLogResyncing ? "স্টক-লগ সিঙ্ক হচ্ছে..." : `📋 শুধু লগ সিঙ্ক করুন (${row.driftItems.length}টা — স্টক অপরিবর্তিত)`}
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => shareDriftList(row)}
+                                  style={{ flex: row.key === "stockDrift" ? "0 0 auto" : 1, background:"#3b82f618", border:"1px solid #3b82f655", borderRadius:6, padding:"6px 10px", color:"#60a5fa", fontSize:9.5, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}
+                                >
+                                  📤 শেয়ার করুন
+                                </button>
+                              </div>
                             </div>
                           );
                         }
