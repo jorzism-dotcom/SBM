@@ -30728,6 +30728,10 @@ function NotificationCenterModule({ T, S, currentUser, setCurrentUser, users, ma
 
   const items = React.useMemo(() => {
     const list = [];
+    // 🔴 OFFLINE_MODE বিল্ডে সিঙ্ক/কানেকশন/কনফ্লিক্ট নোটিফিকেশন হাইড — Firestore
+    // এই বিল্ডে ব্যবহারই হয় না, তাই এগুলো কখনোই প্রাসঙ্গিক নয়। শুধু ব্যাকআপ-সংক্রান্ত
+    // নোটিফিকেশন (লোকাল/Drive ব্যাকআপ) দেখা যাবে — নিচের if (!OFFLINE_MODE) ব্লকের বাইরে।
+    if (!OFFLINE_MODE) {
     if (pendingInfo.stale > 0 || pendingInfo.total > 0) {
       const detailLines = (pendingInfo.breakdown || [])
         .filter(b => b.count > 0)
@@ -30758,6 +30762,7 @@ function NotificationCenterModule({ T, S, currentUser, setCurrentUser, users, ma
         msg: `ডেটা এখন শুধু ফোনে সেভ হচ্ছে, ক্লাউডে যাচ্ছে না — ইন্টারনেট/কনফিগ চেক করুন।${fssDisconnectedSince ? ` (${timeAgo(fssDisconnectedSince)} থেকে বিচ্ছিন্ন)` : ""}`,
       });
     }
+    } // end !OFFLINE_MODE (sync/disconnected)
     if (backupFailStreak >= 3) {
       list.push({
         key: "backup-failed", level: "critical", icon: "☁️",
@@ -30774,6 +30779,7 @@ function NotificationCenterModule({ T, S, currentUser, setCurrentUser, users, ma
         onAction: handleBackupNow, actionDisabled: backingUpNow,
       });
     }
+    if (!OFFLINE_MODE) {
     if ((pendingConflicts || []).length > 0) {
       list.push({
         key: "conflicts", level: "warning", icon: "⚠️",
@@ -30790,6 +30796,7 @@ function NotificationCenterModule({ T, S, currentUser, setCurrentUser, users, ma
           .concat(lowStockCount > 8 ? [`+আরও ${lowStockCount - 8}টা`] : []),
       });
     }
+    } // end !OFFLINE_MODE (conflicts/low-stock)
     const order = { critical: 0, warning: 1, info: 2 };
     return list.sort((a, b) => order[a.level] - order[b.level]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -31820,8 +31827,10 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
         </div>
       </div>
 
-      {/* ── স্টাফ সেটআপ QR ── */}
-      <StaffSetupQrPanel T={T} S={S} recoveryPhone={recoveryPhone} recoveryPinHash={recoveryPinHash} />
+      {/* ── স্টাফ সেটআপ QR — 🔴 OFFLINE_MODE বিল্ডে হাইড (Recovery Phone+PIN সেটআপও এই বিল্ডে হাইড, তাই এই QR অর্থহীন) ── */}
+      {!OFFLINE_MODE && (
+        <StaffSetupQrPanel T={T} S={S} recoveryPhone={recoveryPhone} recoveryPinHash={recoveryPinHash} />
+      )}
     </div>
   );
 }
@@ -33230,6 +33239,11 @@ function Settings_({ T, S, shopName,
   if (isStaffUser) {
     return (
       <div style={S.page}>
+        {/* 🔴 OFFLINE_MODE বিল্ডে স্টাফ সেটিংস শুধু Theme + Font-এ সীমিত — Sync
+            Status, Full App Checkup, ডেটা সিঙ্ক মিসম্যাচ চেক সব Firestore-নির্ভর,
+            এই বিল্ডে অর্থহীন তাই হাইড। স্বাভাবিক (non-offline) বিল্ডে আগের মতোই
+            সবকিছু দেখা যাবে — এই গার্ড শুধু OFFLINE_MODE বিল্ডেই প্রযোজ্য। */}
+        {!OFFLINE_MODE && (<>
         {/* ══ Read-only Sync Status (স্টাফ-ও দেখতে পারবে) ══ */}
         {/* 🔴 ফিক্স: আগে এই ব্লকটা শুধু non-staff return পাথে ছিল — উপরের কমেন্টে
             "সব role দেখতে পারে, staff-ও" লেখা থাকলেও isStaffUser early-return-এর
@@ -33422,6 +33436,7 @@ function Settings_({ T, S, shopName,
               ⚠️ এই চেক শুধু এখন এই ফোনের মেমোরিতে যা আছে তার সাথে ক্লাউড তুলনা করে। কোনো ডেটা যদি কখনো এই ফোনেও সেভ না হয়ে থাকে (যেমন অ্যাপ ক্র্যাশ ঠিক তৈরির মুহূর্তে) — তার কোনো ট্রেস কোথাও থাকে না, তাই এই বাটনও সেটা ফিরিয়ে আনতে পারবে না।
             </div>
           </div>
+        </>)}
 
         {/* ══ Theme Card ══ */}
         {(() => {
@@ -33594,12 +33609,15 @@ function Settings_({ T, S, shopName,
           প্যানেলের ভেতরে ছিল, স্টাফ role এটা দেখতেই পেত না — তাই ডিভাইস আসলে
           disconnected/local-only mode-এ চলছে কিনা বুঝতে পারত না। এখন dot+টেক্সট
           আকারে সবাই দেখতে পাবে, কিন্তু কনফিগ এডিট করার ফুল ফর্ম শুধু owner-ই পাবে। */}
+      {/* 🔴 OFFLINE_MODE বিল্ডে এই স্ট্যাটাস লাইন হাইড — Firestore এই বিল্ডে ব্যবহারই হয় না, তাই সবসময় "সংযুক্ত নেই" দেখানো বিভ্রান্তিকর */}
+      {!OFFLINE_MODE && (
       <div style={{ display:"flex", alignItems:"center", gap:8, background: fssReady ? "#22c55e12" : "#64748b12", border:`1px solid ${fssReady ? "#22c55e30" : "#64748b30"}`, borderRadius:10, padding:"8px 12px", marginBottom:12 }}>
         <span style={{ width:8, height:8, borderRadius:99, background: fssReady ? "#22c55e" : "#64748b", display:"inline-block", flexShrink:0 }} />
         <span style={{ color: fssReady ? "#4ade80" : "#94a3b8", fontSize:11, fontWeight:700 }}>
           Firestore: {fssReady ? "সংযুক্ত (real-time sync চলছে)" : "সংযুক্ত নেই — এই ডিভাইস শুধু local ডেটা নিয়ে চলছে"}
         </span>
       </div>
+      )}
 
       {/* ══ Theme Card ══ */}
       {(() => {
@@ -33901,8 +33919,9 @@ function Settings_({ T, S, shopName,
         })()}
 
 
-        {/* ── CARD: Master Sync & Backup ── */}
-        {(() => {
+        {/* ── CARD: Master Sync & Backup — 🔴 OFFLINE_MODE বিল্ডে হাইড (Firestore/Drive
+            sync এই বিল্ডে অর্থহীন, দোকান শুধু লোকাল ডেটা নিয়ে চলে) ── */}
+        {!OFFLINE_MODE && (() => {
           const MS_COLOR = "#a855f7";
           const fsConnected = !!(firebaseEnabled && fssReady);
           const gdConnected = !!(localStorage.getItem("sbm_gd_token")) && !GDrive.isTokenExpired();
@@ -35186,7 +35205,8 @@ function Settings_({ T, S, shopName,
         </div>
       )}
 
-      {/* ⑤ SMS Template */}
+      {/* ⑤ SMS Template — 🔴 OFFLINE_MODE বিল্ডে হাইড (SMS Gateway-ও এই বিল্ডে হাইড, তাই টেমপ্লেট এডিট করার দরকার নেই) */}
+      {!OFFLINE_MODE && (
       <div className="qc-gradient-card" style={{ ...S.card }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
@@ -35222,6 +35242,7 @@ onChange={()=>{}} />
           </div>
         )}
       </div>
+      )}
 
       {/* 📤 বাকি রিমাইন্ডার SMS — সবাইকে একসাথে পাঠান */}
       {!OFFLINE_MODE && (
