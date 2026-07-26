@@ -5634,7 +5634,13 @@ const FSS = {
   // "VOID-ADJ-" ব্যাচ নতুন করে তৈরি হয়) — ঠিক voidInvoice-এর আগের লজিকের মতোই,
   // শুধু এখন সার্ভারের বর্তমান কপির ওপর atomically। Firebase বন্ধ/ব্যর্থ হলে
   // null — caller আগের মতো synchronous local calculation-এ fallback করবে।
-  async transactionRestoreStock(productId, restoreQty, restoreBatchNo, batchMeta = {}) {
+  // 🔴 ফিক্স (ইনভয়েস ভয়েড/রিটার্ন — স্টক ডাবল-রিস্টোর): transactionUpdateStock()/
+  // transactionUpdateBalance()-এর ঠিক একই idempotency গার্ড — caller ঐচ্ছিক opId
+  // (যেমন `void:${invoiceId}:${productId}` বা `return:${invoiceId}:${productId}:${nonce}`)
+  // দিলে একই restore দ্বিতীয়বার (নেটওয়ার্ক-রেসপন্স হারানোর পর রিট্রাই/রি-কিউ হলে)
+  // প্রয়োগ হবে না — সার্ভারের বর্তমান stock/batches অপরিবর্তিত ফেরত যাবে। opId না
+  // দিলে (পুরনো caller/কল-সাইট) আগের আচরণ অপরিবর্তিত।
+  async transactionRestoreStock(productId, restoreQty, restoreBatchNo, batchMeta = {}, opId = null) {
     if (!this._db || !productId) return null;
     markFieldTxPending("products", productId, ["stock", "batches"]);
     try {
@@ -5648,6 +5654,11 @@ const FSS = {
         // পরিবর্তে ভুলবশত এটাকে transient error ভেবে queue-তে রিট্রাই না করে।
         if (!snap.exists()) return { deleted: true };
         const serverProduct = { id: snap.id, ...snap.data() };
+        const recentOps = Array.isArray(serverProduct._recentStockOps) ? serverProduct._recentStockOps : [];
+        if (opId && recentOps.includes(opId)) {
+          // আগেই প্রয়োগ হয়েছে — বর্তমান stock/batches অপরিবর্তিত ফেরত, আবার যোগ হবে না
+          return { stock: serverProduct.stock, batches: serverProduct.batches };
+        }
         let updatedBatches = serverProduct.batches ? [...serverProduct.batches] : [];
         if (restoreBatchNo) {
           const bIdx = updatedBatches.findIndex(b => b.batchNo === restoreBatchNo);
@@ -5678,10 +5689,12 @@ const FSS = {
           ];
         }
         const newStock = (serverProduct.stock || 0) + restoreQty;
-        tx.update(ref, {
+        const update = {
           stock: newStock, batches: updatedBatches,
           lastUpdated: new Date().toISOString(), _updatedAt: Date.now(),
-        });
+        };
+        if (opId) update._recentStockOps = [...recentOps.filter(o => o !== opId), opId].slice(-30);
+        tx.update(ref, update);
         return { stock: newStock, batches: updatedBatches };
       });
       return result;
@@ -5706,7 +5719,9 @@ const FSS = {
   // পুরোপুরি atomic। batchNo ফাঁকা থাকলে (batch-tracking ছাড়া legacy পণ্য)
   // voidAdjBatchNo দিয়ে নতুন ব্যাচ তৈরি হয়, ঠিক transactionRestoreStock()-এর
   // legacy আচরণের মতোই।
-  async transactionRestoreStockBatches(productId, restoreItems, voidAdjBatchNo) {
+  // 🔴 ফিক্স (ইনভয়েস ভয়েড — মাল্টি-ব্যাচ ডাবল-রিস্টোর): transactionRestoreStock()-
+  // এর ঠিক একই idempotency গার্ড, ঐচ্ছিক opId দিয়ে।
+  async transactionRestoreStockBatches(productId, restoreItems, voidAdjBatchNo, opId = null) {
     if (!this._db || !productId || !restoreItems || !restoreItems.length) return null;
     markFieldTxPending("products", productId, ["stock", "batches"]);
     try {
@@ -5717,6 +5732,10 @@ const FSS = {
         // হওয়া পণ্য transient error থেকে আলাদা করতে { deleted: true } রিটার্ন।
         if (!snap.exists()) return { deleted: true };
         const serverProduct = { id: snap.id, ...snap.data() };
+        const recentOps = Array.isArray(serverProduct._recentStockOps) ? serverProduct._recentStockOps : [];
+        if (opId && recentOps.includes(opId)) {
+          return { stock: serverProduct.stock, batches: serverProduct.batches };
+        }
         let updatedBatches = serverProduct.batches ? [...serverProduct.batches] : [];
         let totalRestore = 0;
         restoreItems.forEach((ri, idx) => {
@@ -5738,10 +5757,12 @@ const FSS = {
           }
         });
         const newStock = (serverProduct.stock || 0) + totalRestore;
-        tx.update(ref, {
+        const update = {
           stock: newStock, batches: updatedBatches,
           lastUpdated: new Date().toISOString(), _updatedAt: Date.now(),
-        });
+        };
+        if (opId) update._recentStockOps = [...recentOps.filter(o => o !== opId), opId].slice(-30);
+        tx.update(ref, update);
         return { stock: newStock, batches: updatedBatches };
       });
       return result;
@@ -5774,7 +5795,12 @@ const FSS = {
   // stock/batches/batchNo/costPrice ফেরত দেয়, caller সেটাই local state ও
   // রিসিট/এন্ট্রিতে ব্যবহার করবে (নিজের stale guess না)। Firebase বন্ধ/ব্যর্থ
   // হলে null — caller আগের মতো synchronous local calculation-এ fallback করবে।
-  async transactionAddStock(productId, { qty, unitCost, unitSell, expiryDate, supplier, note, isFreeStock, batchNoHint } = {}) {
+  // 🔴 ফিক্স (ক্রয় এন্ট্রি — স্টক ডাবল-অ্যাড): transactionUpdateStock()/
+  // transactionRestoreStock()-এর ঠিক একই idempotency গার্ড — caller ঐচ্ছিক opId
+  // (যেমন `purchase:${entryId}:${productId}`) দিলে একই ক্রয়-এন্ট্রি দ্বিতীয়বার
+  // (নেটওয়ার্ক-রেসপন্স হারানোর পর queuePendingPurchaseStock/flush রিট্রাই হলে)
+  // স্টকে যোগ হবে না।
+  async transactionAddStock(productId, { qty, unitCost, unitSell, expiryDate, supplier, note, isFreeStock, batchNoHint } = {}, opId = null) {
     if (!this._db || !productId || !qty) return null;
     markFieldTxPending("products", productId, ["stock", "batches"]);
     try {
@@ -5783,6 +5809,11 @@ const FSS = {
         const snap = await tx.get(ref);
         if (!snap.exists()) return null;
         const serverProduct = { id: snap.id, ...snap.data() };
+        const recentOps = Array.isArray(serverProduct._recentStockOps) ? serverProduct._recentStockOps : [];
+        if (opId && recentOps.includes(opId)) {
+          // আগেই প্রয়োগ হয়েছে — বর্তমান stock/batches অপরিবর্তিত ফেরত, আবার যোগ হবে না
+          return { stock: serverProduct.stock, batches: serverProduct.batches, batchNo: null, costPrice: serverProduct.costPrice };
+        }
         const cost = isFreeStock ? 0 : (unitCost || serverProduct.costPrice || 0);
         const sell = unitSell || serverProduct.price || 0;
         const existingBatchNos = new Set((serverProduct.batches || []).map(b => b.batchNo));
@@ -5809,13 +5840,15 @@ const FSS = {
           at: new Date().toISOString(),
         };
         const updatedBatches = [...(serverProduct.batches || []), newBatch];
-        tx.update(ref, {
+        const update = {
           stock: newStock, costPrice: roundedCost,
           price: sell || serverProduct.price || 0,
           expiryDate: expiryDate || serverProduct.expiryDate || "",
           lastUpdated: new Date().toISOString(), _updatedAt: Date.now(),
           batches: updatedBatches,
-        });
+        };
+        if (opId) update._recentStockOps = [...recentOps.filter(o => o !== opId), opId].slice(-30);
+        tx.update(ref, update);
         return { stock: newStock, batches: updatedBatches, batchNo, costPrice: roundedCost };
       });
       return result;
@@ -6381,10 +6414,10 @@ const FSS = {
           const restoreResults = await Promise.all(item.restoreItems.map(async (ri) => {
             try {
               const txResult = (Array.isArray(ri.batchBreakdown) && ri.batchBreakdown.length > 0)
-                ? await this.transactionRestoreStockBatches(ri.productId, ri.batchBreakdown, ri.voidAdjBatchNo)
+                ? await this.transactionRestoreStockBatches(ri.productId, ri.batchBreakdown, ri.voidAdjBatchNo, ri.opId || null)
                 : await this.transactionRestoreStock(ri.productId, ri.qty, ri.batchNo || "", {
                     costPrice: ri.costPrice || 0, expiryDate: ri.expiryDate || "", voidAdjBatchNo: ri.voidAdjBatchNo,
-                  });
+                  }, ri.opId || null);
               // 🔴 ফিক্স (বাগ ৩): পণ্য সত্যিই ডিলিট হয়ে থাকলে ({ deleted: true }) সেটাকে আর
               // রিট্রাই করার মানে নেই (চিরকাল queue-তে আটকে থাকত) — বাদ দিয়ে লগ করা হচ্ছে।
               if (txResult?.deleted) { deletedProductIds.push(ri.productId); return null; }
@@ -6417,8 +6450,8 @@ const FSS = {
       }
       if (item.balanceUpdate) {
         try {
-          const { customerId, netChange } = item.balanceUpdate;
-          const txBal = await this.transactionUpdateBalance(customerId, (serverBal) => Math.max(0, serverBal - netChange));
+          const { customerId, netChange, opId: balOpId } = item.balanceUpdate;
+          const txBal = await this.transactionUpdateBalance(customerId, (serverBal) => Math.max(0, serverBal - netChange), balOpId || null);
           if (txBal === null) { failedBalanceUpdate = item.balanceUpdate; }
           else if (setCustomers) setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, balance: txBal } : c));
         } catch (e) {
@@ -6482,7 +6515,7 @@ const FSS = {
           qty: item.qty, unitCost: item.unitCost, unitSell: item.unitSell,
           expiryDate: item.expiryDate, supplier: item.supplier, note: item.note,
           isFreeStock: item.isFreeStock, batchNoHint: item.batchNoHint,
-        });
+        }, item.entryId ? `purchase:${item.entryId}:${item.productId}` : null);
         if (!txResult) { remaining.push(item); continue; } // transient — পরের চেষ্টায় আবার হবে
         if (setProducts) {
           setProducts(prev => prev.map(p => p.id === item.productId
@@ -14769,8 +14802,13 @@ function SmartBusinessMgmt() {
     const alreadyReturnedBakiAmount = getReturnedAmountForInvoice(returns, inv.id, "baki");
     const voidNetChange = calcVoidNetChange(inv, alreadyReturnedBakiAmount);
     const shouldReverseBalance = (inv.payType === "baki" || inv.payType === "partial") && inv.customerId && voidNetChange !== 0;
+    // 🔴 ফিক্স (ডাবল-ক্রেডিট বাগের প্যারালাল — ভয়েড ব্যালেন্স-রিভার্সাল): সেলসের
+    // জন্য যেভাবে opId + _recentBalOps দিয়ে ডাবল-অ্যাপ্লাই ঠেকানো হয়েছিল, ভয়েডের
+    // ব্যালেন্স-রিভার্সালেও একই গার্ড — stable opId (শুধু এই ইনভয়েসের ওপর নির্ভর,
+    // তাই নেটওয়ার্ক-রেসপন্স হারিয়ে queue/রিট্রাই হলেও দ্বিতীয়বার প্রয়োগ হবে না)।
+    const voidBalOpId = `void:${inv.id}`;
     const balanceTxPromise = (shouldReverseBalance && !isOffline)
-      ? FSS.transactionUpdateBalance(inv.customerId, (serverBal) => Math.max(0, serverBal - voidNetChange))
+      ? FSS.transactionUpdateBalance(inv.customerId, (serverBal) => Math.max(0, serverBal - voidNetChange), voidBalOpId)
       : Promise.resolve(null);
     const pendingVoidStockItems = [];
     // 🔴 ফিক্স (বাগ ৩): কোনো আইটেমের পণ্য সত্যিই ডিলিট হয়ে গেলে (তাই স্টক ফেরত
@@ -14841,6 +14879,11 @@ function SmartBusinessMgmt() {
         // local-fallback-এ পড়ে যেত, যেটা কোনো queue এন্ট্রি রাখে না — স্টক-রিস্টোর
         // চিরতরে হারিয়ে যেত। এখন isOffline-এর শর্তে `|| !FSS.isReady()`ও ধরা
         // হচ্ছে, তাই এই মাঝের অবস্থাতেও ঠিকভাবে কিউতে জমা হবে।
+        // 🔴 ফিক্স (ডাবল-কাউন্টেড ব্যালেন্সের প্যারালাল — ভয়েড স্টক-রিস্টোর): এই
+        // ইনভয়েসের এই পণ্যের restore-এর জন্য stable opId, যাতে নেটওয়ার্ক-রেসপন্স
+        // হারিয়ে queue/রিট্রাই হলেও (flushPendingVoidRestores) একই restore
+        // দ্বিতীয়বার প্রয়োগ না হয়।
+        const voidStockOpId = `void:${inv.id}:${soldItem.productId}`;
         if (isOffline || !FSS.isReady()) {
           // অফলাইনে/FSS রেডি না থাকলে transaction অ্যাটেম্পটই করা হচ্ছে না —
           // সরাসরি কিউতে জমা, reconnect-এর পর আসল atomic transaction দিয়ে
@@ -14851,15 +14894,16 @@ function SmartBusinessMgmt() {
             expiryDate: soldItem.expiryDate || "",
             batchBreakdown: hasBreakdown ? adjustedBatchBreakdown : undefined,
             voidAdjBatchNo: `VOID-ADJ-${inv.id.slice(-6)}`,
+            opId: voidStockOpId,
           });
         } else {
           const txResult = hasBreakdown
-            ? await FSS.transactionRestoreStockBatches(soldItem.productId, adjustedBatchBreakdown, `VOID-ADJ-${inv.id.slice(-6)}`)
+            ? await FSS.transactionRestoreStockBatches(soldItem.productId, adjustedBatchBreakdown, `VOID-ADJ-${inv.id.slice(-6)}`, voidStockOpId)
             : await FSS.transactionRestoreStock(soldItem.productId, restoredQty, soldBatchNo, {
                 costPrice: soldItem.costPrice || localP?.costPrice || 0,
                 expiryDate: soldItem.expiryDate || "",
                 voidAdjBatchNo: `VOID-ADJ-${inv.id.slice(-6)}`,
-              });
+              }, voidStockOpId);
           // 🔴 ফিক্স (বাগ ৩): পণ্য সত্যিই ডিলিট — স্টক ফেরত দেওয়ার কিছু নেই, দোকানদারকে
           // জানাতে নাম জমা রাখা হচ্ছে, নিচের local fallback-এও যাওয়া হবে না।
           if (txResult?.deleted) {
@@ -14889,6 +14933,7 @@ function SmartBusinessMgmt() {
             expiryDate: soldItem.expiryDate || "",
             batchBreakdown: hasBreakdown ? adjustedBatchBreakdown : undefined,
             voidAdjBatchNo: `VOID-ADJ-${inv.id.slice(-6)}`,
+            opId: voidStockOpId,
           });
         }
         // fallback — Firestore বন্ধ/ব্যর্থ হলে আগের মতো local হিসেব
@@ -15014,7 +15059,7 @@ function SmartBusinessMgmt() {
         // পরের রিসিঙ্কে এই ডিভাইসও পুরনো (ভুল) মানে ফিরে যেত। এখন isOffline বা
         // txBal === null — দুই ক্ষেত্রেই queue হবে, ঠিক উপরের স্টক-রিস্টোরের (বাগ ৪)
         // মতো একই ট্রিটমেন্ট।
-        if (isOffline || txBal === null) pendingVoidBalanceUpdate = { customerId: inv.customerId, netChange };
+        if (isOffline || txBal === null) pendingVoidBalanceUpdate = { customerId: inv.customerId, netChange, opId: voidBalOpId };
         setCustomers(prev => {
           const updated = prev.map(c => {
             if (c.id !== inv.customerId) return c;
@@ -15169,12 +15214,20 @@ function SmartBusinessMgmt() {
       showToast(freshMax <= 0 ? "এই পণ্য ইতিমধ্যে অন্য ডিভাইস থেকে ফেরত নেওয়া হয়ে গেছে" : `সর্বোচ্চ ${freshMax} ${item.unit || "পিস"} ফেরত নেওয়া যাবে`, "#ef4444");
       throw new Error("qty-exceeds-fresh-max");
     }
+    // 🔴 ফিক্স (ডাবল-কাউন্টেড ব্যালেন্সের প্যারালাল — রিটার্ন/রিফান্ড): সেলস ও ভয়েডের
+    // মতোই এই একক processReturn()-কলের জন্য একটা স্থিতিশীল opId নন্স তৈরি করা
+    // হচ্ছে — নেটওয়ার্ক-রেসপন্স হারিয়ে queue/রিট্রাই (flushPendingVoidRestores) হলেও
+    // এই একই কল দ্বিতীয়বার স্টক/ব্যালেন্সে প্রয়োগ হবে না। একই ইনভয়েস+পণ্যে পরবর্তী
+    // *আলাদা* (নতুন বাটন-ক্লিক) আংশিক রিটার্নের নন্স আলাদা হবে, তাই সেগুলো ঠিকই
+    // প্রয়োগ হবে — শুধু এই একই কলের রিট্রাই আটকানো হচ্ছে।
+    const returnOpNonce = Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+    const returnStockOpId = `return:${inv.id}:${productId}:${returnOpNonce}`;
     if (!isOffline && FSS.isReady()) {
       const txResult = await FSS.transactionRestoreStock(productId, qty, item.batchNo || "", {
         costPrice: item.costPrice || localP?.costPrice || 0,
         expiryDate: item.expiryDate || "",
         voidAdjBatchNo: `RETURN-ADJ-${inv.id.slice(-6)}`,
-      });
+      }, returnStockOpId);
       if (txResult?.deleted) productDeleted = true;
       else if (txResult) stockResult = txResult;
       else transientFailure = true;
@@ -15224,6 +15277,7 @@ function SmartBusinessMgmt() {
         costPrice: item.costPrice || localP?.costPrice || 0,
         expiryDate: item.expiryDate || "",
         voidAdjBatchNo: `RETURN-ADJ-${inv.id.slice(-6)}`,
+        opId: returnStockOpId,
       }];
       // 🔴 ফিক্স (ডাবল-রিভার্সাল ঝুঁকি — রুট কজ): balanceUpdate ইচ্ছাকৃতভাবে এখানে
       // queue করা হয় না। এই মুহূর্তে ব্যালেন্স-ট্রানজেকশন এখনো চেষ্টাই করা হয়নি (হবে
@@ -15242,7 +15296,8 @@ function SmartBusinessMgmt() {
       showToast("⚠️ এই পণ্যটি ডিলিট হয়ে যাওয়ায় স্টক ফেরত যায়নি (রিফান্ড/সমন্বয় চলছে)", "#f59e0b");
     }
     if (mode === "baki" && cust) {
-      const txBal = isOffline ? null : await FSS.transactionUpdateBalance(cust.id, (serverBal) => Math.max(0, serverBal - refundAmount));
+      const returnBalOpId = `returnbal:${inv.id}:${productId}:${returnOpNonce}`;
+      const txBal = isOffline ? null : await FSS.transactionUpdateBalance(cust.id, (serverBal) => Math.max(0, serverBal - refundAmount), returnBalOpId);
       // 🔴 ফিক্স (রুট কজ — অনলাইনে থেকেও transient ব্যর্থতায় রিটার্ন-রিফান্ড
       // সমন্বয় হারিয়ে যাওয়া): আগে শুধু isOffline হলে queue হতো। অনলাইনে থেকেও
       // transactionUpdateBalance() নেটওয়ার্ক/সার্ভার সমস্যায় null রিটার্ন করলে
@@ -15254,7 +15309,7 @@ function SmartBusinessMgmt() {
         FSS.queuePendingVoidRestore({
           invoiceId: inv.id,
           restoreItems: [],
-          balanceUpdate: { customerId: cust.id, netChange: refundAmount },
+          balanceUpdate: { customerId: cust.id, netChange: refundAmount, opId: returnBalOpId },
         });
       }
       setCustomers(prev => prev.map(c => {
@@ -20667,10 +20722,13 @@ function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, set
       note: noteText, isFreeStock: peForm.isFreeStock, batchNoHint: newBatch.batchNo,
     };
     if (FSS.isReady()) {
+      // 🔴 ফিক্স (ক্রয় এন্ট্রি — স্টক ডাবল-অ্যাড): entryId-ভিত্তিক opId, যাতে
+      // নেটওয়ার্ক-রেসপন্স হারিয়ে queuePendingPurchaseStock/flush রিট্রাই হলেও
+      // এই একই এন্ট্রি দ্বিতীয়বার স্টকে যোগ না হয়।
       FSS.transactionAddStock(peForm.productId, {
         qty, unitCost, unitSell, expiryDate: peForm.expiryDate, supplier: peForm.supplier,
         note: noteText, isFreeStock: peForm.isFreeStock, batchNoHint: newBatch.batchNo,
-      }).then(txResult => {
+      }, `purchase:${entryId}:${peForm.productId}`).then(txResult => {
         if (!txResult) { FSS.queuePendingPurchaseStock(pendingEntry); return; } // ব্যর্থ হলে রিট্রাই-কিউতে
         setProducts(prev => prev.map(p => p.id === peForm.productId
           ? { ...p, stock: txResult.stock, costPrice: txResult.costPrice, batches: txResult.batches }
@@ -26269,7 +26327,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             if (FSS.isReady()) {
               FSS.transactionAddStock(productId, {
                 qty, unitCost: cost, unitSell: sell, expiryDate, supplier, note, isFreeStock, batchNoHint: newBatch.batchNo,
-              }).then(txResult => {
+              }, `purchase:${entryId}:${productId}`).then(txResult => {
                 if (!txResult) { FSS.queuePendingPurchaseStock(pendingEntryAsync); return; }
                 setProducts(prev => prev.map(p => p.id === productId
                   ? { ...p, stock: txResult.stock, costPrice: txResult.costPrice, batches: txResult.batches }
@@ -26309,7 +26367,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               try {
                 txResult = await FSS.transactionAddStock(productId, {
                   qty, unitCost: cost, unitSell: sell, expiryDate, supplier, note, isFreeStock, batchNoHint: batchNo,
-                });
+                }, `purchase:${entryId}:${productId}`);
               } catch (e) {
                 logErrorToCentral?.("transaction:addStock:bulk", e, { productId, qty });
                 txThrew = true;
