@@ -20544,6 +20544,7 @@ function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, set
         }
       : p
     ));
+    const optimisticStock = newStock; // পরে সার্ভার-রেজাল্টের সাথে তুলনা করার জন্য মূল optimistic মান ধরে রাখা হলো
     const mv1 = pushStockMovement({
       id: "sm_" + Date.now(), productId: peForm.productId,
       productName: prod.name, stock: newStock,
@@ -20575,6 +20576,24 @@ function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, set
           : p));
         if (txResult.batchNo && txResult.batchNo !== newBatch.batchNo) {
           setPurchaseOrders(prev => prev.map(e => e.id === entryId ? { ...e, batch: txResult.batchNo } : e));
+        }
+        // 🔴 ফিক্স (স্টক ড্রিফট false-positive — ক্রয় এন্ট্রি): উপরে optimistic
+        // newStock দিয়ে movement-log এন্ট্রি (mv1) আগেই পুশ হয়ে গেছে। সার্ভার
+        // transaction-এর আসল ফলাফল (txResult.stock) যদি সেই optimistic মান থেকে
+        // আলাদা হয় (যেমন পরপর দুইটা ক্রয়-এন্ট্রি দ্রুত দিলে দ্বিতীয়টার optimistic
+        // হিসাব প্রথমটার সার্ভার-কনফার্মড রেজাল্ট এখনো জানত না) — তাহলে
+        // products.stock ঠিক হয়ে যায় কিন্তু movement-log-এ ভুল মানই থেকে যায়,
+        // আর Settings-এর "স্টক ড্রিফট" চেক এটাকে false-positive হিসেবে ধরে।
+        // এখানে একটা সংশোধনী movement এন্ট্রি পুশ করে movement-log-কে
+        // authoritative মানের সাথে মিলিয়ে দেওয়া হচ্ছে।
+        if (txResult.stock !== optimisticStock) {
+          const mvFix = pushStockMovement({
+            id: "sm_" + Date.now() + "_fix", productId: peForm.productId,
+            productName: prod.name, stock: txResult.stock,
+            prevStock: optimisticStock, delta: txResult.stock - optimisticStock,
+            at: new Date().toISOString(), dateKey: now.split("T")[0], source: "purchase_correction",
+          });
+          setStockMovements(prev => [mvFix, ...prev]);
         }
       }).catch(e => {
         logErrorToCentral?.("transaction:addStock:bg", e, { productId: peForm.productId, qty });
@@ -26141,6 +26160,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           // queuePendingPurchaseStock()-এ জমা থাকে — দেখুন সেই ফাংশনের কমেন্ট।
           if (!awaitServer) {
             applyLocalFallback();
+            const optimisticStock = newStock; // পরে সার্ভার-রেজাল্টের সাথে তুলনা করার জন্য মূল optimistic মান ধরে রাখা হলো
             const pendingEntryAsync = {
               entryId, productId, qty, unitCost: cost, unitSell: sell, expiryDate, supplier,
               note, isFreeStock, batchNoHint: newBatch.batchNo,
@@ -26155,6 +26175,21 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                   : p));
                 if (txResult.batchNo && txResult.batchNo !== newBatch.batchNo) {
                   setPurchaseOrders(prev => prev.map(e => e.id === entryId ? { ...e, batch: txResult.batchNo } : e));
+                }
+                // 🔴 ফিক্স (স্টক ড্রিফট false-positive — ক্রয় এন্ট্রি, দ্র. মূল
+                // ক্রয়-এন্ট্রি ফ্লো-এর একই ফিক্সের কমেন্ট): optimistic মান দিয়ে
+                // ইতিমধ্যে movement-log এন্ট্রি পুশ হয়ে গেছে (নিচে, awaitServer
+                // false/true উভয় পাথের পরে)। সার্ভার-কনফার্মড txResult.stock যদি
+                // সেই optimistic মান থেকে আলাদা হয়, movement-log-কে সংশোধনী
+                // এন্ট্রি দিয়ে মিলিয়ে দেওয়া হচ্ছে।
+                if (txResult.stock !== optimisticStock) {
+                  const mvFix = pushStockMovement({
+                    id: "sm_" + Date.now() + "_fix", productId,
+                    productName: prod.name, stock: txResult.stock,
+                    prevStock: optimisticStock, delta: txResult.stock - optimisticStock,
+                    at: new Date().toISOString(), dateKey: now.split("T")[0], source: "purchase_correction",
+                  });
+                  setStockMovements(prev => [mvFix, ...prev]);
                 }
               }).catch(e => {
                 logErrorToCentral?.("transaction:addStock:bg", e, { productId, qty });
@@ -31252,6 +31287,42 @@ function Settings_({ T, S, shopName,
   // তার কোনো ট্রেস কোথাও থাকে না, তাই এই চেকও সেটা ধরতে/ফেরাতে পারবে না।
   const [mismatchScan, setMismatchScan] = useState(null); // null | {running:true} | {ranAt, rows:[...], totalIssues}
   const [mismatchFixing, setMismatchFixing] = useState(false);
+  // 🔴 ফিক্স (স্টক ড্রিফট ব্যাকফিল — নিরাপদ, শুধু লগ সংশোধন): "পণ্যের স্টক
+  // ড্রিফট" রো অটো-ফিক্স করা হয় না (দেখুন runMismatchAutoFix-এর stockDrift
+  // কমেন্ট — products.stock ছোঁয়া বিপজ্জনক, আসল বিক্রি রিভার্ট হয়ে যেতে পারে)।
+  // কিন্তু stockMovements-এর স্টেল "stock" ফিল্ড সংশোধন করা সম্পূর্ণ নিরাপদ —
+  // এটা শুধু একটা তথ্য/অডিট-লগ এন্ট্রি, প্রকৃত ইনভেন্টরি না। এই স্টেট/ফাংশন
+  // দিয়ে products.stock-কে (যেটা সবসময় authoritative/সঠিক থাকে) সোর্স-অফ-ট্রুথ
+  // ধরে নিয়ে শুধু movement-log-এর সর্বশেষ এন্ট্রিকে তার সাথে মিলিয়ে দেওয়া হয়।
+  const [stockLogResyncing, setStockLogResyncing] = useState(false);
+  const runStockLogResync = async () => {
+    const driftRow = mismatchScan?.rows?.find(r => r.key === "stockDrift");
+    if (!driftRow || !driftRow.driftItems?.length) return;
+    setStockLogResyncing(true);
+    let fixed = 0, failed = 0;
+    try {
+      const _rsNow = new Date().toISOString(), _rsDateKey = _dateKeyOf(new Date());
+      for (const item of driftRow.driftItems) {
+        try {
+          const mv = pushStockMovement({
+            id: "sm_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+            productId: item.id, productName: item.name,
+            stock: item.actual, prevStock: item.expected, delta: item.actual - item.expected,
+            at: _rsNow, dateKey: _rsDateKey, source: "log_resync",
+          });
+          setStockMovements(prev => [mv, ...(prev || [])]);
+          fixed++;
+        } catch { failed++; }
+      }
+      showToast(
+        failed ? `⚠️ ${fixed}টা লগ সিঙ্ক হয়েছে, ${failed}টা ব্যর্থ (স্টক অপরিবর্তিত)` : `✅ ${fixed}টা প্রোডাক্টের স্টক-লগ সিঙ্ক হয়েছে (স্টক অপরিবর্তিত)`,
+        failed ? "#f59e0b" : "#22c55e"
+      );
+      await runMismatchScan();
+    } finally {
+      setStockLogResyncing(false);
+    }
+  };
 
   // 🔴 ফিক্স (রিসারেকশন গ্যাপ — hard-delete হওয়া রেকর্ড): products/customers-এর
   // deleteRecord() hard-delete করে, কোনো tombstone না রাখলে "orphanedLocal"
@@ -32345,6 +32416,15 @@ function Settings_({ T, S, shopName,
                           </div>
                         ))}
                         {row.driftItems.length > 5 && <div style={{ color:"#94a3b8", fontSize:8.5, paddingLeft:8 }}>+আরও {row.driftItems.length - 5}টা</div>}
+                        {row.key === "stockDrift" && (
+                          <button
+                            onClick={runStockLogResync}
+                            disabled={stockLogResyncing}
+                            style={{ width:"100%", marginTop:6, background:"#22c55e18", border:"1px solid #22c55e55", borderRadius:6, padding:"6px 0", color:"#22c55e", fontSize:9.5, fontWeight:800, cursor: stockLogResyncing ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: stockLogResyncing ? 0.6 : 1 }}
+                          >
+                            {stockLogResyncing ? "স্টক-লগ সিঙ্ক হচ্ছে..." : `📋 শুধু লগ সিঙ্ক করুন (${row.driftItems.length}টা — স্টক অপরিবর্তিত)`}
+                          </button>
+                        )}
                       </div>
                     );
                   }
@@ -33075,6 +33155,15 @@ function Settings_({ T, S, shopName,
                                 </div>
                               ))}
                               {row.driftItems.length > 5 && <div style={{ color:"#94a3b8", fontSize:8.5, paddingLeft:8 }}>+আরও {row.driftItems.length - 5}টা</div>}
+                              {row.key === "stockDrift" && (
+                                <button
+                                  onClick={runStockLogResync}
+                                  disabled={stockLogResyncing}
+                                  style={{ width:"100%", marginTop:6, background:"#22c55e18", border:"1px solid #22c55e55", borderRadius:6, padding:"6px 0", color:"#22c55e", fontSize:9.5, fontWeight:800, cursor: stockLogResyncing ? "not-allowed" : "pointer", fontFamily:"inherit", opacity: stockLogResyncing ? 0.6 : 1 }}
+                                >
+                                  {stockLogResyncing ? "স্টক-লগ সিঙ্ক হচ্ছে..." : `📋 শুধু লগ সিঙ্ক করুন (${row.driftItems.length}টা — স্টক অপরিবর্তিত)`}
+                                </button>
+                              )}
                             </div>
                           );
                         }
