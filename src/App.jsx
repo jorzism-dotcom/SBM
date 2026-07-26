@@ -52,6 +52,22 @@ import {
 // পড়তে পারে), শুধু বাটন+প্যানেল UI থেকে সাময়িকভাবে hide করা হয়েছে এই flag
 // দিয়ে — অ্যাডমিন ও স্টাফ দুই জায়গাতেই একই flag প্রযোজ্য।
 const SHOW_FULL_CHECKUP_BUTTON = false;
+// 🔴 অফলাইন-বিল্ড ফ্ল্যাগ (২৬ জুলাই ২০২৬): এই একটা লাইন-ফ্ল্যাগ true করলে —
+// (১) SubscriptionGate সম্পূর্ণ স্কিপ হয়ে সরাসরি অ্যাপ খোলে (কোনো নেটওয়ার্ক কল
+// ছাড়াই), (২) Settings-এ Firebase Setup, SMS Gateway সেটিংস, "১ ক্লিকে বাকি
+// রিমাইন্ডার SMS" বাটন, এবং কেন্দ্রীয়-Firebase-ভিত্তিক "ডেটা রিকভারি (Phone+PIN)"
+// কার্ড — এই চারটা UI সেকশন হাইড হয়ে যায় (কোড/state অক্ষত থাকে, পরে false
+// করলেই সব আগের মতো ফিরে আসবে)। এটা এই কোডবেসের সব শপের জন্য একসাথে প্রযোজ্য —
+// তাই একটাই নির্দিষ্ট দোকানের জন্য আলাদা APK বিল্ড করে (এই ফ্ল্যাগ true সেই
+// বিল্ডে) দেওয়া হয়, বাকি সব শপ এই ফ্ল্যাগ false রাখা সাধারণ APK-ই ব্যবহার করবে।
+// WhatsApp share, printer, staff management, local storage, Google Drive,
+// Claude AI, hourly Auto Sync, Master Sync & Backup (Drive+Local অংশ) —
+// এসব কিছুই অপরিবর্তিত থাকে। logic.js (হিসাব/স্টক/ইনভয়েস) কখনো ছোঁয়া হয় না।
+// 🔴 এই ভ্যালু build-টাইমে .github/workflows/build-apk.yml-এর VITE_OFFLINE_MODE
+// থেকে আসে (workflow_dispatch-এ "offline_mode" ইনপুট true দিলেই এই একটা বিল্ডে
+// true হবে) — সাধারণ push-triggered বিল্ডে সবসময় false। লোকাল dev সার্ভারে
+// (import.meta.env না থাকলে) ডিফল্ট false।
+const OFFLINE_MODE = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_OFFLINE_MODE === "true");
 // 🔴 recharts — শুধু AI পেজের "Analytics & Report" ট্যাবে ব্যবহার হয় (ডিফল্ট স্ক্রিন নয়),
 // তাই স্ট্যাটিক import না রেখে নিচে lazy dynamic import() দিয়ে লোড করা হচ্ছে (useRecharts হুক) —
 // প্রতি অ্যাপ-ওপেনে এই চার্ট লাইব্রেরির parse/eval খরচ আর বহন করতে হবে না।
@@ -2861,6 +2877,12 @@ const DevPanelFlag = { visible: false };
 const CentralBizConfig = { enabledBusinessTypes: null, activeBusinessType: null };
 
 function SubscriptionGate({ children }) {
+  // 🔴 OFFLINE_MODE বিল্ডে সাবস্ক্রিপশন স্ক্রিন সম্পূর্ণ স্কিপ — কোনো নেটওয়ার্ক
+  // কল ছাড়াই সরাসরি অ্যাপ খুলবে। OFFLINE_MODE একটা বিল্ড-টাইম কনস্ট্যান্ট
+  // (অ্যাপের লাইফটাইমে কখনো বদলায় না), তাই এই কম্পোনেন্টের একটা নির্দিষ্ট
+  // ইনস্ট্যান্স সবসময় একইভাবে (হুক-সহ বা হুক-ছাড়া) রেন্ডার হয় — hooks-এর
+  // নিয়ম ভাঙে না।
+  if (OFFLINE_MODE) return <>{children}</>;
   const [status, setStatus] = useState("loading");
   const [phoneInput, setPhoneInput] = useState("");
   const [daysLeft, setDaysLeft] = useState(0);
@@ -16506,6 +16528,9 @@ function SmartBusinessMgmt() {
           <ErrorBoundary T={T}>
             <NotificationCenterModule T={T} S={S}
               currentUser={currentUser}
+              setCurrentUser={setCurrentUser}
+              users={users}
+              masterResetHash={masterResetHash}
               showToast={showToast}
               products={products}
               backupNeeded={backupNeeded}
@@ -30258,12 +30283,167 @@ function StaffCustomTimePicker({ T, staffName, onGrant }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+// 🔁 স্টাফ ↔ এডমিন কুইক-সুইচ (২৬ জুলাই ২০২৬, OFFLINE_MODE কাজের অংশ) —
+// স্টাফ থেকে এডমিনে সুইচ পুরোপুরি লোকাল (কোনো Firebase/সাবস্ক্রিপশন নেটওয়ার্ক
+// কল লাগে না, তাই OFFLINE_MODE-এ ভাঙে না)। এডমিন→স্টাফ কোনো protection ছাড়াই
+// সরাসরি; স্টাফ→এডমিন ৩ ধাপ: (i) Admin PIN (এখানেই প্রথমবার সেট করা যায়,
+// hashPassword দিয়ে হ্যাশড, লোকাল storage-এ), (ii) Master Reset Code
+// (masterResetHash-এর বিরুদ্ধে যাচাই — আগে থেকেই থাকা ডেভেলপার-ফলব্যাক সিস্টেম,
+// ভুলে গেলে devContact দিয়ে রিকভার করা যায়), (iii) "Confirm switch to Admin?"।
+// এই কার্ডটা একটাই স্টাফ ও একটাই এডমিন অ্যাকাউন্ট ধরে নেয়।
+// ══════════════════════════════════════════════════════════════════════════
+const ADMIN_SWITCH_PIN_KEY = "sbm-admin-switch-pin-hash";
+
+function StaffAdminSwitchCard({ T, S, showToast, users = [], currentUser, setCurrentUser, masterResetHash }) {
+  const soleStaff = users.find(u => u.role === "staff");
+  const soleAdmin = users.find(u => u.role === "admin" || u.role === "owner");
+  const isStaffNow = currentUser?.role === "staff";
+
+  const [pinHash, setPinHash] = useState(null);
+  const [pinLoaded, setPinLoaded] = useState(false);
+  useEffect(() => { (async () => { setPinHash(await load(ADMIN_SWITCH_PIN_KEY)); setPinLoaded(true); })(); }, []);
+
+  // ধাপ: null | "setupPin1" | "setupPin2" | "pin" | "master" | "confirm"
+  const [step, setStep] = useState(null);
+  const [pinA, setPinA] = useState("");     // নতুন PIN সেট করার সময় ১ম বার
+  const [input, setInput] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const reset = () => { setStep(null); setInput(""); setPinA(""); setErr(""); setBusy(false); };
+  useBackHandler(!!step, () => { reset(); return true; });
+
+  const startAdminSwitch = () => {
+    setErr(""); setInput("");
+    setStep(pinHash ? "pin" : "setupPin1");
+  };
+
+  const submitSetupPin1 = () => {
+    if (input.length < 4) { setErr("কমপক্ষে ৪ ডিজিটের PIN দিন"); return; }
+    setPinA(input); setInput(""); setErr(""); setStep("setupPin2");
+  };
+  const submitSetupPin2 = async () => {
+    if (input !== pinA) { setErr("দুইবার একই PIN দিন"); setInput(""); return; }
+    setBusy(true);
+    const hashed = await hashPassword(input);
+    await save(ADMIN_SWITCH_PIN_KEY, hashed);
+    setPinHash(hashed); setInput(""); setErr(""); setBusy(false);
+    setStep("master");
+  };
+  const submitPin = async () => {
+    setBusy(true);
+    const hashed = await hashPassword(input);
+    setBusy(false);
+    if (hashed !== pinHash) { setErr("ভুল PIN"); setInput(""); return; }
+    setInput(""); setErr(""); setStep("master");
+  };
+  const submitMaster = async () => {
+    if (!masterResetHash) { setErr("মাস্টার রিসেট কোড সেট করা নেই — Settings-এ গিয়ে সেট করুন"); return; }
+    setBusy(true);
+    const hashed = await hashPassword(input);
+    setBusy(false);
+    if (hashed !== masterResetHash) { setErr("ভুল মাস্টার রিসেট কোড"); setInput(""); return; }
+    setInput(""); setErr(""); setStep("confirm");
+  };
+  const confirmSwitch = () => {
+    if (!soleAdmin) { showToast("এডমিন অ্যাকাউন্ট পাওয়া যায়নি", "#ef4444"); reset(); return; }
+    setCurrentUser(soleAdmin);
+    showToast("✅ এডমিনে সুইচ হয়েছে");
+    reset();
+  };
+
+  if (!pinLoaded) return null;
+
+  return (
+    <div className="qc-gradient-card" style={{ ...S.card, marginBottom: 14, background: "#7c3aed08" }}>
+      <div style={{ color: T.text, fontWeight: 800, fontSize: 13, marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a855f7" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+        স্টাফ ↔ এডমিন
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button
+          onClick={() => { if (!isStaffNow) return; if (!soleStaff) { showToast("কোনো স্টাফ অ্যাকাউন্ট নেই", "#ef4444"); return; } setCurrentUser(soleStaff); showToast("✅ স্টাফে সুইচ হয়েছে"); }}
+          disabled={isStaffNow}
+          style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: `1.5px solid ${isStaffNow ? "#a855f7" : "#33415555"}`,
+            background: isStaffNow ? "#a855f722" : "transparent", color: isStaffNow ? "#a855f7" : T.sub,
+            fontWeight: 800, fontSize: 12, fontFamily: "inherit", cursor: isStaffNow ? "default" : "pointer" }}>
+          স্টাফ {isStaffNow && "●"}
+        </button>
+        <button
+          onClick={() => { if (isStaffNow) return; startAdminSwitch(); }}
+          disabled={!isStaffNow}
+          style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: `1.5px solid ${!isStaffNow ? "#a855f7" : "#33415555"}`,
+            background: !isStaffNow ? "#a855f722" : "transparent", color: !isStaffNow ? "#a855f7" : T.sub,
+            fontWeight: 800, fontSize: 12, fontFamily: "inherit", cursor: isStaffNow ? "pointer" : "default" }}>
+          এডমিন {!isStaffNow && "●"}
+        </button>
+      </div>
+
+      {step && (
+        <div style={{ marginTop: 12, borderTop: "1px solid #a855f722", paddingTop: 12 }}>
+          {step === "setupPin1" && (
+            <>
+              <div style={{ color: T.sub, fontSize: 11, marginBottom: 6 }}>প্রথমবার — একটা Admin PIN সেট করুন (কমপক্ষে ৪ ডিজিট)</div>
+              <input style={S.input} type="password" inputMode="numeric" placeholder="নতুন Admin PIN" value={input} onChange={e => setInput(e.target.value)} />
+              <div style={S.rowBtns}>
+                <button style={S.cancelBtn} onClick={reset}>বাতিল</button>
+                <button style={S.saveBtn} onClick={submitSetupPin1}>পরবর্তী</button>
+              </div>
+            </>
+          )}
+          {step === "setupPin2" && (
+            <>
+              <div style={{ color: T.sub, fontSize: 11, marginBottom: 6 }}>PIN আবার লিখুন (নিশ্চিতকরণ)</div>
+              <input style={S.input} type="password" inputMode="numeric" placeholder="PIN আবার দিন" value={input} onChange={e => setInput(e.target.value)} />
+              <div style={S.rowBtns}>
+                <button style={S.cancelBtn} onClick={reset}>বাতিল</button>
+                <button style={S.saveBtn} disabled={busy} onClick={submitSetupPin2}>নিশ্চিত করুন</button>
+              </div>
+            </>
+          )}
+          {step === "pin" && (
+            <>
+              <div style={{ color: T.sub, fontSize: 11, marginBottom: 6 }}>ধাপ ১/৩ — Admin PIN দিন</div>
+              <input style={S.input} type="password" inputMode="numeric" placeholder="Admin PIN" value={input} onChange={e => setInput(e.target.value)} />
+              <div style={S.rowBtns}>
+                <button style={S.cancelBtn} onClick={reset}>বাতিল</button>
+                <button style={S.saveBtn} disabled={busy} onClick={submitPin}>পরবর্তী</button>
+              </div>
+            </>
+          )}
+          {step === "master" && (
+            <>
+              <div style={{ color: T.sub, fontSize: 11, marginBottom: 6 }}>ধাপ ২/৩ — Master Reset Code দিন</div>
+              <input style={S.input} type="password" placeholder="Master Reset Code" value={input} onChange={e => setInput(e.target.value)} />
+              <div style={S.rowBtns}>
+                <button style={S.cancelBtn} onClick={reset}>বাতিল</button>
+                <button style={S.saveBtn} disabled={busy} onClick={submitMaster}>পরবর্তী</button>
+              </div>
+            </>
+          )}
+          {step === "confirm" && (
+            <>
+              <div style={{ color: T.text, fontWeight: 700, fontSize: 12, marginBottom: 8 }}>ধাপ ৩/৩ — Confirm switch to Admin?</div>
+              <div style={S.rowBtns}>
+                <button style={S.cancelBtn} onClick={reset}>বাতিল</button>
+                <button style={{ ...S.saveBtn, background: "#a855f7" }} onClick={confirmSwitch}>হ্যাঁ, এডমিনে যান</button>
+              </div>
+            </>
+          )}
+          {err && <div style={{ color: "#ef4444", fontSize: 11, marginTop: 6 }}>{err}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // 🔔 নোটিফিকেশন — অ্যাপের বিভিন্ন সতর্কতা (সিঙ্ক ব্যাকলগ, ব্যাকআপ, স্টক ইত্যাদি)
 // এক জায়গায় দেখানোর কেন্দ্রীয় মডিউল। সব ইনপুটই হয় ইতিমধ্যে-লোড-করা props
 // (products/backupNeeded ইত্যাদি) থেকে, নাহলে সম্পূর্ণ লোকাল storage থেকে —
 // এই স্ক্রিন খোলা/রিফ্রেশ করলে কোনো নতুন Firestore read হয় না।
 // ══════════════════════════════════════════════════════════════════════════
-function NotificationCenterModule({ T, S, currentUser, showToast, products = [], backupNeeded, backupFailStreak = 0, lastBackupError = null, fssReady = false, firebaseEnabled = false, pendingConflicts = [], onRetrySyncNow, onResolveConflict, fssDisconnectedSince = null, lastAutoBackup = null, lastLocalBackup = null, onBackupNow }) {
+function NotificationCenterModule({ T, S, currentUser, setCurrentUser, users, masterResetHash, showToast, products = [], backupNeeded, backupFailStreak = 0, lastBackupError = null, fssReady = false, firebaseEnabled = false, pendingConflicts = [], onRetrySyncNow, onResolveConflict, fssDisconnectedSince = null, lastAutoBackup = null, lastLocalBackup = null, onBackupNow }) {
   const [pendingInfo, setPendingInfo] = useState(() => FSS.getLocalPendingQueueCounts());
   const [refreshedAt, setRefreshedAt] = useState(Date.now());
   const [syncingNow, setSyncingNow] = useState(false);
@@ -30383,6 +30563,7 @@ function NotificationCenterModule({ T, S, currentUser, showToast, products = [],
 
   return (
     <div style={{ padding: "16px 14px 90px" }}>
+      <StaffAdminSwitchCard T={T} S={S} showToast={showToast} users={users} currentUser={currentUser} setCurrentUser={setCurrentUser} masterResetHash={masterResetHash} />
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
         <span style={{ color: T.text, fontWeight: 900, fontSize: 24, letterSpacing: 0.3 }}>🔔 নোটিফিকেশন</span>
         <button onClick={refresh} style={{ background: "transparent", border: `1px solid ${T.accent}55`, color: T.accent, borderRadius: 10, padding: "6px 12px", fontSize: 12, fontWeight: 700 }}>
@@ -33423,7 +33604,7 @@ function Settings_({ T, S, shopName,
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
 
         {/* ── CARD 1: Firebase Sync ── */}
-        {(() => {
+        {!OFFLINE_MODE && (() => {
           const COLOR = "#f97316";
           const isActive = firebaseEnabled && FB.isReady();
           return (
@@ -34364,7 +34545,7 @@ function Settings_({ T, S, shopName,
       </div>
 
       {/* ── CARD 5: SMS Gateway — Full Width ── */}
-      {(() => {
+      {!OFFLINE_MODE && (() => {
         const COLOR = "#0ea5e9";
         const isActive = !!smsGateway?.apiKey;
         return (
@@ -34492,7 +34673,7 @@ function Settings_({ T, S, shopName,
       })()}
 
       {/* ④-A Firebase Setup Panel (shown below grid when open) */}
-      {showFbSetup && (
+      {!OFFLINE_MODE && showFbSetup && (
         <div style={{
           background:"linear-gradient(145deg,#1c0f00 0%,#0f172a 100%)",
           borderRadius:18, border:"1.5px solid #f9731633",
@@ -34808,6 +34989,7 @@ onChange={()=>{}} />
       </div>
 
       {/* 📤 বাকি রিমাইন্ডার SMS — সবাইকে একসাথে পাঠান */}
+      {!OFFLINE_MODE && (
       <div className="qc-gradient-card" style={{ ...S.card, background: "#ef444408" }}>
         <div style={{ color: T.text, fontWeight: 800, fontSize: 14, marginBottom: 4, display:"flex", alignItems:"center", gap:8 }}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.5" strokeLinecap="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-9z"/></svg>
@@ -34839,6 +35021,7 @@ onChange={()=>{}} />
           </div>
         )}
       </div>
+      )}
 
       {/* 📋 SMS Logs — সর্বশেষ ১০টি */}
       {(() => {
@@ -35212,7 +35395,7 @@ onChange={()=>{}} />
 
 
       {/* 🔐 Recovery Setup Card — মালিক ছাড়া কেউ দেখতে পারবে না (নিরাপত্তা) */}
-      {currentUser?.role !== "staff" && (
+      {currentUser?.role !== "staff" && !OFFLINE_MODE && (
       <div className="qc-gradient-card" style={{ ...S.card }}>
         <div onClick={() => setShowRecoveryExpanded(v => !v)} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", cursor:"pointer", userSelect:"none" }}>
           <div>
