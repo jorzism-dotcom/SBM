@@ -2877,12 +2877,6 @@ const DevPanelFlag = { visible: false };
 const CentralBizConfig = { enabledBusinessTypes: null, activeBusinessType: null };
 
 function SubscriptionGate({ children }) {
-  // 🔴 OFFLINE_MODE বিল্ডে সাবস্ক্রিপশন স্ক্রিন সম্পূর্ণ স্কিপ — কোনো নেটওয়ার্ক
-  // কল ছাড়াই সরাসরি অ্যাপ খুলবে। OFFLINE_MODE একটা বিল্ড-টাইম কনস্ট্যান্ট
-  // (অ্যাপের লাইফটাইমে কখনো বদলায় না), তাই এই কম্পোনেন্টের একটা নির্দিষ্ট
-  // ইনস্ট্যান্স সবসময় একইভাবে (হুক-সহ বা হুক-ছাড়া) রেন্ডার হয় — hooks-এর
-  // নিয়ম ভাঙে না।
-  if (OFFLINE_MODE) return <>{children}</>;
   const [status, setStatus] = useState("loading");
   const [phoneInput, setPhoneInput] = useState("");
   const [daysLeft, setDaysLeft] = useState(0);
@@ -2905,6 +2899,12 @@ function SubscriptionGate({ children }) {
   const [menuMode, setMenuMode] = useState("menu"); // menu | owner | scan | restore
 
   useEffect(() => {
+    // 🔴 OFFLINE_MODE বিল্ডে এই effect-এর ভেতরের কাজ (timeout, getStorage,
+    // localStorage cache-check, checkSubscription()-এর কেন্দ্রীয় Firestore
+    // নেটওয়ার্ক কল, visibilitychange/resume লিসেনার) সম্পূর্ণ স্কিপ — hook
+    // call-টা (rules-of-hooks মানতে) সবসময় হয়, কিন্তু কোনো কাজ/নেটওয়ার্ক
+    // রাউন্ড-ট্রিপ/টাইমার তৈরি হয় না, তাই আগের মতোই ব্যাটারি/ডেটা-সাশ্রয়ী।
+    if (OFFLINE_MODE) return;
     let mounted = true; // ── unmount guard ──
 
     // ── Secure timeout: offline হলে cached status দেখাও, "active" নয় ──────
@@ -3130,6 +3130,9 @@ function SubscriptionGate({ children }) {
   myPhoneRef.current = myPhone;
 
   useEffect(() => {
+    // 🔴 OFFLINE_MODE বিল্ডে এই effect-ও no-op — resume/visibilitychange
+    // লিসেনার লাগানো বা checkSubscription() কল কোনোটাই হবে না।
+    if (OFFLINE_MODE) return;
     let mounted = true;
     const lastRunRef = { current: 0 };
     const recheck = () => {
@@ -3160,6 +3163,16 @@ function SubscriptionGate({ children }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 🔴 OFFLINE_MODE বিল্ডে সাবস্ক্রিপশন স্ক্রিন সম্পূর্ণ স্কিপ — কোনো নেটওয়ার্ক
+  // কল ছাড়াই সরাসরি অ্যাপ খুলবে। এই early-return-টা এখন সবগুলো hook call
+  // (useState/useRef/useEffect) এর *পরে* রাখা হলো — react-hooks/rules-of-hooks
+  // এর নিয়ম হলো প্রতিটা রেন্ডারে হুকগুলো একই ক্রমে, নিঃশর্তভাবে কল হতে হবে;
+  // hooks-এর আগে কোনো conditional return থাকলে ESLint সেটাকে ভঙ্গ ধরে নেয় —
+  // even though OFFLINE_MODE একটা build-time constant যা কখনো বদলায় না।
+  // হুকগুলোর পরে return দিলে এটা নিছক conditional rendering (allowed),
+  // conditional hook invocation না (disallowed) — তাই এখন lint ক্লিন।
+  if (OFFLINE_MODE) return <>{children}</>;
 
   const handleRegister = async () => {
     if (!phoneInput || phoneInput.length < 11) {
