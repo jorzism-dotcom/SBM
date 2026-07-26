@@ -68,6 +68,13 @@ const SHOW_FULL_CHECKUP_BUTTON = false;
 // true হবে) — সাধারণ push-triggered বিল্ডে সবসময় false। লোকাল dev সার্ভারে
 // (import.meta.env না থাকলে) ডিফল্ট false।
 const OFFLINE_MODE = (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_OFFLINE_MODE === "true");
+// 🔴 ফিক্স (২৭ জুলাই ২০২৬ — OFFLINE_MODE লগইন ব্লকার): মালিকের PIN লগইন
+// (LoginScreen.handleOwnerLogin) সবসময় phone + central-Firestore
+// subscriptions/{phone} ডকুমেন্টের উপর নির্ভর করত। OFFLINE_MODE বিল্ডে
+// SubscriptionGate স্কিপ হওয়ায় সেই phone/ডকুমেন্ট কখনো তৈরিই হয় না, ফলে
+// মালিক "ফোন নম্বর পাওয়া যায়নি" এরর দিয়ে চিরতরে লক-আউট হয়ে থাকতেন। এই key
+// দিয়ে OFFLINE_MODE-এ সম্পূর্ণ লোকাল PIN সেভ/যাচাই হয় (কোনো নেটওয়ার্ক লাগে না)।
+const OFFLINE_OWNER_PIN_KEY = "sbm-offline-owner-pin-hash";
 // 🔴 recharts — শুধু AI পেজের "Analytics & Report" ট্যাবে ব্যবহার হয় (ডিফল্ট স্ক্রিন নয়),
 // তাই স্ট্যাটিক import না রেখে নিচে lazy dynamic import() দিয়ে লোড করা হচ্ছে (useRecharts হুক) —
 // প্রতি অ্যাপ-ওপেনে এই চার্ট লাইব্রেরির parse/eval খরচ আর বহন করতে হবে না।
@@ -17594,6 +17601,36 @@ function LoginScreen({ users, onLogin, shopName, T, setUsers, devContact, master
   const handleOwnerLogin = async () => {
     if (ownerPin.length !== 6) { setOwnerPinError("৬ ডিজিটের PIN দিন"); return; }
     setOwnerChecking(true); setOwnerPinError("");
+
+    // 🔴 ফিক্স (২৭ জুলাই ২০২৬ — OFFLINE_MODE লগইন ব্লকার, দেখুন OFFLINE_OWNER_PIN_KEY-এর
+    // কমেন্ট): OFFLINE_MODE-এ নিচের phone/Firestore-নির্ভর সাধারণ ফ্লো-তে না গিয়ে
+    // সম্পূর্ণ লোকাল PIN দিয়ে যাচাই — প্রথমবার যেকোনো ৬-ডিজিট PIN দিলে সেটাই
+    // স্থায়ীভাবে Owner PIN হিসেবে লোকালি সেভ হয়ে যায় (Settings → "মালিকের লগইন
+    // PIN পরিবর্তন" থেকে পরে বদলানো যাবে), পরের বার সেই হ্যাশের সাথে মিলিয়ে দেখা হয়।
+    if (OFFLINE_MODE) {
+      try {
+        const enc = new TextEncoder().encode("sbm_owner_" + ownerPin);
+        const buf = await crypto.subtle.digest("SHA-256", enc);
+        const hash = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,"0")).join("");
+        const localHash = await load(OFFLINE_OWNER_PIN_KEY);
+        if (!localHash) {
+          await save(OFFLINE_OWNER_PIN_KEY, hash);
+        } else if (hash !== localHash) {
+          setOwnerPinError("ভুল PIN, আবার চেষ্টা করুন"); setOwnerPin(""); setOwnerChecking(false); return;
+        }
+        let adminUser = users.find(u => u.role === "admin" || u.username === "admin");
+        if (!adminUser) {
+          adminUser = { id: uid(), username: "admin", name: "মালিক", role: "admin", email: "", pin: "", password: "" };
+          setUsers(prev => [...prev, adminUser]);
+        }
+        onLogin(adminUser);
+      } catch (e) {
+        setOwnerPinError("লোকাল PIN যাচাই ব্যর্থ হয়েছে, আবার চেষ্টা করুন");
+      }
+      setOwnerChecking(false);
+      return;
+    }
+
     try {
       // getStorage (Capacitor Preferences) থেকে প্রথমে phone নাও, না পেলে localStorage fallback
       let phone = "";
@@ -35521,6 +35558,20 @@ onChange={()=>{}} />
                 {pinChangeErr && <div style={{ color:"#ef4444", fontSize:12, marginBottom:8 }}>{pinChangeErr}</div>}
                 <button style={{ ...S.saveBtn, width:"100%", background:"linear-gradient(135deg,#059669,#10b981)" }} onClick={async () => {
                   if (!oldPinInput || oldPinInput.length !== 6) { setPinChangeErr("৬ ডিজিটের PIN দিন"); return; }
+                  // 🔴 ফিক্স (২৭ জুলাই ২০২৬ — OFFLINE_MODE): নিচের Firestore-নির্ভর
+                  // যাচাই OFFLINE_MODE-এ কখনো phone/ডকুমেন্ট খুঁজে পেত না — এখানে
+                  // OFFLINE_OWNER_PIN_KEY-এর লোকাল হ্যাশের সাথে মিলিয়ে দেখা হয়।
+                  if (OFFLINE_MODE) {
+                    try {
+                      const enc = new TextEncoder().encode("sbm_owner_" + oldPinInput);
+                      const buf = await crypto.subtle.digest("SHA-256", enc);
+                      const hash = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,"0")).join("");
+                      const localHash = await load(OFFLINE_OWNER_PIN_KEY);
+                      if (localHash && hash !== localHash) { setPinChangeErr("বর্তমান PIN ভুল, আবার চেষ্টা করুন"); setOldPinInput(""); return; }
+                      setPinStep(2); setPinChangeErr("");
+                    } catch (e) { setPinChangeErr("লোকাল যাচাই ব্যর্থ হয়েছে, আবার চেষ্টা করুন"); }
+                    return;
+                  }
                   // Firebase থেকে ownerPinHash যাচাই করো
                   try {
                     let phone = "";
@@ -35565,6 +35616,19 @@ onChange={()=>{}} />
                 {pinChangeErr && <div style={{ color:"#ef4444", fontSize:12, marginBottom:8 }}>{pinChangeErr}</div>}
                 <button style={{ ...S.saveBtn, width:"100%", background:"linear-gradient(135deg,#059669,#10b981)" }} onClick={async () => {
                   if (newPinInput !== newPinConfirm) { setPinChangeErr("PIN দুটি মিলছে না"); setNewPinConfirm(""); return; }
+                  // 🔴 ফিক্স (২৭ জুলাই ২০২৬ — OFFLINE_MODE): লোকাল হ্যাশ আপডেট,
+                  // Firestore updateDoc() না (উপরের step 1-এর ফিক্সের প্যারালাল)।
+                  if (OFFLINE_MODE) {
+                    try {
+                      const enc = new TextEncoder().encode("sbm_owner_" + newPinInput);
+                      const buf = await crypto.subtle.digest("SHA-256", enc);
+                      const hash = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,"0")).join("");
+                      await save(OFFLINE_OWNER_PIN_KEY, hash);
+                      setShowPinChange(false); setOldPinInput(""); setNewPinInput(""); setNewPinConfirm(""); setPinStep(1);
+                      showToast("✅ PIN সফলভাবে পরিবর্তন হয়েছে");
+                    } catch (e) { setPinChangeErr("লোকাল সেভ ব্যর্থ হয়েছে, আবার চেষ্টা করুন"); }
+                    return;
+                  }
                   try {
                     let phone = "";
                     try { phone = (await getStorage("sbm_phone")) || ""; } catch {}
