@@ -4,6 +4,12 @@ on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
+    inputs:
+      offline_mode:
+        description: '🔴 OFFLINE বিল্ড — শুধু GitHub Actions থেকে ম্যানুয়ালি ডাউনলোড হবে, কখনো পাবলিক GitHub Release তৈরি হবে না (admin.html-এর auto-update বাকি ২ শপে এই APK পাঠাবে না)। শুধু ওই একটা নির্দিষ্ট দোকানের জন্য যে অফলাইন থাকবে।'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   # ── ফেজ ০: Firestore Emulator + Security Rules টেস্ট ──────────────────────
@@ -175,6 +181,13 @@ jobs:
           echo "APP_SEMVER=$APP_SEMVER" >> "$GITHUB_ENV"
           echo "computed version: $APP_SEMVER"
 
+      - name: 🔴 OFFLINE_MODE ফ্ল্যাগ রিজলভ করা (workflow_dispatch input থেকে; push ট্রিগারে সবসময় false)
+        run: |
+          OFFLINE_MODE_VAL="${{ github.event.inputs.offline_mode }}"
+          if [ "$OFFLINE_MODE_VAL" != "true" ]; then OFFLINE_MODE_VAL="false"; fi
+          echo "OFFLINE_MODE_VAL=$OFFLINE_MODE_VAL" >> "$GITHUB_ENV"
+          echo "OFFLINE_MODE for this build: $OFFLINE_MODE_VAL"
+
       - name: Build web assets
         run: |
           # 🔴 App.jsx-এর APP_BUILD এই ভ্যালু import.meta.env.VITE_BUILD_ID
@@ -185,8 +198,13 @@ jobs:
           # 🔴 App.jsx-এর APP_VERSION_CODE এখন এই VITE_APP_VERSION থেকে পড়ে —
           # admin.html-এর সাথে সেমান্টিক (x.y.z) কম্পেয়ারের জন্য এটাই সোর্স অফ ট্রুথ।
           export VITE_APP_VERSION="$APP_SEMVER"
+          # 🔴 App.jsx-এর OFFLINE_MODE কনস্ট্যান্ট এই ভ্যালু থেকে পড়ে — শুধু
+          # workflow_dispatch-এ offline_mode=true দিলেই এই একটা বিল্ডে true হবে,
+          # push-triggered normal বিল্ডে সবসময় false।
+          export VITE_OFFLINE_MODE="$OFFLINE_MODE_VAL"
           echo "VITE_BUILD_ID=$VITE_BUILD_ID"
           echo "VITE_APP_VERSION=$VITE_APP_VERSION"
+          echo "VITE_OFFLINE_MODE=$VITE_OFFLINE_MODE"
           npm run build
 
       - name: Copy gsi-client.js to dist (Vite public dir fix)
@@ -416,20 +434,32 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: sbm-apk-v${{ github.run_number }}
+          name: sbm-apk-v${{ github.run_number }}${{ env.OFFLINE_MODE_VAL == 'true' && '-OFFLINE' || '' }}
           path: android/app/build/outputs/apk/release/app-release.apk
           retention-days: 30
 
       - name: 📦 Rename signed APK (version নাম দিয়ে)
         run: |
           mkdir -p release-out
-          cp android/app/build/outputs/apk/release/app-release.apk "release-out/SBM-v${APP_SEMVER}.apk"
+          if [ "$OFFLINE_MODE_VAL" == "true" ]; then
+            cp android/app/build/outputs/apk/release/app-release.apk "release-out/SBM-OFFLINE-v${APP_SEMVER}.apk"
+          else
+            cp android/app/build/outputs/apk/release/app-release.apk "release-out/SBM-v${APP_SEMVER}.apk"
+          fi
 
-      - name: 🚀 GitHub Release তৈরি করা (APK পাবলিক ডাউনলোড লিংক সহ)
+      # 🔴 OFFLINE_MODE বিল্ডে এই দুটো ধাপ (GitHub Release তৈরি + পুরনো রিলিজ
+      # পরিষ্কার) ইচ্ছাকৃতভাবে স্কিপ করা হয় — কারণ admin.html-এর Update ট্যাব
+      # সবসময় সর্বশেষ GitHub Release-কেই "নতুন ভার্সন এসেছে" ধরে সব দোকানকে
+      # (৩ জনকেই) দেখায়। অফলাইন বিল্ড পাবলিক Release হয়ে গেলে ভুলবশত বাকি ২টা
+      # সচল/অনলাইন দোকানও এটা ইনস্টল করে ফেলার ঝুঁকি থাকত। তাই অফলাইন বিল্ড শুধু
+      # উপরের "Upload APK" আর্টিফ্যাক্ট হিসেবেই থাকে — এই Actions run পেজ থেকে
+      # ম্যানুয়ালি ডাউনলোড করে সরাসরি সেই একটা দোকানের ডিভাইসে পাঠাতে হবে।
+      - name: 🚀 GitHub Release তৈরি করা (APK পাবলিক ডাউনলোড লিংক সহ) — শুধু normal বিল্ডে
         # 🔴 admin.html-এর Update ট্যাব এই Release-গুলো GitHub API দিয়ে পড়ে
         # (jorzism-dotcom/Turjo/releases) — version + APK লিংক auto-fill হয়,
         # ম্যানুয়ালি টাইপ করা লাগে না। Publish করা না হওয়া পর্যন্ত কোনো দোকানে
         # কিছু যায় না — এটা শুধু APK-টা GitHub-এ রেডি করে রাখে।
+        if: env.OFFLINE_MODE_VAL != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.APP_SEMVER }}
@@ -443,7 +473,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 🧹 পুরনো/টেস্ট রিলিজ পরিষ্কার (সর্বশেষ ১৫টা রেখে বাকি ডিলিট)
+      - name: 🧹 পুরনো/টেস্ট রিলিজ পরিষ্কার (সর্বশেষ ১৫টা রেখে বাকি ডিলিট) — শুধু normal বিল্ডে
+        if: env.OFFLINE_MODE_VAL != 'true'
         run: |
           gh release list --limit 200 --json tagName --jq '.[].tagName' | tail -n +16 | while read -r tag; do
             echo "Deleting old release: $tag"
@@ -451,3 +482,9 @@ jobs:
           done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: ℹ️ OFFLINE বিল্ড — ম্যানুয়াল ডাউনলোড নোট
+        if: env.OFFLINE_MODE_VAL == 'true'
+        run: |
+          echo "✅ OFFLINE APK তৈরি হয়েছে (SBM-OFFLINE-v${APP_SEMVER}.apk) — এটা পাবলিক GitHub Release হয়নি।"
+          echo "এই Actions run-এর 'Artifacts' সেকশন থেকে 'sbm-apk-v${{ github.run_number }}-OFFLINE' নামের ফাইলটা ডাউনলোড করে সরাসরি ওই একটা দোকানের ফোনে দিন।"
