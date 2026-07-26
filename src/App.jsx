@@ -6197,6 +6197,21 @@ const FSS = {
   // queue-তে জমা থাকে না (এটা সার্ভারের একদম তাজা read দাবি করে), তাই এই
   // ম্যানুয়াল কিউ ছাড়া নেট ফিরলেও এই বিক্রির স্টক/বাকি আপডেট চিরতরে হারিয়ে যেত।
   queuePendingSalesTxn(entry) {
+    // 🔴 ফিক্স (রুট কজ — অফলাইন কিউ-এন্ট্রি generic diff-push-এর সাথে রেস করে
+    // "সব স্টক অটো জিরো"): এতদিন markFieldTxPending() শুধু transactionUpdateStock()
+    // ইত্যাদি *আসল transaction চলাকালীন* কল হতো — কিন্তু অফলাইনে এই ফাংশন
+    // (queuePendingSalesTxn) কল হয় transaction-এর বাইরে, শুধু localStorage-এ
+    // জমা রেখে। তার ঠিক আগে optimistic setProducts() দিয়ে React state-এ stock
+    // বদলে যায়, যেটা useFSSCollection-এর generic diff-push effect-এর চোখে একটা
+    // "সাধারণ পরিবর্তন" (কোনো exclusion ছাড়াই) — তাই পুরো products ডকুমেন্ট
+    // plain overwrite হিসেবে পুশ হয়ে যায়। রিকানেক্টের সময় সেই stale পুশ আর
+    // flushPendingSalesTxns()-এর আসল transaction একে অপরকে race করে, ফলে stock
+    // ডাবল-কমে বা এমনকি জিরো/ভুল মানে চলে যায়। এখন কিউ-টাইমেই মার্ক করা হচ্ছে,
+    // যাতে diff-push effect flush না হওয়া পর্যন্ত এই প্রোডাক্টের stock/batches
+    // স্পর্শ না করে। flushPendingSalesTxns()-এ সফল রিকনসিলিয়েশনের পরই ক্লিয়ার হয়।
+    entry?.stockItems?.forEach(si => {
+      if (si?.productId) markFieldTxPending("products", si.productId, ["stock", "batches"]);
+    });
     try {
       const q = JSON.parse(localStorage.getItem("sbm_pending_sales_txns") || "[]");
       // 🔴 ফিক্স (রুট কজ — মাল্টি-বিজনেস ক্রস-কনটামিনেশন, অফলাইন কিউ): এই এন্ট্রি
@@ -6212,6 +6227,12 @@ const FSS = {
       // হারিয়ে গেল, সেই তালিকাসহ)।
       if (q.length > 2000) {
         const dropped = q.slice(0, q.length - 2000);
+        // 🔴 ফিক্স: চিরতরে ড্রপ হওয়া এন্ট্রির pending flag-ও ক্লিয়ার করা দরকার —
+        // নাহলে ওই প্রোডাক্টের stock/batches রিলোড না হওয়া পর্যন্ত চিরকালের জন্য
+        // diff-push থেকে বাদ পড়ে থাকত, যদিও আর কখনো reconcile হবে না।
+        dropped.forEach(d => d?.stockItems?.forEach(si => {
+          if (si?.productId) clearFieldTxPending("products", si.productId, ["stock", "batches"]);
+        }));
         logErrorToCentral?.(
           "queuePendingSalesTxn:overflow",
           new Error(`${dropped.length} pending sales stock/balance entry permanently dropped (queue > 2000)`),
@@ -6254,6 +6275,10 @@ const FSS = {
           const validResults = stockResults.filter(Boolean);
           if (validResults.length) {
             const resMap = new Map(validResults.map(r => [r.id, r]));
+            // 🔴 ফিক্স: এই প্রোডাক্টের stock/batches সার্ভারের সাথে সফলভাবে
+            // reconcile হয়ে গেছে — এখন আবার generic diff-push effect-এর
+            // এক্সক্লুশন থেকে বাদ দেওয়া নিরাপদ (queuePendingSalesTxn()-এর কমেন্ট)।
+            validResults.forEach(r => clearFieldTxPending("products", r.id, ["stock", "batches"]));
             if (setProducts) {
               setProducts(prev => prev.map(p => {
                 const r = resMap.get(p.id);
@@ -6350,6 +6375,13 @@ const FSS = {
   // localStorage-ভিত্তিক কিউ — অফলাইনে সরাসরি এখানে জমা রাখা হয়, reconnect হলে
   // (boot + 'online' ইভেন্ট) আসল atomic transaction দিয়েই reconcile হয়।
   queuePendingVoidRestore(entry) {
+    // 🔴 ফিক্স (queuePendingSalesTxn()-এর ঠিক একই রুট-কজ ও কারণে): ভয়েড/রিটার্ন
+    // অফলাইনে কিউ হওয়ার সময়ও optimistic setProducts() আগে ঘটে যায়, তাই কিউ-টাইমেই
+    // এই প্রোডাক্টগুলোর stock/batches মার্ক করা হচ্ছে — flushPendingVoidRestores()
+    // আসল transaction দিয়ে reconcile করার আগ পর্যন্ত generic diff-push এড়িয়ে যাবে।
+    entry?.restoreItems?.forEach(ri => {
+      if (ri?.productId) markFieldTxPending("products", ri.productId, ["stock", "batches"]);
+    });
     try {
       const q = JSON.parse(localStorage.getItem("sbm_pending_void_restores") || "[]");
       // 🔴 ফিক্স (মাল্টি-বিজনেস ক্রস-কনটামিনেশন) — queuePendingSalesTxn()-এর
@@ -6369,6 +6401,11 @@ const FSS = {
       // invoiceId না থাকলে balanceUpdate.customerId ফলব্যাক হিসেবে দেখানো হচ্ছে।
       if (q.length > 2000) {
         const dropped = q.slice(0, q.length - 2000);
+        // 🔴 ফিক্স: চিরতরে ড্রপ হওয়া এন্ট্রির pending flag-ও ক্লিয়ার করা দরকার
+        // (queuePendingSalesTxn():overflow-এর একই কারণে)।
+        dropped.forEach(d => d?.restoreItems?.forEach(ri => {
+          if (ri?.productId) clearFieldTxPending("products", ri.productId, ["stock", "batches"]);
+        }));
         logErrorToCentral?.(
           "queuePendingVoidRestore:overflow",
           new Error(`${dropped.length} pending restore/balance entry permanently dropped (queue > 2000)`),
@@ -6431,8 +6468,15 @@ const FSS = {
           }));
           if (deletedProductIds.length) {
             logErrorToCentral?.("flushPendingVoidRestores:productDeleted", null, { invoiceId: item.invoiceId, productIds: deletedProductIds });
+            // 🔴 ফিক্স: পণ্য ডিলিট হয়ে থাকলে আর কখনো reconcile হবে না — pending
+            // flag ক্লিয়ার না করলে চিরকাল আটকে থাকত (queuePendingSalesTxn()-এর কমেন্ট)।
+            deletedProductIds.forEach(pid => clearFieldTxPending("products", pid, ["stock", "batches"]));
           }
           const validResults = restoreResults.filter(Boolean);
+          if (validResults.length) {
+            // 🔴 ফিক্স: সফল reconciliation-এর পর এক্সক্লুশন তুলে নেওয়া হচ্ছে।
+            validResults.forEach(r => clearFieldTxPending("products", r.id, ["stock", "batches"]));
+          }
           if (validResults.length && setProducts) {
             const resMap = new Map(validResults.map(r => [r.id, r]));
             setProducts(prev => prev.map(p => {
@@ -6475,6 +6519,12 @@ const FSS = {
   // reconnect হলে (boot + 'online' ইভেন্ট) আসল atomic transaction দিয়ে
   // reconcile হবে।
   queuePendingPurchaseStock(entry) {
+    // 🔴 ফিক্স (queuePendingSalesTxn()-এর ঠিক একই রুট-কজ ও কারণে — অফলাইনে ক্রয়
+    // এন্ট্রি করলে "কিছুক্ষণ পর সব স্টক অটো জিরো" হয়ে যাওয়ার মূল কারণ): এই
+    // ফাংশন কল হওয়ার ঠিক আগে savePE()-এ optimistic setProducts() দিয়ে stock
+    // বাড়িয়ে দেখানো হয় — কিন্তু transactionAddStock() (যেটা মার্ক করত) কল-ই হয়
+    // না অফলাইনে, তাই এতদিন মার্ক হতো না। কিউ-টাইমেই এখানে মার্ক করা হচ্ছে।
+    if (entry?.productId) markFieldTxPending("products", entry.productId, ["stock", "batches"]);
     try {
       const q = JSON.parse(localStorage.getItem("sbm_pending_purchase_stock") || "[]");
       // 🔴 ফিক্স (মাল্টি-বিজনেস ক্রস-কনটামিনেশন): queuePendingSalesTxn()-এর
@@ -6484,6 +6534,9 @@ const FSS = {
       // ক্যাপের বেশি হলে সবচেয়ে পুরনো এন্ট্রিগুলো app_errors-এ লগ হয়ে বাদ পড়ে।
       if (q.length > 2000) {
         const dropped = q.slice(0, q.length - 2000);
+        // 🔴 ফিক্স: চিরতরে ড্রপ হওয়া এন্ট্রির pending flag-ও ক্লিয়ার করা দরকার
+        // (queuePendingSalesTxn():overflow-এর একই কারণে)।
+        dropped.forEach(d => { if (d?.productId) clearFieldTxPending("products", d.productId, ["stock", "batches"]); });
         logErrorToCentral?.(
           "queuePendingPurchaseStock:overflow",
           new Error(`${dropped.length} pending purchase stock entry permanently dropped (queue > 2000)`),
@@ -6517,6 +6570,9 @@ const FSS = {
           isFreeStock: item.isFreeStock, batchNoHint: item.batchNoHint,
         }, item.entryId ? `purchase:${item.entryId}:${item.productId}` : null);
         if (!txResult) { remaining.push(item); continue; } // transient — পরের চেষ্টায় আবার হবে
+        // 🔴 ফিক্স: সফল reconciliation-এর পর এক্সক্লুশন তুলে নেওয়া হচ্ছে
+        // (queuePendingPurchaseStock()-এর কমেন্ট)।
+        clearFieldTxPending("products", item.productId, ["stock", "batches"]);
         if (setProducts) {
           setProducts(prev => prev.map(p => p.id === item.productId
             ? { ...p, stock: txResult.stock, costPrice: txResult.costPrice, batches: txResult.batches }
@@ -6533,15 +6589,82 @@ const FSS = {
     try { localStorage.setItem("sbm_pending_purchase_stock", JSON.stringify(remaining)); } catch {}
   },
 
+  // 🔴 ফিক্স (রুট কজ — মেয়াদোত্তীর্ণ ব্যাচ অপসারণে কোনো রিট্রাই-কিউ না থাকা):
+  // এতদিন transactionRemoveBatch() ব্যর্থ হলে (FSS.isReady() false বা transaction
+  // exception) removeExpiredBatch() শুধু লোকাল React state হিসেব করে দেখাত —
+  // queuePendingSalesTxn()/queuePendingPurchaseStock()-এর মতো কোনো রিট্রাই-কিউ
+  // ছিল না, ফলে অফলাইনে সরানো ব্যাচ সার্ভারে কখনো পৌঁছাত না, কোনো ট্রেসও থাকত
+  // না। এখন একই localStorage-কিউ প্যাটার্ন — ব্যর্থ অপসারণ এখানে জমা থাকে,
+  // reconnect হলে (boot + 'online' ইভেন্ট) আসল atomic transaction দিয়ে reconcile
+  // হবে। transactionRemoveBatch() স্বভাবতই idempotent (batchNo+expiryDate দিয়ে
+  // ম্যাচিং ব্যাচ ফিল্টার করে বাদ দেয় — ব্যাচ আগেই সরানো থাকলে ফিল্টার কিছুই
+  // পাবে না, ফলাফল অপরিবর্তিত থাকে), তাই আলাদা opId/idempotency-গার্ড লাগে না।
+  queuePendingExpiredRemoval(entry) {
+    // 🔴 ফিক্স (queuePendingSalesTxn()-এর ঠিক একই কারণে): কিউ-টাইমেই মার্ক করা
+    // হচ্ছে, যাতে এই ব্যাচ-অপসারণ reconcile হওয়ার আগ পর্যন্ত generic diff-push
+    // effect এই প্রোডাক্টের stock/batches স্পর্শ না করে।
+    if (entry?.productId) markFieldTxPending("products", entry.productId, ["stock", "batches"]);
+    try {
+      const q = JSON.parse(localStorage.getItem("sbm_pending_expired_removal") || "[]");
+      // 🔴 ফিক্স (মাল্টি-বিজনেস ক্রস-কনটামিনেশন): অন্য কিউগুলোর ঠিক একই কারণে
+      // prefix রেকর্ড করা হচ্ছে।
+      q.push({ ...entry, prefix: this._businessPrefix || null, at: Date.now() });
+      if (q.length > 2000) {
+        const dropped = q.slice(0, q.length - 2000);
+        // 🔴 ফিক্স: চিরতরে ড্রপ হওয়া এন্ট্রির pending flag-ও ক্লিয়ার করা দরকার
+        // (queuePendingSalesTxn():overflow-এর একই কারণে)।
+        dropped.forEach(d => { if (d?.productId) clearFieldTxPending("products", d.productId, ["stock", "batches"]); });
+        logErrorToCentral?.(
+          "queuePendingExpiredRemoval:overflow",
+          new Error(`${dropped.length} pending expired-batch removal entry permanently dropped (queue > 2000)`),
+          { droppedProductIds: dropped.map(d => d.productId).filter(Boolean).slice(0, 20) }
+        );
+      }
+      localStorage.setItem("sbm_pending_expired_removal", JSON.stringify(q.slice(-2000)));
+    } catch {}
+  },
+
+  // 🔁 কিউতে জমে থাকা মেয়াদোত্তীর্ণ ব্যাচ-অপসারণ আবার চেষ্টা করে —
+  // flushPendingPurchaseStock()-এর ঠিক পাশাপাশি, FSS রেডি হওয়ার পরে ও নেট
+  // ফিরে এলে কল করা উচিত।
+  async flushPendingExpiredRemoval({ setProducts } = {}) {
+    if (!this._db) return;
+    let q = [];
+    try { q = JSON.parse(localStorage.getItem("sbm_pending_expired_removal") || "[]"); } catch { return; }
+    if (!q.length) return;
+    const remaining = [];
+    const currentPrefix = this._businessPrefix || null;
+    for (const item of q) {
+      const itemPrefix = Object.prototype.hasOwnProperty.call(item, "prefix") ? item.prefix : null;
+      if (itemPrefix !== currentPrefix) { remaining.push(item); continue; }
+      try {
+        const txResult = await this.transactionRemoveBatch(item.productId, item.batchNo || "", item.expiryDate || "");
+        if (!txResult) { remaining.push(item); continue; } // transient — পরের চেষ্টায় আবার হবে
+        clearFieldTxPending("products", item.productId, ["stock", "batches"]);
+        if (setProducts) {
+          setProducts(prev => prev.map(p => p.id === item.productId
+            ? { ...p, stock: txResult.stock, batches: txResult.batches, lastUpdated: new Date().toISOString() }
+            : p));
+        }
+      } catch (e) {
+        logErrorToCentral?.("flushPendingExpiredRemoval", e, { productId: item.productId, batchNo: item.batchNo });
+        remaining.push(item);
+      }
+    }
+    try { localStorage.setItem("sbm_pending_expired_removal", JSON.stringify(remaining)); } catch {}
+  },
+
   // 🆕 নোটিফিকেশন মডিউল/নেভ-ব্যাজের জন্য: সম্পূর্ণ লোকাল (localStorage) থেকে
-  // পড়ে, কোনো Firestore read/write হয় না। ৪টা রিকনসিলিয়েশন কিউ (sales/void/
-  // purchase/stats) মিলিয়ে মোট কতগুলো এন্ট্রি এখনো ক্লাউডে পৌঁছায়নি এবং তার
-  // মধ্যে কতগুলো "স্টেল" (staleMinutes-এর বেশি সময় ধরে আটকে) তা রিটার্ন করে।
+  // পড়ে, কোনো Firestore read/write হয় না। ৫টা রিকনসিলিয়েশন কিউ (sales/void/
+  // purchase/expired-removal/stats) মিলিয়ে মোট কতগুলো এন্ট্রি এখনো ক্লাউডে
+  // পৌঁছায়নি এবং তার মধ্যে কতগুলো "স্টেল" (staleMinutes-এর বেশি সময় ধরে আটকে)
+  // তা রিটার্ন করে।
   getLocalPendingQueueCounts(staleMinutes = 10) {
     const QUEUES = [
       { key: "sbm_pending_sales_txns", label: "বিক্রি (স্টক/বাকি)" },
       { key: "sbm_pending_void_restores", label: "ভয়েড/রিটার্ন রিস্টোর" },
       { key: "sbm_pending_purchase_stock", label: "ক্রয় এন্ট্রি" },
+      { key: "sbm_pending_expired_removal", label: "মেয়াদোত্তীর্ণ ব্যাচ অপসারণ" },
       { key: "sbm_pending_stats", label: "দৈনিক হিসাব (stats)" },
     ];
     const staleMs = staleMinutes * 60 * 1000;
@@ -13053,6 +13176,7 @@ function SmartBusinessMgmt() {
     // 🔴 ফিক্স (রুট কজ — ক্রয় এন্ট্রিতে রিট্রাই-কিউ না থাকা): দেখুন
     // FSS.queuePendingPurchaseStock()-এর কমেন্ট
     FSS.flushPendingPurchaseStock({ setProducts, setPurchaseOrders });
+    FSS.flushPendingExpiredRemoval({ setProducts });
     // 🔴 ফিক্স (রুট কজ ৩): flush-গুলো শেষ হওয়ার সময় দিয়ে ১৫ সেকেন্ড পর ব্যালেন্স
     // ড্রিফট চেক — দেখুন autoBalanceDriftCheck()-এর কমেন্ট
     setTimeout(() => autoBalanceDriftCheck(), 15000);
@@ -13077,6 +13201,7 @@ function SmartBusinessMgmt() {
         FSS.flushPendingSalesTxns({ setProducts, setCustomers, setInvoices });
         FSS.flushPendingVoidRestores({ setProducts, setCustomers });
         FSS.flushPendingPurchaseStock({ setProducts, setPurchaseOrders });
+        FSS.flushPendingExpiredRemoval({ setProducts });
         // 🔴 ফিক্স (রুট কজ ৩): দেখুন autoBalanceDriftCheck()-এর কমেন্ট
         setTimeout(() => autoBalanceDriftCheck(), 15000);
       }
@@ -13102,6 +13227,7 @@ function SmartBusinessMgmt() {
     await FSS.flushPendingSalesTxns({ setProducts, setCustomers, setInvoices });
     await FSS.flushPendingVoidRestores({ setProducts, setCustomers });
     await FSS.flushPendingPurchaseStock({ setProducts, setPurchaseOrders });
+    await FSS.flushPendingExpiredRemoval({ setProducts });
     showToast("✅ সিঙ্ক রিট্রাই করা হয়েছে");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -13217,6 +13343,7 @@ function SmartBusinessMgmt() {
         FSS.flushPendingSalesTxns({ setProducts, setCustomers, setInvoices });
         FSS.flushPendingVoidRestores({ setProducts, setCustomers });
         FSS.flushPendingPurchaseStock({ setProducts, setPurchaseOrders });
+        FSS.flushPendingExpiredRemoval({ setProducts });
       }
     })();
     return () => { cancelled = true; };
@@ -15570,6 +15697,7 @@ function SmartBusinessMgmt() {
       FSS.flushPendingSalesTxns({ setProducts, setCustomers, setInvoices });
       FSS.flushPendingVoidRestores({ setProducts, setCustomers });
       FSS.flushPendingPurchaseStock({ setProducts, setPurchaseOrders });
+      FSS.flushPendingExpiredRemoval({ setProducts });
     }
     setSwitchingBusiness(false);
   }, [businessType, businessTypeLocked, enabledBusinessTypes, setBusinessType, tab, _set]);
@@ -21481,6 +21609,11 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
         ? { ...p, batches: txResult.batches, stock: txResult.stock, lastUpdated: nowIso }
         : p));
     } else {
+      // 🔴 ফিক্স (রুট কজ — অফলাইনে সরানো ব্যাচ সার্ভারে কখনো না পৌঁছানো): আগে
+      // এখানে শুধু লোকাল fallback হিসেব হতো, কোনো রিট্রাই-কিউ ছাড়াই — দেখুন
+      // FSS.queuePendingExpiredRemoval()-এর কমেন্ট। এখন অফলাইন/ব্যর্থ হলে এই
+      // এন্ট্রি সেই কিউতে জমা থাকে, নেট ফিরলে আসল transaction দিয়ে reconcile হবে।
+      FSS.queuePendingExpiredRemoval({ productId: product.id, batchNo: batch.batchNo || "", expiryDate: batch.expiryDate || "" });
       setProducts(prev => prev.map(p => {
         if (p.id !== product.id) return p;
         if (p.batches && p.batches.length > 0) {
