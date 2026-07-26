@@ -4464,7 +4464,15 @@ const ArchiveDB = {
   // পরিবর্তন লাগে না), শুধু আসল প্রাইমারি-কী এখন বিজনেস-স্কোপড। পুরনো v2
   // এন্ট্রি (prefix ছাড়া তৈরি) migrate হয়ে prefix:null (ডিফল্ট/একক-বিজনেস)
   // হিসেবে নতুন ফরম্যাটে রূপান্তরিত হয় — কোনো ডেটা হারায় না।
-  VERSION: 3,
+  // v3→v4: 🆕 ইনভয়েস আর্কাইভ (invoice_archive) — ৬ মাসের বেশি পুরনো ইনভয়েস
+  // লাইভ state থেকে সরিয়ে এখানে (IndexedDB) রাখা হয়, যাতে Firebase বন্ধ/চালু
+  // যেকোনো অবস্থাতেই "ইনভয়েস হিস্ট্রি" ও "বাতিলকৃত ইনভয়েস" স্ক্রিন ইন্টারনেট
+  // ছাড়াই পুরনো ডেটা দেখাতে পারে। keyPath: "id" (কম্পোজিট prefix::invoiceId —
+  // dated_snapshots/worm_archive-এর মতোই মাল্টি-বিজনেস-সেফ)। ৪টা কম্পোজিট
+  // ইনডেক্স (byDate/byCustomer/byStatus/byPayType) — প্রতিটাই [prefix, ...]
+  // দিয়ে শুরু করে যাতে descending cursor-pagination (queryPage) এক বিজনেসের
+  // মধ্যেই সীমাবদ্ধ থাকে।
+  VERSION: 4,
   _db: null,
   async open() {
     if (this._db) return this._db;
@@ -4526,6 +4534,16 @@ const ArchiveDB = {
           const store = db.createObjectStore("field_change_log", { keyPath: "id" });
           store.createIndex("byRecord", ["collection", "recordId"], { unique: false });
           store.createIndex("byTs", "ts", { unique: false });
+        }
+        // ── invoice_archive (v4) — ৬ মাসের বেশি পুরনো ইনভয়েসের লোকাল আর্কাইভ ──
+        if (!db.objectStoreNames.contains("invoice_archive")) {
+          const store = db.createObjectStore("invoice_archive", { keyPath: "id" });
+          // প্রতিটা ইনডেক্স prefix (বিজনেস-স্কোপ) দিয়ে শুরু — descending
+          // cursor-pagination করলে (queryPage) এক বিজনেসের রেঞ্জেই থাকে।
+          store.createIndex("byDate",     ["prefix", "dateKey"],           { unique: false });
+          store.createIndex("byCustomer", ["prefix", "customerId"],        { unique: false });
+          store.createIndex("byStatus",   ["prefix", "status", "dateKey"], { unique: false });
+          store.createIndex("byPayType",  ["prefix", "payType", "dateKey"],{ unique: false });
         }
       };
       req.onsuccess = e => { this._db = e.target.result; resolve(this._db); };
@@ -4633,7 +4651,7 @@ const ArchiveDB = {
   async clearAllArchives() {
     try {
       const db = await this.open();
-      await Promise.all(["dated_snapshots", "worm_archive", "field_change_log"].map(store => new Promise((resolve, reject) => {
+      await Promise.all(["dated_snapshots", "worm_archive", "field_change_log", "invoice_archive"].map(store => new Promise((resolve, reject) => {
         const tx = db.transaction(store, "readwrite");
         tx.objectStore(store).clear();
         tx.oncomplete = resolve;
@@ -4641,6 +4659,111 @@ const ArchiveDB = {
       })));
       return true;
     } catch { return false; }
+  },
+};
+
+// ══════════════════════════════════════════════════════════════════════════
+// 🆕 InvoiceArchive — ৬ মাসের বেশি পুরনো ইনভয়েস (লাইভ state থেকে সরিয়ে) এখানে
+// রাখা হয় (ArchiveDB-এর "invoice_archive" স্টোরে, দেখুন উপরে VERSION 4)।
+// Firebase চালু/বন্ধ যেকোনো অবস্থায়, ইন্টারনেট ছাড়াই "ইনভয়েস হিস্ট্রি" ও
+// "বাতিলকৃত ইনভয়েস" স্ক্রিন এখান থেকে পুরনো ডেটা দেখাতে পারে (দেখুন
+// ReturnModule-এর searchInvoice/loadInvHistPage/loadVoidHist)।
+// ══════════════════════════════════════════════════════════════════════════
+const InvoiceArchive = {
+  STORE: "invoice_archive",
+  _prefix() { return FSS._businessPrefix || null; },
+  _composeId(invId) { return `${this._prefix() || "_default"}::${invId}`; },
+  // rows: ইনভয়েস অবজেক্টের অ্যারে (প্রতিটাতে id/dateKey/customerId/status/payType থাকা দরকার)।
+  // বাল্ক-write — archiveOldInvoices() একবারে অনেকগুলো ইনভয়েস পাঠায়।
+  async putMany(rows) {
+    if (!rows || !rows.length) return true;
+    try {
+      const db = await ArchiveDB.open();
+      if (!db) return false;
+      const prefix = this._prefix();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(this.STORE, "readwrite");
+        const store = tx.objectStore(this.STORE);
+        for (const inv of rows) {
+          store.put({ ...inv, prefix, id: this._composeId(inv.id), _origId: inv.id });
+        }
+        tx.oncomplete = resolve;
+        tx.onerror    = () => reject(tx.error);
+      });
+      return true;
+    } catch { return false; }
+  },
+  // মূল invoiceId (composite নয়) দিয়ে সরাসরি একটা রেকর্ড খোঁজা — searchInvoice-এ ব্যবহার হয়।
+  async getById(invId) {
+    try {
+      const db = await ArchiveDB.open();
+      if (!db) return null;
+      const id = this._composeId(invId);
+      const rec = await new Promise((resolve, reject) => {
+        const tx = db.transaction(this.STORE, "readonly");
+        const req = tx.objectStore(this.STORE).get(id);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror   = () => reject(req.error);
+      });
+      if (!rec) return null;
+      const { prefix, _origId, ...rest } = rec;
+      return { ...rest, id: _origId || rest.id };
+    } catch { return null; }
+  },
+  // সাবস্ট্রিং সার্চ — invoiceNo/id-তে q (uppercase) খোঁজে। ছোট দোকানের জন্য
+  // পুরো prefix-স্কোপড আর্কাইভ ইন-মেমরি স্ক্যান করাই যথেষ্ট দ্রুত (Firestore
+  // কুয়েরির মতো ইনডেক্স-ভিত্তিক নয়, কিন্তু হাজার হাজার এন্ট্রিতেও দ্রুত)।
+  async findByQuery(q) {
+    try {
+      const db = await ArchiveDB.open();
+      if (!db) return [];
+      const prefix = this._prefix();
+      const all = await new Promise((resolve, reject) => {
+        const tx = db.transaction(this.STORE, "readonly");
+        const idx = tx.objectStore(this.STORE).index("byDate");
+        const range = IDBKeyRange.bound([prefix || null, ""], [prefix || null, "\uffff"]);
+        const req = idx.getAll(range);
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror   = () => reject(req.error);
+      });
+      const needle = (q || "").toUpperCase();
+      const hit = all.find(r =>
+        ((r.invoiceNo || r._origId || r.id || "").toUpperCase().includes(needle))
+      );
+      if (!hit) return null;
+      const { prefix: _p, _origId, ...rest } = hit;
+      return { ...rest, id: _origId || rest.id };
+    } catch { return null; }
+  },
+  // পেজিনেটেড কোয়েরি — filters: { customerId, status, payType, dateFrom, dateTo }
+  // cursor: আগের পেজের শেষ dateKey (descending — নতুন থেকে পুরনো)।
+  async queryPage({ customerId, status, payType, dateFrom, dateTo, cursor, pageSize = 30 } = {}) {
+    try {
+      const db = await ArchiveDB.open();
+      if (!db) return { rows: [], done: true };
+      const prefix = this._prefix();
+      let indexName = "byDate";
+      let range;
+      if (status)      { indexName = "byStatus";   range = IDBKeyRange.bound([prefix || null, status, ""], [prefix || null, status, "\uffff"]); }
+      else if (payType) { indexName = "byPayType";  range = IDBKeyRange.bound([prefix || null, payType, ""], [prefix || null, payType, "\uffff"]); }
+      else              { range = IDBKeyRange.bound([prefix || null, ""], [prefix || null, "\uffff"]); }
+      const all = await new Promise((resolve, reject) => {
+        const tx = db.transaction(this.STORE, "readonly");
+        const idx = tx.objectStore(this.STORE).index(indexName);
+        const req = idx.getAll(range);
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror   = () => reject(req.error);
+      });
+      let rows = all;
+      if (customerId) rows = rows.filter(r => r.customerId === customerId);
+      if (dateFrom)   rows = rows.filter(r => (r.dateKey || "") >= dateFrom);
+      if (dateTo)     rows = rows.filter(r => (r.dateKey || "") <= dateTo);
+      // নতুন থেকে পুরনো (descending dateKey, তারপর createdAt)
+      rows.sort((a, b) => (b.dateKey || "").localeCompare(a.dateKey || "") || (b.createdAt || 0) - (a.createdAt || 0));
+      if (cursor) rows = rows.filter(r => (r.dateKey || "") < cursor || ((r.dateKey || "") === cursor));
+      const page = rows.slice(0, pageSize).map(r => { const { prefix: _p, _origId, ...rest } = r; return { ...rest, id: _origId || rest.id }; });
+      return { rows: page, done: rows.length <= pageSize, nextCursor: page.length ? page[page.length - 1].dateKey : cursor };
+    } catch { return { rows: [], done: true }; }
   },
 };
 
@@ -13633,15 +13756,19 @@ function SmartBusinessMgmt() {
     syncDeletes: false,
   });
 
-  // ── Phase 1.2: Invoice Windowed Sync — শুধু শেষ ৩০ দিনের ইনভয়েস real-time ──
+  // ── Phase 1.2: Invoice Windowed Sync — শুধু শেষ ৬ মাসের ইনভয়েস real-time ──
   // আগে: useFSSCollection("invoices"...) → পুরো collection (১০ লাখেও সব pull)
-  // এখন: শুধু ৩০ দিনের window — ১০ লাখ invoice-এও app চলে, Firestore cost ৯৯%+ কম।
-  // পুরনো invoice দেখতে হলে → Invoice History page-এ cursor pagination (Phase 2)।
-  // Firestore index লাগবে: invoices → date (ASC) — console error-এ link আসবে।
+  // এখন: শুধু ৬ মাসের window — ১০ লাখ invoice-এও app চলে, Firestore cost ৯৯%+ কম।
+  // ৬ মাসের বেশি পুরনো ইনভয়েস লাইভ state-এ না রেখে নিচের archiveOldInvoices()
+  // দিয়ে লোকাল IndexedDB আর্কাইভে (InvoiceArchive) সরানো হয় — Firestore-এ
+  // সেগুলো অপরিবর্তিতই থাকে (শুধু এই ডিভাইসের লাইভ মেমরি/UI-তে রাখা হয় না)।
+  // পুরনো invoice দেখতে হলে → Invoice History page, এখন লোকাল আর্কাইভ থেকে
+  // (দেখুন ReturnModule-এর searchInvoice/loadInvHistPage/loadVoidHist), তাই
+  // ইন্টারনেট ছাড়াই কাজ করে। Firestore index লাগবে: invoices → date (ASC)।
   useEffect(() => {
     if (!fssReady || !FSS._db) return;
     const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - 30);
+    cutoffDate.setMonth(cutoffDate.getMonth() - 6);
     const cutoff = _dateKeyOf(cutoffDate); // "YYYY-MM-DD"
 
     const colRef = FSS.col("invoices");
@@ -13667,6 +13794,47 @@ function SmartBusinessMgmt() {
 
     return () => unsub();
   }, [fssReady, appResyncTick]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // 🆕 archiveOldInvoices() — ৬ মাসের বেশি পুরনো ইনভয়েস লাইভ invoices state থেকে
+  // সরিয়ে InvoiceArchive (IndexedDB)-তে রাখে। বুট-টাইমে (প্রথম পেইন্টের পরে,
+  // setTimeout 0-এ) একবার চলে, আর অ্যাপ দীর্ঘক্ষণ খোলা থাকলে (রেয়ার কেস) প্রতি
+  // ৬ ঘণ্টায় একবার নিঃশব্দে রিচেক করার জন্য একটা ইন্টারভ্যাল — stale-closure
+  // এড়াতে invoicesRef ব্যবহার করা হয়েছে।
+  // 🔴 ফিক্স (রুট কজ — ফুল-অফলাইন দোকানে ফিচারটাই কখনো চলত না): এই অ্যাপ
+  // Firebase ছাড়াই সম্পূর্ণ চলার জন্য ডিজাইন করা — ইনভয়েস তৈরির সময়ই
+  // pushDurable()+LK(SK.invoices) দিয়ে লোকালি durable হয়ে যায় (Firestore
+  // _serverTs-এর উপর নির্ভর করে না, দেখুন createInvoice())। তাই এখানে
+  // (ক) স্টেল-ফিল্টারে "inv._serverTs" শর্ত রাখা ভুল ছিল — Firebase কখনো চালু
+  // না থাকা দোকানে _serverTs কোনোদিনই বসত না, ফলে আর্কাইভিং কখনো ঘটতই না;
+  // (খ) নিচের বুট-effect আগে fssReady-এর উপর গেট করা ছিল, যা একই কারণে ভুল —
+  // firebaseEnabled/config না থাকলে fssReady চিরকাল false থেকে যায়। এখন শুধু
+  // "loaded" (লোকাল বুট শেষ) চেক করা হয় — Firebase চালু/বন্ধ যেকোনো অবস্থায়
+  // আর্কাইভিং চলবে। সেফটি এখনো বজায় আছে: লোকাল IndexedDB আর্কাইভ-write সফল
+  // হলে তবেই লাইভ state থেকে সরানো হয়, নাহলে কিছুই মোছা হয় না।
+  // ══════════════════════════════════════════════════════════════════════════
+  const invoicesRef = React.useRef(invoices);
+  React.useEffect(() => { invoicesRef.current = invoices; }, [invoices]);
+
+  const archiveOldInvoices = React.useCallback(async () => {
+    const cur = invoicesRef.current || [];
+    const cutoffDate = new Date();
+    cutoffDate.setMonth(cutoffDate.getMonth() - 6);
+    const cutoff = _dateKeyOf(cutoffDate);
+    const stale = cur.filter(inv => (inv.dateKey || "") < cutoff);
+    if (!stale.length) return;
+    const ok = await InvoiceArchive.putMany(stale);
+    if (!ok) return; // আর্কাইভ-write ব্যর্থ → লাইভ state অপরিবর্তিত থাকে, ডেটা হারানোর ঝুঁকি নেই
+    const staleIds = new Set(stale.map(i => i.id));
+    setInvoices(prev => prev.filter(i => !staleIds.has(i.id)));
+  }, []);
+
+  React.useEffect(() => {
+    if (!loaded) return; // শুধু লোকাল বুট শেষ হওয়ার অপেক্ষা — Firebase/fssReady-নির্ভর নয়
+    const t = setTimeout(() => { archiveOldInvoices(); }, 0);
+    const intervalId = setInterval(() => { archiveOldInvoices(); }, 6 * 60 * 60 * 1000); // প্রতি ৬ ঘণ্টায় নিঃশব্দে রিচেক
+    return () => { clearTimeout(t); clearInterval(intervalId); };
+  }, [loaded, archiveOldInvoices]);
 
   // ── txns Windowed Sync — শুধু শেষ ৩০ দিনের লেনদেন real-time ("আজকের বাকি/জমা"
   // ড্যাশবোর্ড হিসাবের জন্য এতটুকুই যথেষ্ট)। আগে: পুরো collection pull, ১০ লাখ
@@ -28503,15 +28671,20 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
   const [voidModalOpen, setVoidModalOpen] = React.useState(false);
   React.useEffect(() => { setVoidModalOpen(false); }, [detailInv?.id]);
 
-  const searchInvoice = React.useCallback(() => {
+  // 🔴 ফিক্স: শুধু লাইভ (শেষ ৬ মাস) invoices state-এ না পেলে এখন লোকাল
+  // InvoiceArchive (IndexedDB, ৬ মাসের বেশি পুরনো)-তেও খোঁজা হয় — সম্পূর্ণ
+  // ইন্টারনেট ছাড়াই, তাই Firebase বন্ধ থাকা দোকানেও পুরনো ইনভয়েস খুঁজে পাওয়া যায়।
+  const searchInvoice = React.useCallback(async () => {
     const q = invSearch.trim().toUpperCase();
     if (!q) { showToast("ইনভয়েস নম্বর দিন", "#ef4444"); return; }
     const inv = (invoices||[]).find(i =>
       (i.invoiceNo || i.id || "").toUpperCase().includes(q) ||
       (i.id || "").toUpperCase().includes(q)
     );
-    if (!inv) { showToast("ইনভয়েস পাওয়া যায়নি", "#ef4444"); return; }
-    setDetailInv(inv);
+    if (inv) { setDetailInv(inv); return; }
+    const archived = await InvoiceArchive.findByQuery(q);
+    if (archived) { setDetailInv(archived); return; }
+    showToast("ইনভয়েস পাওয়া যায়নি", "#ef4444");
   }, [invSearch, invoices, showToast]);
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -28523,7 +28696,10 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
   const [invHistLoading, setInvHistLoading] = React.useState(false);
   const [invHistDone,    setInvHistDone]    = React.useState(false);
   const [invHistError,   setInvHistError]   = React.useState(null);
-  const invHistCursorRef = React.useRef(null);
+  // 🔴 ফিক্স: আগে Firestore snapshot cursor (startAfter) — এখন সম্পূর্ণ লোকাল
+  // (লাইভ invoices state + InvoiceArchive মার্জ করে), তাই সাধারণ offset-ভিত্তিক
+  // পেজিনেশনই যথেষ্ট, ইন্টারনেট লাগে না।
+  const invHistOffsetRef = React.useRef(0);
   const INV_HIST_PAGE_SIZE = 30;
 
   // ফিল্টার state
@@ -28556,52 +28732,57 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
     return (customers||[]).filter(c => (c.name||"").toLowerCase().includes(q)).slice(0, 8);
   }, [ihCustText, ihCustId, customers]);
 
+  // 🔴 ফিক্স: আগে সরাসরি Firestore কুয়েরি (ইন্টারনেট লাগত) — এখন লাইভ invoices
+  // state (শেষ ৬ মাস) + InvoiceArchive (৬ মাসের বেশি পুরনো, IndexedDB) মার্জ
+  // করে সম্পূর্ণ লোকালি রেজাল্ট বানানো হয়, তাই Firebase বন্ধ থাকা দোকানেও কাজ করে।
   const loadInvHistPage = React.useCallback(async (reset = false) => {
-    if (!FSS.isReady()) { setInvHistError("Firestore প্রস্তুত না — ইন্টারনেট/কনফিগ চেক করুন"); return; }
     setInvHistLoading(true); setInvHistError(null);
     try {
-      const colRef = FSS.col("invoices");
-      const clauses = [];
-      if (ihCustId)              clauses.push(where("customerId", "==", ihCustId));
-      if (ihPayType !== "all")   clauses.push(where("payType", "==", ihPayType));
-      let orderClauses;
-      if (ihDate) {
-        clauses.push(where("dateKey", "==", ihDate));
-        orderClauses = [orderBy("createdAt", "desc")];
-      } else if (ihMonth) {
-        clauses.push(where("dateKey", ">=", `${ihMonth}-01`), where("dateKey", "<=", `${ihMonth}-31`));
-        orderClauses = [orderBy("dateKey", "desc"), orderBy("createdAt", "desc")];
-      } else {
-        orderClauses = [orderBy("dateKey", "desc"), orderBy("createdAt", "desc")];
-      }
-      const cursor = reset ? null : invHistCursorRef.current;
-      const q = query(colRef, ...clauses, ...orderClauses, ...(cursor ? [startAfter(cursor)] : []), limit(INV_HIST_PAGE_SIZE));
-      const snap = await getDocs(q);
-      const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      invHistCursorRef.current = snap.docs.length ? snap.docs[snap.docs.length - 1] : cursor;
-      setInvHistDone(snap.docs.length < INV_HIST_PAGE_SIZE);
-      setInvHistRows(prev => reset ? rows : [...prev, ...rows]);
+      const dateFrom = ihDate || (ihMonth ? `${ihMonth}-01` : null);
+      const dateTo   = ihDate || (ihMonth ? `${ihMonth}-31` : null);
+      const matchesFilter = (inv) => {
+        if (ihCustId && inv.customerId !== ihCustId) return false;
+        if (ihPayType !== "all" && inv.payType !== ihPayType) return false;
+        if (dateFrom && (inv.dateKey || "") < dateFrom) return false;
+        if (dateTo   && (inv.dateKey || "") > dateTo)   return false;
+        return true;
+      };
+      const liveRows = (invoices || []).filter(matchesFilter);
+      const archiveResult = await InvoiceArchive.queryPage({
+        customerId: ihCustId || undefined,
+        payType: ihPayType !== "all" ? ihPayType : undefined,
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined,
+        pageSize: 100000, // পুরো ম্যাচিং সেট — নিচে ম্যানুয়ালি offset-ভিত্তিক স্লাইস হবে
+      });
+      const merged = [...liveRows, ...archiveResult.rows]
+        .sort((a, b) => (b.dateKey || "").localeCompare(a.dateKey || "") || (b.createdAt || 0) - (a.createdAt || 0));
+      const offset = reset ? 0 : invHistOffsetRef.current;
+      const page = merged.slice(offset, offset + INV_HIST_PAGE_SIZE);
+      invHistOffsetRef.current = offset + page.length;
+      setInvHistDone(offset + page.length >= merged.length);
+      setInvHistRows(prev => reset ? page : [...prev, ...page]);
     } catch (err) {
-      setInvHistError(err?.message || err?.code || "লোড ব্যর্থ হয়েছে — Firestore index লাগতে পারে");
+      setInvHistError(err?.message || "লোড ব্যর্থ হয়েছে");
     } finally {
       setInvHistLoading(false);
     }
-  }, [ihCustId, ihPayType, ihDate, ihMonth]);
+  }, [ihCustId, ihPayType, ihDate, ihMonth, invoices]);
 
   const openInvHist = () => {
-    invHistCursorRef.current = null;
+    invHistOffsetRef.current = 0;
     setInvHistRows([]); setInvHistDone(false); setInvHistError(null);
     setShowInvHist(true);
     loadInvHistPage(true);
   };
   const applyInvHistFilter = () => {
-    invHistCursorRef.current = null;
+    invHistOffsetRef.current = 0;
     setInvHistRows([]); setInvHistDone(false); setInvHistError(null);
     loadInvHistPage(true);
   };
   const resetInvHistFilter = () => {
     setIhCustText(""); setIhCustId(""); setIhViewMode("all"); setIhDate(""); setIhMonth(""); setIhPayType("all");
-    invHistCursorRef.current = null;
+    invHistOffsetRef.current = 0;
     setInvHistRows([]); setInvHistDone(false); setInvHistError(null);
     if (showInvHist) loadInvHistPage(true);
   };
@@ -28619,27 +28800,28 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
   const [vhLoading,      setVhLoading]      = React.useState(false);
   const [vhError,        setVhError]        = React.useState(null);
 
+  // 🔴 ফিক্স: আগে সরাসরি Firestore কুয়েরি — এখন লাইভ invoices state (শেষ ৬ মাস)
+  // + InvoiceArchive (৬ মাসের বেশি পুরনো) মার্জ করে সম্পূর্ণ লোকালি, ইন্টারনেট ছাড়াই।
   const loadVoidHist = React.useCallback(async () => {
-    if (!FSS.isReady()) { setVhError("Firestore প্রস্তুত না — ইন্টারনেট/কনফিগ চেক করুন"); return; }
     setVhLoading(true); setVhError(null);
     try {
-      const colRef = FSS.col("invoices");
-      let q;
-      if (vhViewMode === "date") {
-        q = query(colRef, where("status", "==", "voided"), where("dateKey", "==", vhNavDate), orderBy("createdAt", "desc"), limit(100));
-      } else {
-        q = query(colRef, where("status", "==", "voided"),
-          where("dateKey", ">=", `${vhNavMonth}-01`), where("dateKey", "<=", `${vhNavMonth}-31`),
-          orderBy("dateKey", "desc"), orderBy("createdAt", "desc"), limit(200));
-      }
-      const snap = await getDocs(q);
-      setVhRows(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      const dateFrom = vhViewMode === "date" ? vhNavDate : `${vhNavMonth}-01`;
+      const dateTo   = vhViewMode === "date" ? vhNavDate : `${vhNavMonth}-31`;
+      const cap = vhViewMode === "date" ? 100 : 200;
+      const liveRows = (invoices || []).filter(i =>
+        i.status === "voided" && (i.dateKey || "") >= dateFrom && (i.dateKey || "") <= dateTo
+      );
+      const archiveResult = await InvoiceArchive.queryPage({ status: "voided", dateFrom, dateTo, pageSize: cap });
+      const merged = [...liveRows, ...archiveResult.rows]
+        .sort((a, b) => (b.dateKey || "").localeCompare(a.dateKey || "") || (b.createdAt || 0) - (a.createdAt || 0))
+        .slice(0, cap);
+      setVhRows(merged);
     } catch (err) {
-      setVhError(err?.message || err?.code || "লোড ব্যর্থ হয়েছে — Firestore index লাগতে পারে");
+      setVhError(err?.message || "লোড ব্যর্থ হয়েছে");
     } finally {
       setVhLoading(false);
     }
-  }, [vhViewMode, vhNavDate, vhNavMonth]);
+  }, [vhViewMode, vhNavDate, vhNavMonth, invoices]);
 
   const openVoidHist = () => {
     setShowVoidHist(true);
