@@ -7280,8 +7280,43 @@ function useFSSCollection(name, value, setValue, ready, opts = {}) {
           if (!seenIds.has(key) && now - p.ts <= SAFETY_TIMEOUT_MS) merged.push(p.rec); // নতুন রেকর্ড, এখনো remote-এ নেই
         });
       }
-      lastSynced.current = merged;
-      setValue(merged);
+      // 🔴 ফিক্স (অফলাইনে ক্রয়/বিক্রি-জনিত স্টক পরিবর্তন অনলাইনে ফেরা পর্যন্ত
+      // স্ক্রিনে না দেখানো, ২৬ জুলাই ২০২৬): উপরের local→remote push effect
+      // ইচ্ছাকৃতভাবে transaction চলাকালীন (_fieldTxPending) stock/batches
+      // ফিল্ডকে "pending protection" ট্র্যাকারে পুরনো মান দিয়েই রাখে (যাতে
+      // transaction-এর নিজস্ব সার্ভার-কনফার্মড ফলাফলের সাথে false-conflict
+      // ধরা না পড়ে — দেখুন উপরের 🔴 ফিক্স কমেন্ট)। কিন্তু এই remote→local
+      // দিকে সেই একই "পুরনো মান" (বা অফলাইনে Firestore-এর স্টেল local-cache
+      // স্ন্যাপশট, যেটাও পুরনো) merge()-এর মাধ্যমে সরাসরি setValue()-এ চলে
+      // যাচ্ছিল — ফলে UI-তে দেখানো optimistic (নতুন) স্টক সংখ্যা প্রতিটা
+      // re-snapshot/heartbeat-এ আবার পুরনো মান দিয়ে ওভাররাইট হয়ে যেত।
+      // Firestore-এর runTransaction() অফলাইনে দ্রুত ব্যর্থ হয় না — বরং
+      // দীর্ঘক্ষণ অভ্যন্তরীণভাবে রিট্রাই করে, তাই _fieldTxPending লক ততক্ষণ
+      // ধরে থাকে, আর ততক্ষণ স্ক্রিনে পুরনো স্টকই বারবার দেখাতে থাকে।
+      // সমাধান: transaction এখনো চলমান/pending থাকা অবস্থায় (getFieldTxPending
+      // সেট থাকলে) সেই নির্দিষ্ট ফিল্ডগুলোর (stock/batches) জন্য merge/pending-
+      // protection সম্পূর্ণ উপেক্ষা করে সরাসরি বর্তমান local React state
+      // (valueRef.current)-এর মান বজায় রাখা হচ্ছে — একমাত্র transaction নিজে
+      // (তার .then()/.catch() হ্যান্ডলার, দেখুন savePE() ও অনুরূপ কলার) বা
+      // লক ছাড়া পাওয়ার পরের push effect-ই এই ফিল্ড আপডেট করতে পারবে, কোনো
+      // স্টেল/cache স্ন্যাপশট না।
+      let finalMerged = merged;
+      if (name === "products") {
+        const localById = new Map((valueRef.current || []).map(r => [String(r.id), r]));
+        finalMerged = merged.map(rec => {
+          const pendingFields = getFieldTxPending("products", rec.id);
+          if (!pendingFields || !pendingFields.size) return rec;
+          const localRec = localById.get(String(rec.id));
+          if (!localRec) return rec;
+          let patched = null;
+          pendingFields.forEach(f => {
+            if (rec[f] !== localRec[f]) { if (!patched) patched = { ...rec }; patched[f] = localRec[f]; }
+          });
+          return patched || rec;
+        });
+      }
+      lastSynced.current = finalMerged;
+      setValue(finalMerged);
       if (onSync) { onSync("syncing"); setTimeout(() => onSync("synced"), 0); setTimeout(() => onSync(null), 1500); }
     }, (err) => { onSync?.("error"); logErrorToCentral("sync:" + name, err); });
     return () => { FSS.unsubscribe(name); };
