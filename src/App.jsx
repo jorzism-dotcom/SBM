@@ -18105,7 +18105,10 @@ function LoginScreen({ users, onLogin, shopName, T, setUsers, devContact, master
           </div>
         </button>
 
-        {/* 👤 স্টাফ */}
+        {/* 👤 স্টাফ — 🔴 OFFLINE_MODE বিল্ডে হাইড: এখানে আলাদা স্টাফ লগইন (ইউজারনেম/
+            পাসওয়ার্ড) নেই, স্টাফ মোডে যেতে হলে এডমিন লগইন করে Settings-এর
+            "স্টাফ ↔ এডমিন" কুইক-সুইচ ব্যবহার করবেন। */}
+        {!OFFLINE_MODE && (
         <button
           className="qc-card-staff"
           onClick={() => setStage("staff")}
@@ -18150,6 +18153,7 @@ function LoginScreen({ users, onLogin, shopName, T, setUsers, devContact, master
             }}>→</div>
           </div>
         </button>
+        )}
       </div>
 
       {/* Footer */}
@@ -30763,6 +30767,8 @@ function NotificationCenterModule({ T, S, currentUser, setCurrentUser, users, ma
       });
     }
     } // end !OFFLINE_MODE (sync/disconnected)
+    // 🔴 OFFLINE_MODE বিল্ডে ব্যাকআপ নোটিফিকেশনও হাইড — ইউজারের অনুরোধে (২৭ জুলাই ২০২৬)।
+    if (!OFFLINE_MODE) {
     if (backupFailStreak >= 3) {
       list.push({
         key: "backup-failed", level: "critical", icon: "☁️",
@@ -30779,6 +30785,7 @@ function NotificationCenterModule({ T, S, currentUser, setCurrentUser, users, ma
         onAction: handleBackupNow, actionDisabled: backingUpNow,
       });
     }
+    } // end !OFFLINE_MODE (backup)
     if (!OFFLINE_MODE) {
     if ((pendingConflicts || []).length > 0) {
       list.push({
@@ -31460,6 +31467,24 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
   }
 
   const addUser = async () => {
+    // 🔴 OFFLINE_MODE: আলাদা স্টাফ লগইন নেই (শুধু এডমিন↔স্টাফ কুইক-সুইচ) — তাই
+    // ইউজারনেম/পাসওয়ার্ড লাগবে না, শুধু নাম দিলেই একটা স্টাফ প্রোফাইল তৈরি হবে
+    // এবং পারমিশন টগল সাথে সাথে কাজ করবে।
+    if (OFFLINE_MODE) {
+      if (!userForm.name.trim()) { showToast("নাম দিন", "#ef4444"); return; }
+      if (isMultiBusinessShop && !enabledBusinessTypes.includes(userForm.assignedBusinessType)) {
+        showToast("স্টাফের জন্য একটা বিজনেস নির্বাচন করুন", "#ef4444"); return;
+      }
+      const assignedBusinessType = isMultiBusinessShop
+        ? userForm.assignedBusinessType
+        : (enabledBusinessTypes[0] || businessType || null);
+      const autoUsername = "staff-" + uid();
+      setUsers(prev => [...prev, { id: uid(), name: userForm.name.trim(), username: autoUsername, password: "", pin: "", role: "staff", assignedBusinessType }]);
+      setUserForm({ name: "", username: "", password: "", pin: "", assignedBusinessType: businessType });
+      setShowNewUser(false);
+      showToast("নতুন স্টাফ প্রোফাইল তৈরি হয়েছে");
+      return;
+    }
     if (!userForm.name || !userForm.username || !userForm.password) { showToast("সব তথ্য দিন", "#ef4444"); return; }
     // 🆕 ধাপ ৫: multi-business শপে নতুন স্টাফের জন্য business assignment বাধ্যতামূলক
     if (isMultiBusinessShop && !enabledBusinessTypes.includes(userForm.assignedBusinessType)) {
@@ -31591,6 +31616,10 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
             <label style={S.label}>নাম</label>
             <input style={S.input} type="text" placeholder="যেমন: রহিম" value={userForm.name}
               onChange={e => setUserForm(f => ({ ...f, name: e.target.value }))} />
+            {/* 🔴 OFFLINE_MODE: আলাদা স্টাফ লগইন নেই (শুধু এডমিন↔স্টাফ কুইক-সুইচ) —
+                তাই ইউজারনেম/পাসওয়ার্ড/PIN ফিল্ড দেখানোর দরকার নেই, শুধু নাম দিলেই
+                পারমিশন সেট করা যাবে। */}
+            {!OFFLINE_MODE && (<>
             <label style={S.label}>ইউজারনেম</label>
             <input style={S.input} type="text" placeholder="যেমন: rahim123" value={userForm.username}
               autoCapitalize="off" autoCorrect="off" spellCheck="false" autoComplete="off"
@@ -31603,6 +31632,7 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
               type="tel" inputMode="numeric" pattern="[0-9]*" maxLength={6} placeholder="৪-৬ সংখ্যা (ঐচ্ছিক)"
               value={userForm.pin}
               onChange={e => setUserForm(f => ({ ...f, pin: e.target.value.replace(/[^0-9]/g,"") }))} />
+            </>)}
             {isMultiBusinessShop && (
               <>
                 <label style={S.label}>কোন বিজনেসে এসাইন করবেন?</label>
@@ -31628,7 +31658,7 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
               </>
             )}
             <button style={{ ...S.saveBtn, width:"100%", marginTop: 6 }} onClick={addUser}>
-              ✓ স্টাফ অ্যাকাউন্ট তৈরি করুন
+              {OFFLINE_MODE ? "✓ স্টাফ প্রোফাইল তৈরি করুন" : "✓ স্টাফ অ্যাকাউন্ট তৈরি করুন"}
             </button>
           </div>
         )}
@@ -31636,7 +31666,7 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
         <div style={{ marginTop: 14 }}>
           {staffList.length === 0 ? (
             <div style={{ color: T.sub, fontSize: 12, textAlign: "center", padding: "12px 0" }}>
-              কোনো স্টাফ অ্যাকাউন্ট নেই
+              {OFFLINE_MODE ? "কোনো স্টাফ প্রোফাইল নেই" : "কোনো স্টাফ অ্যাকাউন্ট নেই"}
             </div>
           ) : filtered.length === 0 ? (
             <div style={{ color: T.sub, fontSize: 12, textAlign: "center", padding: "12px 0" }}>
@@ -31655,7 +31685,7 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
                 <div style={{ width: 38, height: 38, borderRadius: 11, background: "linear-gradient(135deg,#8b5cf6,#4338ca)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight:900, color:"#fff", flexShrink: 0, boxShadow:"0 3px 10px #8b5cf655" }}>{initials}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ color: T.text, fontWeight: 800, fontSize: 13 }}>{u.name}</div>
-                  <div style={{ color: T.sub, fontSize: 10.5 }}>@{u.username}</div>
+                  {!OFFLINE_MODE && <div style={{ color: T.sub, fontSize: 10.5 }}>@{u.username}</div>}
                   <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginTop:4 }}>
                     {activePurchasePerm && (
                       <span style={{ color:"#c4b5fd", fontSize:9.5, fontWeight:700, background:"#7c3aed22", border:"1px solid #7c3aed44", borderRadius:20, padding:"1px 8px" }}>
@@ -31685,7 +31715,7 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
                   </div>
                 </div>
                 <button style={{ background: "#ef444415", border: "1px solid #ef444433", color: "#ef4444", borderRadius: 9, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}
-                  onClick={() => { if (window.confirm(`${u.name} (${u.username}) অ্যাকাউন্ট মুছবেন?`)) deleteUser(u.id); }}>
+                  onClick={() => { if (window.confirm(OFFLINE_MODE ? `${u.name}-এর স্টাফ প্রোফাইল মুছবেন?` : `${u.name} (${u.username}) অ্যাকাউন্ট মুছবেন?`)) deleteUser(u.id); }}>
                   🗑️
                 </button>
               </div>
@@ -34694,8 +34724,8 @@ function Settings_({ T, S, shopName,
           );
         })()}
 
-        {/* ── CARD 4: Claude AI ── */}
-        {(() => {
+        {/* ── CARD 4: Claude AI — 🔴 OFFLINE_MODE বিল্ডে হাইড (নেটওয়ার্ক লাগে, তাই অফলাইন বিল্ডে অপ্রাসঙ্গিক) ── */}
+        {!OFFLINE_MODE && (() => {
           const COLOR = "#a855f7";
           const isActive = !!anthropicKey;
           const handleSave = () => {
@@ -34788,7 +34818,11 @@ function Settings_({ T, S, shopName,
 
       {/* ══════════════════════════════════════════
           📡 SMS সেকশন — Gateway, Templates, বাকি রিমাইন্ডার, Logs
+          🔴 OFFLINE_MODE বিল্ডে পুরো SMS সেকশন (পিল হেডার সহ) হাইড —
+          SMS Gateway/Template/বাকি রিমাইন্ডার আগে থেকেই এই বিল্ডে হাইড ছিল,
+          এখন হেডার পিল ও SMS Logs কার্ডও হাইড করা হলো।
           ══════════════════════════════════════════ */}
+      {!OFFLINE_MODE && (<>
       <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:8, marginBottom:2 }}>
         <div style={{ flex:1, height:1, background:`linear-gradient(to right,${T.border || "#334155"},transparent)` }} />
         <div style={{ display:"flex", alignItems:"center", gap:7, background:"linear-gradient(135deg,#0ea5e9,#0284c7)", borderRadius:20, padding:"5px 14px" }}>
@@ -34797,6 +34831,7 @@ function Settings_({ T, S, shopName,
         </div>
         <div style={{ flex:1, height:1, background:`linear-gradient(to left,${T.border || "#334155"},transparent)` }} />
       </div>
+      </>)}
 
       {/* ── CARD 5: SMS Gateway — Full Width ── */}
       {!OFFLINE_MODE && (() => {
@@ -35279,8 +35314,8 @@ onChange={()=>{}} />
       </div>
       )}
 
-      {/* 📋 SMS Logs — সর্বশেষ ১০টি */}
-      {(() => {
+      {/* 📋 SMS Logs — সর্বশেষ ১০টি — 🔴 OFFLINE_MODE বিল্ডে হাইড */}
+      {!OFFLINE_MODE && (() => {
         const recentLogs = [...(smsLog || [])].reverse().slice(0, 10);
         const displayLogs = showAllLogs ? [...(smsLog || [])].reverse().slice(0, 50) : recentLogs;
         return (
