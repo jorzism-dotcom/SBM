@@ -17,7 +17,7 @@ import {
 import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
-import { Virtuoso, VirtuosoGrid } from "react-virtuoso";
+import { Virtuoso, VirtuosoGrid, TableVirtuoso } from "react-virtuoso";
 // 🧪 Shared pure logic (App.jsx-এর ভেতর ছড়িয়ে না রেখে src/logic.js-এ রাখা হয়েছে,
 // যাতে tests/logic-tests.mjs ঠিক এই একই কোড plain Node-এ import করে regression
 // টেস্ট চালাতে পারে — CI-তে build হওয়ার আগেই)।
@@ -8869,9 +8869,10 @@ const _pdfCache = new Map(); // temporary cache, auto-cleared after use
 
 function buildPdfHtml(content, shopName, title) {
   return `<!DOCTYPE html><html><head><meta charset="UTF-8">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Bengali:wght@400;500;600;700;800;900&display=swap">
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
-    body { font-family:'Noto Sans Bengali','Noto Sans','SolaimanLipi',Arial,sans-serif; background:#f8fafc; color:#0f172a; font-size:clamp(11px,3vw,13px); padding:clamp(12px,4vw,32px) clamp(12px,5vw,48px); max-width:780px; margin:0 auto; }
+    body { font-family:'Noto Sans Bengali','Hind Siliguri','SolaimanLipi',Arial,sans-serif; line-height:1.5; background:#f8fafc; color:#0f172a; font-size:clamp(11px,3vw,13px); padding:clamp(12px,4vw,32px) clamp(12px,5vw,48px); max-width:780px; margin:0 auto; }
     .header { text-align:center; margin-bottom:22px; padding-bottom:16px; border-bottom:3px solid #0369a1; position:relative; }
     .header::after { content:''; position:absolute; bottom:-3px; left:50%; transform:translateX(-50%); width:80px; height:3px; background:linear-gradient(90deg,#0ea5e9,#22c55e); border-radius:2px; }
     .shop-name { font-size:22px; font-weight:800; color:#0369a1; letter-spacing:-0.5px; margin-bottom:4px; }
@@ -8978,15 +8979,45 @@ async function _loadPdfLibs() {
 
 async function renderHtmlToCanvas(htmlContent) {
   await _loadPdfLibs();
-  const safeHtml = htmlContent.replace(/@import url\([^)]+\);?/g, "");
+  // 🔴 ফন্ট বাগ ফিক্স: আগে @import শুধু স্ট্রিপ করে ফেলা হতো (html2canvas @import
+  // ঠিকভাবে হ্যান্ডল করে না), কিন্তু তার ফলে বাংলা ফন্ট আইফ্রেমে আদৌ লোড হতো না —
+  // ব্রাউজার সিস্টেম ফল-ব্যাক ফন্টে যেত, যাতে যুক্তাক্ষর/মাত্রা ভেঙে-বিকৃত হয়ে
+  // প্রিন্ট/PDF আউটপুটে দেখাত (সংখ্যা-মুদ্রা ক্রম উল্টে যাওয়া, ড্যাশড লাইন ভাঙা ইত্যাদি)।
+  // এখন @import-কে আসল <link rel="stylesheet">-এ রূপান্তর করে <head>-এ বসানো হয়,
+  // আর html2canvas চালানোর আগে document.fonts.ready দিয়ে সত্যিকারের ফন্ট-লোড
+  // নিশ্চিত করা হয় (নেটওয়ার্ক ধীর হলে আটকে না থাকতে ৩০০০ms ক্যাপ সহ)।
+  const importUrls = [];
+  const safeHtml = htmlContent.replace(/@import url\(['"]?([^'")]+)['"]?\);?/g, (_, url) => {
+    importUrls.push(url);
+    return "";
+  });
 
   const iframe = document.createElement("iframe");
   iframe.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:900px;height:1px;border:none;visibility:hidden;";
   document.body.appendChild(iframe);
   await new Promise(res => { iframe.onload = res; iframe.srcdoc = safeHtml; });
   const iDoc = iframe.contentDocument || iframe.contentWindow.document;
+
+  // স্ট্রিপ করা @import-গুলো নির্ভরযোগ্য <link>-এ যোগ, আর সবসময় Noto Sans Bengali
+  // (বাংলা রেন্ডারের মূল ফন্ট) নিশ্চিতভাবে লোড করা — টেমপ্লেটে আলাদা করে না থাকলেও।
+  const linkUrls = new Set(importUrls);
+  linkUrls.add("https://fonts.googleapis.com/css2?family=Noto+Sans+Bengali:wght@400;500;600;700;800;900&display=swap");
+  linkUrls.forEach(url => {
+    const link = iDoc.createElement("link");
+    link.rel = "stylesheet";
+    link.href = url;
+    iDoc.head.appendChild(link);
+  });
+
   iframe.style.height = Math.max(iDoc.body.scrollHeight, 1200) + "px";
-  await new Promise(r => setTimeout(r, 800));
+
+  try {
+    await Promise.race([
+      iDoc.fonts?.ready || Promise.resolve(),
+      new Promise(r => setTimeout(r, 3000)),
+    ]);
+  } catch {}
+  await new Promise(r => setTimeout(r, 250));
 
   const canvas = await window.html2canvas(iDoc.body, {
     scale: 3, useCORS: true, allowTaint: true,
@@ -9154,24 +9185,24 @@ function buildThermalPdfHtml(content, shopName, title = "রশিদ") {
   // 80mm thermal printer format
   return `<!DOCTYPE html><html lang="bn"><head>
     <meta charset="UTF-8">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Bengali:wght@500;700;800;900&display=swap">
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Bengali:wght@700;800&display=swap');
       @page { size: 80mm auto; margin: 2mm 3mm; }
-      * { margin:0; padding:0; box-sizing:border-box; font-family:'Noto Sans Bengali','Hind Siliguri',monospace; }
-      body { width: 74mm; font-size: 11px; font-weight: 700; color: #000; background: #fff; }
-      .shop { text-align:center; font-size:15px; font-weight:900; margin-bottom:3px; }
-      .title { text-align:center; font-size:10px; margin-bottom:2px; }
-      .date { text-align:center; font-size:9px; color:#555; margin-bottom:4px; }
-      .dashed { border:none; border-top:1px dashed #000; margin:3px 0; }
-      .info { display:flex; justify-content:space-between; font-size:10px; margin:2px 0; }
+      * { margin:0; padding:0; box-sizing:border-box; font-family:'Noto Sans Bengali','Hind Siliguri',sans-serif; }
+      body { width: 74mm; font-size: 11px; font-weight: 700; line-height:1.55; color: #000; background: #fff; }
+      .shop { text-align:center; font-size:16px; font-weight:900; letter-spacing:0.2px; margin-bottom:2px; }
+      .title { text-align:center; font-size:10.5px; color:#333; margin-bottom:2px; }
+      .date { text-align:center; font-size:9.5px; color:#555; margin-bottom:5px; }
+      .dashed { border:none; border-top:1.4px dashed #444; margin:5px 0; }
+      .info { display:flex; justify-content:space-between; align-items:baseline; font-size:10.5px; margin:3px 0; gap:8px; }
       .info-l { color:#333; }
-      .info-r { font-weight:800; }
-      table { width:100%; border-collapse:collapse; font-size:9px; }
-      th { border-bottom:1px solid #000; padding:2px 0; text-align:left; font-size:9px; }
-      td { padding:2px 0; }
+      .info-r { font-weight:800; text-align:right; }
+      table { width:100%; border-collapse:collapse; font-size:9.5px; margin:2px 0; }
+      th { border-bottom:1.4px solid #000; padding:4px 2px; text-align:left; font-size:9.5px; font-weight:800; }
+      td { padding:4px 2px; vertical-align:top; }
       .right { text-align:right; }
-      .total { font-size:12px; font-weight:900; border-top:1px solid #000; padding-top:3px; }
-      .footer { text-align:center; font-size:9px; color:#555; margin-top:5px; border-top:1px dashed #000; padding-top:3px; }
+      .total { font-size:13px; font-weight:900; border-top:1.4px solid #000; padding-top:5px; margin-top:3px; }
+      .footer { text-align:center; font-size:9.5px; color:#555; margin-top:6px; border-top:1px dashed #444; padding-top:4px; }
       @media print { @page { size: 80mm auto; margin: 2mm 3mm; } }
     </style>
   </head><body>
@@ -18425,7 +18456,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
           </div>
           <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
             {walkInExistingId && existingBal > 0 && (
-              <div style={{ fontSize:11, color:"#ef4444", fontWeight:800 }}>বাকি ৳{fmt(existingBal)}</div>
+              <div style={{ fontSize:11, color:"#ef4444", fontWeight:800 }}>পূর্বের বাকি ৳{fmt(existingBal)}</div>
             )}
             <button type="button" onClick={() => { setWalkInExistingId(""); setWalkInName(""); setWalkInMobile(""); setWalkInAddress(""); setWalkInCustMode("new"); }}
               style={{ background:"none", border:"none", color:"#ef4444", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>✕ বদলান</button>
@@ -19105,13 +19136,13 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     // Fallback: build HTML directly from printInv data (no DOM ref needed)
     if (!printInv) { showToast("প্রিন্টের জন্য ইনভয়েস নেই", "#ef4444"); return; }
     const inv = printInv;
-    const css = `body{font-family:'Noto Sans Bengali','Hind Siliguri',sans-serif;background:#fff;color:#000;padding:16px;font-size:13px;max-width:400px;margin:0 auto;}.center{text-align:center;}.bold{font-weight:700;}.line{border-top:1px dashed #999;margin:8px 0;}table{width:100%;border-collapse:collapse;}th,td{padding:4px 2px;font-size:12px;}th{text-align:left;border-bottom:1px solid #ccc;}.right{text-align:right;}.total{font-size:15px;font-weight:800;color:#16a34a;}`;
+    const css = `body{font-family:'Noto Sans Bengali','Hind Siliguri',sans-serif;line-height:1.5;background:#fff;color:#000;padding:16px;font-size:13px;max-width:400px;margin:0 auto;}.center{text-align:center;}.bold{font-weight:700;}.line{border-top:1px dashed #999;margin:8px 0;}table{width:100%;border-collapse:collapse;}th,td{padding:4px 2px;font-size:12px;}th{text-align:left;border-bottom:1px solid #ccc;}.right{text-align:right;}.total{font-size:15px;font-weight:800;color:#16a34a;}`;
     const rows = (inv.items||[]).map(it => {
       const _g = it.qty*it.price, _d = Math.min(Math.max(parseFloat(it.itemDiscount)||0,0), _g);
       return `<tr><td>${medBadgeHtmlStr(it.dosageForm)}${it.name}</td><td class="right">${it.qty}</td><td class="right">৳${it.price}</td><td class="right" style="color:#16a34a">${_d>0?`–৳${_d}`:"—"}</td><td class="right">৳${_g-_d}</td></tr>`;
     }).join("");
     const payLabel = inv.payType==="baki"?"বাকি":inv.payType==="partial"?"আংশিক":"নগদ";
-    const html = `<html><head><title>Invoice</title><style>${css}</style></head><body>
+    const html = `<html><head><title>Invoice</title><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Bengali:wght@400;700;800&display=swap"><style>${css}</style></head><body>
       <div class="center bold" style="font-size:16px">${inv.shopName||"SBM"}</div>
       <div class="center" style="font-size:12px;color:#555">${inv.date} | ইনভয়েস: ${inv.id.slice(-6).toUpperCase()}</div>
       <div class="line"></div>
@@ -22945,37 +22976,41 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
 
           {sortedItems.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো পণ্য নেই</div>}
 
-          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-            {sortedItems.map((p, i) => {
-              const pct = Math.max(2, Math.round(((p.stock||0) / maxStock) * 100));
-              const grad = BAR_GRADIENTS[i % BAR_GRADIENTS.length];
-              const numColor = grad.match(/#([0-9a-f]{6})/gi);
-              const labelColor = numColor ? numColor[numColor.length-1] : accent;
-              const expDays = p.expiryDate ? Math.ceil((new Date(p.expiryDate) - now) / 86400000) : null;
-              return (
-                <div key={p.id} style={{ background:"#071a0f", border:`1px solid ${accent}33`, borderLeft:`3px solid ${accent}`, borderRadius:14, padding:"12px 14px" }}>
-                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:4 }}>
-                    <span style={{ color:"#e2e8f0", fontWeight:800, fontSize:14 }}><DosageBadge dosageForm={p.dosageForm} />{p.name}{p.unit ? <span style={{ color:"#64748b", fontSize:11 }}> ({p.unit})</span> : null}</span>
-                    <span style={{ color:labelColor, fontWeight:900, fontSize:15 }}>{p.stock||0}{p.unit||""}</span>
-                  </div>
-                  <div style={{ color:"#94a3b8", fontSize:11, marginBottom:6 }}>🏭 {p.company || p.category || "অজ্ঞাত"}</div>
-                  {expDays !== null && (
-                    <div style={{ color: expDays < 0 ? "#ef4444" : "#f59e0b", fontSize:10, fontWeight:700, marginBottom:6 }}>
-                      {expDays < 0 ? `⚠️ মেয়াদোত্তীর্ণ (${fmtExpiryMonth(p.expiryDate)})` : `⏳ মেয়াদ: ${fmtExpiryMonth(p.expiryDate)}`}
+          {sortedItems.length > 0 && (
+            <Virtuoso
+              style={{ height: "calc(100dvh - 260px)" }}
+              data={sortedItems}
+              itemContent={(i, p) => {
+                const pct = Math.max(2, Math.round(((p.stock||0) / maxStock) * 100));
+                const grad = BAR_GRADIENTS[i % BAR_GRADIENTS.length];
+                const numColor = grad.match(/#([0-9a-f]{6})/gi);
+                const labelColor = numColor ? numColor[numColor.length-1] : accent;
+                const expDays = p.expiryDate ? Math.ceil((new Date(p.expiryDate) - now) / 86400000) : null;
+                return (
+                  <div key={p.id} style={{ background:"#071a0f", border:`1px solid ${accent}33`, borderLeft:`3px solid ${accent}`, borderRadius:14, padding:"12px 14px", marginBottom:10 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:4 }}>
+                      <span style={{ color:"#e2e8f0", fontWeight:800, fontSize:14 }}><DosageBadge dosageForm={p.dosageForm} />{p.name}{p.unit ? <span style={{ color:"#64748b", fontSize:11 }}> ({p.unit})</span> : null}</span>
+                      <span style={{ color:labelColor, fontWeight:900, fontSize:15 }}>{p.stock||0}{p.unit||""}</span>
                     </div>
-                  )}
-                  <div style={{ height:8, borderRadius:999, background:"#0d2e18", overflow:"hidden" }}>
-                    <div style={{ height:"100%", width:`${pct}%`, borderRadius:999, background:grad, transition:"width 0.5s ease" }} />
+                    <div style={{ color:"#94a3b8", fontSize:11, marginBottom:6 }}>🏭 {p.company || p.category || "অজ্ঞাত"}</div>
+                    {expDays !== null && (
+                      <div style={{ color: expDays < 0 ? "#ef4444" : "#f59e0b", fontSize:10, fontWeight:700, marginBottom:6 }}>
+                        {expDays < 0 ? `⚠️ মেয়াদোত্তীর্ণ (${fmtExpiryMonth(p.expiryDate)})` : `⏳ মেয়াদ: ${fmtExpiryMonth(p.expiryDate)}`}
+                      </div>
+                    )}
+                    <div style={{ height:8, borderRadius:999, background:"#0d2e18", overflow:"hidden" }}>
+                      <div style={{ height:"100%", width:`${pct}%`, borderRadius:999, background:grad, transition:"width 0.5s ease" }} />
+                    </div>
+                    <div style={{ display:"flex", gap:10, marginTop:5 }}>
+                      {p.spPrice > 0 ? <span style={{ color:"#a78bfa", fontSize:10 }}>SP: ৳{p.spPrice}</span> : null}
+                      {p.costPrice ? <span style={{ color:"#f59e0b", fontSize:10 }}>ক্রয়: ৳{p.costPrice}</span> : null}
+                      {p.price ? <span style={{ color:"#1fd15e", fontSize:10 }}>বিক্রয়: ৳{p.price}</span> : null}
+                    </div>
                   </div>
-                  <div style={{ display:"flex", gap:10, marginTop:5 }}>
-                    {p.spPrice > 0 ? <span style={{ color:"#a78bfa", fontSize:10 }}>SP: ৳{p.spPrice}</span> : null}
-                    {p.costPrice ? <span style={{ color:"#f59e0b", fontSize:10 }}>ক্রয়: ৳{p.costPrice}</span> : null}
-                    {p.price ? <span style={{ color:"#1fd15e", fontSize:10 }}>বিক্রয়: ৳{p.price}</span> : null}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              }}
+            />
+          )}
         </div>
       );
     }
@@ -23044,55 +23079,62 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           )}
 
           {supItems.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো পণ্য নেই</div>}
-          <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-            {[...supItems].sort((a,b)=>(b.stock||0)-(a.stock||0)).map((p, i) => {
-              const pct = Math.max(2, Math.round(((p.stock||0) / maxStock) * 100));
-              const grad = BAR_GRADIENTS[i % BAR_GRADIENTS.length];
-              const numColor = grad.match(/#([0-9a-f]{6})/gi);
-              const labelColor = numColor ? numColor[numColor.length-1] : accent;
-              const expDays = p.expiryDate ? Math.ceil((new Date(p.expiryDate) - now) / 86400000) : null;
-              return (
-                <div key={p.id} style={{ background:"#071a0f", border:`1px solid ${accent}22`, borderRadius:14, padding:"12px 14px" }}>
-                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6 }}>
-                    <span style={{ color:"#e2e8f0", fontWeight:800, fontSize:14 }}><DosageBadge dosageForm={p.dosageForm} />{p.name}{p.unit ? <span style={{ color:"#64748b", fontSize:11 }}> ({p.unit})</span> : null}</span>
-                    <div style={{ textAlign:"right" }}>
-                      <span style={{ color:labelColor, fontWeight:900, fontSize:15 }}>{p.stock||0}{p.unit||""}</span>
-                      {expDays !== null && (
-                        <div style={{ color: expDays < 0 ? "#ef4444" : "#f59e0b", fontSize:10, fontWeight:700 }}>
-                          {expDays < 0 ? `⚠️ মেয়াদোত্তীর্ণ (${fmtExpiryMonth(p.expiryDate)})` : `⏳ মেয়াদ: ${fmtExpiryMonth(p.expiryDate)}`}
+          {supItems.length > 0 && (() => {
+            const sortedSupItems = [...supItems].sort((a,b)=>(b.stock||0)-(a.stock||0));
+            return (
+              <Virtuoso
+                style={{ height: "calc(100dvh - 340px)" }}
+                data={sortedSupItems}
+                itemContent={(i, p) => {
+                  const pct = Math.max(2, Math.round(((p.stock||0) / maxStock) * 100));
+                  const grad = BAR_GRADIENTS[i % BAR_GRADIENTS.length];
+                  const numColor = grad.match(/#([0-9a-f]{6})/gi);
+                  const labelColor = numColor ? numColor[numColor.length-1] : accent;
+                  const expDays = p.expiryDate ? Math.ceil((new Date(p.expiryDate) - now) / 86400000) : null;
+                  return (
+                    <div key={p.id} style={{ background:"#071a0f", border:`1px solid ${accent}22`, borderRadius:14, padding:"12px 14px", marginBottom:10 }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:6 }}>
+                        <span style={{ color:"#e2e8f0", fontWeight:800, fontSize:14 }}><DosageBadge dosageForm={p.dosageForm} />{p.name}{p.unit ? <span style={{ color:"#64748b", fontSize:11 }}> ({p.unit})</span> : null}</span>
+                        <div style={{ textAlign:"right" }}>
+                          <span style={{ color:labelColor, fontWeight:900, fontSize:15 }}>{p.stock||0}{p.unit||""}</span>
+                          {expDays !== null && (
+                            <div style={{ color: expDays < 0 ? "#ef4444" : "#f59e0b", fontSize:10, fontWeight:700 }}>
+                              {expDays < 0 ? `⚠️ মেয়াদোত্তীর্ণ (${fmtExpiryMonth(p.expiryDate)})` : `⏳ মেয়াদ: ${fmtExpiryMonth(p.expiryDate)}`}
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  </div>
-                  <div style={{ height:8, borderRadius:999, background:"#0d2e18", overflow:"hidden" }}>
-                    <div style={{ height:"100%", width:`${pct}%`, borderRadius:999, background:grad, transition:"width 0.5s ease" }} />
-                  </div>
-                  <div style={{ display:"flex", gap:10, marginTop:5 }}>
-                    {p.spPrice > 0 ? <span style={{ color:"#a78bfa", fontSize:10 }}>SP: ৳{p.spPrice}</span> : null}
-                    {p.costPrice ? <span style={{ color:"#f59e0b", fontSize:10 }}>ক্রয়: ৳{p.costPrice}</span> : null}
-                    {p.price ? <span style={{ color:"#1fd15e", fontSize:10 }}>বিক্রয়: ৳{p.price}</span> : null}
-                  </div>
-                  {/* 🗑️ মেয়াদোত্তীর্ণ ব্যাচ সরান — শুধু এডমিন, শুধু 'expired' লিস্টে */}
-                  {baseInvKey === 'expired' && currentUser?.role !== "staff" && (() => {
-                    const expBatches = getExpiredBatchesOf(p, now);
-                    if (expBatches.length === 0) return null;
-                    return (
-                      <div style={{ marginTop:8, display:"flex", flexDirection:"column", gap:5 }}>
-                        {expBatches.map((b, bi) => (
-                          <button key={bi}
-                            onClick={() => { setExpRemoveSubmitting(false); setExpRemoveConfirm({ product: p, batch: b }); }}
-                            style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:"#ef444414", border:"1px solid #ef444440", borderRadius:10, padding:"7px 10px", color:"#f87171", fontSize:11, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
-                            <span>🗑️ দোকান থেকে সরানো হয়েছে — অ্যাপ থেকেও সরান {b.batchNo ? `(${b.batchNo})` : ""}</span>
-                            <span>{b.qty}{p.unit||""} · ৳{fmt(Math.round((b.qty||0)*(b.costPrice||0)))}</span>
-                          </button>
-                        ))}
                       </div>
-                    );
-                  })()}
-                </div>
-              );
-            })}
-          </div>
+                      <div style={{ height:8, borderRadius:999, background:"#0d2e18", overflow:"hidden" }}>
+                        <div style={{ height:"100%", width:`${pct}%`, borderRadius:999, background:grad, transition:"width 0.5s ease" }} />
+                      </div>
+                      <div style={{ display:"flex", gap:10, marginTop:5 }}>
+                        {p.spPrice > 0 ? <span style={{ color:"#a78bfa", fontSize:10 }}>SP: ৳{p.spPrice}</span> : null}
+                        {p.costPrice ? <span style={{ color:"#f59e0b", fontSize:10 }}>ক্রয়: ৳{p.costPrice}</span> : null}
+                        {p.price ? <span style={{ color:"#1fd15e", fontSize:10 }}>বিক্রয়: ৳{p.price}</span> : null}
+                      </div>
+                      {/* 🗑️ মেয়াদোত্তীর্ণ ব্যাচ সরান — শুধু এডমিন, শুধু 'expired' লিস্টে */}
+                      {baseInvKey === 'expired' && currentUser?.role !== "staff" && (() => {
+                        const expBatches = getExpiredBatchesOf(p, now);
+                        if (expBatches.length === 0) return null;
+                        return (
+                          <div style={{ marginTop:8, display:"flex", flexDirection:"column", gap:5 }}>
+                            {expBatches.map((b, bi) => (
+                              <button key={bi}
+                                onClick={() => { setExpRemoveSubmitting(false); setExpRemoveConfirm({ product: p, batch: b }); }}
+                                style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:"#ef444414", border:"1px solid #ef444440", borderRadius:10, padding:"7px 10px", color:"#f87171", fontSize:11, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
+                                <span>🗑️ দোকান থেকে সরানো হয়েছে — অ্যাপ থেকেও সরান {b.batchNo ? `(${b.batchNo})` : ""}</span>
+                                <span>{b.qty}{p.unit||""} · ৳{fmt(Math.round((b.qty||0)*(b.costPrice||0)))}</span>
+                              </button>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  );
+                }}
+              />
+            );
+          })()}
         </div>
       );
     }
@@ -23250,34 +23292,38 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
         {items.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>কোনো পণ্য নেই</div>}
 
         {/* সাপ্লায়ার কার্ড তালিকা */}
-        <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-          {supplierList.map(sup => {
-            const supTotal = sup.products.reduce((s,p)=>s+(p.stock||0), 0);
-            const outCount = sup.products.filter(p=>(p.stock||0)===0).length;
-            const lowCount = sup.products.filter(p=>(p.stock||0)>0&&(p.stock||0)<=(p.minStockAlert||5)).length;
-            return (
-              // 🔴 রিডেবিলিটি ফিক্স: আগে প্রায়-স্বচ্ছ গ্র্যাডিয়েন্ট ব্যাকগ্রাউন্ডে ধূসর টেক্সট
-              // পড়া কঠিন ছিল — এখন সলিড গাঢ় নেভি কার্ড + উজ্জ্বল হাই-কনট্রাস্ট টেক্সট।
-              <div key={sup.name} className="tap-card"
-                onClick={() => openSupplier(sup.name)}
-                style={{ display:"flex", alignItems:"center", gap:12, background:"#111c33", border:`1.5px solid ${accent}55`, borderLeft:`4px solid ${accent}`, borderRadius:14, padding:"13px 15px", cursor:"pointer" }}>
-                <div style={{ width:42, height:42, borderRadius:12, background:`${accent}26`, border:`1px solid ${accent}55`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-                  <span style={{ fontSize:19 }}>🏭</span>
-                </div>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ color:"#ffffff", fontWeight:800, fontSize:14.5 }}>{sup.name}</div>
-                  <div style={{ display:"flex", gap:8, marginTop:5, flexWrap:"wrap" }}>
-                    <span style={{ color:accent, fontSize:11.5, fontWeight:800 }}>{sup.products.length}টি পণ্য</span>
-                    <span style={{ color:"#cbd5e1", fontSize:11.5, fontWeight:600 }}>মোট স্টক: {supTotal}</span>
-                    {outCount > 0 && <span style={{ color:"#fca5a5", background:"#7f1d1d55", borderRadius:6, padding:"1px 6px", fontSize:11, fontWeight:800 }}>🚫 {outCount}টি শেষ</span>}
-                    {lowCount > 0 && <span style={{ color:"#fcd34d", background:"#78350f55", borderRadius:6, padding:"1px 6px", fontSize:11, fontWeight:800 }}>⚠️ {lowCount}টি কম</span>}
+        {supplierList.length > 0 && (
+          <Virtuoso
+            style={{ height: "calc(100dvh - 300px)" }}
+            data={supplierList}
+            itemContent={(i, sup) => {
+              const supTotal = sup.products.reduce((s,p)=>s+(p.stock||0), 0);
+              const outCount = sup.products.filter(p=>(p.stock||0)===0).length;
+              const lowCount = sup.products.filter(p=>(p.stock||0)>0&&(p.stock||0)<=(p.minStockAlert||5)).length;
+              return (
+                // 🔴 রিডেবিলিটি ফিক্স: আগে প্রায়-স্বচ্ছ গ্র্যাডিয়েন্ট ব্যাকগ্রাউন্ডে ধূসর টেক্সট
+                // পড়া কঠিন ছিল — এখন সলিড গাঢ় নেভি কার্ড + উজ্জ্বল হাই-কনট্রাস্ট টেক্সট।
+                <div key={sup.name} className="tap-card"
+                  onClick={() => openSupplier(sup.name)}
+                  style={{ display:"flex", alignItems:"center", gap:12, background:"#111c33", border:`1.5px solid ${accent}55`, borderLeft:`4px solid ${accent}`, borderRadius:14, padding:"13px 15px", cursor:"pointer", marginBottom:10 }}>
+                  <div style={{ width:42, height:42, borderRadius:12, background:`${accent}26`, border:`1px solid ${accent}55`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+                    <span style={{ fontSize:19 }}>🏭</span>
                   </div>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ color:"#ffffff", fontWeight:800, fontSize:14.5 }}>{sup.name}</div>
+                    <div style={{ display:"flex", gap:8, marginTop:5, flexWrap:"wrap" }}>
+                      <span style={{ color:accent, fontSize:11.5, fontWeight:800 }}>{sup.products.length}টি পণ্য</span>
+                      <span style={{ color:"#cbd5e1", fontSize:11.5, fontWeight:600 }}>মোট স্টক: {supTotal}</span>
+                      {outCount > 0 && <span style={{ color:"#fca5a5", background:"#7f1d1d55", borderRadius:6, padding:"1px 6px", fontSize:11, fontWeight:800 }}>🚫 {outCount}টি শেষ</span>}
+                      {lowCount > 0 && <span style={{ color:"#fcd34d", background:"#78350f55", borderRadius:6, padding:"1px 6px", fontSize:11, fontWeight:800 }}>⚠️ {lowCount}টি কম</span>}
+                    </div>
+                  </div>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={accent} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
                 </div>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={accent} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
-              </div>
-            );
-          })}
-        </div>
+              );
+            }}
+          />
+        )}
       </div>
     );
   }
@@ -23355,9 +23401,17 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
         )}
         {sortedRows.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>এই মাসে কোনো মেয়াদোত্তীর্ণ পণ্য সরানো হয়নি</div>}
         {sortedRows.length > 0 && (
-          <div style={{ background:"#fff", borderRadius:14, overflow:"hidden", boxShadow:"0 1px 4px rgba(0,0,0,0.08)" }}>
-            <table style={{ width:"100%", borderCollapse:"collapse", fontFamily:"inherit" }}>
-              <thead>
+          <div style={{ background:"#fff", borderRadius:14, overflow:"hidden", boxShadow:"0 1px 4px rgba(0,0,0,0.08)", height:"calc(100dvh - 380px)" }}>
+            <TableVirtuoso
+              style={{ height: "100%" }}
+              data={sortedRows}
+              components={{
+                Table: (props) => <table {...props} style={{ width:"100%", borderCollapse:"collapse", fontFamily:"inherit" }} />,
+                TableHead: React.forwardRef((props, ref) => <thead {...props} ref={ref} />),
+                TableRow: (props) => <tr {...props} style={{ background: props["data-index"] % 2 === 1 ? "#f8faff" : "#fff" }} />,
+                TableBody: React.forwardRef((props, ref) => <tbody {...props} ref={ref} />),
+              }}
+              fixedHeaderContent={() => (
                 <tr style={{ background:"linear-gradient(135deg,#0369a1,#0284c7)" }}>
                   <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"center", width:34 }}>#</th>
                   <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"left" }}>পণ্য</th>
@@ -23367,24 +23421,22 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"right" }}>মেয়াদ</th>
                   <th style={{ color:"#fff", padding:"9px 10px", fontSize:11.5, fontWeight:700, textAlign:"right" }}>সরানো হয়েছে</th>
                 </tr>
-              </thead>
-              <tbody>
-                {sortedRows.map((r, i) => (
-                  <tr key={r.id || i} style={{ background: i % 2 === 1 ? "#f8faff" : "#fff" }}>
-                    <td style={{ padding:"9px 10px", fontSize:12, textAlign:"center", fontWeight:700, color:"#0369a1", borderBottom:"1px solid #f1f5f9" }}>{i+1}</td>
-                    <td style={{ padding:"9px 10px", fontSize:12.5, color:"#0f172a", borderBottom:"1px solid #f1f5f9" }}>
-                      <div style={{ fontWeight:600 }}>{r.productName}</div>
-                      {r.batchNo && <div style={{ color:"#0891b2", fontSize:10.5, fontWeight:700, marginTop:2 }}>ব্যাচ: {r.batchNo}</div>}
-                    </td>
-                    <td style={{ padding:"9px 10px", fontSize:12, color:"#334155", borderBottom:"1px solid #f1f5f9" }}>{r.company || r.supplier || "অজ্ঞাত"}</td>
-                    <td style={{ padding:"9px 10px", fontSize:12.5, color:"#334155", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{r.qty}{r.unit||""}</td>
-                    <td style={{ padding:"9px 10px", fontSize:12.5, fontWeight:700, color:"#0f172a", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>৳{fmt(r.value||0)}</td>
-                    <td style={{ padding:"9px 10px", fontSize:12, fontWeight:700, color:"#dc2626", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{r.expiryDate ? fmtExpiryMonth(r.expiryDate) : "-"}</td>
-                    <td style={{ padding:"9px 10px", fontSize:11.5, color:"#334155", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{r.dateKey}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+              )}
+              itemContent={(i, r) => (
+                <>
+                  <td style={{ padding:"9px 10px", fontSize:12, textAlign:"center", fontWeight:700, color:"#0369a1", borderBottom:"1px solid #f1f5f9" }}>{i+1}</td>
+                  <td style={{ padding:"9px 10px", fontSize:12.5, color:"#0f172a", borderBottom:"1px solid #f1f5f9" }}>
+                    <div style={{ fontWeight:600 }}>{r.productName}</div>
+                    {r.batchNo && <div style={{ color:"#0891b2", fontSize:10.5, fontWeight:700, marginTop:2 }}>ব্যাচ: {r.batchNo}</div>}
+                  </td>
+                  <td style={{ padding:"9px 10px", fontSize:12, color:"#334155", borderBottom:"1px solid #f1f5f9" }}>{r.company || r.supplier || "অজ্ঞাত"}</td>
+                  <td style={{ padding:"9px 10px", fontSize:12.5, color:"#334155", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{r.qty}{r.unit||""}</td>
+                  <td style={{ padding:"9px 10px", fontSize:12.5, fontWeight:700, color:"#0f172a", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>৳{fmt(r.value||0)}</td>
+                  <td style={{ padding:"9px 10px", fontSize:12, fontWeight:700, color:"#dc2626", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{r.expiryDate ? fmtExpiryMonth(r.expiryDate) : "-"}</td>
+                  <td style={{ padding:"9px 10px", fontSize:11.5, color:"#334155", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{r.dateKey}</td>
+                </>
+              )}
+            />
           </div>
         )}
       </div>
@@ -26112,27 +26164,26 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
         <div style={{ display: "flex", justifyContent: "space-between", color: T.text, fontWeight: 800, fontSize: 16, marginBottom: 4 }}>
           <span>মোট খরচ</span><span>৳{fmt(inv.total)}</span>
         </div>
-        {inv.payType === "partial" && (
-          <>
-            <div style={{ display: "flex", justifyContent: "space-between", color: "#22c55e", fontSize: 13, marginBottom: 2 }}>
-              <span>নগদ পেয়েছি</span><span>৳{fmt(inv.paidAmount || 0)}</span>
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", color: "#ef4444", fontSize: 13 }}>
-              <span>এই বাকি</span><span>৳{fmt(inv.bakiAmount || 0)}</span>
-            </div>
-          </>
-        )}
-        <div style={{ display: "flex", justifyContent: "space-between", color: T.sub, fontSize: 12, marginTop: 4 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: T.sub, fontSize: 12, marginBottom: inv.payType === "partial" ? 2 : 4 }}>
           <span>পরিশোধ পদ্ধতি</span>
-          <span>{inv.payType === "baki" ? "বাকি" : inv.payType === "partial" ? "আংশিক" : "নগদ"}</span>
+          <span style={{ color: inv.payType==="baki"?"#ef4444":inv.payType==="partial"?"#f59e0b":"#22c55e", fontWeight:700 }}>
+            {inv.payType === "baki" ? `বাকি ৳${fmt(inv.total)}`
+              : inv.payType === "partial" ? `আংশিক — নগদ ৳${fmt(inv.paidAmount || 0)}`
+              : "নগদ পরিশোধ"}
+          </span>
         </div>
+        {inv.payType === "partial" && (
+          <div style={{ display: "flex", justifyContent: "space-between", color: "#ef4444", fontSize: 13, marginBottom: 4 }}>
+            <span>এখনকার বাকি</span><span>৳{fmt(inv.bakiAmount || 0)}</span>
+          </div>
+        )}
         {(inv.payType === "baki" || inv.payType === "partial" || (inv.prevBalance||0) > 0) && (
           <>
-            <div style={{ borderTop: `1px dashed ${T.border}`, marginTop: 8, paddingTop: 8 }} />
-            <div style={{ display: "flex", justifyContent: "space-between", color: "#f59e0b", fontSize: 13, marginBottom: 2 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", color: "#f59e0b", fontSize: 13, marginTop: 4 }}>
               <span style={{ fontWeight: 700 }}>পূর্বের বাকি</span><span style={{ fontWeight: 700 }}>৳{fmt(inv.prevBalance || 0)}</span>
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", color: "#ef4444", fontSize: 14, padding: "8px 10px", background: "#ef444415", borderRadius: 10, marginTop: 4 }}>
+            <div style={{ borderTop: `1px dashed ${T.border}`, marginTop: 8, marginBottom: 8 }} />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "#ef4444", fontSize: 14, padding: "8px 10px", background: "#ef444415", borderRadius: 10 }}>
               <span style={{ fontWeight: 800 }}>বর্তমান বাকি</span><span style={{ fontWeight: 900 }}>৳{fmt((inv.prevBalance || 0) + (inv.bakiAmount || 0) - (inv.overpayAmount || 0))}</span>
             </div>
           </>
