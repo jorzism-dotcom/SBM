@@ -11045,7 +11045,11 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
     const returnReversalToday = cashLogsAll.filter(c => c.type === "return_refund_reversal" && c.dateKey === todayKeyEn).reduce((s, c) => s + (c.amount || 0), 0);
 
     const purchaseOrdersAll = (purchaseOrders || []).filter(p => p._type === "pe");
-    const todayPurchases = purchaseOrdersAll.filter(p => p.dateKey === todayKey);
+    // 🔴 ফিক্স (হোম পেজ vs "দৈনিক সারসংক্ষেপ" পেজের হিসাব অমিল): এখানে শুধু
+    // dateKey চেক হতো, কিন্তু buildDailySummaryData()-এ dateKey না থাকলে
+    // createdAt ফলব্যাকও চেক হয় — ফলে একই দিনের ক্রয় দুই জায়গায় ভিন্ন সংখ্যা
+    // দেখাতে পারত। এখন দুই জায়গায়ই একই (dateKey অথবা createdAt) শর্ত।
+    const todayPurchases = purchaseOrdersAll.filter(p => p.dateKey === todayKey || (p.createdAt && p.createdAt.startsWith(todayKey)));
     const todayPurchaseCost = todayPurchases.reduce((s, p) => s + (p.totalCost || 0), 0);
     const todayPurchaseCount = todayPurchases.length;
     const monthPurchaseCost = purchaseOrdersAll.filter(p => (p.dateKey || "") >= monthStartKey).reduce((s, p) => s + (p.totalCost || 0), 0);
@@ -16827,26 +16831,9 @@ function SmartBusinessMgmt() {
                 transition: "all 0.2s",
                 letterSpacing: isMoreActive ? 0.3 : 0,
               }}>অন্যান্য</span>
-              {staleSyncCount > 0 ? (
-                <span style={{
-                  minWidth: 15, height: 15, padding: "0 3px",
-                  background: "#ef4444", color: "#fff",
-                  borderRadius: 8, fontSize: 9, fontWeight: 800,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  position: "absolute", top: 3, right: "calc(50% - 16px)",
-                  boxShadow: "0 0 6px #ef444488",
-                  animation: "pulse 1.5s ease-in-out infinite",
-                }}>{staleSyncCount > 99 ? "99+" : staleSyncCount}</span>
-              ) : backupNeeded && (
-                <span style={{
-                  width: 7, height: 7,
-                  background: "#f59e0b",
-                  borderRadius: "50%",
-                  position: "absolute", top: 6, right: "calc(50% - 14px)",
-                  boxShadow: "0 0 6px #f59e0b88",
-                  animation: "pulse 1.5s ease-in-out infinite",
-                }} />
-              )}
+              {/* 🔴 ফিক্স (ইউজার রিকোয়েস্ট — "অন্যান্য" ট্যাবের নোটিফিকেশন ব্যাজ বন্ধ):
+                  staleSyncCount/backupNeeded ব্যাজ রেন্ডার সরানো হলো। state/effect
+                  (staleSyncCount) অক্ষুণ্ণ রাখা হয়েছে যদি ভবিষ্যতে অন্য কোথাও দরকার হয়। */}
             </button>
           );
         })()}
@@ -21156,6 +21143,7 @@ function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, set
       isFreeStock: peForm.isFreeStock || false,
       at: now, dateKey: now.split("T")[0],
       unit: prod.unit || "",
+      dosageForm: prod.dosageForm || "", // 🔴 ফিক্স — প্রিন্ট/PDF-এ Tab./Cap. ব্যাজ দেখানোর জন্য
     };
 
     // 🆕 পারফরম্যান্স ফিক্স (২৫ জুলাই ২০২৬ — ক্রয় এন্ট্রি সেভ-এ ধীরগতি): আগে
@@ -23472,6 +23460,10 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           return {
             productId: p.id, name: p.name, unit: p.unit||"", stock: p.stock||0, supplier: supplierOf(p),
             qty: qtyTotal(p.id), stripQty: v.strip||0, boxQty: v.box||0, pcsQty: v.pcs||0,
+            // 🔴 রুট-কজ ফিক্স (ক্রয় অর্ডার প্রিন্ট/PDF-এ পণ্যের ধরন Tab./Cap. দেখাচ্ছিল না):
+            // আইটেম অবজেক্টে dosageForm কখনোই সংরক্ষিত হতো না, অথচ প্রিন্ট builder
+            // (medBadgeHtmlStr) সবসময় p.dosageForm আশা করে — তাই ব্যাজ খালি থাকত।
+            dosageForm: p.dosageForm || "",
           };
         }),
       };
@@ -24039,26 +24031,30 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             </button>
           </div>
           {dashModal.rows.length === 0 && <div style={S.empty}>কোনো তথ্য নেই</div>}
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {dashModal.rows.map((row, i) => (
-              <div key={i} className="qc-gradient-card" style={{ ...S.card, marginBottom: 0, padding: "12px 14px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                  <div style={{ ...S.avatar, width: 34, height: 34, fontSize: 13 }}>{row.name[0]}</div>
-                  <div>
-                    <div style={{ color: "#0ea5e9", fontWeight: 700, fontSize: 14 }}>{row.name}</div>
-                    <div style={{ color: T.sub, fontSize: 11 }}>{row.mobile}</div>
+          {dashModal.rows.length > 0 && (
+            <Virtuoso
+              style={{ height: "calc(100dvh - 260px)" }}
+              data={dashModal.rows}
+              itemContent={(i, row) => (
+                <div key={i} className="qc-gradient-card" style={{ ...S.card, marginBottom: 10, padding: "12px 14px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                    <div style={{ ...S.avatar, width: 34, height: 34, fontSize: 13 }}>{row.name[0]}</div>
+                    <div>
+                      <div style={{ color: "#0ea5e9", fontWeight: 700, fontSize: 14 }}>{row.name}</div>
+                      <div style={{ color: T.sub, fontSize: 11 }}>{row.mobile}</div>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, background: row.balance > 0 ? "#ef444415" : "#22c55e15", borderRadius: 12, padding: "10px 14px", border: `1px solid ${row.balance > 0 ? "#ef444444" : "#22c55e44"}` }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={row.balance > 0 ? "#ef4444" : "#22c55e"} strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                      <span style={{ color: row.balance > 0 ? "#fca5a5" : "#86efac", fontSize: 12, fontWeight: 700 }}>বর্তমান বাকি</span>
+                    </div>
+                    <div style={{ color: row.balance > 0 ? "#ef4444" : "#22c55e", fontWeight: 900, fontSize: 20 }}>৳{fmt(row.balance)}</div>
                   </div>
                 </div>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, background: row.balance > 0 ? "#ef444415" : "#22c55e15", borderRadius: 12, padding: "10px 14px", border: `1px solid ${row.balance > 0 ? "#ef444444" : "#22c55e44"}` }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={row.balance > 0 ? "#ef4444" : "#22c55e"} strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                    <span style={{ color: row.balance > 0 ? "#fca5a5" : "#86efac", fontSize: 12, fontWeight: 700 }}>বর্তমান বাকি</span>
-                  </div>
-                  <div style={{ color: row.balance > 0 ? "#ef4444" : "#22c55e", fontWeight: 900, fontSize: 20 }}>৳{fmt(row.balance)}</div>
-                </div>
-              </div>
-            ))}
-          </div>
+              )}
+            />
+          )}
         </div>
       );
     }
@@ -24241,7 +24237,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           const total = e.totalCost || 0;
           return `<tr>
             <td style="padding:7px 6px;font-size:12px;border-bottom:1px solid #e2e8f0;">${i+1}</td>
-            <td style="padding:7px 6px;font-size:12px;border-bottom:1px solid #e2e8f0;font-weight:600;">${pName}</td>
+            <td style="padding:7px 6px;font-size:12px;border-bottom:1px solid #e2e8f0;font-weight:600;">${medBadgeHtmlStr(e.dosageForm)}${pName}</td>
             <td style="padding:7px 6px;font-size:12px;border-bottom:1px solid #e2e8f0;text-align:center;">${qty}${unit}</td>
             <td style="padding:7px 6px;font-size:12px;border-bottom:1px solid #e2e8f0;text-align:right;">৳${fmt2(unitCost)}</td>
             <td style="padding:7px 6px;font-size:12px;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:700;">৳${fmt2(total)}</td>
@@ -24314,8 +24310,10 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           {filteredPurchases.length === 0 ? (
             <div style={S.empty}>এই তারিখে কোনো ক্রয় এন্ট্রি নেই</div>
           ) : (
-            <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-              {filteredPurchases.map((entry, i) => {
+            <Virtuoso
+              style={{ height: "calc(100dvh - 340px)" }}
+              data={filteredPurchases}
+              itemContent={(i, entry) => {
                 const pName = entry.productName || entry.product || "—";
                 const qty = entry.qty || 0;
                 const unit = entry.unit || "";
@@ -24323,12 +24321,12 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                 const total = entry.totalCost || 0;
                 const note = entry.note || null;
                 return (
-                  <div key={entry.id || i} style={{ background:T.card, borderRadius:16, padding:"14px 16px", border:`1px solid #0ea5e922` }}>
+                  <div key={entry.id || i} style={{ background:T.card, borderRadius:16, padding:"14px 16px", border:`1px solid #0ea5e922`, marginBottom:10 }}>
                     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
                       <div style={{ display:"flex", alignItems:"center", gap:10 }}>
                         <div style={{ width:32, height:32, borderRadius:10, background:"linear-gradient(135deg,#0369a1,#0ea5e9)", display:"flex", alignItems:"center", justifyContent:"center", color:"#fff", fontWeight:900, fontSize:13, flexShrink:0 }}>{i+1}</div>
                         <div>
-                          <div style={{ color:"#7dd3fc", fontWeight:800, fontSize:14 }}>{pName}</div>
+                          <div style={{ color:"#7dd3fc", fontWeight:800, fontSize:14 }}><DosageBadge dosageForm={entry.dosageForm} />{pName}</div>
                           {note && <div style={{ color:T.sub, fontSize:11, marginTop:1 }}>📝 {note}</div>}
                         </div>
                       </div>
@@ -24343,8 +24341,8 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                     </div>
                   </div>
                 );
-              })}
-            </div>
+              }}
+            />
           )}
         </div>
       );
@@ -24417,8 +24415,11 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             </button>
           </div>
           {rangedItems.length === 0 && <div style={S.empty}>এই সময়ে কোনো ইনভয়েস নেই</div>}
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {rangedItems.map((inv, i) => {
+          {rangedItems.length > 0 && (
+          <Virtuoso
+            style={{ height: "calc(100dvh - 380px)" }}
+            data={rangedItems}
+            itemContent={(i, inv) => {
               // payType অনুযায়ী card accent color
               const isVoided   = inv.status === "voided";
               // 🆕 ফিক্স #২ — আংশিক পণ্য ফেরত হয়ে থাকলে সেটা এখন কার্ডেই দৃশ্যমান
@@ -24455,7 +24456,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                 } catch { return ""; }
               })();
               return (
-              <div key={inv.id || i} style={{ ...S.card, marginBottom: 0, padding: "12px 14px", background: cardBg, border: `1.5px solid ${cardBorder}`, borderRadius: 16, boxShadow: isVoided ? "none" : `0 0 0 1px ${cardBorder}22, 0 4px 16px ${cardBorder}22` }}>
+              <div key={inv.id || i} style={{ ...S.card, marginBottom: 10, padding: "12px 14px", background: cardBg, border: `1.5px solid ${cardBorder}`, borderRadius: 16, boxShadow: isVoided ? "none" : `0 0 0 1px ${cardBorder}22, 0 4px 16px ${cardBorder}22` }}>
                 {_showNetProfit && (
                   <div style={{
                     display:"flex", justifyContent:"space-between", alignItems:"center",
@@ -24532,8 +24533,9 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                 </div>
               </div>
               );
-            })}
-          </div>
+            }}
+          />
+          )}
           {voidModalInv && (
             <InvoiceVoidModal inv={voidModalInv} returns={returns} products={products} customers={customers}
               currentUser={currentUser} voidInvoice={voidInvoice} processReturn={processReturn}
@@ -24582,9 +24584,12 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             </button>
           </div>
           {filteredItems.length === 0 && <div style={S.empty}>এই সময়ে কোনো জমার রশিদ নেই</div>}
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {filteredItems.map((pinv, i) => (
-              <div key={i} className="qc-gradient-card" style={{ ...S.card, marginBottom: 0, padding: "12px 14px" }}>
+          {filteredItems.length > 0 && (
+          <Virtuoso
+            style={{ height: "calc(100dvh - 340px)" }}
+            data={filteredItems}
+            itemContent={(i, pinv) => (
+              <div key={i} className="qc-gradient-card" style={{ ...S.card, marginBottom: 10, padding: "12px 14px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <div style={{ ...S.avatar, width: 34, height: 34, fontSize: 13, background: "linear-gradient(135deg,#0369a1,#0ea5e9)" }}>{pinv.customerName[0]}</div>
@@ -24604,8 +24609,9 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   <span style={{ marginLeft: "auto", color: T.sub }}>#{pinv.id?.toUpperCase?.()?.slice(0,6)}</span>
                 </button>
               </div>
-            ))}
-          </div>
+            )}
+          />
+          )}
         </div>
       );
     }
@@ -26765,6 +26771,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             note: isFreeStock ? `🎁 ফ্রি স্টক${note ? " — " + note : ""}` : note || "",
             isFreeStock: isFreeStock || false,
             at: now, dateKey: now.split("T")[0], unit: prod.unit || "",
+            dosageForm: prod.dosageForm || "", // 🔴 ফিক্স — প্রিন্ট/PDF-এ Tab./Cap. ব্যাজ দেখানোর জন্য
           };
           let newStock = (prod.stock || 0) + qty; // fallback/লগের জন্য প্রাথমিক মান
 
@@ -29882,7 +29889,11 @@ const NOTIF_MAX_TIMES = 8; // সর্বোচ্চ কতগুলো সম
 function buildDailySummaryData({ invoices = [], txns = [], customers = [], products = [], cashLogs = [], purchaseOrders = [], returns = [] } = {}) {
   const todayKey = todayEn();
   // voided ও isSelfUse বাদ — না হলে নোটিফিকেশনে ভুল revenue/profit দেখায়
-  const todayInvList  = (invoices || []).filter(i => i.dateKey === todayKey && !i.isSelfUse && i.status !== "voided");
+  // 🔴 ফিক্স (হোম পেজ vs "দৈনিক সারসংক্ষেপ" পেজের হিসাব অমিল): আগে শুধু dateKey
+  // চেক হতো, কিন্তু useKpiStats()-এ (হোম পেজ) dateKey না থাকা ইনভয়েসের জন্য
+  // date ফলব্যাকও চেক হতো — ফলে dateKey-বিহীন পুরনো ইনভয়েস দুই জায়গায় ভিন্নভাবে
+  // গোনা হতো। এখন দুই জায়গায়ই একই (dateKey অথবা date ফলব্যাক) শর্ত।
+  const todayInvList  = (invoices || []).filter(i => (i.dateKey === todayKey || (i.date && i.date.startsWith(todayKey))) && !i.isSelfUse && i.status !== "voided");
   // 🔴 ফিক্স (Phase 4 — returns নেট-আউট): useKpiStats()-এর একই নীতি — আজকের
   // ফেরত যাওয়া পণ্যের refundAmount বিক্রয়/লাভ থেকে বাদ, নাহলে নোটিফিকেশনে
   // দেখানো "আজকের বিক্রয়/লাভ" ফেরত যাওয়া পণ্যসহ ফোলানো থাকবে।
