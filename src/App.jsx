@@ -4126,6 +4126,19 @@ const DEV_MASTER_HASH = "d640f2be304872c2aaba9fbf2a113f8333911366ac2e9857bffac8d
 const GOOGLE_WEB_CLIENT_ID = "359825185312-u3g22v54j5if5ghq4984fnn03c90rf5o.apps.googleusercontent.com";
 const GDRIVE_REFRESH_ENDPOINT = "https://sbm-admin-mocha.vercel.app/api/refresh-token";
 
+// ─── Viewer Mode (২৭ জুলাই ২০২৬, আইটেম G) — device-লেভেল, প্লেইন localStorage ───
+// এই কী-গুলো কোনো business/shop ডেটা না — সম্পূর্ণ এই ডিভাইসের নিজস্ব সেটিং
+// (কোন Drive ফাইল দেখছে, কত মিনিট পরপর চেক করবে ইত্যাদি), তাই SK/LK সিস্টেমের
+// বাইরে সরাসরি localStorage-এ, main app-এর boot/business-scoped storage থেকে
+// সম্পূর্ণ আলাদা।
+const VK = {
+  mode:     "sbm-viewer-mode",       // "1" থাকলে এই ডিভাইস Viewer মোডে
+  prefix:   "sbm-viewer-biz-prefix", // "" (সিঙ্গেল-বিজনেস) | "pharmacy" | "veterinary" | "semen"
+  interval: "sbm-viewer-interval-min",
+  lastSync: "sbm-viewer-last-sync",
+  cache:    "sbm-viewer-cache",      // শেষবার সফলভাবে টানা ব্যাকআপ (JSON স্ট্রিং) — রিওপেনে সাথে সাথে কিছু দেখানোর জন্য
+};
+
 // ─── Storage Keys ─────────────────────────────────────────────────────────────
 const SK = {
   customers: "sbm-customers", products: "sbm-products", invoices: "sbm-invoices",
@@ -12670,6 +12683,29 @@ function ruleBasedAnswer(q, data) {
 
 
 function SmartBusinessMgmt() {
+  // 🆕 (২৭ জুলাই ২০২৬, আইটেম G) — Viewer Mode: এই ডিভাইস normal দোকান-অ্যাপ
+  // নাকি শুধু-দেখার Viewer, সেটা প্লেইন localStorage-এ রাখা একটা সাধারণ flag —
+  // ইচ্ছাকৃতভাবে Zustand/boot-load সিস্টেমের বাইরে, কারণ Viewer ডিভাইসের কোনো
+  // দোকানের নিজস্ব ডেটাই থাকে না, তাই সাধারণ বুট-ওয়েট এড়িয়ে সাথে সাথেই ঠিক করা
+  // যায় কোন UI দেখাবে।
+  const [viewerMode, setViewerMode] = useState(() => {
+    try { return localStorage.getItem(VK.mode) === "1"; } catch { return false; }
+  });
+  const enterViewerMode = useCallback(() => {
+    try { localStorage.setItem(VK.mode, "1"); } catch {}
+    setViewerMode(true);
+  }, []);
+  const exitViewerMode = useCallback(() => {
+    try {
+      localStorage.removeItem(VK.mode);
+      localStorage.removeItem(VK.prefix);
+      localStorage.removeItem(VK.interval);
+      localStorage.removeItem(VK.lastSync);
+      localStorage.removeItem(VK.cache);
+    } catch {}
+    setViewerMode(false);
+  }, []);
+
   // ── Temp share file cleanup on app start ────────────────────────────────────
   useEffect(() => {
     if (!window.Capacitor?.isNativePlatform?.()) return;
@@ -15955,9 +15991,57 @@ function SmartBusinessMgmt() {
     const isMultiBusiness = Array.isArray(enabledBusinessTypes) && enabledBusinessTypes.length > 1;
     const prefix = isMultiBusiness ? (BUSINESS_TYPE_REGISTRY[newType]?.collectionPrefix || null) : null;
     FSS.setBusinessPrefix(prefix);
+    // 🔴 ফিক্স (২৭ জুলাই ২০২৬ — ধাপ D, সম্পূর্ণ-অফলাইন মাল্টি-বিজনেস গ্যাপ):
+    // আগে local IndexedDB/localStorage prefix (LK) শুধু fssReady-নির্ভর effect-এ
+    // (উপরে, businessType বদলালে) সেট হতো — Firebase বন্ধ/fssReady কখনো true
+    // না হওয়া সম্পূর্ণ-অফলাইন শপে সেই effect-ই কখনো চলত না, ফলে Business
+    // Switcher-এ ট্যাপ করে সুইচ করলেও products/customers/invoices ইত্যাদির
+    // local key পুরোনো prefix-এই থেকে যেত (ক্রস-কনটামিনেশন/ভুল ডেটা দেখানোর
+    // ঝুঁকি)। এখন এই সরাসরি ট্যাপ-হ্যান্ডলারেই, fssReady/Firebase-এর ওপর
+    // নির্ভর না করে, সিঙ্ক্রোনাসলি সেট করা হচ্ছে।
+    setLocalBusinessPrefix(prefix);
     if (FSS.isReady()) FSS.setBusinessConfig(newType, businessTypeLocked, enabledBusinessTypes);
     _bumpBusinessSwitch(); // 🆕 useFSSCollection-কে বলে দেয় এটা business switch — পুরনো state সাথে সাথে খালি করে fresh resubscribe করবে
     _bumpGlobalResync(); // সাথে সাথে resubscribe — পরের heartbeat-এর জন্য অপেক্ষা না করে
+    // 🔴 ফিক্স (২৭ জুলাই ২০২৬ — ধাপ D, সম্পূর্ণ-অফলাইন শপের জন্য): উপরের
+    // _bumpBusinessSwitch() প্রতিটা useFSSCollection-এর state সাথে সাথে খালি
+    // ([]) করে দেয়, তারপর Firestore-এর নতুন snapshot এলে আসল ডেটা দিয়ে ভরে।
+    // কিন্তু Firebase বন্ধ/fssReady কখনো true না হওয়া শপে সেই snapshot কখনোই
+    // আসবে না — state স্থায়ীভাবে খালি থেকে যেত। এখানে সরাসরি নতুন prefix-এর
+    // local IndexedDB থেকে প্রতিটা business-scoped কালেকশন লোড করে state ভরা
+    // হচ্ছে। Firebase চালু শপেও ক্ষতি নেই — এটা শুধু তাৎক্ষণিক প্রিভিউ (remote
+    // snapshot আসা পর্যন্ত অপেক্ষা না করে সাথে সাথে সঠিক-বিজনেসের ডেটা দেখানো),
+    // remote snapshot এলে যথারীতি সেটাই চূড়ান্ত হয়ে ওভাররাইট করবে।
+    try {
+      const [
+        newCustomers, newProducts, newInvoices, newTxns, newSmsLog,
+        newPaymentInvoices, newSuppliers, newPurchaseOrders, newStockMovements,
+        newCashLogs, newExpenses, newReturns, newAuditLogs, newQuotations,
+        newSupplierPayments, newDeletedCustomers, newDeletedProducts,
+      ] = await Promise.all([
+        load(LK(SK.customers)), load(LK(SK.products)), load(LK(SK.invoices)), load(LK(SK.txns)), load(LK(SK.smsLog)),
+        load(LK(SK.paymentInvoices)), load(LK(SK.suppliers)), load(LK(SK.purchaseOrders)), load(LK(SK.stockMovements)),
+        load(LK(SK.cashLogs)), load(LK(SK.expenses)), load(LK(SK.returns)), load(LK(SK.auditLogs)), load(LK(SK.quotations)),
+        load(LK(SK.supplierPayments)), load(LK(SK.deletedCustomers)), load(LK(SK.deletedProducts)),
+      ]);
+      setCustomers(newCustomers || []); // 🆕 নতুন/না-ছোঁয়া বিজনেসে খালি — SEED ডেটা না (boot-এর মতো demo-seed এখানে দেওয়া হয় না)
+      setProducts(newProducts || []);
+      setInvoices(newInvoices || []);
+      setTxns(newTxns || []);
+      setSmsLog(newSmsLog || []);
+      setPaymentInvoices(newPaymentInvoices || []);
+      setSuppliers(newSuppliers || []);
+      setPurchaseOrders(newPurchaseOrders || []);
+      setStockMovements(newStockMovements || []);
+      setCashLogs(newCashLogs || []);
+      setExpenses(newExpenses || []);
+      setReturns(newReturns || []);
+      setAuditLogs(newAuditLogs || []);
+      setQuotations(newQuotations || []);
+      setSupplierPayments(newSupplierPayments || []);
+      setDeletedCustomers(newDeletedCustomers || []);
+      setDeletedProducts(newDeletedProducts || []);
+    } catch {}
     try {
       await FSS.waitForNextSnapshot(
         ["products", "customers", "invoices", "txns", "stockMovements", "cashLogs"],
@@ -15980,7 +16064,10 @@ function SmartBusinessMgmt() {
       FSS.flushPendingExpiredRemoval({ setProducts });
     }
     setSwitchingBusiness(false);
-  }, [businessType, businessTypeLocked, enabledBusinessTypes, setBusinessType, tab, _set]);
+  }, [businessType, businessTypeLocked, enabledBusinessTypes, setBusinessType, tab, _set,
+      setCustomers, setProducts, setInvoices, setTxns, setSmsLog, setPaymentInvoices,
+      setSuppliers, setPurchaseOrders, setStockMovements, setCashLogs, setExpenses,
+      setReturns, setAuditLogs, setQuotations, setSupplierPayments, setDeletedCustomers, setDeletedProducts]);
 
   // Hide HTML splash screen once React is fully ready (data loaded + auth checked)
   useEffect(() => {
@@ -16094,6 +16181,13 @@ function SmartBusinessMgmt() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 🆕 (২৭ জুলাই ২০২৬, আইটেম G) — Viewer মোড হলে সবার আগে এটাই দেখাবে, লোডিং
+  // স্পিনার/বিজনেস-সিলেক্ট/লগইন কোনোটাই না — Viewer ডিভাইসের কোনো নিজস্ব
+  // দোকান-ডেটা লোড করার দরকারই নেই, তাই বুট-ওয়েট সম্পূর্ণ এড়িয়ে যাওয়া হচ্ছে।
+  if (viewerMode) return (
+    <ViewerModeContainer onExit={exitViewerMode} />
+  );
+
   if (!loaded || !authChecked) return (
     <div style={{ ...makeS(DARK).loadScreen, background: "radial-gradient(ellipse at 50% 40%,#001a2c 0%,#000d18 70%)" }}>
       <div style={{ position: "relative", width: 110, height: 110, display: "flex", alignItems: "center", justifyContent: "center", animation: "fadeUp 0.6s ease" }}>
@@ -16110,6 +16204,21 @@ function SmartBusinessMgmt() {
         @keyframes pulse{0%,100%{opacity:0.4}50%{opacity:1}}
       `}</style>
     </div>
+  );
+
+  // 🆕 (২৭ জুলাই ২০২৬ — মাল্টি-বিজনেস অফলাইন অ্যাক্টিভেশন, ধাপ B): লগইনের আগেই
+  // এই গেট — businessTypeLocked false থাকলে (নতুন ইনস্টল বা আগে-থেকে-চলা শপ,
+  // দুটোতেই) বিজনেস-সিলেক্ট স্ক্রিন দেখাবে। একবার নিশ্চিত করে লক হয়ে গেলে আর
+  // কখনো দেখাবে না।
+  if (!businessTypeLocked) return (
+    <BusinessTypeSelectScreen
+      businessType={businessType}
+      setBusinessType={setBusinessType}
+      enabledBusinessTypes={enabledBusinessTypes}
+      setEnabledBusinessTypes={setEnabledBusinessTypes}
+      setBusinessTypeLocked={setBusinessTypeLocked}
+      onEnterViewer={enterViewerMode}
+    />
   );
 
   if (!currentUser) return (
@@ -16890,7 +16999,17 @@ function SmartBusinessMgmt() {
             {/* 🔴 ফিক্স (২৭ জুলাই ২০২৬ — ইউজার ফিডব্যাক): আগে এই কার্ডটা
                 নোটিফিকেশন সাব-স্ক্রিনের ভেতরে বসানো ছিল (২ ট্যাপ দূরে) —
                 এখন "অন্যান্য মডিউল" ড্রয়ারের একদম উপরে, সরাসরি দৃশ্যমান। */}
-            <StaffAdminSwitchCard T={T} S={S} showToast={showToast} users={users} currentUser={currentUser} setCurrentUser={setCurrentUser} masterResetHash={masterResetHash} />
+            {/* 🆕 ফিক্স (২৭ জুলাই ২০২৬ — ধাপ C): single-business শপে স্টাফ↔এডমিন
+                টগল দেখাবে (আগের মতো, owner/staff উভয় ডিভাইসেই); multi-business
+                শপের owner ডিভাইসে এই জায়গায় তার বদলে নিচের Business Switcher
+                দেখাবে (দুটো একসাথে দেখানো হতো আগে, এখন প্রতিস্থাপিত)। multi-
+                business শপের staff ডিভাইসে আচরণ অপরিবর্তিত — সে আগে থেকেই শুধু
+                এই কার্ডটাই দেখত (Business Switcher স্টাফ দেখেই না, নিচের শর্তে
+                !isStaff আছে), তাই staff-এর ক্ষেত্রে isMultiBusinessActive
+                থাকা সত্ত্বেও কার্ডটা দেখানো হচ্ছে। */}
+            {(!isMultiBusinessActive || isStaff) && (
+              <StaffAdminSwitchCard T={T} S={S} showToast={showToast} users={users} currentUser={currentUser} setCurrentUser={setCurrentUser} masterResetHash={masterResetHash} />
+            )}
             {/* 🆕 ধাপ ৩: Business Switcher — শুধু multi-business শপে (enabledBusinessTypes.length >= 2), staff দেখবে না */}
             {/* 🆕 রিডিজাইন (১৯ জুলাই ২০২৬ — "সোয়াপ বাটন ল্যাগি/স্লো" ফিডব্যাক): আগে
                 কোনো hover/press transition ছিল না (ট্যাপ করলে UI-তে কোনো তাৎক্ষণিক
@@ -17588,6 +17707,497 @@ function PinPad({ T, onComplete, title = "PIN লিখুন", subtitle = "" })
             {d}
           </button>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Business Type Select Screen ──────────────────────────────────────────────
+// 🆕 (২৭ জুলাই ২০২৬ — মাল্টি-বিজনেস অফলাইন অ্যাক্টিভেশন, ধাপ B): businessTypeLocked
+// === false হলে অ্যাপ বুট হওয়ার সাথে সাথেই (লগইন স্ক্রিনের আগে) এই স্ক্রিন
+// দেখাবে — নতুন ইনস্টল এবং আগে-থেকে-চলা শপ, দুটোতেই একই আচরণ (আলাদা
+// fresh-vs-existing ডিটেকশন লাগে না, কারণ এই ফ্ল্যাগ আগে কখনো ব্যবহারই হয়নি,
+// সব শপেই ডিফল্ট false)। আগে-থেকে-চলা শপে বর্তমান businessType আগে থেকেই
+// checked দেখানো হয় — শুধু সেটাই রেখে "নিশ্চিত করুন" চাপলে single→single
+// no-op (কিছুই বদলায় না, prefix লাগে না)। মালিক নতুন ২য়/৩য় টাইপ যোগ করলে
+// (single→multi) কনফার্মের মুহূর্তে বর্তমান unprefixed local ডেটা (sbm-products
+// ইত্যাদি) কপি হয়ে প্রাইমারি বিজনেসের prefixed key-তে (sbm-products_pharmacy
+// ইত্যাদি) যায় — কপি করা হয়, ডিলিট না, তাই পুরনো key নিরাপত্তার জন্য থেকেই
+// যায়। একবার "নিশ্চিত করুন" চাপলে businessTypeLocked: true — এরপর এই স্ক্রিন
+// আর কখনো দেখাবে না (রিইনস্টল ছাড়া বদলানোর কোনো পথ ইচ্ছাকৃতভাবে নেই)।
+function BusinessTypeSelectScreen({ businessType, setBusinessType, enabledBusinessTypes, setEnabledBusinessTypes, setBusinessTypeLocked, onEnterViewer }) {
+  const ORDER = ["pharmacy", "veterinary", "semen"];
+  const ICONS = { pharmacy: "🏥", veterinary: "🐄", semen: "🧬" };
+  const DESCR = { pharmacy: "ঔষধ, মেডিসিন দোকান", veterinary: "পশু চিকিৎসা/ওষুধ", semen: "পশু প্রজনন/সিমেন" };
+
+  const [selected, setSelected] = useState(() => {
+    const base = (Array.isArray(enabledBusinessTypes) && enabledBusinessTypes.length)
+      ? enabledBusinessTypes.filter(t => BUSINESS_TYPE_REGISTRY[t])
+      : [(businessType && BUSINESS_TYPE_REGISTRY[businessType]) ? businessType : "pharmacy"];
+    return new Set(base.length ? base : ["pharmacy"]);
+  });
+  const [step, setStep] = useState("select"); // "select" | "confirm"
+  const [busy, setBusy] = useState(false);
+
+  const toggle = (key) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        if (next.size > 1) next.delete(key); // অন্তত ১টা সবসময় থাকতেই হবে
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  // ধাপ D-এর সাথে সঙ্গতিপূর্ণ migration: single→multi হলে বর্তমান unprefixed
+  // local ডেটা কপি হয়ে প্রাইমারি বিজনেসের prefixed key-তে যায় (কপি, ডিলিট না)।
+  const handleFinalConfirm = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const list = ORDER.filter(k => selected.has(k));
+      const primary = list.includes(businessType) ? businessType : list[0];
+      if (list.length > 1) {
+        const primaryPrefix = BUSINESS_TYPE_REGISTRY[primary]?.collectionPrefix;
+        if (primaryPrefix) {
+          for (const key of LOCAL_BUSINESS_SCOPED_KEYS) {
+            try {
+              const val = await load(key);
+              if (val !== null && val !== undefined) await save(`${key}_${primaryPrefix}`, val);
+            } catch {}
+          }
+        }
+      }
+      setBusinessType(primary);
+      setEnabledBusinessTypes(list);
+      setBusinessTypeLocked(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (step === "confirm") {
+    const list = ORDER.filter(k => selected.has(k));
+    return (
+      <div style={{
+        minHeight: "100vh", background: "#060d1a",
+        display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "center",
+        padding: 24, fontFamily: "'Hind Siliguri', system-ui, sans-serif",
+      }}>
+        <div style={{ fontSize: 40, marginBottom: 14 }}>⚠️</div>
+        <div style={{ color: "#fbbf24", fontWeight: 800, fontSize: 17, marginBottom: 10, textAlign: "center" }}>
+          নিশ্চিত করুন
+        </div>
+        <div style={{ color: "rgba(255,255,255,0.75)", fontSize: 13.5, textAlign: "center", lineHeight: 1.7, marginBottom: 6, maxWidth: 320 }}>
+          আপনি নির্বাচন করেছেন: <b style={{ color: "#fff" }}>{list.map(k => BUSINESS_TYPE_REGISTRY[k].label).join(", ")}</b>
+        </div>
+        <div style={{ color: "rgba(255,255,255,0.55)", fontSize: 12.5, textAlign: "center", lineHeight: 1.7, marginBottom: 28, maxWidth: 320 }}>
+          একবার নিশ্চিত করলে এই তালিকা আর পরে বদলানো যাবে না।
+        </div>
+        <div style={{ display: "flex", gap: 12, width: "100%", maxWidth: 320 }}>
+          <button onClick={() => setStep("select")} disabled={busy} style={{
+            flex: 1, padding: "13px 0", borderRadius: 14, border: "1.5px solid rgba(255,255,255,0.18)",
+            background: "rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.8)", fontWeight: 700, fontSize: 14,
+            cursor: "pointer", fontFamily: "inherit",
+          }}>← পিছনে</button>
+          <button onClick={handleFinalConfirm} disabled={busy} style={{
+            flex: 1.4, padding: "13px 0", borderRadius: 14, border: "none",
+            background: busy ? "rgba(34,197,94,0.4)" : "linear-gradient(135deg,#16a34a,#22c55e)",
+            color: "#fff", fontWeight: 800, fontSize: 14, cursor: busy ? "default" : "pointer",
+            boxShadow: "0 6px 20px rgba(34,197,94,0.35)", fontFamily: "inherit",
+          }}>{busy ? "সেভ হচ্ছে..." : "হ্যাঁ, নিশ্চিত"}</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      minHeight: "100vh", background: "#060d1a",
+      display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center",
+      padding: 24, fontFamily: "'Hind Siliguri', system-ui, sans-serif",
+    }}>
+      <div style={{ marginBottom: 10 }}><SBMLogo size={64} /></div>
+      <div style={{ color: "#e0f9ff", fontWeight: 800, fontSize: 18, marginBottom: 4, textAlign: "center" }}>
+        আপনার বিজনেস সিলেক্ট করুন
+      </div>
+      <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 12, marginBottom: 24, textAlign: "center", maxWidth: 300, lineHeight: 1.6 }}>
+        একটা বা একাধিক বেছে নিতে পারবেন। একাধিক বিজনেস চালু করলে প্রতিটার ডেটা (পণ্য/কাস্টমার/ইনভয়েস) সম্পূর্ণ আলাদা থাকবে।
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, width: "100%", maxWidth: 320, marginBottom: 22 }}>
+        {ORDER.map(key => {
+          const bt = BUSINESS_TYPE_REGISTRY[key];
+          const checked = selected.has(key);
+          return (
+            <button key={key} onClick={() => toggle(key)} style={{
+              display: "flex", alignItems: "center", gap: 14,
+              padding: "16px 16px", borderRadius: 16, textAlign: "left", cursor: "pointer",
+              border: checked ? `1.5px solid ${bt.color}88` : "1.5px solid rgba(255,255,255,0.12)",
+              background: checked ? `${bt.color}18` : "rgba(255,255,255,0.03)",
+              fontFamily: "inherit", transition: "all 0.15s",
+            }}>
+              <div style={{
+                width: 24, height: 24, borderRadius: 7, flexShrink: 0,
+                border: checked ? `2px solid ${bt.color}` : "2px solid rgba(255,255,255,0.25)",
+                background: checked ? bt.color : "transparent",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                color: "#fff", fontSize: 15, fontWeight: 900,
+              }}>{checked ? "✓" : ""}</div>
+              <div style={{ fontSize: 24 }}>{ICONS[key]}</div>
+              <div>
+                <div style={{ color: "#fff", fontWeight: 700, fontSize: 15 }}>{bt.label}</div>
+                <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 11.5 }}>{DESCR[key]}</div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{ color: "rgba(251,191,36,0.85)", fontSize: 11.5, marginBottom: 20, textAlign: "center", maxWidth: 300 }}>
+        ⚠️ একবার নিশ্চিত করলে পরে বদলানো যাবে না
+      </div>
+
+      <button onClick={() => setStep("confirm")} style={{
+        width: "100%", maxWidth: 320, padding: "15px 0", borderRadius: 16, border: "none",
+        background: "linear-gradient(135deg,#16a34a,#22c55e)", color: "#fff",
+        fontWeight: 800, fontSize: 15, cursor: "pointer", fontFamily: "inherit",
+        boxShadow: "0 8px 24px rgba(34,197,94,0.35)",
+      }}>নিশ্চিত করুন</button>
+
+      {onEnterViewer && (
+        <button onClick={onEnterViewer} style={{
+          background: "none", border: "none", color: "rgba(255,255,255,0.4)", fontSize: 11.5,
+          cursor: "pointer", fontFamily: "inherit", marginTop: 18, textDecoration: "underline",
+        }}>👁 এই ডিভাইসে শুধু হিসাব দেখব (Viewer মোড) →</button>
+      )}
+    </div>
+  );
+}
+
+// ── Viewer Mode ───────────────────────────────────────────────────────────────
+// 🆕 (২৭ জুলাই ২০২৬, আইটেম G) — দ্বিতীয় ডিভাইসে (মালিকের নিজের ফোন) দোকানের
+// হিসাব শুধু দেখা যাবে, এডিট/লেখা করা যাবে না। মেইন অ্যাপ (দোকানের ট্যাব) নিয়মিত
+// Google Drive-এ যেই ব্যাকআপ আপলোড করে (একই Gmail), এই Viewer সেটাই পিরিয়ডিক্যালি
+// চেক করে ডাউনলোড করে দেখায় — সম্পূর্ণ স্বতন্ত্র read-only পাথ, মূল অ্যাপের কোনো
+// state/hook/write-flow ছোঁয় না। রিয়েল-টাইম না — "সর্বশেষ আপডেট: X মিনিট আগে"।
+function ViewerModeContainer({ onExit }) {
+  const [step, setStep] = useState(() => {
+    const hasPrefix = localStorage.getItem(VK.prefix) !== null; // "" ও একটা বৈধ মান (single-business)
+    const hasToken = !!localStorage.getItem("sbm_gd_token");
+    return (hasToken && hasPrefix) ? "dashboard" : "setup";
+  });
+
+  if (step === "setup") {
+    return <ViewerSetupScreen onDone={() => setStep("dashboard")} onExit={onExit} />;
+  }
+  return <ViewerDashboardScreen onReconfigure={() => setStep("setup")} onExit={onExit} />;
+}
+
+function ViewerSetupScreen({ onDone, onExit }) {
+  const PILLS = [
+    { key: "", label: "সিঙ্গেল বিজনেস", icon: "🏪" },
+    { key: "pharmacy", label: "ফার্মেসি", icon: "🏥" },
+    { key: "veterinary", label: "ভেটেরিনারি", icon: "🐄" },
+    { key: "semen", label: "সিমেন বিজনেস", icon: "🧬" },
+  ];
+  const INTERVALS = [10, 15, 30, 60];
+
+  const [connected, setConnected] = useState(() => !!localStorage.getItem("sbm_gd_token") && !GDrive.isTokenExpired());
+  const [connecting, setConnecting] = useState(false);
+  const [prefix, setPrefix] = useState(() => {
+    const saved = localStorage.getItem(VK.prefix);
+    return saved !== null ? saved : "";
+  });
+  const [interval_, setInterval_] = useState(() => parseInt(localStorage.getItem(VK.interval) || "15"));
+  const [testing, setTesting] = useState(false);
+  const [err, setErr] = useState("");
+
+  const handleConnect = async () => {
+    setErr(""); setConnecting(true);
+    try {
+      await GDrive.interactiveAuth(GOOGLE_WEB_CLIENT_ID);
+      setConnected(true);
+    } catch (e) {
+      setErr(e?.message || "সংযোগ ব্যর্থ হয়েছে, আবার চেষ্টা করুন");
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const handleStart = async () => {
+    setErr(""); setTesting(true);
+    try {
+      const token = await GDrive.ensureTokenSilent(GOOGLE_WEB_CLIENT_ID) || localStorage.getItem("sbm_gd_token");
+      if (!token) throw new Error("Google Drive সংযোগ পাওয়া যায়নি — আবার Connect করুন");
+      const { data, modifiedTime } = await GDrive.downloadBackupFor(token, prefix || null);
+      localStorage.setItem(VK.prefix, prefix);
+      localStorage.setItem(VK.interval, String(interval_));
+      localStorage.setItem(VK.cache, JSON.stringify(data));
+      localStorage.setItem(VK.lastSync, modifiedTime || new Date().toISOString());
+      onDone();
+    } catch (e) {
+      setErr(e?.message === "TOKEN_EXPIRED"
+        ? "সেশনের মেয়াদ শেষ — আবার Connect করুন"
+        : (e?.message || "এই বিজনেসের কোনো ব্যাকআপ Drive-এ পাওয়া যায়নি — মেইন ট্যাবে অন্তত একবার Drive ব্যাকআপ নেওয়া হয়েছে কিনা দেখুন"));
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <div style={{
+      minHeight: "100vh", background: "#060d1a",
+      display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center",
+      padding: 24, fontFamily: "'Hind Siliguri', system-ui, sans-serif",
+    }}>
+      <div style={{ marginBottom: 8 }}><SBMLogo size={56} /></div>
+      <div style={{ color: "#e0f9ff", fontWeight: 800, fontSize: 17, marginBottom: 4, textAlign: "center" }}>
+        👁 ভিউয়ার মোড সেটআপ
+      </div>
+      <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 11.5, marginBottom: 22, textAlign: "center", maxWidth: 300, lineHeight: 1.6 }}>
+        এই ডিভাইসে দোকানের হিসাব শুধু দেখা যাবে, কোনো এডিট/এন্ট্রি করা যাবে না। দোকানের ট্যাবে যেই Gmail দিয়ে Drive ব্যাকআপ নেওয়া হয়, এখানেও একই Gmail দিয়ে সংযোগ দিন।
+      </div>
+
+      <div style={{ width: "100%", maxWidth: 320, marginBottom: 18 }}>
+        <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 12, fontWeight: 700, marginBottom: 8 }}>১. Google Drive সংযোগ</div>
+        {connected ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 14px", borderRadius: 12, background: "rgba(34,197,94,0.12)", border: "1.5px solid rgba(34,197,94,0.35)" }}>
+            <span style={{ color: "#4ade80", fontSize: 15 }}>✓</span>
+            <span style={{ color: "#dcfce7", fontSize: 13, fontWeight: 600 }}>সংযুক্ত হয়েছে</span>
+          </div>
+        ) : (
+          <button onClick={handleConnect} disabled={connecting} style={{
+            width: "100%", padding: "12px 0", borderRadius: 12, border: "1.5px solid rgba(255,255,255,0.18)",
+            background: "rgba(255,255,255,0.05)", color: "#fff", fontWeight: 700, fontSize: 13.5,
+            cursor: connecting ? "default" : "pointer", fontFamily: "inherit",
+          }}>{connecting ? "সংযোগ হচ্ছে..." : "🔗 Google Drive Connect করুন"}</button>
+        )}
+      </div>
+
+      <div style={{ width: "100%", maxWidth: 320, marginBottom: 18, opacity: connected ? 1 : 0.4, pointerEvents: connected ? "auto" : "none" }}>
+        <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 12, fontWeight: 700, marginBottom: 8 }}>২. কোন বিজনেসের হিসাব দেখবেন</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {PILLS.map(p => (
+            <button key={p.key} onClick={() => setPrefix(p.key)} style={{
+              padding: "9px 13px", borderRadius: 10, cursor: "pointer", fontFamily: "inherit",
+              border: prefix === p.key ? "1.5px solid #38bdf8" : "1.5px solid rgba(255,255,255,0.15)",
+              background: prefix === p.key ? "rgba(56,189,248,0.15)" : "rgba(255,255,255,0.03)",
+              color: "#fff", fontSize: 12.5, fontWeight: 600,
+            }}>{p.icon} {p.label}</button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ width: "100%", maxWidth: 320, marginBottom: 22, opacity: connected ? 1 : 0.4, pointerEvents: connected ? "auto" : "none" }}>
+        <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 12, fontWeight: 700, marginBottom: 8 }}>৩. কত মিনিট পরপর চেক করবে</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {INTERVALS.map(m => (
+            <button key={m} onClick={() => setInterval_(m)} style={{
+              flex: 1, padding: "9px 0", borderRadius: 10, cursor: "pointer", fontFamily: "inherit",
+              border: interval_ === m ? "1.5px solid #38bdf8" : "1.5px solid rgba(255,255,255,0.15)",
+              background: interval_ === m ? "rgba(56,189,248,0.15)" : "rgba(255,255,255,0.03)",
+              color: "#fff", fontSize: 12.5, fontWeight: 600,
+            }}>{m} মিনিট</button>
+          ))}
+        </div>
+      </div>
+
+      {err && (
+        <div style={{ color: "#fca5a5", fontSize: 12, marginBottom: 14, textAlign: "center", maxWidth: 300 }}>{err}</div>
+      )}
+
+      <button onClick={handleStart} disabled={!connected || testing} style={{
+        width: "100%", maxWidth: 320, padding: "14px 0", borderRadius: 14, border: "none",
+        background: (!connected || testing) ? "rgba(56,189,248,0.35)" : "linear-gradient(135deg,#0284c7,#38bdf8)",
+        color: "#fff", fontWeight: 800, fontSize: 14.5, cursor: (!connected || testing) ? "default" : "pointer",
+        boxShadow: "0 8px 22px rgba(56,189,248,0.3)", fontFamily: "inherit", marginBottom: 14,
+      }}>{testing ? "যাচাই হচ্ছে..." : "শুরু করুন"}</button>
+
+      <button onClick={onExit} style={{
+        background: "none", border: "none", color: "rgba(255,255,255,0.4)", fontSize: 12, cursor: "pointer", fontFamily: "inherit",
+      }}>← স্বাভাবিক দোকান-অ্যাপ হিসেবে ব্যবহার করব</button>
+    </div>
+  );
+}
+
+function ViewerDashboardScreen({ onReconfigure, onExit }) {
+  const PREFIX_LABEL = { "": "সিঙ্গেল বিজনেস", pharmacy: "ফার্মেসি", veterinary: "ভেটেরিনারি", semen: "সিমেন বিজনেস" };
+  const prefix = localStorage.getItem(VK.prefix) || "";
+  const [data, setData] = useState(() => {
+    try { const raw = localStorage.getItem(VK.cache); return raw ? JSON.parse(raw) : null; } catch { return null; }
+  });
+  const [lastSync, setLastSync] = useState(() => localStorage.getItem(VK.lastSync) || null);
+  const [syncing, setSyncing] = useState(false);
+  const [err, setErr] = useState("");
+  const [, forceTick] = useState(0); // "X মিনিট আগে" ব্যানার প্রতি মিনিটে রিফ্রেশ করার জন্য
+  const cooldownRef = useRef(0);
+
+  const refresh = useCallback(async ({ interactive = false } = {}) => {
+    const now = Date.now();
+    if (now - cooldownRef.current < 60 * 1000) return; // একই মিনিটে বারবার না (অনলাইন-ইভেন্ট + টাইমার একসাথে ফায়ার করলে)
+    cooldownRef.current = now;
+    setSyncing(true); setErr("");
+    try {
+      let token = await GDrive.ensureTokenSilent(GOOGLE_WEB_CLIENT_ID);
+      if (!token && interactive) token = await GDrive.interactiveAuth(GOOGLE_WEB_CLIENT_ID);
+      if (!token) token = localStorage.getItem("sbm_gd_token");
+      if (!token) throw new Error("Google Drive সংযোগ নেই");
+      const { data: fresh, modifiedTime } = await GDrive.downloadBackupFor(token, prefix || null);
+      setData(fresh);
+      const ts = modifiedTime || new Date().toISOString();
+      setLastSync(ts);
+      localStorage.setItem(VK.cache, JSON.stringify(fresh));
+      localStorage.setItem(VK.lastSync, ts);
+    } catch (e) {
+      setErr(e?.message === "TOKEN_EXPIRED" ? "সেশনের মেয়াদ শেষ — রিফ্রেশ বাটনে চাপুন" : (e?.message || "রিফ্রেশ ব্যর্থ হয়েছে"));
+    } finally {
+      setSyncing(false);
+    }
+  }, [prefix]);
+
+  // টাইমার + ইন্টারনেট-ফিরে-আসা দুটোতেই রিফ্রেশ — যেটা আগে ঘটে
+  useEffect(() => {
+    const minutes = parseInt(localStorage.getItem(VK.interval) || "15");
+    const id = setInterval(() => refresh(), minutes * 60 * 1000);
+    const onOnline = () => refresh();
+    window.addEventListener("online", onOnline);
+    refresh(); // স্ক্রিন খোলার সাথে সাথেই একবার চেষ্টা
+    return () => { clearInterval(id); window.removeEventListener("online", onOnline); };
+  }, [refresh]);
+
+  useEffect(() => {
+    const id = setInterval(() => forceTick(t => t + 1), 30 * 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const agoText = useMemo(() => {
+    if (!lastSync) return "এখনো সিঙ্ক হয়নি";
+    const mins = Math.max(0, Math.floor((Date.now() - new Date(lastSync).getTime()) / 60000));
+    if (mins < 1) return "এইমাত্র";
+    if (mins < 60) return `${mins} মিনিট আগে`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs} ঘণ্টা আগে`;
+    return `${Math.floor(hrs / 24)} দিন আগে`;
+  }, [lastSync, /* eslint-disable-next-line react-hooks/exhaustive-deps */ Math.floor(Date.now() / 30000)]);
+
+  const stats = useMemo(() => {
+    if (!data) return null;
+    const customers = data.customers || [];
+    const products = data.products || [];
+    const invoices = data.invoices || [];
+    const todayKey = _dateKeyOf(new Date());
+    const todayInvoices = invoices.filter(i => i.dateKey === todayKey);
+    const todaySales = todayInvoices.reduce((s, i) => s + (i.total || 0), 0);
+    const totalBaki = customers.reduce((s, c) => s + (c.balance || 0), 0);
+    const bakiCustomers = customers.filter(c => (c.balance || 0) > 0).length;
+    const lowStock = products.filter(p => (p.stock || 0) > 0 && (p.stock || 0) <= (p.minStockAlert || 5));
+    const outOfStock = products.filter(p => (p.stock || 0) <= 0);
+    const recentInvoices = [...invoices].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 8);
+    return { todaySales, todayCount: todayInvoices.length, totalBaki, bakiCustomers, lowStock, outOfStock, recentInvoices };
+  }, [data]);
+
+  const cardStyle = { background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.09)", borderRadius: 14, padding: 14 };
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#060d1a", fontFamily: "'Hind Siliguri', system-ui, sans-serif", paddingBottom: 40 }}>
+      <div style={{ padding: "18px 16px 14px", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 18 }}>👁</span>
+            <span style={{ color: "#e0f9ff", fontWeight: 800, fontSize: 15 }}>ভিউয়ার মোড</span>
+            <span style={{ background: "rgba(56,189,248,0.18)", color: "#7dd3fc", fontSize: 10.5, fontWeight: 700, padding: "2px 8px", borderRadius: 8 }}>
+              {PREFIX_LABEL[prefix] || prefix}
+            </span>
+          </div>
+          <button onClick={() => refresh({ interactive: true })} disabled={syncing} style={{
+            background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10,
+            color: "#fff", fontSize: 12, padding: "6px 10px", cursor: syncing ? "default" : "pointer", fontFamily: "inherit",
+          }}>{syncing ? "..." : "↻ রিফ্রেশ"}</button>
+        </div>
+        <div style={{ color: "rgba(255,255,255,0.45)", fontSize: 11 }}>
+          সর্বশেষ আপডেট: {agoText}{err ? ` · ⚠️ ${err}` : ""}
+        </div>
+      </div>
+
+      {!data ? (
+        <div style={{ padding: 40, textAlign: "center", color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
+          {syncing ? "লোড হচ্ছে..." : "কোনো ডেটা পাওয়া যায়নি"}
+        </div>
+      ) : (
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div style={cardStyle}>
+              <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 11, marginBottom: 4 }}>আজকের বিক্রয়</div>
+              <div style={{ color: "#4ade80", fontWeight: 800, fontSize: 17 }}>৳{fmtMoney(stats.todaySales)}</div>
+              <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10.5 }}>{stats.todayCount}টা ইনভয়েস</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 11, marginBottom: 4 }}>মোট বাকি</div>
+              <div style={{ color: "#fb923c", fontWeight: 800, fontSize: 17 }}>৳{fmtMoney(stats.totalBaki)}</div>
+              <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10.5 }}>{stats.bakiCustomers} জন কাস্টমার</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 11, marginBottom: 4 }}>লো-স্টক</div>
+              <div style={{ color: "#fbbf24", fontWeight: 800, fontSize: 17 }}>{stats.lowStock.length}</div>
+              <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10.5 }}>পণ্য</div>
+            </div>
+            <div style={cardStyle}>
+              <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 11, marginBottom: 4 }}>স্টক শেষ</div>
+              <div style={{ color: "#f87171", fontWeight: 800, fontSize: 17 }}>{stats.outOfStock.length}</div>
+              <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10.5 }}>পণ্য</div>
+            </div>
+          </div>
+
+          <div style={cardStyle}>
+            <div style={{ color: "rgba(255,255,255,0.6)", fontWeight: 700, fontSize: 12.5, marginBottom: 10 }}>সাম্প্রতিক ইনভয়েস</div>
+            {stats.recentInvoices.length === 0 ? (
+              <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 12 }}>কোনো ইনভয়েস নেই</div>
+            ) : stats.recentInvoices.map((inv, idx) => (
+              <div key={inv.id || idx} style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+                padding: "8px 0", borderTop: idx > 0 ? "1px solid rgba(255,255,255,0.06)" : "none",
+              }}>
+                <div>
+                  <div style={{ color: "#fff", fontSize: 12.5 }}>{inv.customerName || "—"}</div>
+                  <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10.5 }}>{inv.dateKey || ""}</div>
+                </div>
+                <div style={{ color: "#4ade80", fontWeight: 700, fontSize: 13 }}>৳{fmtMoney(inv.total)}</div>
+              </div>
+            ))}
+          </div>
+
+          {stats.lowStock.length > 0 && (
+            <div style={cardStyle}>
+              <div style={{ color: "rgba(255,255,255,0.6)", fontWeight: 700, fontSize: 12.5, marginBottom: 10 }}>লো-স্টক পণ্য</div>
+              {stats.lowStock.slice(0, 8).map((p, idx) => (
+                <div key={p.id || idx} style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "7px 0", borderTop: idx > 0 ? "1px solid rgba(255,255,255,0.06)" : "none",
+                }}>
+                  <div style={{ color: "#fff", fontSize: 12.5 }}>{p.name}</div>
+                  <div style={{ color: "#fbbf24", fontSize: 12.5, fontWeight: 700 }}>{p.stock} বাকি</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div style={{ padding: "20px 16px 0", display: "flex", gap: 10, justifyContent: "center" }}>
+        <button onClick={onReconfigure} style={{
+          background: "none", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10,
+          color: "rgba(255,255,255,0.6)", fontSize: 11.5, padding: "8px 14px", cursor: "pointer", fontFamily: "inherit",
+        }}>⚙️ সেটিংস বদলান</button>
+        <button onClick={onExit} style={{
+          background: "none", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10,
+          color: "rgba(255,255,255,0.6)", fontSize: 11.5, padding: "8px 14px", cursor: "pointer", fontFamily: "inherit",
+        }}>✕ ভিউয়ার মোড বন্ধ করুন</button>
       </div>
     </div>
   );
@@ -38330,6 +38940,89 @@ const GDrive = {
       return { ok: true };
     } catch (e) {
       return { ok: false, msg: e.message };
+    }
+  },
+
+  // ── Viewer Mode (২৭ জুলাই ২০২৬, আইটেম G) — উপরের findBackupFile/downloadBackup/
+  // getBackupInfo সবাই গ্লোবাল FSS._businessPrefix (এই ডিভাইসের নিজস্ব সক্রিয়
+  // বিজনেস) থেকে ফাইলনেম বানায়। কিন্তু Viewer ডিভাইসে কোনো নিজস্ব সক্রিয়
+  // বিজনেস নেই — মালিক সরাসরি বেছে নেন কোন বিজনেসের ব্যাকআপ দেখবেন। তাই এই
+  // মেথডগুলো প্রিফিক্স সরাসরি প্যারামিটার হিসেবে নেয়, কোনো গ্লোবাল স্টেট ছোঁয় না
+  // — মূল অ্যাপের নিজের ব্যাকআপ ফ্লো-র সাথে কোনো ওভারল্যাপ/সাইড-ইফেক্ট নেই।
+  _backupBaseNameFor(prefix) {
+    if (!prefix) return this.BACKUP_FILENAME;
+    return this.BACKUP_FILENAME.replace(/\.json$/, `-${prefix}.json`);
+  },
+
+  async findBackupFileFor(token, prefix) {
+    const folderId = await this._ensureFolder(token);
+    const baseName = this._backupBaseNameFor(prefix);
+    const names = baseName !== this.BACKUP_FILENAME
+      ? [baseName + ".gz", baseName, this.BACKUP_FILENAME + ".gz", this.BACKUP_FILENAME]
+      : [baseName + ".gz", baseName];
+    for (const name of names) {
+      const q = encodeURIComponent(`name="${name}" and "${folderId}" in parents and trashed=false`);
+      const r = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime)&orderBy=modifiedTime desc`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!r.ok) continue;
+      const data = await r.json();
+      const f = data.files?.[0];
+      if (f?.id) return f;
+    }
+    return null;
+  },
+
+  async downloadBackupFor(token, prefix) {
+    const file = await this.findBackupFileFor(token, prefix);
+    if (!file) throw new Error("Drive-এ এই বিজনেসের কোনো ব্যাকআপ পাওয়া যায়নি");
+    const metaR = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${file.id}?fields=name,appProperties,modifiedTime`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const meta = metaR.ok ? await metaR.json() : {};
+    const isGzip = meta.name?.endsWith(".gz") || meta.appProperties?.hg_compressed === "gzip";
+    const r = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!r.ok) {
+      if (r.status === 401) throw new Error("TOKEN_EXPIRED");
+      throw new Error(`Download failed: HTTP ${r.status}`);
+    }
+    let data;
+    if (!isGzip || typeof DecompressionStream === "undefined") {
+      data = await r.json();
+    } else {
+      const compressed = await r.arrayBuffer();
+      const ds = new DecompressionStream("gzip");
+      const writer = ds.writable.getWriter();
+      writer.write(new Uint8Array(compressed));
+      writer.close();
+      const chunks = [];
+      const reader = ds.readable.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+      const totalLen = chunks.reduce((a, c) => a + c.length, 0);
+      const out = new Uint8Array(totalLen);
+      let offset = 0;
+      for (const c of chunks) { out.set(c, offset); offset += c.length; }
+      data = JSON.parse(new TextDecoder().decode(out));
+    }
+    return { data, modifiedTime: meta.modifiedTime || file.modifiedTime || null };
+  },
+
+  async getBackupInfoFor(token, prefix) {
+    try {
+      const file = await this.findBackupFileFor(token, prefix);
+      if (!file) return null;
+      return { modifiedTime: file.modifiedTime || null, name: file.name };
+    } catch {
+      return null;
     }
   },
 };
