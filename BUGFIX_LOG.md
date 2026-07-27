@@ -25,6 +25,74 @@
 
 ## এন্ট্রি
 
+### ২০২৬-০৭-২৮ — অফলাইন মাসিক সাবস্ক্রিপশন লক সিস্টেম (নতুন ফিচার)
+- কী করা হলো: OFFLINE_MODE শপে (Firebase/কেন্দ্রীয় সাবস্ক্রিপশন-ডক নেই) মাসিক
+  টাকা আদায়ের জন্য সম্পূর্ণ লোকাল "ডিভাইস আইডি + মাসিক ৬-ডিজিট কোড" সিস্টেম।
+  `src/App.jsx`-এ: LICENSE_* কনস্ট্যান্ট/হেল্পার (getOrCreateLicenseDeviceId,
+  computeLicenseCode, verifyLicenseCode, checkLicenseClockTamper — SHA-256
+  ভিত্তিক, hashPassword-এর একই salted-digest প্যাটার্নে), useLicenseSubscription
+  হুক (SmartBusinessMgmt-এ ওয়্যার করা), নতুন "সাবস্ক্রিপশন" সাইড-মেনু আইটেম
+  (স্টাফ ব্যবস্থাপনা↔সেটিং-এর মাঝে, ৭-দিন/লক ডট ব্যাজ), নতুন
+  `SubscriptionModule` কম্পোনেন্ট (ডিভাইস আইডি+কপি, স্ট্যাটাস, কোড-এন্ট্রি,
+  কল/WhatsApp বাটন ০১৫৭২৯৩১২৩০, হিস্ট্রি), ড্যাশবোর্ডের উপরে ৭-দিন সতর্কতা
+  ব্যানার, `createInvoice()`-এ soft-lock গার্ড (মেয়াদ শেষে শুধু নতুন
+  ইনভয়েস/বিক্রি বন্ধ — ডেটা/রিপোর্ট/ব্যাকআপ অক্ষত)। নতুন ফাইল:
+  `netlify-site/license-generator.html` (পাসওয়ার্ড-প্রোটেক্টেড, ডেভেলপার-শুধু
+  ব্রাউজার টুল — ডিভাইস আইডি ইনপুট → এই মাসের কোড আউটপুট, App.jsx-এর সাথে
+  হুবহু একই LICENSE_SECRET+ফর্মুলা)।
+- মূল কারণ/প্রসঙ্গ: ইউজার (Protik) নিজের কয়েকটা দোকানকে ফায়ারবেস থেকে বের করে
+  সম্পূর্ণ অফলাইন করেছেন, কিন্তু অফলাইন হওয়ায় মাসিক সাবস্ক্রিপশন ফি বাধ্যতামূলক
+  আদায়ের কোনো প্রক্রিয়া অবশিষ্ট ছিল না। মালিকের সাথে আলোচনায় স্থির হওয়া
+  ডিজাইন: প্রতি মাসে ফোনে যোগাযোগ করে টাকা নেওয়ার পর কোড দেওয়া হবে, কোড না
+  দিলে soft-lock (শুধু নতুন বিক্রি বন্ধ, ডেটা দৃশ্যমান — যাতে দোকানদার ডেটা
+  হারানোর ভয়ে রাগান্বিত না হয় কিন্তু ব্যবসা চালাতে বাধ্যও হয়)।
+- ফিক্স/সংযোজন কোথায়: `src/App.jsx` (নতুন কোড, বিদ্যমান কোনো ফাংশন বদলানো
+  হয়নি বাদে `createInvoice()`-এর শুরুতে ১টা গার্ড ও ইনভয়েস সাবমিট বাটনের
+  disabled/opacity কন্ডিশনে `license.isLocked` যোগ), `navItems` array,
+  `moreNavItems` রেন্ডার ব্লকের dot-badge কন্ডিশন। নতুন ফাইল:
+  `netlify-site/license-generator.html`।
+- ব্লাস্ট রেডিয়াস: এই ফিচার `src/logic.js`/`src/sync.js`/schema/firestore
+  rules কোনোটাই ছোঁয়নি (৮-প্রায়োরিটি-এলাকার কোনোটাই না) — সম্পূর্ণ App.jsx-এর
+  নতুন isolated state+UI। একমাত্র বিদ্যমান আচরণ-পরিবর্তন: `createInvoice()`-এর
+  একদম শুরুতে একটা নতুন early-return guard (license.isLocked হলে), যেটা
+  ডিফল্টভাবে false থাকে যতক্ষণ না কোনো কোড অ্যাক্টিভেট/এক্সপায়ার হয়, তাই
+  বিদ্যমান ৫০০ শপে (যাদের OFFLINE_MODE ফ্ল্যাগ false এবং কখনো কোনো
+  LICENSE_UNTIL_KEY সেট হবে না) `license.isLocked` সবসময় `true` (কারণ
+  unlockedUntil কখনো সেট হয়নি) — ⚠️ এটা ইচ্ছাকৃত না, দেখুন নিচের সতর্কতা।
+- রিগ্রেশন টেস্ট যোগ হয়েছে কি: না (pure logic.js ফাংশন নয়, তাই
+  logic-tests.mjs-এ যোগ করা হয়নি)। যাচাই করা হয়েছে: `npx esbuild` দিয়ে
+  সিনট্যাক্স-চেক পাস, `node tests/logic-tests.mjs` (৬৮টা কেস) পাস। sandbox-এ
+  `node_modules` ইনস্টল করা ছিল না বলে `npm test`-এর schema/integration/sync
+  ধাপ পর্যন্ত চালানো যায়নি (zod মডিউল না পাওয়ার এরর — এই ফিচারের কারণে না)।
+  **real ডিভাইসে এখনো টেস্ট করা হয়নি।**
+- 🔴 গুরুত্বপূর্ণ — ধরা পড়া ও একই সেশনে ঠিক করা একটা সংকট: প্রথম খসড়ায়
+  `license.isLocked` ডিফল্টভাবে `true` ছিল (unlockedUntil কখনো সেট না হলে),
+  এবং এই গার্ড `OFFLINE_MODE`-নির্বিশেষে সব বিল্ডে সক্রিয় ছিল — অর্থাৎ deploy
+  হলে **OFFLINE_MODE=false (Firebase-চালিত, বর্তমান ৫০০ শপের প্রায় সবগুলো)
+  শপেও ইনভয়েস তৈরি বন্ধ হয়ে যেত।** এটা BUGFIX_LOG লেখার সময়ই নিজে ধরা পড়ে,
+  সাথে সাথে ফিক্স করা হয়েছে: `useLicenseSubscription()`-এ এখন
+  `!OFFLINE_MODE` হলে `isLocked`/`isNearExpiry` জোরপূর্বক `false` (হুক-লেভেল
+  গার্ড), `createInvoice()`-এর গার্ডে `OFFLINE_MODE &&` ডাবল-চেক
+  (defense-in-depth), আর `navItems`-এ `!OFFLINE_MODE` হলে "সাবস্ক্রিপশন"
+  মেনু-আইটেমটাই হাইড (Firebase শপে এই মেনু দেখানোর কোনো মানে নেই, বিভ্রান্তি
+  এড়াতে)। ফিক্সের পর esbuild দিয়ে আবার সিনট্যাক্স-চেক পাস করা হয়েছে।
+  **এরপরও deploy করার আগে অন্তত একটা `OFFLINE_MODE=false` বিল্ডে সরাসরি
+  টেস্ট করে নিশ্চিত হওয়া উচিত যে ইনভয়েস তৈরি স্বাভাবিক আছে** — এটা এই সেশনে
+  করা যায়নি (sandbox-এ Capacitor/Android বিল্ড চালানো সম্ভব না)।
+- 🔴 দ্বিতীয় বাগ (একই সেশনে `npm run lint` দিয়ে ধরা পড়েছে): `createInvoice()`
+  ফাংশন ও ইনভয়েস সাবমিট বাটন আসলে `SmartBusinessMgmt`-এ না, আলাদা
+  `SmartInvoiceBuilder` কম্পোনেন্টে থাকে (props দিয়ে ডেটা পায়) — তাই
+  `SmartBusinessMgmt`-এ ডিক্লেয়ার করা `const license = useLicenseSubscription()`
+  ওখানে scope-এই ছিল না (`'license' is not defined` — `no-undef` error,
+  ৪টা জায়গায়)। sandbox-এ `npm install` করে `npm run lint` চালিয়ে ধরা পড়ে,
+  ফিক্স: `<MemoSmartInvoiceBuilder>`-কে `license={license}` prop পাস করা +
+  `SmartInvoiceBuilder`-এর function signature-এ `license = { isLocked: false }`
+  (নিরাপদ ডিফল্টসহ) যোগ। এরপর `npm run lint` 0 errors (440 pre-existing
+  warning অপরিবর্তিত), `npm test` (৬৮+১৪+১০+২৪ কেস সব পাস, rules-sync সহ)
+  পুরোপুরি সবুজ। এই দুটো বাগই যদি ধরা না পড়ত, ফিচারটা প্রথম রানেই
+  ক্র্যাশ/ব্রেক করত (JS `ReferenceError` — পুরো ইনভয়েস স্ক্রিনই ভেঙে যেত,
+  শুধু OFFLINE_MODE শপে না, সব শপেই)।
+
 ### ২০২৬-০৭-২২ (দ্বিতীয় সেশন) — এন্টারপ্রাইজ মনিটরিং প্ল্যান D2 (ড্যাশবোর্ড ব্যাজ) ও D3 (ডাউনগ্রেড-রোলব্যাক) সম্পূর্ণ
 - কী করা হলো: D2 — Dashboard ট্যাবে `_errorsCache`-ভিত্তিক ইনভ্যারিয়েন্ট-অ্যালার্ট
   কাউন্ট কার্ড (নতুন Firestore কোয়েরি ছাড়াই)। D3 — `admin_config/appVersion.
