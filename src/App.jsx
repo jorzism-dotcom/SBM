@@ -18416,6 +18416,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
   }, [customers, walkInCustSearch]);
 
   const selectWalkInExistingCust = (c) => {
+    setWalkInCustMode("existing");
     setWalkInExistingId(c.id);
     setWalkInName(c.name || "");
     setWalkInMobile(c.mobile || "");
@@ -18424,7 +18425,9 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
   };
 
   // 🔎 বাকি/আংশিক বাকি ফর্মে কাস্টমার নির্বাচন — "কাস্টমার" ফিল্ড + দুটি প্রিমিয়াম বাটন (মডাল)
-  const renderWalkInCustPicker = (accentColor) => (
+  const renderWalkInCustPicker = (accentColor) => {
+    const existingBal = walkInExistingId ? ((customers || []).find(c => c.id === walkInExistingId)?.balance || 0) : 0;
+    return (
     <>
       {walkInName.trim() ? (
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:accentColor+"14", border:`1.5px solid ${accentColor}44`, borderRadius:10, padding:"9px 12px", marginBottom:6 }}>
@@ -18433,8 +18436,13 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
             <div style={{ fontWeight:800, fontSize:13, color:T.text }}>{walkInName}</div>
             {walkInMobile && <div style={{ fontSize:11, color:T.sub }}>{walkInMobile}</div>}
           </div>
-          <button type="button" onClick={() => { setWalkInExistingId(""); setWalkInName(""); setWalkInMobile(""); setWalkInAddress(""); setWalkInCustMode("new"); }}
-            style={{ background:"none", border:"none", color:"#ef4444", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>✕ বদলান</button>
+          <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4 }}>
+            {walkInExistingId && existingBal > 0 && (
+              <div style={{ fontSize:11, color:"#ef4444", fontWeight:800 }}>বাকি ৳{fmt(existingBal)}</div>
+            )}
+            <button type="button" onClick={() => { setWalkInExistingId(""); setWalkInName(""); setWalkInMobile(""); setWalkInAddress(""); setWalkInCustMode("new"); }}
+              style={{ background:"none", border:"none", color:"#ef4444", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>✕ বদলান</button>
+          </div>
         </div>
       ) : (
         <div style={{ display:"flex", gap:8, marginBottom:6 }}>
@@ -18446,17 +18454,17 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
           <button type="button" onClick={() => { setModalNewName(""); setModalNewMobile(""); setModalNewAddress(""); setShowWalkInNewCustModal(true); }}
             style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"12px 6px", borderRadius:14, border:"none", background:"linear-gradient(135deg, #06b6d4, #22c55e)", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 14px rgba(34,197,94,0.35)" }}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.8" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            + নতুন কাস্টমার
+            নতুন কাস্টমার
           </button>
         </div>
       )}
 
-      {/* 🆕 "পুরোনো কাস্টমার" মডাল */}
-      {showWalkInOldCustModal && (
-        <div style={{ position:"fixed", inset:0, zIndex:9999, background:"rgba(0,0,0,0.6)", display:"flex", flexDirection:"column" }}
+      {/* 🆕 "পুরোনো কাস্টমার" মডাল — Portal দিয়ে body-তে, যাতে পুরো স্ক্রিন ওভারলে হয়ে খোলে (কার্ডের ভেতরে ইনলাইন না) */}
+      {showWalkInOldCustModal && ReactDOM.createPortal(
+        <div style={{ position:"fixed", inset:0, zIndex:99999, background:"rgba(0,0,0,0.6)", display:"flex", flexDirection:"column" }}
           onClick={() => setShowWalkInOldCustModal(false)}>
           <div onClick={e => e.stopPropagation()}
-            style={{ marginTop:"auto", background:T.bg, borderTopLeftRadius:20, borderTopRightRadius:20, maxHeight:"82vh", display:"flex", flexDirection:"column", padding:16 }}>
+            style={{ marginTop:"auto", background:T.bg, borderTopLeftRadius:20, borderTopRightRadius:20, maxHeight:"82vh", display:"flex", flexDirection:"column", padding:16, paddingBottom:"calc(env(safe-area-inset-bottom, 0px) + 16px)" }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
               <div style={{ fontWeight:800, fontSize:15, color:T.text }}>পুরোনো কাস্টমার নির্বাচন</div>
               <button onClick={() => setShowWalkInOldCustModal(false)} style={{ background:"none", border:"none", color:T.sub, fontSize:20, cursor:"pointer", lineHeight:1 }}>✕</button>
@@ -18492,15 +18500,16 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
               }}
               style={{ ...S.saveBtn, marginTop:10, opacity: walkInModalSelectedId ? 1 : 0.5 }}>নিশ্চিত করুন</button>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
-      {/* 🆕 "+ নতুন কাস্টমার" মডাল */}
-      {showWalkInNewCustModal && (
-        <div style={{ position:"fixed", inset:0, zIndex:9999, background:"rgba(0,0,0,0.6)", display:"flex", flexDirection:"column" }}
+      {/* 🆕 "নতুন কাস্টমার" মডাল — Portal দিয়ে body-তে */}
+      {showWalkInNewCustModal && ReactDOM.createPortal(
+        <div style={{ position:"fixed", inset:0, zIndex:99999, background:"rgba(0,0,0,0.6)", display:"flex", flexDirection:"column" }}
           onClick={() => setShowWalkInNewCustModal(false)}>
           <div onClick={e => e.stopPropagation()}
-            style={{ marginTop:"auto", background:T.bg, borderTopLeftRadius:20, borderTopRightRadius:20, maxHeight:"85vh", overflowY:"auto", padding:16 }}>
+            style={{ marginTop:"auto", background:T.bg, borderTopLeftRadius:20, borderTopRightRadius:20, maxHeight:"85vh", overflowY:"auto", padding:16, paddingBottom:"calc(env(safe-area-inset-bottom, 0px) + 16px)" }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
               <div style={{ fontWeight:800, fontSize:15, color:T.text }}>নতুন কাস্টমার যোগ করুন</div>
               <button onClick={() => setShowWalkInNewCustModal(false)} style={{ background:"none", border:"none", color:T.sub, fontSize:20, cursor:"pointer", lineHeight:1 }}>✕</button>
@@ -18529,10 +18538,12 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
               }}
               style={{ ...S.saveBtn, opacity: (!modalNewName.trim() || (!modalNewMobile.trim() && !modalNewAddress.trim())) ? 0.5 : 1 }}>পরবর্তী →</button>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
-  );
+    );
+  };
 
   const changeQty = (p, delta) => {
     const isSelfUse = selCust?.id === "__selfuse__";
@@ -20120,10 +20131,6 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                         বাকি: ৳{fmt(total - (parseFloat(walkInPartialAmt)||0))}
                       </div>
                       {renderWalkInCustPicker("#f59e0b")}
-                      <div style={{ color: T.sub, fontSize:11, marginBottom:4, marginTop:6 }}>পরিশোধের তারিখ (ঐচ্ছিক)</div>
-                      <input type="date"
-                        value={walkInDueDate} onChange={e => setWalkInDueDate(e.target.value)}
-                        style={{ ...S.input, marginBottom:0 }} />
                     </div>
                   )}
                   {/* পুরো বাকি ফর্ম */}
@@ -20134,10 +20141,6 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                       <input type="text" readOnly disabled value={`৳${fmt(total)}`}
                         style={{ ...S.input, marginBottom:10, borderColor:"#ef444444", color:"#ef4444", fontWeight:800, opacity:0.95 }} />
                       {renderWalkInCustPicker("#ef4444")}
-                      <div style={{ color: T.sub, fontSize:11, marginBottom:4, marginTop:6 }}>পরিশোধের তারিখ (ঐচ্ছিক)</div>
-                      <input type="date"
-                        value={walkInDueDate} onChange={e => setWalkInDueDate(e.target.value)}
-                        style={{ ...S.input, marginBottom:0 }} />
                     </div>
                   )}
                 </div>
@@ -20208,7 +20211,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
               {/* বর্তমান বাকি (মোট = পূর্বের বাকি + এই ইনভয়েসের বাকি) */}
               {((selCust && selCust.id !== "__walkin__" && selCust.id !== "__selfuse__") || walkInExistingCust) && (prevBalance > 0 || displayBakiAmt > 0) && (
                 <div style={{ display:"flex", justifyContent:"space-between", fontSize:13, borderTop:`1px solid ${T.border}`, paddingTop:6, marginTop:2 }}>
-                  <span style={{ color: T.sub }}>সর্বমোট বাকি</span>
+                  <span style={{ color: T.sub }}>মোট বাকি</span>
                   <span style={{ color: displayNewBalance > 0 ? "#ef4444" : "#22c55e", fontWeight:900 }}>৳{fmt(Math.max(0, displayNewBalance))}</span>
                 </div>
               )}
