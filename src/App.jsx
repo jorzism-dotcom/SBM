@@ -75,6 +75,84 @@ const OFFLINE_MODE = (typeof import.meta !== "undefined" && import.meta.env && i
 // মালিক "ফোন নম্বর পাওয়া যায়নি" এরর দিয়ে চিরতরে লক-আউট হয়ে থাকতেন। এই key
 // দিয়ে OFFLINE_MODE-এ সম্পূর্ণ লোকাল PIN সেভ/যাচাই হয় (কোনো নেটওয়ার্ক লাগে না)।
 const OFFLINE_OWNER_PIN_KEY = "sbm-offline-owner-pin-hash";
+
+// ══════════════════════════════════════════════════════════════════════════
+// 🆕 অফলাইন মাসিক সাবস্ক্রিপশন লক (২৮ জুলাই ২০২৬) — OFFLINE_MODE বিল্ডে
+// Firebase/সাবস্ক্রিপশন-ডক না থাকায় প্রতি দোকান থেকে মাসিক টাকা আদায়ের কোনো
+// প্রক্রিয়া ছিল না। এই মডিউল সম্পূর্ণ লোকাল (নেটওয়ার্কহীন) একটা "মাসিক আনলক
+// কোড" সিস্টেম বানায়: প্রতিটা ডিভাইসের একটা ইউনিক আইডি থাকে, প্রতি মাসে
+// ডেভেলপার (Protik) সেই আইডি + বর্তমান মাস দিয়ে একটা ৬-ডিজিট কোড জেনারেট করে
+// দেয় (আলাদা browser-tool দিয়ে, netlify-site/license-generator.html), আর
+// অ্যাপ সেই কোড লোকালিই একই সূত্র দিয়ে যাচাই করে আনলক করে। মেয়াদ শেষ হলে শুধু
+// নতুন ইনভয়েস/বিক্রি বন্ধ হয় (soft-lock) — ডেটা/রিপোর্ট/ব্যাকআপ স্বাভাবিক থাকে।
+// এই ফ্ল্যাগ শুধুমাত্র চেকিং/UI-এর জন্য; পুরো ফিচারটা OFFLINE_MODE=false বিল্ডেও
+// টেকনিক্যালি কাজ করবে (ক্ষতি নেই), কিন্তু ব্যবহারিকভাবে শুধু OFFLINE_MODE
+// দোকানগুলোতেই দরকার (Firebase-চালিত দোকানের সাবস্ক্রিপশন কেন্দ্রীয়ভাবেই হয়)।
+// ── স্টোরেজ key গুলো ──
+const LICENSE_DEVICE_ID_KEY   = "sbm-license-device-id";
+const LICENSE_UNTIL_KEY       = "sbm-license-unlocked-until";   // ISO date string
+const LICENSE_MAX_SEEN_KEY    = "sbm-license-max-seen-ts";      // clock-rollback guard
+const LICENSE_HISTORY_KEY     = "sbm-license-history";          // [{activatedAt, validUntil}]
+// ── গোপন key — জেনারেটর টুলেও (netlify-site/license-generator.html) হুবহু এই
+// একই স্ট্রিং থাকতে হবে, নাহলে কোড কখনো মিলবে না। বদলাতে চাইলে দুই জায়গায়
+// একসাথে বদলান, নাহলে সব পুরনো/চলমান দোকানের কোড আর কাজ করবে না। ──
+const LICENSE_SECRET = "SBM-Turjo-Offline-License-v1-9f3k2Lq";
+
+// ডিভাইস আইডি — প্রথমবার জেনারেট হয়ে লোকালি স্থায়ীভাবে সেভ থাকে, আনইনস্টল/
+// রিসেট করলে নতুন আইডি তৈরি হবে (ইচ্ছাকৃত — পুরনো কোড কপি করে নতুন ফোনে বসিয়ে
+// বাইপাস করা ঠেকাতে)।
+async function getOrCreateLicenseDeviceId() {
+  let id = await load(LICENSE_DEVICE_ID_KEY);
+  if (id && typeof id === "string" && id.length >= 6) return id;
+  const raw = (crypto?.randomUUID ? crypto.randomUUID() : uid() + uid()).replace(/-/g, "").toUpperCase();
+  id = raw.slice(0, 8);
+  await save(LICENSE_DEVICE_ID_KEY, id);
+  return id;
+}
+
+// yyyy-mm ফরম্যাটে বর্তমান (বাংলাদেশ সময়ের বদলে সরল লোকাল-ডিভাইস তারিখ যথেষ্ট,
+// যেহেতু মাস-ভিত্তিক নির্ভুলতা লাগবে না) মাস।
+function _licenseYearMonth(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+// deviceId + yearMonth → ৬-ডিজিট কোড (SHA-256 হ্যাশ থেকে বের করা, hashPassword-এর
+// একই সল্টেড-ডাইজেস্ট প্যাটার্ন অনুসরণ করে)।
+async function computeLicenseCode(deviceId, yearMonth) {
+  const enc = new TextEncoder().encode(`${LICENSE_SECRET}:${deviceId}:${yearMonth}`);
+  const buf = await crypto.subtle.digest("SHA-256", enc);
+  const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+  // hex-এর প্রথম ৮ ক্যারেক্টারকে সংখ্যায় রূপান্তর করে mod 1000000 নিয়ে ৬-ডিজিট বানানো
+  const n = parseInt(hex.slice(0, 8), 16) % 1000000;
+  return String(n).padStart(6, "0");
+}
+
+// কোড যাচাই — চলতি মাস আর আগের মাস দুটোই মিলিয়ে দেখে (মাস পাল্টানোর আশেপাশে
+// দোকানদার একটু দেরিতে কোড বসালে যেন আটকে না যায়)।
+async function verifyLicenseCode(deviceId, code) {
+  const now = new Date();
+  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const curCode  = await computeLicenseCode(deviceId, _licenseYearMonth(now));
+  const prevCode = await computeLicenseCode(deviceId, _licenseYearMonth(prev));
+  return code === curCode || code === prevCode;
+}
+
+// "সর্বোচ্চ দেখা তারিখ" ট্র্যাক করে ফোনের ঘড়ি ইচ্ছাকৃতভাবে পিছিয়ে দিয়ে মেয়াদ
+// বাড়ানোর চেষ্টা ঠেকায়। কয়েক ঘণ্টার স্বাভাবিক টাইমজোন/DST গোলযোগ সহনীয়
+// রাখতে ৬ ঘণ্টার tolerance রাখা হয়েছে — বড় ধরনের (কয়েক দিনের) পিছিয়ে যাওয়াই
+// শুধু সন্দেহজনক ধরা হবে।
+const LICENSE_CLOCK_TOLERANCE_MS = 6 * 60 * 60 * 1000;
+async function checkLicenseClockTamper() {
+  const now = Date.now();
+  const maxSeenRaw = await load(LICENSE_MAX_SEEN_KEY);
+  const maxSeen = maxSeenRaw ? Number(maxSeenRaw) : 0;
+  if (maxSeen && now < maxSeen - LICENSE_CLOCK_TOLERANCE_MS) {
+    return true; // tampered
+  }
+  if (now > maxSeen) await save(LICENSE_MAX_SEEN_KEY, String(now));
+  return false;
+}
+
 // 🔴 recharts — শুধু AI পেজের "Analytics & Report" ট্যাবে ব্যবহার হয় (ডিফল্ট স্ক্রিন নয়),
 // তাই স্ট্যাটিক import না রেখে নিচে lazy dynamic import() দিয়ে লোড করা হচ্ছে (useRecharts হুক) —
 // প্রতি অ্যাপ-ওপেনে এই চার্ট লাইব্রেরির parse/eval খরচ আর বহন করতে হবে না।
@@ -12680,9 +12758,74 @@ function ruleBasedAnswer(q, data) {
   return `🤖 আপনি জিজ্ঞেস করতে পারেন:\n• "আজকের বিক্রয় কত?"\n• "কোন ওষুধে লাভ বেশি?"\n• "সবচেয়ে বেশি বাকি কার?"\n• "কম স্টক কোথায়?"\n• "ফার্মেসি কেমন চলছে?"\n• "আগামী মাসের ফোরকাস্ট"\n• "আজকের পরামর্শ"${urgent.length?"\n\n🚨 এখনই মনোযোগ দিন:\n"+urgent.join("\n"):""}`;
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// 🆕 useLicenseSubscription — অফলাইন মাসিক সাবস্ক্রিপশন স্টেট হুক (২৮ জুলাই ২০২৬)
+// দেখুন উপরের LICENSE_* কনস্ট্যান্ট/হেল্পার ফাংশনগুলোর কমেন্ট। এই হুক শুধু
+// state/load/save orchestrate করে — অ্যাক্টিভেশন লজিক নিজে computeLicenseCode/
+// verifyLicenseCode-এই থাকে (ডুপ্লিকেট না রাখতে)।
+// ══════════════════════════════════════════════════════════════════════════
+function useLicenseSubscription() {
+  const [deviceId, setDeviceId]         = useState("");
+  const [unlockedUntil, setUnlockedUntil] = useState(null); // Date | null
+  const [history, setHistory]           = useState([]);      // [{activatedAt, validUntil}]
+  const [tampered, setTampered]         = useState(false);
+  const [loading, setLoading]           = useState(true);
 
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const id = await getOrCreateLicenseDeviceId();
+      const untilRaw = await load(LICENSE_UNTIL_KEY);
+      const histRaw  = await load(LICENSE_HISTORY_KEY);
+      const isTampered = await checkLicenseClockTamper();
+      if (!mounted) return;
+      setDeviceId(id);
+      setUnlockedUntil(untilRaw ? new Date(untilRaw) : null);
+      setHistory(Array.isArray(histRaw) ? histRaw : []);
+      setTampered(isTampered);
+      setLoading(false);
+    })();
+    return () => { mounted = false; };
+  }, []);
+
+  const now = new Date();
+  // 🔴 সংকট এড়াতে জরুরি গার্ড: এই পুরো লোকাল-লাইসেন্স সিস্টেম শুধু OFFLINE_MODE
+  // বিল্ডের জন্য (Firebase নেই এমন দোকান)। OFFLINE_MODE=false শপে (বর্তমান ৫০০
+  // শপের প্রায় সবগুলো) সাবস্ক্রিপশন ইতিমধ্যে কেন্দ্রীয়ভাবে SubscriptionGate/
+  // Firestore দিয়ে হ্যান্ডেল হয় — সেখানে unlockedUntil কখনো সেট হবে না বলে
+  // isLocked ডিফল্টভাবে true হয়ে যেত, যা createInvoice()-কে সব ৫০০ শপে ব্লক
+  // করে দিত। তাই !OFFLINE_MODE-এ isLocked/isNearExpiry সবসময় জোরপূর্বক false।
+  const isLocked = !OFFLINE_MODE ? false : (loading ? false : (tampered || !unlockedUntil || unlockedUntil.getTime() < now.getTime()));
+  const daysRemaining = unlockedUntil ? Math.ceil((unlockedUntil.getTime() - now.getTime()) / 86400000) : 0;
+  const isNearExpiry = !OFFLINE_MODE ? false : (!isLocked && daysRemaining <= 7);
+
+  const activateCode = async (code) => {
+    if (!deviceId) return { ok: false, msg: "ডিভাইস আইডি এখনো লোড হয়নি, একটু পরে চেষ্টা করুন" };
+    if (!/^\d{6}$/.test(code)) return { ok: false, msg: "৬ ডিজিটের কোড দিন" };
+    const valid = await verifyLicenseCode(deviceId, code);
+    if (!valid) return { ok: false, msg: "কোড মিলছে না, আবার চেষ্টা করুন" };
+    // আগেভাগে রিনিউ করলে দিন যেন নষ্ট না হয় — আগের unlockedUntil (যদি ভবিষ্যতে হয়) থেকেই ৩০ দিন যোগ হয়
+    const base = (unlockedUntil && unlockedUntil.getTime() > now.getTime()) ? unlockedUntil : now;
+    const next = new Date(base.getTime() + 30 * 86400000);
+    await save(LICENSE_UNTIL_KEY, next.toISOString());
+    await save(LICENSE_MAX_SEEN_KEY, String(Date.now())); // সফল অ্যাক্টিভেশনে ট্যাম্পার-ফ্ল্যাগও রিফ্রেশ
+    const newHist = [{ activatedAt: now.toISOString(), validUntil: next.toISOString() }, ...history].slice(0, 24);
+    await save(LICENSE_HISTORY_KEY, newHist);
+    setUnlockedUntil(next);
+    setHistory(newHist);
+    setTampered(false);
+    return { ok: true, msg: `সচল হয়েছে — ${next.toLocaleDateString("bn-BD")} পর্যন্ত` };
+  };
+
+  return { deviceId, unlockedUntil, history, loading, isLocked, isNearExpiry, daysRemaining, tampered, activateCode };
+}
 
 function SmartBusinessMgmt() {
+  // 🆕 (২৮ জুলাই ২০২৬) — অফলাইন মাসিক সাবস্ক্রিপশন লক। দেখুন উপরের
+  // useLicenseSubscription/LICENSE_* কমেন্ট। সব দোকানেই এই হুক চলে (শুধু
+  // OFFLINE_MODE-এ না), কিন্তু ব্যবহারিকভাবে দরকার হয় শুধু OFFLINE_MODE বিল্ডে —
+  // Firebase-চালিত দোকানে কেন্দ্রীয় subscriptions/{phone} ডকই আসল সোর্স অফ ট্রুথ।
+  const license = useLicenseSubscription();
   // 🆕 (২৭ জুলাই ২০২৬, আইটেম G) — Viewer Mode: এই ডিভাইস normal দোকান-অ্যাপ
   // নাকি শুধু-দেখার Viewer, সেটা প্লেইন localStorage-এ রাখা একটা সাধারণ flag —
   // ইচ্ছাকৃতভাবে Zustand/boot-load সিস্টেমের বাইরে, কারণ Viewer ডিভাইসের কোনো
@@ -15933,11 +16076,15 @@ function SmartBusinessMgmt() {
       { id: "ai",       label: "AI",       icon: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8 11a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm8 0a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm-4 6c-2.5 0-4.7-1.3-6-3.3h12c-1.3 2-3.5 3.3-6 3.3z" },
       { id: "auditTrail",   label: "অডিট ট্রেইল",       icon: "M9 12h6m-6 4h6m2 5H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5.586a1 1 0 0 1 .707.293l5.414 5.414a1 1 0 0 1 .293.707V19a2 2 0 0 1-2 2z" },
       { id: "staffMgmt",    label: "স্টাফ ব্যবস্থাপনা", icon: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" },
+      { id: "subscription", label: "সাবস্ক্রিপশন", icon: "M20 12V8H6a2 2 0 0 1-2-2c0-1.1.9-2 2-2h12v4M4 6v12c0 1.1.9 2 2 2h14v-4M18 12a2 2 0 0 0 0 4h4v-4z" },
       { id: "settings",  label: "সেটিং",   icon: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" },
     ];
     // Staff cannot see sms/ai/দৈনিক সারসংক্ষেপ/অডিট ট্রেইল/স্টাফ ব্যবস্থাপনা (settings এখন দেখবে — শুধু theme+font)
     // 🔴 ফিক্স: "ইনভয়েস হিস্ট্রি" (returns) ও "সাপ্লায়ার" (supplier) এখন থেকে শুধু admin/owner দেখবে — স্টাফের জন্য হাইড
-    let visible = isStaff ? all.filter(n => !["sms", "ai", "dailySummary", "auditTrail", "staffMgmt", "returns", "supplier"].includes(n.id)) : all;
+    let visible = isStaff ? all.filter(n => !["sms", "ai", "dailySummary", "auditTrail", "staffMgmt", "returns", "supplier", "subscription"].includes(n.id)) : all;
+    // 🔴 এই লোকাল-লাইসেন্স মডিউল শুধু OFFLINE_MODE বিল্ডে প্রাসঙ্গিক (Firebase
+    // শপে সাবস্ক্রিপশন কেন্দ্রীয়ভাবে হয়) — অন্য বিল্ডে মেনু আইটেমটাই হাইড
+    if (!OFFLINE_MODE) visible = visible.filter(n => n.id !== "subscription");
     // "এক্সপেন্স ট্রেকার" শুধু Admin রোল দেখতে পাবে — অন্য কোনো রোল (staff/অজানা) দেখবে না
     if (currentUser?.role !== "admin" && currentUser?.role !== "owner") visible = visible.filter(n => n.id !== "expense");
     return visible;
@@ -16598,6 +16745,34 @@ function SmartBusinessMgmt() {
       <main style={{ ...S.main, ...(tab === "invoice" ? { overflowY: "hidden", paddingBottom: 0, contain: "layout style", display: "flex", flexDirection: "column", minHeight: 0 } : {}) }}>
         {tab === "dashboard" && (
           <ErrorBoundary T={T}>
+            {/* 🆕 (২৮ জুলাই ২০২৬) — সাবস্ক্রিপশন মেয়াদ শেষের ৭ দিন আগে থেকে সতর্কতা
+                ব্যানার, হোমের একদম উপরে (ক্যাশ ড্রয়ার কার্ডের আগে)। ট্যাপ করলে
+                সরাসরি "সাবস্ক্রিপশন" মডিউলে নিয়ে যায়। ডিসমিস নেই — প্রতিবার
+                অ্যাপ খুললে/হোমে এলে দেখাবে, যাতে ভুলে না যায়। */}
+            {!isStaff && !license.loading && (license.isLocked || license.isNearExpiry) && (
+              <div
+                onClick={() => setTab("subscription")}
+                style={{
+                  display:"flex", alignItems:"center", gap:10,
+                  background: license.isLocked ? "#ef444422" : "#f59e0b22",
+                  border: `1px solid ${license.isLocked ? "#ef444466" : "#f59e0b66"}`,
+                  borderRadius: 12, padding:"11px 14px", marginBottom: 12,
+                  cursor:"pointer",
+                }}>
+                <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke={license.isLocked ? "#ef4444" : "#f59e0b"} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0 }}>
+                  <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                  <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+                <span style={{ color: license.isLocked ? "#ef4444" : "#f59e0b", fontWeight:800, fontSize:12.5, flex:1 }}>
+                  {license.isLocked
+                    ? "সাবস্ক্রিপশনের মেয়াদ শেষ — নতুন বিক্রি/ইনভয়েস বন্ধ। এখনই নবায়ন করুন।"
+                    : `সাবস্ক্রিপশন শেষ হবে ${license.daysRemaining} দিনে — নবায়ন করুন`}
+                </span>
+                <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={license.isLocked ? "#ef4444" : "#f59e0b"} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0 }}>
+                  <polyline points="9 18 15 12 9 6" />
+                </svg>
+              </div>
+            )}
             <MemoDashboard T={T} S={S}
               businessType={businessType}
               customers={customers} invoices={invoices} totalBaki={totalBaki}
@@ -16676,6 +16851,7 @@ function SmartBusinessMgmt() {
               currentUser={currentUser}
               businessType={businessType}
               onDone={clearPreselected}
+              license={license}
             />
           </ErrorBoundary>
         )}
@@ -16921,6 +17097,11 @@ function SmartBusinessMgmt() {
             />
           </ErrorBoundary>
         )}
+        {tab === "subscription" && (
+          <ErrorBoundary T={T}>
+            <SubscriptionModule T={T} S={S} license={license} showToast={showToast} />
+          </ErrorBoundary>
+        )}
       </main>
 
       <nav style={S.nav}>
@@ -17107,6 +17288,9 @@ function SmartBusinessMgmt() {
                   <span style={{ fontSize:13.5, fontWeight: isActive ? 800 : 600 }}>{n.label}</span>
                   {n.id === "settings" && backupNeeded && (
                     <span style={{ width:7, height:7, background:"#f59e0b", borderRadius:"50%", marginLeft:"auto", boxShadow:"0 0 6px #f59e0b88" }} />
+                  )}
+                  {n.id === "subscription" && (license.isLocked || license.isNearExpiry) && !license.loading && (
+                    <span style={{ width:7, height:7, background: license.isLocked ? "#ef4444" : "#f59e0b", borderRadius:"50%", marginLeft:"auto", boxShadow: license.isLocked ? "0 0 6px #ef444488" : "0 0 6px #f59e0b88" }} />
                   )}
                 </button>
               );
@@ -18875,7 +19059,7 @@ function invoiceReducer(state, action) {
   }
 }
 
-function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoices, setProducts, sendSMS, showToast, addTxn, shopName, btConnected, btDevice, onConnectBluetooth, createPaymentInvoice, preselectedCustomer, preselectedType, setTab, onDone, purchaseOrders = [], currentUser, businessType = "pharmacy" }) {
+function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoices, setProducts, sendSMS, showToast, addTxn, shopName, btConnected, btDevice, onConnectBluetooth, createPaymentInvoice, preselectedCustomer, preselectedType, setTab, onDone, purchaseOrders = [], currentUser, businessType = "pharmacy", license = { isLocked: false } }) {
   // 🆕 ধাপ ৪: semen business-এ ইনভয়েস স্টেপ ২ প্রোডাক্ট কার্ডে ক্রয়মূল্য হাইড
   // (registry hiddenFields.invoiceCard: "purchasePrice")
   const hideCostPrice = (BUSINESS_TYPE_REGISTRY[businessType]?.hiddenFields?.invoiceCard || []).includes("purchasePrice");
@@ -19355,6 +19539,17 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
   // চলে, আর সার্ভারের চূড়ান্ত মান লোকাল guess-এর চেয়ে ভিন্ন হলে (কনফ্লিক্ট/রেস
   // কন্ডিশনে, বিরল) সাইলেন্টলি স্টেট + পুশ-করা ইনভয়েস ডকুমেন্ট রিকনসাইল হয়ে যায়।
   const createInvoice = async () => {
+    // 🆕 (২৮ জুলাই ২০২৬) — সাবস্ক্রিপশন soft-lock: মেয়াদ শেষ হলে নতুন ইনভয়েস/বিক্রি
+    // তৈরি বন্ধ (ডেটা দেখা/এক্সপোর্ট/ব্যাকআপ স্বাভাবিক থাকে — শুধু এই একটা পয়েন্টেই আটকানো)।
+    // OFFLINE_MODE && ডাবল-গার্ড ইচ্ছাকৃত — useLicenseSubscription() নিজেই
+    // !OFFLINE_MODE-এ isLocked জোরপূর্বক false রাখে, কিন্তু এখানে defense-in-depth
+    // হিসেবে আবার চেক করা হলো যাতে ভবিষ্যতে হুক লজিক বদলালেও ৫০০ Firebase শপে
+    // ভুলবশত ইনভয়েস ব্লক না হয়।
+    if (OFFLINE_MODE && license.isLocked) {
+      showToast("সাবস্ক্রিপশনের মেয়াদ শেষ — নতুন ইনভয়েস তৈরি বন্ধ। সাবস্ক্রিপশন মডিউল থেকে নবায়ন করুন।", "#ef4444");
+      setTab("subscription");
+      return;
+    }
     if (!selCust || items.length === 0) { showToast("কাস্টমার ও পণ্য বেছে নিন", "#ef4444"); return; }
     setCreating(true);
     try {
@@ -20865,10 +21060,10 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
           <div style={{ flexShrink:0, paddingTop:8, paddingBottom:"calc(env(safe-area-inset-bottom, 0px) + 70px)", borderTop:`1px solid ${T.border}`, background:T.bg, position:"sticky", bottom:0, zIndex:100 }}>
             <div style={{ display:"flex", gap:10 }}>
               <button style={{ ...S.cancelBtn, flex:1 }} onClick={() => setStep(2)}>← পণ্য</button>
-              <button style={{ ...S.saveBtn, flex:2, padding:14, fontSize:15, opacity:creating?0.7:1 }}
-                disabled={creating || (!isSelfUse && payType==="partial" && !partialAmt) || (!isSelfUse && selCust?.id==="__walkin__" && walkInPayType==="partial" && !walkInPartialAmt) || (!isSelfUse && selCust?.id==="__walkin__" && (walkInPayType==="partial" || walkInPayType==="baki") && !walkInName.trim())}
+              <button style={{ ...S.saveBtn, flex:2, padding:14, fontSize:15, opacity:(creating || license.isLocked)?0.6:1 }}
+                disabled={creating || license.isLocked || (!isSelfUse && payType==="partial" && !partialAmt) || (!isSelfUse && selCust?.id==="__walkin__" && walkInPayType==="partial" && !walkInPartialAmt) || (!isSelfUse && selCust?.id==="__walkin__" && (walkInPayType==="partial" || walkInPayType==="baki") && !walkInName.trim())}
                 onClick={createInvoice}>
-                {creating ? "তৈরি হচ্ছে..." : <span style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>ইনভয়েস তৈরি করুন →</span>}
+                {creating ? "তৈরি হচ্ছে..." : license.isLocked ? "🔒 সাবস্ক্রিপশন মেয়াদ শেষ" : <span style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>ইনভয়েস তৈরি করুন →</span>}
               </button>
             </div>
           </div>
@@ -32164,6 +32359,146 @@ function StaffSetupQrPanel({ T, S, recoveryPhone, recoveryPinHash }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// 🆕 SubscriptionModule (২৮ জুলাই ২০২৬) — সাইড মেনু ("স্টাফ ব্যবস্থাপনা"-র
+// নিচে, "সেটিং"-এর উপরে)। ডিভাইস আইডি, বাকি দিন, সাবস্ক্রিপশন হিস্ট্রি,
+// যোগাযোগ নম্বর (কল/হোয়াটসঅ্যাপ), আর কোড দিয়ে রিনিউ — সব একজায়গায়।
+// দেখুন useLicenseSubscription/LICENSE_* হেল্পারের কমেন্ট (মূল লজিক ওখানেই)।
+// ══════════════════════════════════════════════════════════════════════════
+const SUBSCRIPTION_CONTACT_NUMBER = "01572931230"; // দেশীয় ফরম্যাট — কল/হোয়াটসঅ্যাপ লিংকে +88 প্রিফিক্স যোগ হয়
+function SubscriptionModule({ T, S, license, showToast }) {
+  const [codeInput, setCodeInput] = useState("");
+  const [activating, setActivating] = useState(false);
+  const [copyDone, setCopyDone] = useState(false);
+
+  const copyDeviceId = async () => {
+    try {
+      await navigator.clipboard.writeText(license.deviceId);
+      setCopyDone(true);
+      showToast?.("ডিভাইস আইডি কপি হয়েছে");
+      setTimeout(() => setCopyDone(false), 1800);
+    } catch {
+      showToast?.("কপি করা যায়নি, ম্যানুয়ালি লিখে নিন", "#ef4444");
+    }
+  };
+
+  const handleActivate = async () => {
+    if (codeInput.length !== 6) { showToast?.("৬ ডিজিটের কোড দিন", "#ef4444"); return; }
+    setActivating(true);
+    const res = await license.activateCode(codeInput);
+    setActivating(false);
+    if (res.ok) {
+      setCodeInput("");
+      showToast?.(res.msg);
+    } else {
+      showToast?.(res.msg, "#ef4444");
+    }
+  };
+
+  const callNumber   = () => { window.location.href = `tel:+88${SUBSCRIPTION_CONTACT_NUMBER}`; };
+  const whatsappOpen = () => { window.open(`https://wa.me/88${SUBSCRIPTION_CONTACT_NUMBER}`, "_blank"); };
+
+  const statusColor = license.isLocked ? "#ef4444" : license.isNearExpiry ? "#f59e0b" : "#22c55e";
+  const statusLabel = license.isLocked
+    ? (license.tampered ? "লক (ফোনের তারিখ যাচাই ব্যর্থ)" : "মেয়াদ শেষ")
+    : license.isNearExpiry ? `${license.daysRemaining} দিন বাকি` : "সচল আছে";
+
+  return (
+    <div style={{ padding: "4px 2px 24px" }}>
+      <div style={{ ...S.headerTitle, fontSize: 17, marginBottom: 14 }}>📶 সাবস্ক্রিপশন</div>
+
+      {/* ── স্ট্যাটাস কার্ড ── */}
+      <div style={{ ...S.card, borderColor: statusColor + "55" }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: 6 }}>
+          <span style={{ color: T.sub, fontSize: 12.5, fontWeight: 700 }}>বর্তমান অবস্থা</span>
+          <span style={{ color: statusColor, fontWeight: 900, fontSize: 14 }}>{statusLabel}</span>
+        </div>
+        {license.unlockedUntil && (
+          <div style={{ color: T.text, fontSize: 12.5 }}>
+            মেয়াদ শেষ হবে: <b>{license.unlockedUntil.toLocaleDateString("bn-BD", { day:"numeric", month:"long", year:"numeric" })}</b>
+          </div>
+        )}
+        {!license.unlockedUntil && !license.loading && (
+          <div style={{ color: T.sub, fontSize: 12.5 }}>এখনো কোনো কোড অ্যাক্টিভেট করা হয়নি</div>
+        )}
+      </div>
+
+      {/* ── ডিভাইস আইডি ── */}
+      <div style={S.card}>
+        <div style={{ color: T.sub, fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>ডিভাইস আইডি</div>
+        <div style={{ display:"flex", alignItems:"center", gap: 10 }}>
+          <div style={{
+            flex: 1, background: T.input, border: `1.5px solid ${T.border}`, borderRadius: 12,
+            padding: "12px 14px", color: T.text, fontWeight: 900, fontSize: 18, letterSpacing: 2,
+            textAlign: "center", fontFamily: "monospace",
+          }}>
+            {license.loading ? "..." : license.deviceId}
+          </div>
+          <button onClick={copyDeviceId} disabled={license.loading}
+            style={{ ...S.iconBtn, background: copyDone ? "#22c55e33" : T.input, border: `1px solid ${T.border}`, color: T.text, width: 44, height: 44 }}>
+            {copyDone ? "✓" : (
+              <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            )}
+          </button>
+        </div>
+        <div style={{ color: T.sub, fontSize: 11, marginTop: 8 }}>এই আইডিটা ফোনে/হোয়াটসঅ্যাপে পাঠিয়ে দিন, আপনাকে এর বদলে এই মাসের কোড দেওয়া হবে</div>
+      </div>
+
+      {/* ── কোড দিয়ে রিনিউ ── */}
+      <div style={S.card}>
+        <div style={{ color: T.sub, fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>সাবস্ক্রিপশন কোড</div>
+        <input
+          style={{ ...S.input, textAlign:"center", fontSize: 20, fontWeight: 800, letterSpacing: 6, fontFamily:"monospace" }}
+          placeholder="000000" maxLength={6} inputMode="numeric"
+          value={codeInput}
+          onChange={e => setCodeInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
+        />
+        <button
+          style={{ ...S.saveBtn, width: "100%", opacity: (activating || codeInput.length !== 6) ? 0.6 : 1 }}
+          disabled={activating || codeInput.length !== 6}
+          onClick={handleActivate}>
+          {activating ? "যাচাই হচ্ছে..." : "সচল করুন"}
+        </button>
+      </div>
+
+      {/* ── যোগাযোগ ── */}
+      <div style={S.card}>
+        <div style={{ color: T.sub, fontSize: 12.5, fontWeight: 700, marginBottom: 10 }}>যোগাযোগ করুন</div>
+        <div style={{ color: T.text, fontSize: 15, fontWeight: 800, marginBottom: 12, textAlign:"center" }}>{SUBSCRIPTION_CONTACT_NUMBER}</div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={callNumber} style={{ ...S.saveBtn, flex: 1, background: "linear-gradient(135deg,#1d4ed8,#3b82f6)" }}>
+            📞 কল করুন
+          </button>
+          <button onClick={whatsappOpen} style={{ ...S.saveBtn, flex: 1, background: "linear-gradient(135deg,#128c4a,#25d366)" }}>
+            💬 WhatsApp
+          </button>
+        </div>
+      </div>
+
+      {/* ── হিস্ট্রি ── */}
+      <div style={S.card}>
+        <div style={{ color: T.sub, fontSize: 12.5, fontWeight: 700, marginBottom: 10 }}>সাবস্ক্রিপশন হিস্ট্রি</div>
+        {license.history.length === 0 && (
+          <div style={{ color: T.sub, fontSize: 12.5, textAlign:"center", padding: "10px 0" }}>কোনো ইতিহাস নেই</div>
+        )}
+        {license.history.map((h, i) => (
+          <div key={i} style={{
+            display:"flex", justifyContent:"space-between", alignItems:"center",
+            padding: "9px 0", borderBottom: i < license.history.length - 1 ? `1px solid ${T.border}` : "none",
+          }}>
+            <span style={{ color: T.text, fontSize: 12.5 }}>
+              {new Date(h.activatedAt).toLocaleDateString("bn-BD", { day:"numeric", month:"short", year:"numeric" })}-এ অ্যাক্টিভেট
+            </span>
+            <span style={{ color: T.sub, fontSize: 11.5 }}>
+              → {new Date(h.validUntil).toLocaleDateString("bn-BD", { day:"numeric", month:"short" })} পর্যন্ত
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
