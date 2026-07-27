@@ -16282,10 +16282,10 @@ function SmartBusinessMgmt() {
           transform: translateZ(0); /* GPU layer */
         }
 
-        /* ── Virtuoso Grid — Invoice Product 2-column ── */
+        /* ── Virtuoso Grid — Invoice Product single-column ── */
         .sbm-inv-product-grid {
           display: grid;
-          grid-template-columns: 1fr 1fr;
+          grid-template-columns: 1fr;
           gap: 8px;
           padding: 0;
         }
@@ -18270,6 +18270,12 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
   const [walkInCustMode,   setWalkInCustMode]   = useState("new"); // "new" | "existing" — বাকি/আংশিক বাকির কাস্টমার নতুন নাকি পুরোনো
   const [walkInExistingId, setWalkInExistingId] = useState(""); // পুরোনো কাস্টমার সিলেক্ট করলে তার id
   const [walkInCustSearch, setWalkInCustSearch] = useState(""); // পুরোনো কাস্টমার সার্চ
+  const [showWalkInOldCustModal, setShowWalkInOldCustModal] = useState(false); // 🆕 "পুরোনো কাস্টমার" মডাল
+  const [showWalkInNewCustModal, setShowWalkInNewCustModal] = useState(false); // 🆕 "+ নতুন কাস্টমার" মডাল
+  const [walkInModalSelectedId, setWalkInModalSelectedId] = useState(""); // মডালে সিলেক্ট করা (নিশ্চিত না করা পর্যন্ত অস্থায়ী)
+  const [modalNewName,    setModalNewName]    = useState(""); // "+ নতুন কাস্টমার" মডাল ফর্ম
+  const [modalNewMobile,  setModalNewMobile]  = useState("");
+  const [modalNewAddress, setModalNewAddress] = useState("");
   const [selfUseOn,  setSelfUseOn]  = useState(false); // 🏠 নিজের ব্যবহার (Personal Use) টগল — Payment স্টেপে
   const [note,       setNote]       = useState("");
   const [discount,   setDiscount]   = useState(""); // টাকায় ডিসকাউন্ট
@@ -18401,6 +18407,14 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     ).slice(0, 8);
   }, [customers, walkInCustSearch]);
 
+  // 🆕 "পুরোনো কাস্টমার" মডালের জন্য পূর্ণ তালিকা (সার্চ করলে ফিল্টার, না করলে সব)
+  const walkInModalCustList = useMemo(() => {
+    const list = customers || [];
+    if (!walkInCustSearch.trim()) return list;
+    const q = walkInCustSearch.trim().toLowerCase();
+    return list.filter(c => (c.name || "").toLowerCase().includes(q) || (c.mobile || "").includes(q));
+  }, [customers, walkInCustSearch]);
+
   const selectWalkInExistingCust = (c) => {
     setWalkInExistingId(c.id);
     setWalkInName(c.name || "");
@@ -18409,71 +18423,113 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     setWalkInCustSearch("");
   };
 
-  // 🔎 বাকি/আংশিক বাকি ফর্মে কাস্টমার নির্বাচন — পুরোনো কাস্টমার সার্চ+সিলেক্ট অথবা নতুন কাস্টমার তৈরি
+  // 🔎 বাকি/আংশিক বাকি ফর্মে কাস্টমার নির্বাচন — "কাস্টমার" ফিল্ড + দুটি প্রিমিয়াম বাটন (মডাল)
   const renderWalkInCustPicker = (accentColor) => (
     <>
-      <div style={{ display:"flex", gap:6, marginBottom:8 }}>
-        {[{ key:"new", label:"➕ নতুন কাস্টমার" }, { key:"existing", label:"🔎 পুরোনো কাস্টমার" }].map(m => (
-          <button key={m.key} type="button"
-            onClick={() => { setWalkInCustMode(m.key); setWalkInExistingId(""); setWalkInCustSearch(""); if (m.key === "existing") { setWalkInName(""); setWalkInMobile(""); setWalkInAddress(""); } }}
-            style={{ flex:1, padding:"7px 6px", borderRadius:8, border:`1.5px solid ${walkInCustMode===m.key ? accentColor : T.border}`, background: walkInCustMode===m.key ? accentColor+"1a" : "transparent", color: walkInCustMode===m.key ? accentColor : T.sub, fontWeight:700, fontSize:11, cursor:"pointer", fontFamily:"inherit" }}>
-            {m.label}
-          </button>
-        ))}
-      </div>
-
-      {walkInCustMode === "existing" ? (
-        <>
-          {walkInExistingId ? (
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:accentColor+"14", border:`1.5px solid ${accentColor}44`, borderRadius:10, padding:"9px 12px", marginBottom:6 }}>
-              <div>
-                <div style={{ fontWeight:800, fontSize:13, color:T.text }}>{walkInName}</div>
-                {walkInMobile && <div style={{ fontSize:11, color:T.sub }}>{walkInMobile}</div>}
-              </div>
-              <button type="button" onClick={() => { setWalkInExistingId(""); setWalkInName(""); setWalkInMobile(""); setWalkInAddress(""); }}
-                style={{ background:"none", border:"none", color:"#ef4444", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>✕ বদলান</button>
-            </div>
-          ) : (
-            <>
-              <input placeholder="নাম বা মোবাইল দিয়ে সার্চ করুন"
-                value={walkInCustSearch} onChange={e => setWalkInCustSearch(e.target.value)}
-                style={{ ...S.input, marginBottom:6 }} />
-              {walkInCustSearch.trim() && (
-                walkInCustMatches.length > 0 ? (
-                  <div style={{ maxHeight:160, overflowY:"auto", marginBottom:6, border:`1px solid ${T.border}`, borderRadius:10 }}>
-                    {walkInCustMatches.map(c => (
-                      <div key={c.id} onClick={() => selectWalkInExistingCust(c)}
-                        style={{ padding:"8px 12px", borderBottom:`1px solid ${T.border}`, cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                        <div>
-                          <div style={{ fontWeight:700, fontSize:12, color:T.text }}>{c.name}</div>
-                          <div style={{ fontSize:10, color:T.sub }}>{c.mobile || "মোবাইল নেই"}</div>
-                        </div>
-                        {(c.balance || 0) > 0 && <div style={{ fontSize:10, color:"#ef4444", fontWeight:700 }}>বাকি ৳{fmt(c.balance)}</div>}
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div style={{ fontSize:11, color:T.sub, marginBottom:6 }}>কোনো কাস্টমার পাওয়া যায়নি — "নতুন কাস্টমার" ট্যাবে গিয়ে যোগ করুন</div>
-                )
-              )}
-            </>
-          )}
-        </>
+      {walkInName.trim() ? (
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", background:accentColor+"14", border:`1.5px solid ${accentColor}44`, borderRadius:10, padding:"9px 12px", marginBottom:6 }}>
+          <div>
+            <div style={{ fontSize:10, color:T.sub, marginBottom:2 }}>কাস্টমার</div>
+            <div style={{ fontWeight:800, fontSize:13, color:T.text }}>{walkInName}</div>
+            {walkInMobile && <div style={{ fontSize:11, color:T.sub }}>{walkInMobile}</div>}
+          </div>
+          <button type="button" onClick={() => { setWalkInExistingId(""); setWalkInName(""); setWalkInMobile(""); setWalkInAddress(""); setWalkInCustMode("new"); }}
+            style={{ background:"none", border:"none", color:"#ef4444", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>✕ বদলান</button>
+        </div>
       ) : (
-        <>
-          <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>কাস্টমারের নাম <span style={{color:"#ef4444"}}>*</span></div>
-          <input placeholder="বাধ্যতামূলক"
-            value={walkInName} onChange={e => setWalkInName(e.target.value)}
-            style={{ ...S.input, marginBottom:6, borderColor: !walkInName.trim() ? "#ef444488" : undefined }} />
-          <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>মোবাইল নম্বর (ঐচ্ছিক)</div>
-          <input type="tel" inputMode="numeric" placeholder="" maxLength={11}
-            value={walkInMobile} onChange={e => setWalkInMobile(e.target.value.replace(/\D/g,"").slice(0,11))}
-            style={{ ...S.input, marginBottom:6 }} />
-          <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>ঠিকানা (ঐচ্ছিক)</div>
-          <input placeholder=""
-            value={walkInAddress} onChange={e => setWalkInAddress(e.target.value)}
-            style={{ ...S.input, marginBottom:6 }} />
-        </>
+        <div style={{ display:"flex", gap:8, marginBottom:6 }}>
+          <button type="button" onClick={() => { setWalkInModalSelectedId(""); setWalkInCustSearch(""); setShowWalkInOldCustModal(true); }}
+            style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"12px 6px", borderRadius:14, border:"none", background:"linear-gradient(135deg, #6366f1, #a855f7)", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 14px rgba(99,102,241,0.35)" }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            পুরোনো কাস্টমার
+          </button>
+          <button type="button" onClick={() => { setModalNewName(""); setModalNewMobile(""); setModalNewAddress(""); setShowWalkInNewCustModal(true); }}
+            style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, padding:"12px 6px", borderRadius:14, border:"none", background:"linear-gradient(135deg, #06b6d4, #22c55e)", color:"#fff", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 14px rgba(34,197,94,0.35)" }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.8" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            + নতুন কাস্টমার
+          </button>
+        </div>
+      )}
+
+      {/* 🆕 "পুরোনো কাস্টমার" মডাল */}
+      {showWalkInOldCustModal && (
+        <div style={{ position:"fixed", inset:0, zIndex:9999, background:"rgba(0,0,0,0.6)", display:"flex", flexDirection:"column" }}
+          onClick={() => setShowWalkInOldCustModal(false)}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ marginTop:"auto", background:T.bg, borderTopLeftRadius:20, borderTopRightRadius:20, maxHeight:"82vh", display:"flex", flexDirection:"column", padding:16 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+              <div style={{ fontWeight:800, fontSize:15, color:T.text }}>পুরোনো কাস্টমার নির্বাচন</div>
+              <button onClick={() => setShowWalkInOldCustModal(false)} style={{ background:"none", border:"none", color:T.sub, fontSize:20, cursor:"pointer", lineHeight:1 }}>✕</button>
+            </div>
+            <input placeholder="নাম বা মোবাইল দিয়ে সার্চ করুন"
+              value={walkInCustSearch} onChange={e => setWalkInCustSearch(e.target.value)}
+              style={{ ...S.input, marginBottom:10 }} />
+            <div style={{ flex:1, overflowY:"auto", minHeight:120 }}>
+              {walkInModalCustList.length === 0 ? (
+                <div style={{ fontSize:12, color:T.sub, textAlign:"center", padding:"20px 0" }}>কোনো কাস্টমার পাওয়া যায়নি</div>
+              ) : walkInModalCustList.map(c => (
+                <div key={c.id} onClick={() => setWalkInModalSelectedId(c.id)}
+                  style={{ padding:"10px 12px", marginBottom:6, borderRadius:10, cursor:"pointer",
+                    border:`1.5px solid ${walkInModalSelectedId===c.id ? accentColor : T.border}`,
+                    background: walkInModalSelectedId===c.id ? accentColor+"14" : T.card,
+                    display:"flex", justifyContent:"space-between", alignItems:"center", gap:8 }}>
+                  <div style={{ minWidth:0 }}>
+                    <div style={{ fontWeight:700, fontSize:12.5, color:T.text }}>{c.name}</div>
+                    <div style={{ fontSize:10.5, color:T.sub }}>{c.mobile || "মোবাইল নেই"}{c.address ? " · " + c.address : ""}</div>
+                  </div>
+                  <div style={{ fontSize:10.5, color: (c.balance||0) > 0 ? "#ef4444" : T.sub, fontWeight:800, flexShrink:0 }}>
+                    {(c.balance||0) > 0 ? `বাকি ৳${fmt(c.balance)}` : "বাকি নেই"}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button type="button" disabled={!walkInModalSelectedId}
+              onClick={() => {
+                const c = (customers || []).find(x => x.id === walkInModalSelectedId);
+                if (c) selectWalkInExistingCust(c);
+                setShowWalkInOldCustModal(false);
+                setWalkInModalSelectedId("");
+              }}
+              style={{ ...S.saveBtn, marginTop:10, opacity: walkInModalSelectedId ? 1 : 0.5 }}>নিশ্চিত করুন</button>
+          </div>
+        </div>
+      )}
+
+      {/* 🆕 "+ নতুন কাস্টমার" মডাল */}
+      {showWalkInNewCustModal && (
+        <div style={{ position:"fixed", inset:0, zIndex:9999, background:"rgba(0,0,0,0.6)", display:"flex", flexDirection:"column" }}
+          onClick={() => setShowWalkInNewCustModal(false)}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ marginTop:"auto", background:T.bg, borderTopLeftRadius:20, borderTopRightRadius:20, maxHeight:"85vh", overflowY:"auto", padding:16 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+              <div style={{ fontWeight:800, fontSize:15, color:T.text }}>নতুন কাস্টমার যোগ করুন</div>
+              <button onClick={() => setShowWalkInNewCustModal(false)} style={{ background:"none", border:"none", color:T.sub, fontSize:20, cursor:"pointer", lineHeight:1 }}>✕</button>
+            </div>
+            <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>কাস্টমারের নাম <span style={{color:"#ef4444"}}>*</span></div>
+            <input placeholder="বাধ্যতামূলক"
+              value={modalNewName} onChange={e => setModalNewName(e.target.value)}
+              style={{ ...S.input, marginBottom:10, borderColor: !modalNewName.trim() ? "#ef444488" : undefined }} />
+            <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>মোবাইল নম্বর</div>
+            <input type="tel" inputMode="numeric" maxLength={11}
+              value={modalNewMobile} onChange={e => setModalNewMobile(e.target.value.replace(/\D/g,"").slice(0,11))}
+              style={{ ...S.input, marginBottom:10 }} />
+            <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>ঠিকানা</div>
+            <input value={modalNewAddress} onChange={e => setModalNewAddress(e.target.value)}
+              style={{ ...S.input, marginBottom:6 }} />
+            <div style={{ color:"#94a3b8", fontSize:10, marginBottom:12 }}>মোবাইল অথবা ঠিকানা — যেকোনো একটি দেওয়া বাধ্যতামূলক</div>
+            <button type="button"
+              disabled={!modalNewName.trim() || (!modalNewMobile.trim() && !modalNewAddress.trim())}
+              onClick={() => {
+                setWalkInName(modalNewName.trim());
+                setWalkInMobile(modalNewMobile.trim());
+                setWalkInAddress(modalNewAddress.trim());
+                setWalkInExistingId("");
+                setWalkInCustMode("new");
+                setShowWalkInNewCustModal(false);
+              }}
+              style={{ ...S.saveBtn, opacity: (!modalNewName.trim() || (!modalNewMobile.trim() && !modalNewAddress.trim())) ? 0.5 : 1 }}>পরবর্তী →</button>
+          </div>
+        </div>
       )}
     </>
   );
@@ -19666,7 +19722,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                   )}
 
                   {/* পণ্যের নাম */}
-                  <div style={{ color: T.text, fontWeight: 800, fontSize: 12.5, lineHeight: 1.25, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", paddingRight: isSelected ? 22 : 0 }}>
+                  <div style={{ color: T.text, fontWeight: 800, fontSize: 12.5, lineHeight: 1.25, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", paddingRight: isSelected ? 22 : 0, textAlign: "center" }}>
                     <DosageBadge dosageForm={p.dosageForm} />{p.name}
                   </div>
                   {(() => {
@@ -19677,10 +19733,10 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                     return (
                       <>
                         {supplierLabel && (
-                          <div style={{ color: T.sub, fontSize: 10 }}>{supplierLabel}</div>
+                          <div style={{ color: T.sub, fontSize: 10, textAlign: "center" }}>{supplierLabel}</div>
                         )}
                         {batchLabel && (
-                          <div style={{ color: T.sub, fontSize: 10, display:"flex", alignItems:"center", gap:3, flexWrap:"wrap" }}>
+                          <div style={{ color: T.sub, fontSize: 10, display:"flex", alignItems:"center", justifyContent:"center", gap:3, flexWrap:"wrap" }}>
                             <span>ব্যাচ: {batchLabel}</span>
                             {batch?.expiryDate && (
                               <span style={{ color: expColor, fontWeight: 700 }}>
@@ -20040,9 +20096,9 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                 <div>
                   <div style={{ display:"flex", gap:8, marginBottom:10 }}>
                     {[
+                      { key:"baki",    label:"পুরো বাকি",  color:"#ef4444" },
                       { key:"cash",    label:"নগদ পরিশোধ", color:"#22c55e" },
                       { key:"partial", label:"আংশিক বাকি", color:"#f59e0b" },
-                      { key:"baki",    label:"পুরো বাকি",  color:"#ef4444" },
                     ].map(opt => (
                       <button key={opt.key}
                         style={{ flex:1, padding:"12px 4px", borderRadius:12, border:`2px solid ${walkInPayType===opt.key ? opt.color : T.border}`, background: walkInPayType===opt.key ? opt.color+"22" : T.card, color: walkInPayType===opt.key ? opt.color : T.sub, fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"center", gap:5 }}
@@ -20055,35 +20111,33 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                   {/* আংশিক বাকি ফর্ম */}
                   {walkInPayType === "partial" && (
                     <div className="qc-gradient-card" style={{ ...S.card, marginBottom:8, border:"1.5px solid #f59e0b44" }}>
-                      <div style={{ color:"#f59e0b", fontWeight:700, fontSize:12, marginBottom:8 }}>আংশিক পেমেন্ট তথ্য</div>
+                      <div style={{ color:"#f59e0b", fontWeight:700, fontSize:12, marginBottom:8, textAlign:"center" }}>আংশিক পেমেন্ট তথ্য</div>
                       <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>নগদ পেলাম *</div>
                       <input type="number" inputMode="numeric" placeholder="নগদ পরিমাণ"
                         value={walkInPartialAmt} onChange={e => setWalkInPartialAmt(e.target.value)}
                         style={{ ...S.input, marginBottom:6, borderColor:"#f59e0b44" }} />
-                      <div style={{ color:"#ef4444", fontSize:12, fontWeight:700, marginBottom:8 }}>
+                      <div style={{ color:"#ef4444", fontSize:12, fontWeight:700, marginBottom:10 }}>
                         বাকি: ৳{fmt(total - (parseFloat(walkInPartialAmt)||0))}
                       </div>
                       {renderWalkInCustPicker("#f59e0b")}
-                      <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>পরিশোধের তারিখ (ঐচ্ছিক)</div>
+                      <div style={{ color: T.sub, fontSize:11, marginBottom:4, marginTop:6 }}>পরিশোধের তারিখ (ঐচ্ছিক)</div>
                       <input type="date"
                         value={walkInDueDate} onChange={e => setWalkInDueDate(e.target.value)}
                         style={{ ...S.input, marginBottom:0 }} />
-                      <div style={{ color:"#94a3b8", fontSize:10, marginTop:6 }}>নাম ছাড়া বাকি ইনভয়েস তৈরি করা যাবে না</div>
                     </div>
                   )}
                   {/* পুরো বাকি ফর্ম */}
                   {walkInPayType === "baki" && (
                     <div className="qc-gradient-card" style={{ ...S.card, marginBottom:8, border:"1.5px solid #ef444444" }}>
-                      <div style={{ color:"#ef4444", fontWeight:700, fontSize:12, marginBottom:8 }}>বাকি কাস্টমারের তথ্য</div>
-                      <div style={{ color:"#ef4444", fontSize:13, fontWeight:800, marginBottom:10 }}>
-                        মোট বাকি: ৳{fmt(total)}
-                      </div>
+                      <div style={{ color:"#ef4444", fontWeight:700, fontSize:12, marginBottom:8, textAlign:"center" }}>বাকি পেমেন্ট তথ্য</div>
+                      <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>বাকির পরিমাণ</div>
+                      <input type="text" readOnly disabled value={`৳${fmt(total)}`}
+                        style={{ ...S.input, marginBottom:10, borderColor:"#ef444444", color:"#ef4444", fontWeight:800, opacity:0.95 }} />
                       {renderWalkInCustPicker("#ef4444")}
-                      <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>পরিশোধের তারিখ (ঐচ্ছিক)</div>
+                      <div style={{ color: T.sub, fontSize:11, marginBottom:4, marginTop:6 }}>পরিশোধের তারিখ (ঐচ্ছিক)</div>
                       <input type="date"
                         value={walkInDueDate} onChange={e => setWalkInDueDate(e.target.value)}
                         style={{ ...S.input, marginBottom:0 }} />
-                      <div style={{ color:"#94a3b8", fontSize:10, marginTop:6 }}>নাম ছাড়া বাকি ইনভয়েস তৈরি করা যাবে না</div>
                     </div>
                   )}
                 </div>
@@ -20173,10 +20227,6 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                   onChange={e => setDueDate(e.target.value)} />
               </div>
             )}
-
-            {/* Note */}
-            <textarea placeholder="নোট লিখুন (ঐচ্ছিক)" value={note} onChange={e => setNote(e.target.value)}
-              rows={2} style={{ ...S.input, resize:"none", marginBottom:8 }} />
 
           </div>
 
