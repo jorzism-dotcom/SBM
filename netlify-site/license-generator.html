@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>SBM লাইসেন্স জেনারেটর</title>
+<style>
+  :root{
+    --bg:#0b1220; --card:#111a2e; --border:#22314f; --text:#e7ecf7; --sub:#8ea0c4;
+    --accent:#22c55e; --accentDark:#16803d; --danger:#ef4444; --amber:#f59e0b;
+  }
+  *{ box-sizing:border-box; }
+  body{
+    margin:0; min-height:100vh; background:var(--bg); color:var(--text);
+    font-family:'Noto Sans Bengali','Hind Siliguri',sans-serif;
+    display:flex; align-items:center; justify-content:center; padding:20px;
+  }
+  .wrap{ width:100%; max-width:420px; }
+  .card{
+    background:var(--card); border:1.5px solid var(--border); border-radius:20px;
+    padding:22px; margin-bottom:16px; box-shadow:0 8px 30px rgba(0,0,0,0.35);
+  }
+  h1{ font-size:19px; margin:0 0 4px; }
+  .sub{ color:var(--sub); font-size:12.5px; margin:0 0 18px; }
+  label{ display:block; color:var(--sub); font-size:12.5px; font-weight:700; margin-bottom:6px; }
+  input{
+    width:100%; background:#0d1526; border:1.5px solid var(--border); border-radius:12px;
+    padding:13px 14px; color:var(--text); font-size:15px; outline:none; margin-bottom:14px;
+    font-family:inherit; box-sizing:border-box;
+  }
+  input:focus{ border-color:var(--accent); }
+  button{
+    width:100%; border:none; border-radius:14px; padding:13px; font-weight:800; font-size:15px;
+    cursor:pointer; font-family:inherit; color:#fff;
+    background:linear-gradient(135deg,var(--accentDark),var(--accent));
+  }
+  button:disabled{ opacity:0.5; cursor:not-allowed; }
+  .code-display{
+    text-align:center; font-family:monospace; font-size:38px; font-weight:900;
+    letter-spacing:10px; padding:22px 0 8px; color:var(--accent);
+  }
+  .hint{ color:var(--sub); font-size:12px; text-align:center; margin-top:4px; }
+  .row{ display:flex; gap:10px; }
+  .row > *{ flex:1; }
+  .err{ color:var(--danger); font-size:12.5px; margin:-8px 0 12px; }
+  #loginBox{ display:flex; flex-direction:column; align-items:center; text-align:center; }
+  #loginBox h1{ margin-bottom:14px; }
+  #appBox{ display:none; }
+  .month-pill{
+    display:inline-block; background:#0d1526; border:1px solid var(--border); border-radius:999px;
+    padding:5px 14px; font-size:12.5px; color:var(--sub); margin-bottom:16px;
+  }
+  .copy-btn{ background:#0d1526; border:1.5px solid var(--border); color:var(--text); margin-top:10px; }
+  a.tool-link{ color: var(--sub); font-size: 11.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ══════════ পাসওয়ার্ড লগইন ══════════ -->
+  <div class="card" id="loginBox">
+    <h1>🔐 SBM লাইসেন্স জেনারেটর</h1>
+    <div class="sub">শুধু আপনার ব্যবহারের জন্য — এই লিংক কারো সাথে শেয়ার করবেন না</div>
+    <input type="password" id="pwdInput" placeholder="পাসওয়ার্ড" onkeydown="if(event.key==='Enter')doLogin()" />
+    <div class="err" id="loginErr" style="display:none"></div>
+    <button onclick="doLogin()">প্রবেশ করুন</button>
+  </div>
+
+  <!-- ══════════ জেনারেটর ══════════ -->
+  <div class="card" id="appBox">
+    <h1>📶 মাসিক কোড জেনারেট করুন</h1>
+    <div class="month-pill" id="monthPill"></div>
+    <label>দোকানের ডিভাইস আইডি</label>
+    <input type="text" id="deviceIdInput" placeholder="যেমন: 8H3K29QZ" maxlength="8"
+      oninput="this.value=this.value.toUpperCase()" onkeydown="if(event.key==='Enter')generateCode()" />
+    <div class="err" id="genErr" style="display:none"></div>
+    <button onclick="generateCode()">কোড জেনারেট করুন</button>
+
+    <div id="resultBox" style="display:none">
+      <div class="code-display" id="codeOut">------</div>
+      <div class="hint">এই কোডটা দোকানদারকে পাঠান — শুধু এই মাসের জন্য কাজ করবে</div>
+      <button class="copy-btn" onclick="copyCode()" id="copyBtn">কোড কপি করুন</button>
+    </div>
+  </div>
+
+  <div class="card" style="padding:14px 18px">
+    <a class="tool-link" href="#" onclick="doLogout();return false;">লগআউট</a>
+  </div>
+
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════════════════
+// ⚠️ এই ফাইলের LICENSE_SECRET স্ট্রিংটা src/App.jsx-এর LICENSE_SECRET-এর সাথে
+// হুবহু মিলতে হবে — নাহলে এখানে জেনারেট করা কোড অ্যাপে কখনো মিলবে না। কোনো
+// একটা বদলালে অন্যটাও একইসাথে বদলাতে হবে (এবং সব চলমান দোকানের ঐ মাসের কোড
+// আর কাজ করবে না — তাই সাধারণত এটা বদলানো উচিত না)।
+// ══════════════════════════════════════════════════════════════════════════
+const LICENSE_SECRET = "SBM-Turjo-Offline-License-v1-9f3k2Lq";
+// এই পাসওয়ার্ডটা শুধু casual protection — সত্যিকারের সিকিউরিটির জন্য না
+// (পুরো লজিক ক্লায়েন্ট-সাইডেই থাকে)। প্রয়োজনে বদলে নিন।
+const TOOL_PASSWORD = "protik-sbm-2026";
+
+function _licenseYearMonth(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+async function computeLicenseCode(deviceId, yearMonth) {
+  const enc = new TextEncoder().encode(`${LICENSE_SECRET}:${deviceId}:${yearMonth}`);
+  const buf = await crypto.subtle.digest("SHA-256", enc);
+  const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+  const n = parseInt(hex.slice(0, 8), 16) % 1000000;
+  return String(n).padStart(6, "0");
+}
+
+function doLogin() {
+  const val = document.getElementById('pwdInput').value;
+  const errEl = document.getElementById('loginErr');
+  if (val !== TOOL_PASSWORD) {
+    errEl.textContent = "ভুল পাসওয়ার্ড";
+    errEl.style.display = "block";
+    return;
+  }
+  try { sessionStorage.setItem('sbmLicToolAuth', '1'); } catch(e) {}
+  document.getElementById('loginBox').style.display = 'none';
+  document.getElementById('appBox').style.display = 'block';
+  initMonthPill();
+}
+
+function doLogout() {
+  try { sessionStorage.removeItem('sbmLicToolAuth'); } catch(e) {}
+  document.getElementById('loginBox').style.display = 'flex';
+  document.getElementById('appBox').style.display = 'none';
+  document.getElementById('pwdInput').value = '';
+}
+
+function initMonthPill() {
+  const now = new Date();
+  const monthNames = ["জানুয়ারি","ফেব্রুয়ারি","মার্চ","এপ্রিল","মে","জুন","জুলাই","আগস্ট","সেপ্টেম্বর","অক্টোবর","নভেম্বর","ডিসেম্বর"];
+  document.getElementById('monthPill').textContent = `এই মাস: ${monthNames[now.getMonth()]} ${now.getFullYear()}`;
+}
+
+async function generateCode() {
+  const raw = document.getElementById('deviceIdInput').value.trim().toUpperCase();
+  const errEl = document.getElementById('genErr');
+  errEl.style.display = 'none';
+  if (raw.length < 6) {
+    errEl.textContent = "সঠিক ডিভাইস আইডি দিন (কমপক্ষে ৬ ক্যারেক্টার)";
+    errEl.style.display = 'block';
+    return;
+  }
+  const code = await computeLicenseCode(raw, _licenseYearMonth(new Date()));
+  document.getElementById('codeOut').textContent = code;
+  document.getElementById('resultBox').style.display = 'block';
+}
+
+async function copyCode() {
+  const code = document.getElementById('codeOut').textContent;
+  const btn = document.getElementById('copyBtn');
+  try {
+    await navigator.clipboard.writeText(code);
+    btn.textContent = "✓ কপি হয়েছে";
+    setTimeout(() => { btn.textContent = "কোড কপি করুন"; }, 1800);
+  } catch(e) {
+    btn.textContent = "কপি ব্যর্থ — ম্যানুয়ালি লিখুন";
+  }
+}
+
+// পেজ রিলোড করলে বারবার পাসওয়ার্ড না চাইতে — শুধু এই ট্যাব/সেশনে
+(function() {
+  try {
+    if (sessionStorage.getItem('sbmLicToolAuth') === '1') {
+      document.getElementById('loginBox').style.display = 'none';
+      document.getElementById('appBox').style.display = 'block';
+      initMonthPill();
+    }
+  } catch(e) {}
+})();
+</script>
+</body>
+</html>
