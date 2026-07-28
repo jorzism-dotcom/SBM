@@ -11296,18 +11296,19 @@ function KpiCardsGrid({ T, stats, compact = false }) {
               }} />
               <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
                 <span style={{
-                  fontSize: 14.5, flexShrink: 0, width: 25, height: 25, display: "flex",
+                  fontSize: 17, flexShrink: 0, width: 29, height: 29, display: "flex",
                   alignItems: "center", justifyContent: "center", borderRadius: 8,
                   background: `linear-gradient(160deg, ${item.color}35, ${item.color}12)`,
                   border: `1px solid ${item.color}45`,
                 }}>{item.icon}</span>
                 <span style={{
-                  color: T.text, fontWeight: 750, fontSize: 12, lineHeight: 1.25,
+                  color: T.text, fontWeight: 750, fontSize: 13, lineHeight: 1.25,
                   overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                 }}>{item.label}</span>
               </div>
+              {/* 🆕 (ইউজার ফিডব্যাক — ২৮ জুলাই ২০২৬) ফন্ট 14.5→19, ড্যাশবোর্ডের মতোই বড় দেখাতে */}
               <span style={{
-                color: item.color, fontWeight: 900, fontSize: 14.5, whiteSpace: "nowrap", flexShrink: 0,
+                color: item.color, fontWeight: 900, fontSize: 19, whiteSpace: "nowrap", flexShrink: 0,
                 textShadow: `0 0 12px ${item.color}55`,
               }}>{displayVal}</span>
             </div>
@@ -11353,8 +11354,9 @@ function KpiCardsGrid({ T, stats, compact = false }) {
             color: T.text, fontWeight: 800, fontSize: 12.5, opacity: 0.88,
             lineHeight: 1.35, letterSpacing: 0.1,
           }}>{item.label}</div>
+          {/* 🆕 (ইউজার ফিডব্যাক — ২৮ জুলাই ২০২৬) ফন্ট 18.5→24, ড্যাশবোর্ডের মতোই বড় দেখাতে */}
           <div style={{
-            color: item.color, fontWeight: 900, fontSize: 18.5,
+            color: item.color, fontWeight: 900, fontSize: 24,
             letterSpacing: 0.2,
             textShadow: `0 0 14px ${item.color}66`,
           }}>{item.val}</div>
@@ -26084,7 +26086,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                 backdropFilter: DT.dark ? "blur(16px)" : "none",
                 boxShadow: DT.dark ? "0 4px 24px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06)" : "0 8px 18px -8px rgba(0,0,0,0.26)",
                 cursor:"pointer", position:"relative", overflow:"hidden",
-                minHeight:102,
+                minHeight:114,
                 gridColumn: c.fullWidth ? "1 / -1" : undefined,
                 animation:`fadeUp 0.3s ease both`,
                 animationDelay:`${i * 20}ms`,
@@ -26152,7 +26154,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   </div>
                 );
               })() : (
-                <div style={{ color:valueColor, fontWeight:900, fontSize:26, letterSpacing:-0.5, lineHeight:1, textShadow: DT.dark ? `0 0 20px ${cAccent}55` : "none", marginBottom:4 }}>{c.value}</div>
+                <div style={{ color:valueColor, fontWeight:900, fontSize:34, letterSpacing:-0.5, lineHeight:1, textShadow: DT.dark ? `0 0 20px ${cAccent}55` : "none", marginBottom:4 }}>{c.value}</div>
               )}
               <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2 }}>{c.label}</div>
               <div style={{ color:subColor, fontWeight:600, fontSize:10 }}>{c.sub}</div>
@@ -26205,7 +26207,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                 backdropFilter: DT.dark ? "blur(16px)" : "none",
                 boxShadow: DT.dark ? "0 4px 24px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06)" : "0 8px 18px -8px rgba(0,0,0,0.26)",
                 cursor:"pointer", position:"relative", overflow:"hidden",
-                minHeight:102,
+                minHeight:114,
               }}
               onClick={() => setDashModal(c.modal)}>
               <div style={{ position:"absolute", bottom:-30, right:-30, width:90, height:90, borderRadius:"50%", background: DT.dark ? `radial-gradient(circle,${cAccent}1a 0%,transparent 70%)` : "rgba(255,255,255,0.10)" }} />
@@ -26215,7 +26217,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                 </div>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
               </div>
-              <div style={{ color:valueColor, fontWeight:900, fontSize:26, letterSpacing:-0.5, lineHeight:1, textShadow: DT.dark ? `0 0 20px ${cAccent}55` : "none", marginBottom:4 }}>{c.value}</div>
+              <div style={{ color:valueColor, fontWeight:900, fontSize:34, letterSpacing:-0.5, lineHeight:1, textShadow: DT.dark ? `0 0 20px ${cAccent}55` : "none", marginBottom:4 }}>{c.value}</div>
               <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2 }}>{c.label}</div>
               <div style={{ color:subColor, fontWeight:600, fontSize:10 }}>{c.sub}</div>
             </div>
@@ -26503,7 +26505,8 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
                 </div>
               </button>
               <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 8 }}>
-                <div style={{ color: c.balance > 0 ? "#ef4444" : "#22c55e", fontWeight: 900, fontSize: 20, letterSpacing:-0.5 }}>৳{fmt(c.balance)}</div>
+                {/* 🆕 (ইউজার ফিডব্যাক — ২৮ জুলাই ২০২৬) ফন্ট 20→26, ড্যাশবোর্ড কার্ডের মতোই বড় দেখাতে */}
+                <div style={{ color: c.balance > 0 ? "#ef4444" : "#22c55e", fontWeight: 900, fontSize: 26, letterSpacing:-0.5, textShadow: `0 0 16px ${c.balance > 0 ? "#ef4444" : "#22c55e"}44` }}>৳{fmt(c.balance)}</div>
                 <div style={{ background: c.balance > 0 ? "#ef444418" : "#22c55e18", color: c.balance > 0 ? "#f87171" : "#4ade80", fontSize: 11, fontWeight: 800, borderRadius:8, padding:"2px 8px", marginTop:4, border: `1px solid ${c.balance > 0 ? "#ef444433" : "#22c55e33"}` }}>
                   {c.balance > 0 ? "বাকি আছে" : "✓ পরিশোধ"}
                 </div>
@@ -37408,7 +37411,12 @@ function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken, 
   const [restoring, setRestoring] = useState(false);
   const [lastSync, setLastSync] = useState(() => localStorage.getItem("sbm_gd_last_sync") || null);
   const [backupInfo, setBackupInfo] = useState(null);
-  const [autoEnabled, setAutoEnabled] = useState(() => localStorage.getItem("sbm_gd_auto") === "1");
+  // 🆕 ফিক্স (ডিফল্ট Auto-Backup ON): আগে key না থাকলে (fresh install/নতুন Drive
+  // connect) এটা false-এ পড়ে যেত — ইউজারকে ম্যানুয়ালি টগল অন করতে হতো, নাহলে
+  // Drive-এ ব্যাকআপ যেত না। এখন key না থাকলে ডিফল্ট ON ধরা হয়; কেউ ইচ্ছাকৃতভাবে
+  // আগে বন্ধ করে থাকলে (key === "0") সেটা আগের মতোই বন্ধ থাকবে — বিদ্যমান
+  // ইউজারের সেটিং জোর করে বদলায় না।
+  const [autoEnabled, setAutoEnabled] = useState(() => localStorage.getItem("sbm_gd_auto") !== "0");
   const [autoInterval, setAutoInterval] = useState(() => parseInt(localStorage.getItem("hg_gd_interval") || "30"));
   const [confirmRestore, setConfirmRestore] = useState(false);
   // 🔴 ফিক্স (staircase ব্যাক): এই ২য়-ধাপ কনফার্মেশনটা back-stack-এ
@@ -40054,7 +40062,10 @@ const LocalBackup = {
   // করে যেটা APK-তে ঠিকভাবে কাজ করে — তাই এই ডুপ্লিকেট/ভাঙা মেথডটা বাদ দেওয়া হলো।
 
   setAutoEnabled(v) { localStorage.setItem(this.AUTO_KEY, v ? "1" : "0"); },
-  isAutoEnabled()   { return localStorage.getItem(this.AUTO_KEY) === "1"; },
+  // 🆕 ফিক্স (ডিফল্ট Auto-Snapshot ON): আগে key না থাকলে (fresh install) false
+  // ধরা হতো, ইউজারকে ম্যানুয়ালি চালু করতে হতো। এখন key না থাকলে ডিফল্ট ON —
+  // কেউ ইচ্ছাকৃতভাবে বন্ধ করলে (key === "0") সেটা আগের মতোই বন্ধ থাকবে।
+  isAutoEnabled()   { return localStorage.getItem(this.AUTO_KEY) !== "0"; },
   setSchedule(v)    { localStorage.setItem(this.SCHEDULE_KEY, v); },
   getSchedule()     { return localStorage.getItem(this.SCHEDULE_KEY) || "daily"; },
 
