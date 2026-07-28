@@ -672,7 +672,7 @@ const getKnownCustomDosageForms = (products = []) => {
 function SearchBar({ placeholder, value, onChange, onClear, color = "#22c55e", T, S, style, voiceColor, showCount, count, accentBorder, autoFocus }) {
   const [focused, setFocused] = React.useState(false);
   const inputRef = React.useRef(null);
-  const { ref: smartRef } = useSmartSearch(onChange, 300); // 300ms debounce — Google/Linear approach
+  const { ref: smartRef } = useSmartSearch(onChange, 120); // দ্রুত রেসপন্স — মাত্র ২ অক্ষরেই ফলাফল আসে
 
   const setRef = React.useCallback((el) => {
     inputRef.current = el;
@@ -680,29 +680,46 @@ function SearchBar({ placeholder, value, onChange, onClear, color = "#22c55e", T
     if (el && autoFocus) setTimeout(() => el.focus(), 100);
   }, [smartRef, autoFocus]);
 
-  const borderColor = focused ? color : (accentBorder || color + "44");
-  const glowShadow  = focused ? `0 0 0 2.5px ${color}22, 0 2px 16px ${color}18` : `0 1px 4px rgba(0,0,0,0.15)`;
+  // থিম-নির্বিশেষে সবসময় স্পষ্ট দেখা যায় এমন বর্ডার/গ্লো
+  const isLight = T?.bg === "#f8fafc";
+  const borderColor = focused ? color : (accentBorder || color + "77");
+  const shellBg = isLight
+    ? `linear-gradient(135deg, ${color}17, #ffffffdd 65%)`
+    : `linear-gradient(135deg, ${color}22, #00000038 65%)`;
+  const glowShadow = focused
+    ? `0 0 0 3px ${color}33, 0 4px 22px ${color}3d, inset 0 1px 0 rgba(255,255,255,0.08)`
+    : `0 2px 12px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.06)`;
 
   return (
     <div style={{
-      display: "flex", alignItems: "center", gap: 8,
-      background: `linear-gradient(135deg,${color}08,${color}04)`,
+      display: "flex", alignItems: "center", gap: 9,
+      background: shellBg,
       border: `1.5px solid ${borderColor}`,
-      borderRadius: 14,
+      borderRadius: 16,
       padding: "9px 12px",
-      transition: "all 0.2s cubic-bezier(0.4,0,0.2,1)",
+      transition: "all 0.25s cubic-bezier(0.4,0,0.2,1)",
       boxShadow: glowShadow,
+      backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)",
+      animation: "sbmShellIn 0.2s ease",
       ...style,
     }}>
-      {/* Search icon — pulses when focused */}
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
-        stroke={focused ? color : (S?.sub ? "#6b7280" : "#94a3b8")} strokeWidth="2.5" strokeLinecap="round"
-        style={{ flexShrink: 0, transition: "stroke 0.2s", opacity: focused ? 1 : 0.7 }}>
-        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-      </svg>
+      {/* Search icon চিপ — ফোকাস হলে হালকা পালস */}
+      <div style={{
+        width: 26, height: 26, borderRadius: 9, flexShrink: 0,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        background: `linear-gradient(135deg, ${color}3d, ${color}1a)`,
+        border: `1px solid ${color}55`,
+        animation: focused ? "sbmIconPulse 1.3s ease-in-out infinite" : "none",
+      }}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+          stroke={color} strokeWidth="2.5" strokeLinecap="round">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+      </div>
 
       <input
         ref={setRef}
+        className="sbm-search-input"
         defaultValue={value}
         onChange={() => {}}
         placeholder={showCount && count !== undefined ? `${placeholder} (${count})` : placeholder}
@@ -720,12 +737,21 @@ function SearchBar({ placeholder, value, onChange, onClear, color = "#22c55e", T
         }}
       />
 
-      {/* Clear button — fades in when there's a value */}
+      {/* Clear button — গাঢ় লাল, বড়, পপ-ইন অ্যানিমেশন */}
       {value && (
         <button
           onPointerDown={e => { e.preventDefault(); }}
           onClick={() => { if (inputRef.current) { inputRef.current.value = ""; inputRef.current.focus(); } onClear?.(); onChange(""); }}
-          style={{ background: color + "22", border: "none", color: color, cursor: "pointer", borderRadius: 8, width: 22, height: 22, fontSize: 11, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }}>
+          style={{
+            background: "linear-gradient(135deg,#dc2626,#7f1d1d)",
+            border: "1.5px solid rgba(255,255,255,0.25)",
+            color: "#fff", cursor: "pointer", borderRadius: "50%",
+            width: 29, height: 29, fontSize: 14, fontWeight: 900,
+            display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+            boxShadow: "0 2px 10px rgba(153,27,27,0.6)",
+            animation: "sbmClearPop 0.22s ease",
+            transition: "transform 0.12s",
+          }}>
           ✕
         </button>
       )}
@@ -16438,6 +16464,21 @@ function SmartBusinessMgmt() {
         @keyframes geminiOrb2 { 0%,100%{transform:translate(0,0) scale(1)} 33%{transform:translate(-18px,12px) scale(1.03)} 66%{transform:translate(14px,-10px) scale(0.98)} }
         @keyframes neonPulse { 0%,100%{opacity:1} 50%{opacity:0.82} }
 
+        /* ── 🔎 Premium Search Bar animations ────────────────────────── */
+        @keyframes sbmIconPulse { 0%,100%{ opacity:0.8; transform:scale(1); } 50%{ opacity:1; transform:scale(1.12); } }
+        @keyframes sbmClearPop  { 0%{ transform:scale(0.4) rotate(-20deg); opacity:0; } 60%{ transform:scale(1.18) rotate(4deg); opacity:1; } 100%{ transform:scale(1) rotate(0deg); opacity:1; } }
+        @keyframes sbmShellIn   { 0%{ transform:scale(0.985); } 100%{ transform:scale(1); } }
+
+        /* ── Premium Search Bars — নিজস্ব ফোকাস-স্টাইল ব্যবহার করে, তাই
+           নিচের জেনেরিক input:focus রিং (box-shadow) এখানে বাদ — এটাই
+           সার্চবারের ভিতরে "বক্স" দেখানোর কারণ ছিল ── */
+        input.sbm-search-input:focus,
+        input.sbm-search-input:focus-visible {
+          box-shadow: none !important;
+          border-color: transparent !important;
+          outline: none !important;
+        }
+
         /* ── 🌈 Quantum Core multicolour gradient border (static, thick) ── */
         .qc-gradient-card {
           border: 4px solid transparent !important;
@@ -16749,30 +16790,61 @@ function SmartBusinessMgmt() {
                 ব্যানার, হোমের একদম উপরে (ক্যাশ ড্রয়ার কার্ডের আগে)। ট্যাপ করলে
                 সরাসরি "সাবস্ক্রিপশন" মডিউলে নিয়ে যায়। ডিসমিস নেই — প্রতিবার
                 অ্যাপ খুললে/হোমে এলে দেখাবে, যাতে ভুলে না যায়। */}
-            {!isStaff && !license.loading && (license.isLocked || license.isNearExpiry) && (
+            {!isStaff && !license.loading && (license.isLocked || license.isNearExpiry) && (() => {
+              const accent = license.isLocked ? "#ef4444" : "#f59e0b";
+              const accent2 = license.isLocked ? "#f97316" : "#fbbf24";
+              return (
               <div
                 onClick={() => setTab("subscription")}
                 style={{
-                  display:"flex", alignItems:"center", gap:10,
-                  background: license.isLocked ? "#ef444422" : "#f59e0b22",
-                  border: `1px solid ${license.isLocked ? "#ef444466" : "#f59e0b66"}`,
-                  borderRadius: 12, padding:"11px 14px", marginBottom: 12,
+                  position:"relative", overflow:"hidden",
+                  display:"flex", alignItems:"center", gap:11,
+                  background: `linear-gradient(135deg, ${accent}26, ${accent2}14 55%, ${accent}26)`,
+                  backgroundSize:"220% 220%",
+                  animation:"alertBannerGradient 6s ease infinite, alertBannerGlow 2.4s ease-in-out infinite",
+                  border: `1px solid ${accent}55`,
+                  boxShadow:`0 4px 18px ${accent}22, inset 0 1px 0 ${accent}22`,
+                  borderRadius: 16, padding:"12px 14px", marginBottom: 12,
                   cursor:"pointer",
                 }}>
-                <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke={license.isLocked ? "#ef4444" : "#f59e0b"} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0 }}>
-                  <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-                  <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
-                </svg>
-                <span style={{ color: license.isLocked ? "#ef4444" : "#f59e0b", fontWeight:800, fontSize:12.5, flex:1 }}>
+                <style>{`
+                  @keyframes alertBannerGradient { 0%{background-position:0% 50%} 50%{background-position:100% 50%} 100%{background-position:0% 50%} }
+                  @keyframes alertBannerGlow { 0%,100%{box-shadow:0 4px 18px ${accent}22, inset 0 1px 0 ${accent}22} 50%{box-shadow:0 4px 26px ${accent}44, inset 0 1px 0 ${accent}33} }
+                  @keyframes alertBannerSweep { 0%{transform:translateX(-120%)} 100%{transform:translateX(220%)} }
+                  @keyframes alertBannerPulse { 0%,100%{transform:scale(1); opacity:1} 50%{transform:scale(1.12); opacity:0.75} }
+                `}</style>
+                {/* running light sweep */}
+                <div style={{
+                  position:"absolute", top:0, left:0, height:"100%", width:"35%",
+                  background:`linear-gradient(90deg, transparent, ${accent2}33, transparent)`,
+                  animation:"alertBannerSweep 2.8s linear infinite", pointerEvents:"none",
+                }} />
+                <div style={{
+                  position:"relative", flexShrink:0, width:34, height:34, borderRadius:"50%",
+                  display:"flex", alignItems:"center", justifyContent:"center",
+                  background:`linear-gradient(135deg, ${accent}, ${accent2})`,
+                  boxShadow:`0 0 14px ${accent}77`,
+                }}>
+                  <span style={{
+                    position:"absolute", inset:0, borderRadius:"50%",
+                    border:`1.5px solid ${accent2}`, animation:"alertBannerPulse 1.8s ease-in-out infinite",
+                  }} />
+                  <svg width={17} height={17} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ position:"relative" }}>
+                    <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                    <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
+                  </svg>
+                </div>
+                <span style={{ position:"relative", color: license.isLocked ? "#fecaca" : "#fde68a", fontWeight:800, fontSize:12.5, flex:1, letterSpacing:0.1 }}>
                   {license.isLocked
                     ? "সাবস্ক্রিপশনের মেয়াদ শেষ — নতুন বিক্রি/ইনভয়েস বন্ধ। এখনই নবায়ন করুন।"
                     : `সাবস্ক্রিপশন শেষ হবে ${license.daysRemaining} দিনে — নবায়ন করুন`}
                 </span>
-                <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={license.isLocked ? "#ef4444" : "#f59e0b"} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0 }}>
+                <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke={accent} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ position:"relative", flexShrink:0 }}>
                   <polyline points="9 18 15 12 9 6" />
                 </svg>
               </div>
-            )}
+              );
+            })()}
             <MemoDashboard T={T} S={S}
               businessType={businessType}
               customers={customers} invoices={invoices} totalBaki={totalBaki}
@@ -20293,6 +20365,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                   ${((inv.itemDiscount||0) > 0 || (inv.discount||0) > 0) ? `<div class="info-row"><span class="info-label">সর্বমোট:</span><span class="info-val">৳${fmtMoney(inv.subtotal||inv.total||0)}</span></div>` : ""}
                   ${(inv.itemDiscount||0) > 0 ? `<div class="info-row"><span class="info-label" style="color:#22c55e;">পণ্যভিত্তিক ডিসকাউন্ট:</span><span class="info-val" style="color:#22c55e;">– ৳${fmtMoney(inv.itemDiscount||0)}</span></div>` : ""}
                   ${(inv.discount||0) > 0 ? `<div class="info-row"><span class="info-label" style="color:#22c55e;">ডিসকাউন্ট:</span><span class="info-val" style="color:#22c55e;">– ৳${fmtMoney(inv.discount||0)}</span></div>` : ""}
+                  ${(inv.extraCharge||0) > 0 ? `<div class="info-row"><span class="info-label" style="color:#f59e0b;">অতিরিক্ত চার্জ:</span><span class="info-val" style="color:#f59e0b;">+ ৳${fmtMoney(inv.extraCharge||0)}</span></div>` : ""}
                   <div class="info-row"><span class="info-label">মোট খরচ:</span><span class="info-val" style="font-size:18px;font-weight:800;">৳${fmtMoney(inv.total||0)}</span></div>
                   <div class="info-row"><span class="info-label">পরিশোধ পদ্ধতি:</span><span class="info-val">${inv.payType==="baki"?"বাকি":inv.payType==="partial"?"আংশিক":"নগদ"}</span></div>
                   ${inv.payType==="partial"?`
@@ -20505,16 +20578,23 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
             </div>
           </div>
 
-          {/* Search */}
+          {/* Search — প্রিমিয়াম গ্লাস শেল, থিম-নির্বিশেষে স্পষ্ট */}
           <div style={{
-            display: "flex", alignItems: "center", gap: 10,
-            background: T.card, border: "1.5px solid #f9731633",
-            borderRadius: 14, padding: "12px 14px",
-            boxShadow: "inset 0 2px 8px rgba(0,0,0,0.08)",
+            display: "flex", alignItems: "center", gap: 9,
+            background: T.bg === "#f8fafc"
+              ? "linear-gradient(135deg,#f9731617,#ffffffdd 65%)"
+              : "linear-gradient(135deg,#f9731624,#00000038 65%)",
+            border: "1.5px solid #f9731677",
+            borderRadius: 16, padding: "10px 13px",
+            boxShadow: "0 2px 12px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.06)",
+            backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)",
             marginBottom: 8,
           }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f97316" strokeWidth="2.5" strokeLinecap="round" style={{ flexShrink:0, opacity:0.85 }}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <div style={{ width:26, height:26, borderRadius:9, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background:"linear-gradient(135deg,#f9731655,#f9731622)", border:"1px solid #f9731666" }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f97316" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </div>
             <input
+              className="sbm-search-input"
               style={{ flex: 1, background: "none", border: "none", outline: "none", color: T.text, fontSize: 14, fontFamily: "inherit", padding: 0 }}
               placeholder={`নাম, মোবাইল বা সিরিয়াল নম্বর... (${customers.length}জন)`}
               defaultValue={custSearch}
@@ -20531,7 +20611,15 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
               autoCorrect="off" autoCapitalize="off" spellCheck={false}
             />
             {custSearch && (
-              <button style={{ background: "#f9731622", border: "none", color: "#f97316", cursor: "pointer", borderRadius: 8, width: 24, height: 24, fontSize: 11, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}
+              <button style={{
+                  background: "linear-gradient(135deg,#dc2626,#7f1d1d)",
+                  border: "1.5px solid rgba(255,255,255,0.25)",
+                  color: "#fff", cursor: "pointer", borderRadius: "50%",
+                  width: 29, height: 29, fontSize: 14, fontWeight: 900,
+                  display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                  boxShadow: "0 2px 10px rgba(153,27,27,0.6)",
+                  animation: "sbmClearPop 0.22s ease",
+                }}
                 onPointerDown={e => e.preventDefault()}
                 onClick={() => {
                   setCustSearch("");
@@ -20760,25 +20848,39 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
             ))}
           </div>
 
-          {/* Product search */}
+          {/* Product search — প্রিমিয়াম গ্লাস শেল, থিম-নির্বিশেষে স্পষ্ট */}
           <div style={{
-            display: "flex", alignItems: "center", gap: 8, flexShrink: 0,
-            background: "linear-gradient(135deg,#0d2818cc,#14532d55)",
-            border: "1.5px solid #22c55e44",
-            borderRadius: 12,
-            padding: "7px 12px",
+            display: "flex", alignItems: "center", gap: 9, flexShrink: 0,
+            background: T.bg === "#f8fafc"
+              ? "linear-gradient(135deg,#22c55e17,#ffffffdd 65%)"
+              : "linear-gradient(135deg,#22c55e26,#00000040 65%)",
+            border: "1.5px solid #22c55e77",
+            borderRadius: 14,
+            padding: "8px 12px",
             marginBottom: 5,
-            boxShadow: "0 2px 12px #22c55e18, inset 0 1px 0 rgba(255,255,255,0.05)",
+            boxShadow: "0 2px 12px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.06)",
+            backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)",
           }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" style={{ flexShrink: 0, opacity: 0.85 }}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            <input style={{ flex: 1, background: "none", border: "none", outline: "none", color: "#e2e8f0", fontSize: 13, fontFamily: "inherit", padding: 0 }}
+            <div style={{ width:24, height:24, borderRadius:8, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background:"linear-gradient(135deg,#22c55e55,#22c55e22)", border:"1px solid #22c55e66" }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </div>
+            <input className="sbm-search-input" style={{ flex: 1, background: "none", border: "none", outline: "none", color: T.text, fontSize: 13, fontFamily: "inherit", padding: 0 }}
               placeholder={`পণ্য খুঁজুন... (${products.length}টি)`}
               defaultValue={prodSearch}
               ref={el => { if (el && !el._b) { el._b=true; el.addEventListener("compositionend",(e)=>{setProdSearch(e.target.value);setProdPage(1);},{passive:true}); el.addEventListener("input",(e)=>{setProdSearch(e.target.value);setProdPage(1);},{passive:true}); el.addEventListener("keydown",(e)=>{if(e.key==="Escape"){el.value="";setProdSearch("");setProdPage(1);}},{passive:true}); } }} onChange={()=>{}}
               autoCorrect="off" autoCapitalize="off" spellCheck={false} autoComplete="off"
               inputMode="text" enterKeyHint="done" />
             {prodSearch && (
-              <button onPointerDown={e => e.preventDefault()} onClick={e => { e.currentTarget.closest("div").querySelector("input")?.value !== undefined && (e.currentTarget.closest("div").querySelector("input").value = ""); setProdSearch(""); setProdPage(1); }} style={{ background:"#22c55e22",border:"none",color:"#22c55e",cursor:"pointer",borderRadius:8,width:22,height:22,fontSize:11,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0 }}>✕</button>
+              <button onPointerDown={e => e.preventDefault()} onClick={e => { e.currentTarget.closest("div").querySelector("input")?.value !== undefined && (e.currentTarget.closest("div").querySelector("input").value = ""); setProdSearch(""); setProdPage(1); }}
+                style={{
+                  background: "linear-gradient(135deg,#dc2626,#7f1d1d)",
+                  border: "1.5px solid rgba(255,255,255,0.25)",
+                  color:"#fff", cursor:"pointer", borderRadius:"50%",
+                  width:29, height:29, fontSize:14, fontWeight:900,
+                  display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0,
+                  boxShadow: "0 2px 10px rgba(153,27,27,0.6)",
+                  animation: "sbmClearPop 0.22s ease",
+                }}>✕</button>
             )}
           </div>
 
@@ -20835,7 +20937,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                   )}
 
                   {/* পণ্যের নাম */}
-                  <div style={{ color: T.text, fontWeight: 800, fontSize: 12.5, lineHeight: 1.25, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", paddingRight: isSelected ? 22 : 0, textAlign: "center" }}>
+                  <div style={{ color: T.text, fontWeight: 900, fontSize: 15, lineHeight: 1.2, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", paddingRight: isSelected ? 22 : 0, textAlign: "center" }}>
                     <DosageBadge dosageForm={p.dosageForm} />{p.name}
                   </div>
                   {(() => {
@@ -20846,10 +20948,10 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                     return (
                       <>
                         {supplierLabel && (
-                          <div style={{ color: T.sub, fontSize: 10, textAlign: "center" }}>{supplierLabel}</div>
+                          <div style={{ color: T.sub, fontSize: 8.5, textAlign: "center", opacity: 0.85 }}>{supplierLabel}</div>
                         )}
                         {batchLabel && (
-                          <div style={{ color: T.sub, fontSize: 10, display:"flex", alignItems:"center", justifyContent:"center", gap:3, flexWrap:"wrap" }}>
+                          <div style={{ color: T.sub, fontSize: 8.5, display:"flex", alignItems:"center", justifyContent:"center", gap:3, flexWrap:"wrap", opacity: 0.85 }}>
                             <span>ব্যাচ: {batchLabel}</span>
                             {batch?.expiryDate && (
                               <span style={{ color: expColor, fontWeight: 700 }}>
@@ -21173,9 +21275,9 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                   <button style={{ background: T.accent+"22", color: T.accent, border:`1px solid ${T.accent}55`, borderRadius:16, padding:"3px 8px", fontSize:11, fontWeight:800, cursor:"pointer", fontFamily:"inherit", flexShrink:0, opacity: discountPct > 0 ? 1 : 0.3 }}
                     onClick={() => { setDiscountPct(0); setDiscount(""); }}>✕</button>
                 </div>
-                <input type="number" inputMode="numeric" placeholder="৳ পরিমাণ"
-                  value={discount || ""}
-                  onChange={e => { setDiscountPct(0); setDiscount(Math.max(0, parseInt(e.target.value)||0)); }}
+                <input type="number" inputMode="decimal" placeholder="৳ পরিমাণ"
+                  value={discount}
+                  onChange={e => { setDiscountPct(0); setDiscount(e.target.value); }}
                   style={{ ...S.input, marginBottom:0, fontSize:13 }} />
               </div>
               {/* Extra Charge কার্ড */}
@@ -25941,16 +26043,13 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", marginBottom:4 }}>
                       <div>
                         <div style={{ color: DT.dark ? "#86efac" : "rgba(255,255,255,0.75)", fontSize:8.5, fontWeight:700, marginBottom:1 }}>আজকের লাভ</div>
-                        <div style={{ color:profitCol, fontWeight:900, fontSize:17, letterSpacing:-0.5, lineHeight:1, textShadow: DT.dark ? `0 0 20px ${cAccent}55` : "none" }}>৳{fmt(Number(_totalProfit.toFixed(2)))}</div>
                       </div>
                       <div style={{ textAlign:"right" }}>
                         <div style={{ color: DT.dark ? "#fca5a5" : "rgba(255,255,255,0.75)", fontSize:8.5, fontWeight:700, marginBottom:1 }}>আজকের লস</div>
-                        <div style={{ color:lossCol, fontWeight:900, fontSize:17, letterSpacing:-0.5, lineHeight:1, textShadow: (DT.dark && _totalLoss < 0) ? "0 0 20px #ef444455" : "none" }}>৳{fmt(Math.abs(Number(_totalLoss.toFixed(2))))}</div>
                       </div>
                     </div>
                     <div style={{ borderTop: DT.dark ? `1px solid ${_net >= 0 ? cAccent+"33" : "#ef444433"}` : "1px solid rgba(255,255,255,0.3)", paddingTop:4, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
                       <div style={{ color: DT.dark ? "#94a3b8" : "rgba(255,255,255,0.75)", fontSize:8.5, fontWeight:700 }}>নেট (লাভ−লস)</div>
-                      <div style={{ color:netCol, fontWeight:900, fontSize:14, letterSpacing:-0.3 }}>{_net >= 0 ? "+" : "−"}৳{fmt(Math.abs(Number(_net.toFixed(2))))}</div>
                     </div>
                   </div>
                 );
@@ -26986,7 +27085,7 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
           <button style={{ ...S.modeBtn, ...(mode === "joma" ? { background: "#22c55e", color: "#fff" } : {}) }} onClick={() => setMode("joma")}>▼ জমা</button>
         </div>
         {/* 🗓️ পুরাতন এন্ট্রি টগল — অন করলে নিচে তারিখ নেভিগেটর দেখাবে (ডিফল্ট আজ) */}
-        <div style={{ display:"flex", justifyContent:"flex-end", marginBottom: 8, marginTop: -4 }}>
+        <div style={{ display:"flex", justifyContent:"center", marginBottom: 8, marginTop: -4 }}>
           <button type="button"
             onClick={() => {
               setShowOldEntry(v => {
@@ -27007,14 +27106,8 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
           </button>
         </div>
         {showOldEntry && (
-          <>
-            <OldEntryDateNav dateKey={entryDateKey} setDateKey={setEntryDateKey}
-              accentColor={mode === "baki" ? "#ef4444" : "#22c55e"} T={T} />
-            <label style={{ display:"flex", alignItems:"center", gap:8, marginTop:-4, marginBottom: 10, color: T.sub, fontSize: 11, cursor:"pointer" }}>
-              <input type="checkbox" checked={sendSmsBackdated} onChange={e => setSendSmsBackdated(e.target.checked)} />
-              কাস্টমারকে SMS পাঠান
-            </label>
-          </>
+          <OldEntryDateNav dateKey={entryDateKey} setDateKey={setEntryDateKey}
+            accentColor={mode === "baki" ? "#ef4444" : "#22c55e"} T={T} />
         )}
         <div style={{ marginBottom: 10 }}>
           <div style={{ color: T.sub, fontSize: 11, marginBottom: 8 }}>দ্রুত পরিমাণ <span style={{ color: T.accent, fontWeight: 700 }}>(একাধিকবার ক্লিক করুন)</span>:</div>
@@ -27297,10 +27390,13 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
               <div class="info"><span>সর্বমোট:</span><span>৳${fmtMoney(inv.subtotal||inv.total||0)}</span></div>
               ${(inv.itemDiscount||0) > 0 ? `<div class="info"><span>পণ্যভিত্তিক ডিসকাউন্ট:</span><span>– ৳${fmtMoney(inv.itemDiscount||0)}</span></div>` : ""}
               ${(inv.discount||0) > 0 ? `<div class="info"><span>ডিসকাউন্ট:</span><span>– ৳${fmtMoney(inv.discount||0)}</span></div>` : ""}
+              ${(inv.extraCharge||0) > 0 ? `<div class="info"><span>অতিরিক্ত চার্জ:</span><span>+ ৳${fmtMoney(inv.extraCharge||0)}</span></div>` : ""}
               <div class="info total"><span>মোট খরচ:</span><span>৳${fmtMoney(inv.total||0)}</span></div>
-              ${inv.payType==="baki"?`<div class="info"><span>পরিশোধ:</span><span>বাকি</span></div>`:""}
+              <div class="info"><span>পরিশোধ পদ্ধতি:</span><span>${inv.payType==="baki"?"বাকি":inv.payType==="partial"?`আংশিক — নগদ ৳${fmtMoney(inv.paidAmount||0)}`:"নগদ"}</span></div>
+              ${inv.payType==="partial" ? `<div class="info"><span>এখনকার বাকি:</span><span>৳${fmtMoney(inv.bakiAmount||0)}</span></div>` : ""}
+              ${(inv.payType === "baki" || inv.payType === "partial" || (inv.prevBalance||0) > 0) ? `
               <div class="info"><span>পূর্বের বাকি:</span><span>৳${fmtMoney(inv.prevBalance||0)}</span></div>
-              <div class="info"><span>বর্তমান বাকি:</span><span>৳${fmtMoney((inv.prevBalance||0)+(inv.bakiAmount||0)-(inv.overpayAmount||0))}</span></div>`;
+              <div class="info"><span>বর্তমান বাকি:</span><span>৳${fmtMoney((inv.prevBalance||0)+(inv.bakiAmount||0)-(inv.overpayAmount||0))}</span></div>` : ""}`;
             printThermalDirect(content, shopName, `${isBuyer?"ক্রেতার":"বিক্রেতার"} ইনভয়েস`);
           }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>
@@ -36718,7 +36814,7 @@ onChange={()=>{}} />
       {(() => {
         const totalBin = deletedCustomers.length + deletedProducts.length;
         return (
-        <div className="qc-gradient-card" style={{ ...S.card }}>
+        <div className="qc-gradient-card" style={{ ...S.card, marginTop: 14 }}>
             <div onClick={() => setShowBinExpanded(v => !v)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor:"pointer", userSelect:"none" }}>
             <div>
               <div style={{ color: T.text, fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}>
