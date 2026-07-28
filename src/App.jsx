@@ -234,6 +234,13 @@ const useAppStore = create(subscribeWithSelector((set) => ({
 
   // ── Backup / Drive ────────────────────────────────────────────────────────
   lastAutoBackup:    null,
+  // 🆕 ফিক্স (single source of truth): Google Drive-এর প্রকৃত আপলোড সময় ও
+  // Local Snapshot-এর প্রকৃত সেভ সময় — আগে এগুলো শুধু component-local state/
+  // localStorage-এ ছিল, তাই collapsed card-এ (Settings screen বন্ধ থাকা
+  // অবস্থায়ও) দেখানো যেত না। এখন global store-এ থাকায় card-এর উপরেই সরাসরি
+  // দেখানো সম্ভব, আর App-level background cycle সরাসরি এই state আপডেট করে।
+  lastDriveBackup:    null,
+  lastSnapshotBackup: null,
   driveStatus:       null,
   backupNeeded:      false,
   backupFailStreak:  0,     // #১০ পরপর কয়বার ব্যাকআপ ব্যর্থ হয়েছে
@@ -4251,6 +4258,7 @@ const SK = {
   paymentInvoices: "sbm-payment-invoices", smsGateway: "sbm-sms-gateway",
   lastAutoBackup: "sbm-last-auto-backup", anthropicKey: "sbm-anthropic-key",
   lastLocalBackup: "sbm-last-local-backup",
+  lastDriveBackup: "sbm-last-drive-backup", lastSnapshotBackup: "sbm-last-snapshot-backup",
   smsTemplates: "sbm-sms-templates",
   autoBackupEnabled: "sbm-auto-backup-on",
   backupSnapshot: "sbm-backup-snapshot",
@@ -13054,6 +13062,8 @@ function SmartBusinessMgmt() {
   const btConnected      = useAppStore(s => s.btConnected);
   const btDevice         = useAppStore(s => s.btDevice);
   const lastAutoBackup   = useAppStore(s => s.lastAutoBackup);
+  const lastDriveBackup    = useAppStore(s => s.lastDriveBackup);    // 🆕 single-source-of-truth: প্রকৃত Google Drive আপলোড সময়
+  const lastSnapshotBackup = useAppStore(s => s.lastSnapshotBackup); // 🆕 single-source-of-truth: প্রকৃত Local Snapshot সেভ সময়
   const driveStatus      = useAppStore(s => s.driveStatus);
   const backupNeeded     = useAppStore(s => s.backupNeeded);
   const backupFailStreak = useAppStore(s => s.backupFailStreak);
@@ -13118,6 +13128,8 @@ function SmartBusinessMgmt() {
   const setSmsGateway       = useCallback((v) => _set("smsGateway",       v), [_set]);
   const setGoogleDriveToken = useCallback((v) => _set("googleDriveToken", v), [_set]);
   const setLastLocalBackup  = useCallback((v) => _set("lastLocalBackup",  v), [_set]);
+  const setLastDriveBackup    = useCallback((v) => _set("lastDriveBackup",    v), [_set]); // 🆕
+  const setLastSnapshotBackup = useCallback((v) => _set("lastSnapshotBackup", v), [_set]); // 🆕
   const setDashModal        = useCallback((v) => _set("dashModal",        v), [_set]);
   const setInvModal         = useCallback((v) => _set("invModal",         v), [_set]);
   const setCashModal        = useCallback((v) => _set("cashModal",        v), [_set]);
@@ -13389,6 +13401,7 @@ function SmartBusinessMgmt() {
       const DEFERRED_KEYS = [
         LK(SK.smsLog), LK(SK.deletedCustomers), LK(SK.deletedProducts), SK.smsGateway,
         SK.lastAutoBackup, SK.anthropicKey, SK.smsTemplates, SK.autoBackupEnabled,
+        SK.lastDriveBackup, SK.lastSnapshotBackup,
         SK.lastMasterSync, SK.autoMasterSyncEnabled, LK(SK.suppliers), LK(SK.purchaseOrders),
         LK(SK.stockMovements), LK(SK.cashLogs), LK(SK.expenses), LK(SK.returns), LK(SK.auditLogs),
         LK(SK.quotations), LK(SK.supplierPayments),
@@ -13498,6 +13511,8 @@ function SmartBusinessMgmt() {
           deletedProducts:       boot2[LK(SK.deletedProducts)]      || [],
           smsGateway:            boot2[SK.smsGateway]           || null,
           lastAutoBackup:        boot2[SK.lastAutoBackup]       || null,
+          lastDriveBackup:       boot2[SK.lastDriveBackup]      || null,
+          lastSnapshotBackup:    boot2[SK.lastSnapshotBackup]   || null,
           anthropicKey:          boot2[SK.anthropicKey]         || "",
           smsTemplates:          boot2[SK.smsTemplates]         || null,
           autoBackupEnabled:     boot2[SK.autoBackupEnabled]    ?? false,
@@ -15101,6 +15116,19 @@ function SmartBusinessMgmt() {
   const _latestBuildBackupData = useRef(buildBackupData);
   useEffect(() => { _latestBuildBackupData.current = buildBackupData; }, [buildBackupData]);
 
+  // 🆕 ফিক্স (single source of truth — component-scoped টাইমার বাদ): আগে
+  // GoogleDriveSection/LocalStorageSection নিজেদের ভেতরে আলাদা setInterval
+  // রাখত যেটা "30m/1h/2h/4h" বা "hourly/daily" ইন্টারভাল মানত — কিন্তু সেই
+  // টাইমার শুধু ওই Settings sub-panel খোলা থাকা অবস্থাতেই বাঁচত, screen
+  // বদলালেই (component unmount) মরে যেত। এখন নিচের global cycle-ই একমাত্র
+  // জায়গা যেটা আসলে ব্যাকআপ ট্রিগার করে, আর প্রতিবার ইউজারের বেছে নেওয়া
+  // ইন্টারভ্যাল (localStorage থেকে সরাসরি পড়ে) নিজে চেক করে — তাই Settings
+  // স্ক্রিন খোলা/বন্ধ যাই থাকুক, প্রতিশ্রুত ইন্টারভালই বজায় থাকে।
+  const lastDriveBackupRef = useRef(lastDriveBackup);
+  useEffect(() => { lastDriveBackupRef.current = lastDriveBackup; }, [lastDriveBackup]);
+  const lastSnapshotBackupRef = useRef(lastSnapshotBackup);
+  useEffect(() => { lastSnapshotBackupRef.current = lastSnapshotBackup; }, [lastSnapshotBackup]);
+
   useEffect(() => {
     if (!loaded || !firebaseEnabled || !firebaseConfig) return;
     const isStaffDevice = currentUser?.role === "staff";
@@ -15160,8 +15188,18 @@ function SmartBusinessMgmt() {
       }
     };
 
-    const runDriveBackup = async () => {
+    // 🆕 ফিক্স: এখন এই ফাংশনটাই একমাত্র জায়গা যেটা Google Drive-এ প্রকৃত
+    // আপলোড করে — GoogleDriveSection-এর নিজস্ব silentBackup timer সরিয়ে
+    // ফেলা হয়েছে। তাই এখানেই ইউজারের বেছে নেওয়া ইন্টারভাল (hg_gd_interval,
+    // মিনিটে) ও অন/অফ টগল (sbm_gd_auto) চেক হয়।
+    const runDriveBackup = async ({ force = false } = {}) => {
       try {
+        if (localStorage.getItem("sbm_gd_auto") === "0") return; // ইউজার নিজে বন্ধ করেছে
+        if (!force) {
+          const intervalMin = parseInt(localStorage.getItem("hg_gd_interval") || "30", 10) || 30;
+          const last = lastDriveBackupRef.current ? new Date(lastDriveBackupRef.current).getTime() : 0;
+          if (Date.now() - last < intervalMin * 60 * 1000) return; // এখনো ইন্টারভাল শেষ হয়নি
+        }
         let token = null;
         if (!isStaffDevice) {
           // Admin: silent token refresh করে Firestore-এ push (staff ফোনও পাবে)
@@ -15212,9 +15250,15 @@ function SmartBusinessMgmt() {
         // এই key লিখত। ফলে এই timer একাই backup চালিয়ে যাচ্ছিল ঠিকই, কিন্তু
         // Backup Health কার্ডে সেটার কোনো প্রমাণ দেখা যেত না — "কখনো না"/পুরনো
         // timestamp দেখাত, মনে হতো ব্যাকআপ আদৌ হচ্ছে না। এখন সফল হলেই লেখা হয়।
-        localStorage.setItem("sbm_gd_last_sync", new Date().toISOString());
+        const ts2 = new Date().toISOString();
+        localStorage.setItem("sbm_gd_last_sync", ts2);
         localStorage.setItem("sbm_gd_auto_fail_count", "0");
         try { localStorage.removeItem("sbm_gd_needs_reconnect"); } catch {}
+        // 🆕 ফিক্স: central store-এ লেখা — এখন Google Drive কার্ডের collapsed
+        // view-তেই "সংযুক্ত (Connected)"-এর পাশে সর্বশেষ ব্যাকআপের সময় সরাসরি
+        // দেখানো যায়, কার্ডের ভেতরে ঢোকা ছাড়াই।
+        setLastDriveBackup(ts2);
+        await save(SK.lastDriveBackup, ts2);
       } catch (e) {
         if (!isStaffDevice) {
           const fails = (parseInt(localStorage.getItem("sbm_gd_auto_fail_count") || "0", 10) || 0) + 1;
@@ -15224,9 +15268,40 @@ function SmartBusinessMgmt() {
       }
     };
 
+    // 🆕 ফিক্স: LocalStorageSection-এর নিজস্ব "hourly/daily" setInterval-ও
+    // সরিয়ে ফেলা হয়েছে। এখন এই ফাংশনটাই একমাত্র জায়গা যেটা IndexedDB
+    // স্ন্যাপশট নেয়, আর ইউজারের বেছে নেওয়া schedule (sbm_local_schedule) ও
+    // অন/অফ টগল (sbm_local_auto) নিজে চেক করে। "realtime" মানে প্রতি tick-এই
+    // (নিচে ৬০ সেকেন্ড) কনটেন্ট বদলেছে কিনা চেক হবে — DeltaSync নিজেই বৃথা
+    // রি-রাইট আটকে দেয়।
+    const runSnapshotBackup = async ({ force = false } = {}) => {
+      try {
+        if (localStorage.getItem("sbm_local_auto") === "0") return;
+        const schedule = localStorage.getItem("sbm_local_schedule") || "daily";
+        if (!force && schedule !== "realtime") {
+          const intervals = { hourly: 3600000, daily: 86400000 };
+          const ms = intervals[schedule] || 86400000;
+          const last = lastSnapshotBackupRef.current ? new Date(lastSnapshotBackupRef.current).getTime() : 0;
+          if (Date.now() - last < ms) return; // এখনো সময় হয়নি
+        }
+        const data = await _latestBuildBackupData.current();
+        const picked = pickBackupFields(data);
+        const newHashes = buildContentHashes(picked);
+        if (await DeltaSync.shouldSkip("snapshot", newHashes)) return; // ডেটা না বদলালে বৃথা রি-রাইট না
+        await SnapshotDB.save({ ...picked, _meta: data._meta, _savedAt: new Date().toISOString() });
+        await DeltaSync.markSynced("snapshot", newHashes);
+        const ts = new Date().toISOString();
+        setLastSnapshotBackup(ts);
+        await save(SK.lastSnapshotBackup, ts);
+      } catch (e) {
+        try { SyncLog.add("error", "Auto snapshot ব্যর্থ: " + (e?.message || String(e))); } catch {}
+      }
+    };
+
     const cycle = () => {
       runLocalBackup();
       runDriveBackup();
+      runSnapshotBackup();
     };
 
     // 🆕 ফোল্ডার-মিসিং সেলফ-হিল চেক — আগে অন্তত একবার ব্যাকআপ ফোল্ডারে ফাইল
@@ -15248,29 +15323,48 @@ function SmartBusinessMgmt() {
       }).catch(() => {});
     }
 
-    // Admin token ৬০ মিনিটে expire — প্রতি ৪৫ মিনিটে refresh করলে staff সবসময় fresh token পাবে
-    const tokenRefreshInterval = !isStaffDevice ? 45 * 60 * 1000 : 5 * 60 * 1000;
-    const timer = setInterval(cycle, tokenRefreshInterval);
-    const firstRun = setTimeout(cycle, 30000); // অ্যাপ ওপেন হওয়ার ৩০ সেকেন্ড পর প্রথমবার
-
-    // 🔴 ফিক্স (প্রতি মিনিটে লোকাল JSON ব্যাকআপ): আগে লোকাল ফাইল ব্যাকআপ Drive
-    // token-refresh সাইকেলের (৪৫ মিনিট/৫ মিনিট) সাথে বাঁধা ছিল — ইউজারের কাছে
-    // মনে হচ্ছিল ফাইলে সবসময় "আগের" (পুরনো) ডেটা থেকে যাচ্ছে, কারণ মাঝের সময়ে
-    // করা পরিবর্তন পরের সাইকেলের আগে ফাইলে প্রতিফলিত হতো না। এখন লোকাল ফাইল
-    // ব্যাকআপ আলাদা, নিজস্ব ১-মিনিট টাইমারে চলে (DeltaSync এখনো ভেতরে আছে,
-    // তাই ডেটা না বদলালে বৃথা রিরাইট হবে না — শুধু চেক প্রতি মিনিটে হবে)।
-    // Drive backup + token refresh আগের মতোই কম ঘন ঘন চলে (API rate-limit/ব্যাটারি বাঁচাতে)।
-    const localOnlyTimer = setInterval(runLocalBackup, 60 * 1000);
+    // 🆕 ফিক্স (একটাই সোর্স-অফ-ট্রুথ): আগে এখানে দুটো আলাদা টাইমার ছিল —
+    // একটা ৪৫ মিনিট/৫ মিনিটে (cycle, Drive+local file একসাথে), আরেকটা ৬০
+    // সেকেন্ডে (শুধু local file) — কিন্তু কোনোটাই ইউজারের Settings-এ বেছে
+    // নেওয়া ইন্টারভাল (30m/1h/2h/4h বা hourly/daily) মানত না। এখন একটাই
+    // "tick" প্রতি ৬০ সেকেন্ডে চলে; runDriveBackup/runSnapshotBackup নিজেরাই
+    // ভেতরে চেক করে তাদের নিজস্ব ইন্টারভাল পার হয়েছে কিনা, তাই প্রতি tick-এ
+    // ডাকা হলেও বেশিরভাগ সময় সাথে সাথেই skip হয়ে যায় — ব্যাটারি/API rate-limit
+    // এর কোনো বাড়তি ক্ষতি নেই, কিন্তু ইউজারের সেটিং সবসময় সঠিকভাবে মানা হয়।
+    const tick = () => { runLocalBackup(); runDriveBackup(); runSnapshotBackup(); };
+    const tickTimer = setInterval(tick, 60 * 1000);
+    const firstRun = setTimeout(tick, 30000); // অ্যাপ ওপেন হওয়ার ৩০ সেকেন্ড পর প্রথমবার
 
     // 🔴 Event-driven trigger — Android Doze/App Standby-তে background setInterval
     // suspend হয়ে যেতে পারে, তাই শুধু interval-এর উপর ভরসা না করে অ্যাপ
-    // foreground-এ ফিরলেও (visibilitychange/resume) backup cycle চালানো হয়,
-    // যদি শেষ backup-এর পর যথেষ্ট সময় (১৫ মিনিট) পার হয়ে থাকে (spam এড়াতে)।
-    let lastCycleAt = Date.now();
-    const cycleGuarded = () => { const now = Date.now(); if (now - lastCycleAt >= 15 * 60 * 1000) { lastCycleAt = now; cycle(); } };
-    const onVisible = () => { if (document.visibilityState === "visible") cycleGuarded(); };
+    // foreground-এ ফিরলেই (visibilitychange/resume) একটা tick চালানো হয় —
+    // runDriveBackup/runSnapshotBackup নিজেরাই ইন্টারভাল-গেট করে বলে বাড়তি
+    // ১৫-মিনিট গার্ডের আর দরকার নেই, স্প্যামের ঝুঁকি নেই।
+    const onVisible = () => { if (document.visibilityState === "visible") tick(); };
     document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("focus", cycleGuarded);
+    window.addEventListener("focus", tick);
+
+    // 🆕 ফিক্স (staff-শেয়ার্ড token সবসময় fresh রাখা): আগে token-refresh
+    // Drive backup cycle-এর সাথেই বাঁধা ছিল (৪৫ মিনিটে) — কিন্তু এখন Drive
+    // backup-এর প্রকৃত cadence ইউজারের সেটিং (হতে পারে ৪ ঘণ্টাও) অনুযায়ী
+    // চলে, যেটা staff token-এর ৬৮ মিনিট freshness window-এর চেয়ে বড় হতে
+    // পারে। তাই admin ডিভাইসে token silent-refresh এখন সম্পূর্ণ আলাদা,
+    // backup cadence-নিরপেক্ষ ৪৫-মিনিট টাইমারে চলে — শুধু token রিফ্রেশ করে
+    // Firestore-এ push করে, কোনো ডেটা আপলোড করে না।
+    let tokenOnlyTimer = null;
+    if (!isStaffDevice) {
+      const refreshTokenOnly = async () => {
+        try {
+          const token = await GDrive.ensureTokenSilent(GOOGLE_WEB_CLIENT_ID);
+          if (token) {
+            const tokenData = { token, savedAt: Date.now() };
+            setGoogleDriveToken(tokenData);
+            try { FSS.setSettings({ googleDriveToken: tokenData }); } catch {}
+          }
+        } catch {}
+      };
+      tokenOnlyTimer = setInterval(refreshTokenOnly, 45 * 60 * 1000);
+    }
 
     // 🔄 Auto-reconnect: token expired হলে প্রতি ১০ মিনিটে silent re-auth চেষ্টা (Admin only)
     // APK-তে silentReauth সরাসরি null দেয় (Browser Tab খোলে না) → banner দেখায়
@@ -15294,12 +15388,12 @@ function SmartBusinessMgmt() {
     }
 
     return () => {
-      clearInterval(timer);
-      clearInterval(localOnlyTimer);
+      clearInterval(tickTimer);
       clearTimeout(firstRun);
+      if (tokenOnlyTimer) clearInterval(tokenOnlyTimer);
       if (autoReconnectTimer) clearInterval(autoReconnectTimer);
       document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("focus", cycleGuarded);
+      window.removeEventListener("focus", tick);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, firebaseEnabled, firebaseConfig, currentUser?.role]);
@@ -17075,6 +17169,7 @@ function SmartBusinessMgmt() {
               purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders}
               stockMovements={stockMovements} setStockMovements={setStockMovements}
               lastAutoBackup={lastAutoBackup} lastLocalBackup={lastLocalBackup}
+              lastDriveBackup={lastDriveBackup} lastSnapshotBackup={lastSnapshotBackup}
               driveStatus={driveStatus} performDriveBackup={performDriveBackup}
               backupNeeded={backupNeeded}
               backupFailStreak={backupFailStreak} lastBackupError={lastBackupError}
@@ -33755,7 +33850,7 @@ function AppVersionCard({ T, S }) {
 }
 
 function Settings_({ T, S, shopName,
- setShopName, businessType = "pharmacy", setBusinessType, businessTypeLocked = false, setBusinessTypeLocked, enabledBusinessTypes = [], users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, setGoogleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [] }) {
+ setShopName, businessType = "pharmacy", setBusinessType, businessTypeLocked = false, setBusinessTypeLocked, enabledBusinessTypes = [], users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, lastDriveBackup, lastSnapshotBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, setGoogleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [] }) {
   const [editName,    setEditName]    = useState(false);
   const [nameInput,   setNameInput]   = useState(shopName);
   const [showRecoveryExpanded, setShowRecoveryExpanded] = useState(false);
@@ -36289,13 +36384,19 @@ function Settings_({ T, S, shopName,
               </div>
 
               <div style={{ color:"#f1f5f9", fontWeight:900, fontSize:13, marginBottom:3 }}>Google Drive</div>
-              <div style={{ color: gdConnected ? COLOR : "#475569", fontSize:10, marginBottom:12, display:"flex", alignItems:"center", gap:4 }}>
+              <div style={{ color: gdConnected ? COLOR : "#475569", fontSize:10, marginBottom:12, display:"flex", alignItems:"center", gap:4, flexWrap:"wrap" }}>
                 {gdConnected
-                  // 🔴 ফিক্স (বিভ্রান্তিকর কপি): "Cloud backup active" শুনতে মনে
-                  // হতো ব্যাকআপ আপলোড হয়েছে, কিন্তু এই কার্ড আসলে শুধু
-                  // token/connection সচল কিনা তাই বলে — Backup Health কার্ডের
-                  // "সর্বশেষ ব্যাকআপ" টাইমস্ট্যাম্পই আসল আপলোড-স্ট্যাটাস দেখায়।
-                  ? <><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={COLOR} strokeWidth="3" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>সংযুক্ত (Connected)</>
+                  // 🔴 ফিক্স (একক সোর্স-অফ-ট্রুথ): "সংযুক্ত (Connected)"-এর পাশেই
+                  // এখন সরাসরি সর্বশেষ প্রকৃত Drive আপলোডের সময় (বাংলাদেশ
+                  // টাইমে) দেখানো হয় — কার্ডের ভিতরে ঢোকার দরকার নেই। lastDriveBackup
+                  // central store থেকে আসে, App.jsx-এর global background cycle-ই এটা আপডেট করে।
+                  ? <><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={COLOR} strokeWidth="3" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>সংযুক্ত (Connected)
+                      {lastDriveBackup && (
+                        <span style={{ color:"#64748b", fontWeight:700 }}>
+                          {" • "}শেষ ব্যাকআপ: {new Date(lastDriveBackup).toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit", timeZone:"Asia/Dhaka" })}
+                        </span>
+                      )}
+                    </>
                   : "Secure cloud backup"}
               </div>
 
@@ -36351,9 +36452,19 @@ function Settings_({ T, S, shopName,
               </div>
 
               <div style={{ color:"#f1f5f9", fontWeight:900, fontSize:13, marginBottom:3 }}>Local Storage</div>
-              <div style={{ color: ldEnabled ? COLOR : "#475569", fontSize:10, marginBottom:12, display:"flex", alignItems:"center", gap:4 }}>
+              <div style={{ color: ldEnabled ? COLOR : "#475569", fontSize:10, marginBottom:12, display:"flex", alignItems:"center", gap:4, flexWrap:"wrap" }}>
                 {ldEnabled
-                  ? <><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={COLOR} strokeWidth="3" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>Auto-backup on</>
+                  // 🔴 ফিক্স (একক সোর্স-অফ-ট্রুথ): "Auto-backup on"-এর পাশেই এখন
+                  // সরাসরি সর্বশেষ প্রকৃত স্ন্যাপশট সেভের সময় (বাংলাদেশ টাইমে)
+                  // দেখানো হয় — কার্ডের ভিতরে ঢোকার দরকার নেই। lastSnapshotBackup
+                  // central store থেকে আসে, App.jsx-এর global background cycle-ই এটা আপডেট করে।
+                  ? <><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={COLOR} strokeWidth="3" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>Auto-backup on
+                      {lastSnapshotBackup && (
+                        <span style={{ color:"#64748b", fontWeight:700 }}>
+                          {" • "}শেষ স্ন্যাপশট: {new Date(lastSnapshotBackup).toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit", timeZone:"Asia/Dhaka" })}
+                        </span>
+                      )}
+                    </>
                   : "Device-local snapshots"}
               </div>
 
@@ -37594,17 +37705,16 @@ function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken, 
     if (token) { setConnected(true); }
   }, []);
 
-  // Auto-backup timer — 🔴 ফিক্স: dependency array থেকে `data` সরানো হলো,
-  // যাতে data বদলালে টাইমার রিসেট না হয় (উপরের কমেন্ট দেখুন); silentBackup
-  // এখন ref থেকে সবসময় সর্বশেষ data পড়ে।
-  useEffect(() => {
-    if (autoTimer.current) clearInterval(autoTimer.current);
-    if (!autoEnabled || !connected) return;
-    const ms = autoInterval * 60 * 1000;
-    autoTimer.current = setInterval(() => { silentBackup(); }, ms);
-    return () => clearInterval(autoTimer.current);
-    // eslint-disable-next-line
-  }, [autoEnabled, autoInterval, connected]);
+  // 🔴 ফিক্স (single source of truth): এই component-scoped setInterval আগে
+  // "30m/1h/2h/4h" ইন্টারভাল মানত, কিন্তু শুধু এই Settings sub-panel খোলা
+  // থাকা অবস্থাতেই বাঁচত — screen বদলালে (component unmount) টাইমার মরে
+  // যেত, ফলে ব্যাকগ্রাউন্ডে প্রকৃত cadence অনেক বেশি হয়ে যেত (App-level
+  // ৪৫-মিনিটের safety-net cycle-এ নেমে আসত)। এখন App.jsx-এর গ্লোবাল
+  // background cycle (useAppLogic-এর ভেতরে, runDriveBackup) নিজেই প্রতি ৬০
+  // সেকেন্ডে চেক করে autoInterval (localStorage: hg_gd_interval) পার হয়েছে
+  // কিনা — Settings স্ক্রিন খোলা/বন্ধ যাই থাকুক না কেন। তাই এখানে আর আলাদা
+  // timer রাখার দরকার নেই; নিচের autoInterval/autoEnabled state শুধু UI পিল
+  // সিলেকশন ও localStorage-এ সেটিং সেভ করার জন্যই ব্যবহৃত হয়।
 
   const silentBackup = useCallback(async () => {
     try {
@@ -38243,21 +38353,20 @@ function LocalStorageSection({ data, setters, showToast, T, S, currentBusinessTy
     if (result.ok) { setLastSync(new Date().toISOString()); await DeltaSync.markSynced("snapshot", newHashes); }
   }, []);
 
-  // Auto-backup timer — শুধু hourly/daily এর জন্য (realtime এখন নিচের change-triggered effect-এ)
+  // 🔴 ফিক্স (single source of truth): আগে এখানে hourly/daily-এর জন্য
+  // component-scoped setInterval ছিল — শুধু এই Settings sub-panel খোলা
+  // থাকা অবস্থাতেই বাঁচত, screen বদলালে মরে যেত। এখন App.jsx-এর গ্লোবাল
+  // background cycle (runSnapshotBackup) প্রতি ৬০ সেকেন্ডে চেক করে
+  // localStorage-এর "sbm_local_schedule" (hourly/daily/realtime) পার
+  // হয়েছে কিনা — Settings স্ক্রিন খোলা/বন্ধ যাই থাকুক না কেন। শুধু ইউজার
+  // টগল অন করার সাথে সাথেই এক তাৎক্ষণিক ফিডব্যাক-সেভ রাখা হলো, বাকিটা
+  // global cycle-এর দায়িত্ব।
+  const autoEnabledPrev = useRef(autoEnabled);
   useEffect(() => {
-    if (autoTimer.current) clearInterval(autoTimer.current);
-    if (!autoEnabled || schedule === "realtime") return;
-
-    const intervals = { hourly: 3600000, daily: 86400000 };
-    const ms = intervals[schedule] || 86400000;
-
-    autoTimer.current = setInterval(doSave, ms);
-    // Immediate save when first enabled
-    doSave();
-
-    return () => clearInterval(autoTimer.current);
+    if (autoEnabled && !autoEnabledPrev.current) doSave(); // just turned on — immediate feedback
+    autoEnabledPrev.current = autoEnabled;
     // eslint-disable-next-line
-  }, [autoEnabled, schedule]);
+  }, [autoEnabled]);
 
   // 🆕 "রিয়েলটাইম" মোড — আর পোলিং না, ডেটা চেঞ্জ হলেই ট্রিগার হয়, ২.৫ সেকেন্ড debounce দিয়ে
   // (টাইপ করার সময় বারবার IndexedDB write এড়াতে; মোড চালু হওয়ার সাথে সাথে একবার immediate সেভ হয়)
