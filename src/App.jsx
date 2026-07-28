@@ -10713,18 +10713,28 @@ function ExpiryYearMonthPicker({ value, onChange, style = {} }) {
   // "0327" → "03/27" — প্রথম অঙ্ক(গুলো) দেখে স্মার্টভাবে বুঝে নেয় মাস ১ অঙ্কের নাকি ২ অঙ্কের:
   //   • প্রথম অঙ্ক 2-9 → মাস সবসময় ১ অঙ্কের (কোনো মাস ২০-৯৯ দিয়ে শুরু হয় না)
   //   • প্রথম অঙ্ক 0    → মাস ২ অঙ্কের (01-09)
-  //   • প্রথম অঙ্ক 1    → দ্বিতীয় অঙ্ক 0/1/2 হলে ২ অঙ্কের (10/11/12), নাহলে ১ অঙ্কের (জানুয়ারি)
+  //   • প্রথম অঙ্ক 1    → ৩য়/৪র্থ অঙ্ক না দেখে নিশ্চিত বলা যায় না (দেখুন নিচের ফিক্স নোট)
+  //
+  // 🐛 ফিক্স: আগে এই সিদ্ধান্তটা মাত্র ২টা অঙ্ক টাইপ হওয়ার পরই পাকা করে ফেলা হতো — ২য় অঙ্ক
+  // 0/1/2 হলে ধরে নেওয়া হতো ২-অঙ্কের মাস (১০/১১/১২)। কিন্তু ২য় অঙ্কটা আসলে বছরের প্রথম অঙ্কও
+  // হতে পারে — আর ২০০০-২০২৯ এর যেকোনো বছরের (তার মধ্যে বর্তমান দশক ২০২০-২০২৯ ধরেও) প্রথম অঙ্ক
+  // 0/1/2! ফলে জানুয়ারি (মাস ১) + এসব বছর টাইপ করলে সিস্টেম ভুলভাবে ২-অঙ্কের মাস ধরে নিয়ে
+  // বছরের আরেকটা অঙ্কের অপেক্ষায় চিরকাল "অসম্পূর্ণ" থেকে যেত (কোনো এরর ছাড়াই) — যার ফলে
+  // ব্যাচ সেভই হতো না। এখন সিদ্ধান্তটা ৩য় অঙ্ক না আসা পর্যন্ত পিছিয়ে রাখা হচ্ছে: ৩ অঙ্কে
+  // (d0='0' ছাড়া) সবসময় ১-অঙ্কের মাস ধরে নেওয়া হয় (এবং তখনই সম্পূর্ণ হয়ে যায়); ৪র্থ অঙ্ক
+  // এলে দরকার হলে ২-অঙ্কের মাসে (১০/১১/১২) পুনর্বিবেচনা করা হয়।
   const handleShorthandChange = (raw) => {
     const digits = raw.replace(/[^\d]/g, "").slice(0, 4);
     let monthLen = null;
-    if (digits.length >= 1) {
-      const d0 = digits[0];
-      if (d0 === "0") monthLen = 2;
-      else if (d0 === "1") {
-        if (digits.length >= 2) monthLen = (["0","1","2"].includes(digits[1])) ? 2 : 1;
-        // digits.length === 1 হলে এখনো অনির্ধারিত — পরের অঙ্কের অপেক্ষা
-      } else monthLen = 1;
+    const d0 = digits[0];
+    if (digits.length >= 4) {
+      // পুরো ইনপুট হাতে থাকলে নিশ্চিতভাবে বলা যায় মাস ১ না ২ অঙ্কের
+      monthLen = (d0 === "0" || (d0 === "1" && ["0","1","2"].includes(digits[1]))) ? 2 : 1;
+    } else if (digits.length === 3) {
+      // d0==='0' হলে এখনো ২-অঙ্কের মাসের ৪র্থ অঙ্কের অপেক্ষা; নাহলে ১-অঙ্কের মাস ধরে সম্পূর্ণ ধরে নাও
+      monthLen = (d0 === "0") ? 2 : 1;
     }
+    // digits.length <= 2 হলে monthLen অনির্ধারিতই থাকবে (null) — এখনো দ্ব্যর্থতা কাটেনি
     const formatted = (monthLen && digits.length > monthLen)
       ? `${digits.slice(0, monthLen)}/${digits.slice(monthLen)}`
       : digits;
@@ -28005,6 +28015,21 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
         return;
       }
     }
+    // 🐛 ফিক্স: এডিট মোডে "নতুন এক্সপায়ারির স্টক যোগ করুন" থেকে যোগ করা রো-এর জন্য আগে কোনো
+    // ভ্যালিডেশন ছিল না — পরিমাণ দেওয়া থাকলেও মেয়াদ অসম্পূর্ণ/খালি থাকলে সেভের সময় (নিচে
+    // validNewRows ফিল্টারে) সেই ব্যাচটা চুপচাপ বাদ পড়ে যেত, অথচ "পণ্য আপডেট হয়েছে" সাকসেস
+    // মেসেজ দেখাত এবং "মোট স্টক হবে" প্রিভিউ-ও সেই পরিমাণ ধরে হিসাব দেখাত — ব্যবহারকারী বুঝতেই
+    // পারতেন না যে স্টক আসলে যোগ হয়নি। এখন এডিট মোডেও একই ভ্যালিডেশন প্রযোজ্য হবে।
+    if (editId && form.productType !== "service") {
+      const incompleteNew = newBatchRows.some(r =>
+        (r.qty && parseInt(r.qty) > 0 && !r.expiryDate) ||
+        ((!r.qty || parseInt(r.qty) <= 0) && r.expiryDate)
+      );
+      if (incompleteNew) {
+        showToast("নতুন এক্সপায়ারির ব্যাচে পরিমাণ ও মেয়াদ দুটোই সঠিকভাবে দিতে হবে (মেয়াদ ঘরে ৪ ডিজিট সম্পূর্ণ করুন, যেমন 1226 → 12/26)", "#ef4444");
+        return;
+      }
+    }
     if (editId && currentUser?.role === "staff") { showToast("পণ্য এডিট করার অনুমতি নেই", "#ef4444"); return; }
     if (!editId && currentUser?.role === "staff" && !currentUser?.canAddProduct) { showToast("নতুন পণ্য যোগ করার অনুমতি নেই", "#ef4444"); return; }
     const now = new Date().toISOString();
@@ -29773,20 +29798,37 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                       <div style={{ color:"#fbbf2499", fontSize:11 }}>এই পণ্যের কোনো ট্র্যাক করা ব্যাচ নেই — নিচে নতুন ব্যাচ যোগ করলে ট্র্যাকিং শুরু হবে</div>
                     )}
 
-                    {newBatchRows.map(row => (
-                      <div key={row.id} style={{ display:"grid", gridTemplateColumns:"0.8fr 1.4fr auto", gap:6, alignItems:"end", marginTop:6, background:"#22c55e14", border:"1px solid #22c55e44", borderRadius:9, padding:6 }}>
-                        <div>
-                          <label style={{ ...S.label, fontSize:9, color:"#86efac" }}>পরিমাণ</label>
-                          <input type="number" inputMode="numeric" value={row.qty} onChange={e => updateNewBatchRow(row.id, { qty:e.target.value })}
-                            style={{ width:"100%", textAlign:"center", fontSize:12, padding:"6px 4px", background:"rgba(0,0,0,0.3)", border:"1px solid #22c55e55", borderRadius:7, color:"#e2e8f0", fontWeight:800, fontFamily:"inherit" }} />
-                        </div>
-                        <div>
-                          <ExpiryYearMonthPicker value={row.expiryDate} onChange={v => updateNewBatchRow(row.id, { expiryDate:v })} />
-                        </div>
-                        <button type="button" onClick={() => removeNewBatchRow(row.id)}
-                          style={{ width:30, height:30, borderRadius:8, border:"1px solid #ef444455", background:"#ef444422", color:"#ef4444", fontWeight:900, fontSize:13, cursor:"pointer" }}>✕</button>
-                      </div>
-                    ))}
+                    {(() => {
+                      // 🆕 প্রতিটি নতুন-ব্যাচ রো-এর জন্য পরবর্তী ব্যাচ নম্বর প্রিভিউ — ক্রয় এন্ট্রি
+                      // ফর্মের মতোই calcNextBatch দিয়ে হিসাব, সেভ-লজিকের (নিচে validNewRows.forEach)
+                      // মতোই একটার পর একটা অ্যাকিউমুলেট করে যাতে একই সাথে একাধিক রো যোগ করলে
+                      // প্রতিটির নম্বর ঠিকঠাক ক্রমান্বয়ে (যেমন B-2607-2, B-2607-3...) দেখায়।
+                      let previewBatches = (p.batches || [])
+                        .map((b, i) => ({ ...b, qty: parseInt(batchEdits[i] ?? b.qty) || 0 }))
+                        .filter(b => b.qty > 0);
+                      return newBatchRows.map(row => {
+                        const bno = calcNextBatch(editId, [{ ...p, batches: previewBatches }], purchaseOrders, new Date().toISOString());
+                        previewBatches = [...previewBatches, { batchNo: bno, qty: parseInt(row.qty) || 0 }];
+                        return (
+                          <div key={row.id} style={{ display:"grid", gridTemplateColumns:"0.8fr 1.4fr auto", gap:6, alignItems:"end", marginTop:6, background:"#22c55e14", border:"1px solid #22c55e44", borderRadius:9, padding:6 }}>
+                            <div>
+                              <label style={{ ...S.label, fontSize:9, color:"#86efac" }}>পরিমাণ</label>
+                              <input type="number" inputMode="numeric" value={row.qty} onChange={e => updateNewBatchRow(row.id, { qty:e.target.value })}
+                                style={{ width:"100%", textAlign:"center", fontSize:12, padding:"6px 4px", background:"rgba(0,0,0,0.3)", border:"1px solid #22c55e55", borderRadius:7, color:"#e2e8f0", fontWeight:800, fontFamily:"inherit" }} />
+                            </div>
+                            <div>
+                              <ExpiryYearMonthPicker value={row.expiryDate} onChange={v => updateNewBatchRow(row.id, { expiryDate:v })} />
+                            </div>
+                            <button type="button" onClick={() => removeNewBatchRow(row.id)}
+                              style={{ width:30, height:30, borderRadius:8, border:"1px solid #ef444455", background:"#ef444422", color:"#ef4444", fontWeight:900, fontSize:13, cursor:"pointer" }}>✕</button>
+                            <div style={{ gridColumn:"1 / -1", marginTop:2, textAlign:"center", padding:"5px 10px", borderRadius:8, border:"1px solid #a78bfa44", background:"linear-gradient(135deg,#a78bfa1c,#7c3aed14)" }}>
+                              <span style={{ color:"#c4b5fd", fontWeight:900, fontSize:12 }}>{bno}</span>
+                              <span style={{ color:"#94a3b8", fontSize:10, fontWeight:700 }}> 🏷️ ব্যাচ নম্বর — স্বয়ংক্রিয়ভাবে যুক্ত হবে</span>
+                            </div>
+                          </div>
+                        );
+                      });
+                    })()}
                     <button type="button" onClick={addNewBatchRow}
                       style={{ width:"100%", marginTop:6, padding:"7px", borderRadius:9, border:"1.5px dashed #22c55e66", background:"transparent", color:"#22c55e", fontWeight:700, fontSize:11, cursor:"pointer", fontFamily:"inherit" }}>
                       ➕ নতুন এক্সপায়ারির স্টক যোগ করুন
@@ -29795,9 +29837,14 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                     <div style={{ marginTop:6, textAlign:"center", color:"#fde68a", fontSize:11, fontWeight:800 }}>
                       মোট স্টক হবে: {
                         (p.batches || []).reduce((s, b, i) => s + (parseInt(batchEdits[i] ?? b.qty) || 0), 0)
-                        + newBatchRows.reduce((s, r) => s + (parseInt(r.qty) || 0), 0)
+                        + newBatchRows.filter(r => r.qty && parseInt(r.qty) > 0 && r.expiryDate).reduce((s, r) => s + (parseInt(r.qty) || 0), 0)
                       }
                     </div>
+                    {newBatchRows.some(r => r.qty && parseInt(r.qty) > 0 && !r.expiryDate) && (
+                      <div style={{ marginTop:4, textAlign:"center", color:"#ef4444", fontSize:10, fontWeight:800 }}>
+                        ⚠️ উপরের নতুন ব্যাচের মেয়াদ এখনো অসম্পূর্ণ — এই স্টক এখনো মোটে যোগ হয়নি
+                      </div>
+                    )}
                   </div>
                   </>)}
                 </div>
