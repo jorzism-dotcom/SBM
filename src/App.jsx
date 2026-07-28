@@ -11174,7 +11174,21 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
       if (i.payType === "partial") return s + Math.min(i.paidAmount || 0, i.total || 0);
       return s;
     }, 0);
-    const todayCashProfit = calcProfit(todayInvs.filter(i => i.payType === "cash" || i.payType === "partial"));
+    // 🔴 ফিক্স (২৮ জুলাই ২০২৬ — "নগদ বিক্রয়ে লাভ" মিসম্যাচ): আগে partial-pay
+    // ইনভয়েসের পুরো লাভ (বাকি অংশসহ) এখানে যোগ হতো, অথচ todayCashSale-এ শুধু
+    // paid (ক্যাশ) অংশ ধরা হতো — ফলে লাভ রেভিনিউর চেয়ে বেশি দেখাত (মার্জিন
+    // শতাধিক %)। এখন partial ইনভয়েসের লাভ paidAmount/total অনুপাতে স্কেল করা
+    // হয়, যাতে এই কার্ডের লাভ ও তার পাশের ক্যাশ-বিক্রয় সংখ্যা একই স্কোপ (শুধু
+    // আদায় হওয়া ক্যাশ অংশ) বোঝায়।
+    const todayCashProfit = todayInvs.reduce((s, i) => {
+      if (i.payType === "cash") return s + calcInvoiceProfit(i, prodMap);
+      if (i.payType === "partial") {
+        const total = i.total || 0;
+        const paidRatio = total > 0 ? Math.min(i.paidAmount || 0, total) / total : 0;
+        return s + calcInvoiceProfit(i, prodMap) * paidRatio;
+      }
+      return s;
+    }, 0);
 
     const todayKeyEn = todayEn();
     const _voidedIds = new Set((invoices || []).filter(i => i.status === "voided").map(i => i.id));
@@ -11492,7 +11506,19 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
     if (i.payType === "partial") return s + Math.min(i.paidAmount || 0, i.total || 0);
     return s;
   }, 0) - todayReturnsCashRefund;
-  const todayCashProfit = calcProfit(todayInvs.filter(i => i.payType === "cash" || i.payType === "partial"));
+  // 🔴 ফিক্স (২৮ জুলাই ২০২৬ — "নগদ বিক্রয়ে লাভ" মিসম্যাচ): উপরের todayCashSale-এর
+  // মতোই partial ইনভয়েসের লাভ এখন paidAmount/total অনুপাতে স্কেল করা হয় —
+  // আগে পুরো ইনভয়েসের লাভ (বাকি অংশসহ) যোগ হতো, তাই লাভ ক্যাশ-রেভিনিউর চেয়ে
+  // বেশি দেখাত (মার্জিন শতাধিক %, "আজকের লাভ" কার্ডের সাথেও মিলত না)।
+  const todayCashProfit = todayInvs.reduce((s, i) => {
+    if (i.payType === "cash") return s + calcInvoiceProfit(i, prodMap);
+    if (i.payType === "partial") {
+      const total = i.total || 0;
+      const paidRatio = total > 0 ? Math.min(i.paidAmount || 0, total) / total : 0;
+      return s + calcInvoiceProfit(i, prodMap) * paidRatio;
+    }
+    return s;
+  }, 0);
 
   // ── আজকের বাকি (নতুন) ও আজকের বাকি আদায় ────────────────────────────────
   const todayKeyEn = todayEn();
@@ -18359,7 +18385,21 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
 
   const refresh = useCallback(async ({ interactive = false } = {}) => {
     const now = Date.now();
-    if (now - cooldownRef.current < 60 * 1000) return;
+    // 🔴 ফিক্স (২৮ জুলাই ২০২৬ — "রিফ্রেশ বাটন কাজ করছে না"): আগে এই ৬০-সেকেন্ড
+    // কুলডাউন ম্যানুয়াল বাটন-ক্লিকেও (interactive: true) সমানভাবে প্রযোজ্য ছিল,
+    // আর ব্লক হলে কোনো toast/error/loading state কিছুই দেখাত না — চুপচাপ কিছুই
+    // হতো না, ব্যবহারকারীর কাছে মনে হতো বাটন কাজ করছে না। এখন ম্যানুয়াল ট্যাপে
+    // কুলডাউন অনেক কম (৫ সেকেন্ড, শুধু ডাবল-ট্যাপ ঠেকাতে) আর ব্লক হলে স্পষ্ট
+    // toast দেখানো হয়। ব্যাকগ্রাউন্ড/অটো-ট্রিগারে (interactive: false) আগের
+    // মতোই ৬০ সেকেন্ড কুলডাউন থাকে, যাতে Google Drive API স্প্যাম না হয়।
+    const minGap = interactive ? 5 * 1000 : 60 * 1000;
+    if (now - cooldownRef.current < minGap) {
+      if (interactive) {
+        const waitSec = Math.ceil((minGap - (now - cooldownRef.current)) / 1000);
+        try { showToast(`একটু আগেই রিফ্রেশ করা হয়েছে — ${waitSec} সেকেন্ড পর আবার চেষ্টা করুন`, "#f59e0b"); } catch {}
+      }
+      return;
+    }
     cooldownRef.current = now;
     setSyncing(true); setErr("");
     try {
@@ -18373,20 +18413,52 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
       setLastSync(ts);
       localStorage.setItem(VK.cache, JSON.stringify(fresh));
       localStorage.setItem(VK.lastSync, ts);
+      if (interactive) { try { showToast("✅ রিফ্রেশ সম্পন্ন — সর্বশেষ ডেটা লোড হয়েছে", "#22c55e"); } catch {} }
     } catch (e) {
-      setErr(e?.message === "TOKEN_EXPIRED" ? "সেশনের মেয়াদ শেষ — রিফ্রেশ বাটনে চাপুন" : (e?.message || "রিফ্রেশ ব্যর্থ হয়েছে"));
+      const msg = e?.message === "TOKEN_EXPIRED" ? "সেশনের মেয়াদ শেষ — রিফ্রেশ বাটনে চাপুন" : (e?.message || "রিফ্রেশ ব্যর্থ হয়েছে");
+      setErr(msg);
+      if (interactive) { try { showToast(`⚠️ ${msg}`, "#ef4444"); } catch {} }
     } finally {
       setSyncing(false);
     }
-  }, [prefix]);
+  }, [prefix]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const minutes = parseInt(localStorage.getItem(VK.interval) || "15");
     const id = setInterval(() => refresh(), minutes * 60 * 1000);
     const onOnline = () => refresh();
     window.addEventListener("online", onOnline);
+    // 🔴 ফিক্স (২৮ জুলাই ২০২৬ — ভিউয়ার মোডে ঘণ্টার পর ঘণ্টা স্টেল ডেটা): মূল
+    // অ্যাপের অটো-ব্যাকাপ আপলোড পাইপলাইনে আগেই visibilitychange/focus
+    // resume-trigger আছে (Android Doze/App Standby-তে setInterval suspend
+    // হয়ে যাওয়ার জন্য), কিন্তু ভিউয়ার মোডের এই ডাউনলোড-সাইড refresh()-এ সেটা
+    // ছিল না — তাই অ্যাপ ব্যাকগ্রাউন্ডে গিয়ে অনেক পরে ফিরে এলেও নতুন ডেটা
+    // আনত না, "X ঘণ্টা আগে" স্টেল থেকে যেত। এখন ফোরগ্রাউন্ডে ফিরলে (এবং শেষ
+    // সিঙ্কের পর যথেষ্ট সময় পার হলে) রিফ্রেশ চালানো হয়।
+    let lastAttemptAt = Date.now();
+    const resumeRefresh = () => {
+      const now = Date.now();
+      if (now - lastAttemptAt < 60 * 1000) return; // spam এড়াতে
+      lastAttemptAt = now;
+      refresh();
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") resumeRefresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", resumeRefresh);
+    let appListenerHandle = null;
+    if (typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.()) {
+      import("@capacitor/app").then(({ App }) => {
+        appListenerHandle = App.addListener("resume", resumeRefresh);
+      }).catch(() => {});
+    }
     refresh();
-    return () => { clearInterval(id); window.removeEventListener("online", onOnline); };
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("online", onOnline);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", resumeRefresh);
+      if (appListenerHandle) { try { appListenerHandle.remove(); } catch {} }
+    };
   }, [refresh]);
 
   useEffect(() => {
@@ -18710,27 +18782,42 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
             <div style={{ color: `${T.headingColor}99`, fontSize: 11, padding: "0 8px 12px" }}>
               {PREFIX_LABEL[prefix] || prefix} · সর্বশেষ আপডেট: {agoText}{err ? ` · ⚠️ ${err}` : ""}
             </div>
+            <button onClick={() => refresh({ interactive: true })} disabled={syncing} style={{
+              background: `${T.accent}18`, border: `1px solid ${T.accent}44`, borderRadius: 12,
+              color: T.headingColor, fontSize: 13, fontWeight: 700, padding: "12px 14px",
+              cursor: syncing ? "default" : "pointer", fontFamily: "inherit", textAlign: "left",
+            }}>{syncing ? "রিফ্রেশ হচ্ছে..." : "↻ রিফ্রেশ করুন"}</button>
             <button onClick={() => { setShowMoreMenu(false); setDetailCId(null); setVTab("dailySummary"); }} style={{
               background: vTab === "dailySummary" ? `${T.accent}30` : "rgba(255,255,255,0.06)",
               border: `1px solid ${vTab === "dailySummary" ? T.accent + "66" : "rgba(255,255,255,0.14)"}`, borderRadius: 12,
               color: T.headingColor, fontSize: 13, fontWeight: 700, padding: "12px 14px",
               cursor: "pointer", fontFamily: "inherit", textAlign: "left",
             }}>📊 দৈনিক সারসংক্ষেপ</button>
-            <button onClick={() => refresh({ interactive: true })} disabled={syncing} style={{
-              background: `${T.accent}18`, border: `1px solid ${T.accent}44`, borderRadius: 12,
-              color: T.headingColor, fontSize: 13, fontWeight: 700, padding: "12px 14px",
-              cursor: syncing ? "default" : "pointer", fontFamily: "inherit", textAlign: "left",
-            }}>{syncing ? "রিফ্রেশ হচ্ছে..." : "↻ রিফ্রেশ করুন"}</button>
-            <button onClick={onReconfigure} style={{
-              background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.14)", borderRadius: 12,
-              color: T.headingColor, fontSize: 13, fontWeight: 700, padding: "12px 14px",
-              cursor: "pointer", fontFamily: "inherit", textAlign: "left",
-            }}>⚙️ সেটিংস বদলান</button>
-            <button onClick={onExit} style={{
-              background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 12,
-              color: "#f87171", fontSize: 13, fontWeight: 700, padding: "12px 14px",
-              cursor: "pointer", fontFamily: "inherit", textAlign: "left",
-            }}>✕ ভিউয়ার মোড বন্ধ করুন</button>
+            {/* ── এক্সিট বাটন — অ্যাপ থেকে সম্পূর্ণ বের হওয়ার জন্য (ভিউয়ার মোড বন্ধ করা না) ── */}
+            <button
+              onClick={() => {
+                setShowMoreMenu(false);
+                if (!window.confirm("অ্যাপ থেকে বের হতে চান?")) return;
+                const CapApp = window.Capacitor?.Plugins?.App;
+                if (CapApp?.exitApp) { CapApp.exitApp(); return; }
+                // ওয়েব/ব্রাউজারে প্রোগ্রাম্যাটিক্যালি ট্যাব বন্ধ করা যায় না —
+                // তাই সেক্ষেত্রে চেষ্টা করে, না পারলে কিছু হবে না।
+                window.close();
+              }}
+              style={{
+                display: "flex", alignItems: "center", gap: 12,
+                background: "transparent",
+                border: "1px solid #ef444444",
+                borderRadius: 12, padding: "11px 12px",
+                color: "#ef4444",
+                cursor: "pointer", fontFamily: "inherit", width: "100%", textAlign: "left",
+                marginTop: 8,
+              }}>
+              <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
+              <span style={{ fontSize: 13.5, fontWeight: 700 }}>এক্সিট</span>
+            </button>
           </div>
         </div>
       )}
@@ -20911,33 +20998,43 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                   }}
                   style={{
                     position: "relative",
-                    background: isSelected ? `${glowColor}1f` : (p.demandType === "uncommon" ? "#a78bfa14" : "#22c55e0d"),
+                    background: isSelected
+                      ? `linear-gradient(155deg, ${glowColor}2b 0%, ${glowColor}12 100%)`
+                      : (p.demandType === "uncommon"
+                          ? "linear-gradient(155deg, #a78bfa1c 0%, #a78bfa08 100%)"
+                          : "linear-gradient(155deg, #22c55e14 0%, #22c55e06 100%)"),
                     border: `1.5px solid ${isSelected ? glowColor : (p.demandType === "uncommon" ? "#a78bfa55" : "#22c55e3d")}`,
-                    borderRadius: 12,
+                    borderRadius: 14,
                     padding: "10px 10px",
-                    display: "flex", flexDirection: "column", gap: 4,
-                    boxShadow: isSelected ? `0 0 0 1px ${glowColor}55, 0 0 14px ${glowColor}55` : "none",
-                    transition: "all 0.2s",
+                    display: "flex", flexDirection: "column", gap: 3,
+                    boxShadow: isSelected
+                      ? `0 0 0 1px ${glowColor}55, 0 0 16px ${glowColor}66, 0 3px 10px rgba(0,0,0,0.18)`
+                      : `0 1px 6px rgba(0,0,0,0.10)`,
+                    transition: "all 0.2s cubic-bezier(.2,.8,.2,1)",
                     cursor: isSelected ? "default" : "pointer",
                     userSelect: "none",
+                    overflow: "hidden",
                   }}>
+                  {isSelected && (
+                    <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 3, background: `linear-gradient(90deg, ${glowColor}, #86efac, ${glowColor})`, zIndex: 1 }} />
+                  )}
 
                   {/* ক্রস বাটন — কার্ট থেকে বাদ দিন */}
                   {isSelected && (
                     <button
                       onClick={(e) => { e.stopPropagation(); setItems(prev => prev.filter(i => i.productId !== p.id)); }}
-                      style={{ position: "absolute", top: 6, right: 6, width: 20, height: 20, borderRadius: "50%", border: "none", background: "#ef444433", color: "#ef4444", fontSize: 11, fontWeight: 900, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2 }}>✕</button>
+                      style={{ position: "absolute", top: 7, right: 7, width: 27, height: 27, borderRadius: "50%", border: "1.5px solid #ef444455", background: "linear-gradient(155deg, #ef444444, #ef444422)", color: "#ef4444", fontSize: 14, fontWeight: 900, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3, boxShadow: "0 2px 6px rgba(239,68,68,0.35)" }}>✕</button>
                   )}
 
                   {/* কমন/আনকমন ব্যাজ */}
                   {!isSelected && (
                     p.demandType === "uncommon"
-                      ? <div style={{ position: "absolute", top: 6, right: 6, background:"#a78bfa33", color:"#a78bfa", fontSize: 8.5, fontWeight: 800, borderRadius: 5, padding: "1px 5px", zIndex: 2 }}>আনকমন</div>
-                      : <div style={{ position: "absolute", top: 6, right: 6, background:"#22c55e33", color:"#22c55e", fontSize: 8.5, fontWeight: 800, borderRadius: 5, padding: "1px 5px", zIndex: 2 }}>কমন</div>
+                      ? <div style={{ position: "absolute", top: 7, right: 7, background:"linear-gradient(155deg, #a78bfa48, #a78bfa22)", border: "1px solid #a78bfa55", color:"#a78bfa", fontSize: 8, fontWeight: 800, borderRadius: 6, padding: "2px 6px", zIndex: 2, boxShadow: "0 1px 4px rgba(167,139,250,0.3)" }}>আনকমন</div>
+                      : <div style={{ position: "absolute", top: 7, right: 7, background:"linear-gradient(155deg, #22c55e48, #22c55e22)", border: "1px solid #22c55e55", color:"#22c55e", fontSize: 8, fontWeight: 800, borderRadius: 6, padding: "2px 6px", zIndex: 2, boxShadow: "0 1px 4px rgba(34,197,94,0.3)" }}>কমন</div>
                   )}
 
                   {/* পণ্যের নাম */}
-                  <div style={{ color: T.text, fontWeight: 900, fontSize: 15, lineHeight: 1.2, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", paddingRight: isSelected ? 22 : 0, textAlign: "center" }}>
+                  <div style={{ color: T.text, fontWeight: 900, fontSize: 17.5, letterSpacing: 0.1, lineHeight: 1.18, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", paddingRight: isSelected ? 28 : 0, textAlign: "center", marginTop: 1 }}>
                     <DosageBadge dosageForm={p.dosageForm} />{p.name}
                   </div>
                   {(() => {
@@ -20946,21 +21043,18 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                     const expDays = batch?.expiryDate ? Math.ceil((new Date(batch.expiryDate) - new Date()) / 86400000) : null;
                     const expColor = expDays === null ? T.sub : expDays < 0 ? "#ef4444" : expDays <= 30 ? "#f59e0b" : "#6ee7b7";
                     return (
-                      <>
-                        {supplierLabel && (
-                          <div style={{ color: T.sub, fontSize: 8.5, textAlign: "center", opacity: 0.85 }}>{supplierLabel}</div>
-                        )}
-                        {batchLabel && (
-                          <div style={{ color: T.sub, fontSize: 8.5, display:"flex", alignItems:"center", justifyContent:"center", gap:3, flexWrap:"wrap", opacity: 0.85 }}>
-                            <span>ব্যাচ: {batchLabel}</span>
-                            {batch?.expiryDate && (
-                              <span style={{ color: expColor, fontWeight: 700 }}>
-                                {expDays < 0 ? "⚠️মেয়াদ শেষ" : expDays <= 30 ? `⏳${expDays}দিন` : `📅${batch.expiryDate}`}
-                              </span>
-                            )}
-                          </div>
-                        )}
-                      </>
+                      (supplierLabel || batchLabel) && (
+                        <div style={{ color: T.sub, fontSize: 7, display: "flex", alignItems: "center", justifyContent: "center", gap: 4, flexWrap: "wrap", opacity: 0.68, lineHeight: 1.15 }}>
+                          {supplierLabel && <span>{supplierLabel}</span>}
+                          {supplierLabel && batchLabel && <span style={{ opacity: 0.5 }}>•</span>}
+                          {batchLabel && <span>ব্যাচ:{batchLabel}</span>}
+                          {batch?.expiryDate && (
+                            <span style={{ color: expColor, fontWeight: 700, opacity: 0.95 }}>
+                              {expDays < 0 ? "⚠️মেয়াদ শেষ" : expDays <= 30 ? `⏳${expDays}দিন` : `📅${batch.expiryDate}`}
+                            </span>
+                          )}
+                        </div>
+                      )
                     );
                   })()}
 
@@ -20977,20 +21071,20 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                       </div>
                     </div>
                   ) : (
-                  <div style={{ display: "grid", gridTemplateColumns: hideCostPrice ? "1fr 1fr" : "1fr 1fr 1fr", gap: 2, marginTop: 2 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: hideCostPrice ? "1fr 1fr" : "1fr 1fr 1fr", gap: 2, marginTop: 1 }}>
                     {!hideCostPrice && (
                     <div style={{ textAlign: "center" }}>
-                      <div style={{ color: T.sub, fontSize: 9, fontWeight: 600 }}>ক্রয়</div>
-                      <div style={{ color: "#f59e0b", fontWeight: 800, fontSize: 11 }}>৳{fmt(p.costPrice || 0)}</div>
+                      <div style={{ color: T.sub, fontSize: 8, fontWeight: 600, opacity: 0.75 }}>ক্রয়</div>
+                      <div style={{ color: "#f59e0b", fontWeight: 800, fontSize: 10.5 }}>৳{fmt(p.costPrice || 0)}</div>
                     </div>
                     )}
                     <div style={{ textAlign: "center", borderLeft: hideCostPrice ? "none" : `1px solid ${T.border}`, borderRight: `1px solid ${T.border}` }}>
-                      <div style={{ color: T.sub, fontSize: 9, fontWeight: 600 }}>বিক্রয়</div>
-                      <div style={{ color: T.accent, fontWeight: 800, fontSize: 11 }}>৳{fmt(p.price)}</div>
+                      <div style={{ color: T.sub, fontSize: 8, fontWeight: 600, opacity: 0.75 }}>বিক্রয়</div>
+                      <div style={{ color: T.accent, fontWeight: 800, fontSize: 10.5 }}>৳{fmt(p.price)}</div>
                     </div>
                     <div style={{ textAlign: "center" }}>
-                      <div style={{ color: T.sub, fontSize: 9, fontWeight: 600 }}>স্টক</div>
-                      <div style={{ color: isLowStock ? "#ef4444" : liveStock === 0 ? "#ef4444" : T.text, fontWeight: 800, fontSize: 11 }}>
+                      <div style={{ color: T.sub, fontSize: 8, fontWeight: 600, opacity: 0.75 }}>স্টক</div>
+                      <div style={{ color: isLowStock ? "#ef4444" : liveStock === 0 ? "#ef4444" : T.text, fontWeight: 800, fontSize: 10.5 }}>
                         {liveStock !== null ? liveStock : "—"}
                       </div>
                     </div>
@@ -21006,7 +21100,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
 
                   {/* প্রিসেট কুইক বাটন — প্রতি ক্লিকে যোগ হয়, একাধিকবার ক্লিক করা যাবে */}
                   {p.productType !== "service" && (
-                    <div style={{ display: "flex", gap: 3, marginTop: 4 }}>
+                    <div style={{ display: "flex", gap: 3, marginTop: 3 }}>
                       {[1,2,5,10,20,50,100].map(n => {
                         const disabled = liveStock !== null && liveStock < n;
                         return (
@@ -21014,11 +21108,15 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                             onClick={(e) => { e.stopPropagation(); changeQty(p, n); }}
                             disabled={disabled}
                             style={{
-                              flex: 1, height: 24, borderRadius: 6, border: `1px solid ${T.border}`,
-                              background: T.border + "33", color: disabled ? T.sub : T.text,
-                              fontSize: 10, fontWeight: 700, padding: 0, fontFamily: "inherit",
+                              flex: 1, height: 29, borderRadius: 8,
+                              border: disabled ? `1px solid ${T.border}` : `1px solid ${T.accent}66`,
+                              background: disabled ? T.border + "26" : `linear-gradient(155deg, ${T.accent}2e, ${T.accent}12)`,
+                              color: disabled ? T.sub : T.text,
+                              fontSize: 12, fontWeight: 800, padding: 0, fontFamily: "inherit",
                               cursor: disabled ? "default" : "pointer",
                               opacity: disabled ? 0.4 : 1,
+                              boxShadow: disabled ? "none" : `0 1px 4px ${T.accent}33`,
+                              transition: "transform 0.12s",
                             }}>{n}</button>
                         );
                       })}
