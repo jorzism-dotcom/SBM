@@ -10701,17 +10701,34 @@ function ExpiryYearMonthPicker({ value, onChange, style = {} }) {
     else onChange("");
   };
 
-  // শর্টহ্যান্ড টাইপ: "0327" → "03/27" → year=2027, month=03 — ড্রপডাউনে লাইভ সিঙ্ক হবে
+  // শর্টহ্যান্ড টাইপ: "126" → "1/26" (জানুয়ারি ২০২৬, লিডিং জিরো ছাড়াই) অথবা
+  // "0327" → "03/27" — প্রথম অঙ্ক(গুলো) দেখে স্মার্টভাবে বুঝে নেয় মাস ১ অঙ্কের নাকি ২ অঙ্কের:
+  //   • প্রথম অঙ্ক 2-9 → মাস সবসময় ১ অঙ্কের (কোনো মাস ২০-৯৯ দিয়ে শুরু হয় না)
+  //   • প্রথম অঙ্ক 0    → মাস ২ অঙ্কের (01-09)
+  //   • প্রথম অঙ্ক 1    → দ্বিতীয় অঙ্ক 0/1/2 হলে ২ অঙ্কের (10/11/12), নাহলে ১ অঙ্কের (জানুয়ারি)
   const handleShorthandChange = (raw) => {
     const digits = raw.replace(/[^\d]/g, "").slice(0, 4);
-    const formatted = digits.length > 2 ? `${digits.slice(0,2)}/${digits.slice(2)}` : digits;
+    let monthLen = null;
+    if (digits.length >= 1) {
+      const d0 = digits[0];
+      if (d0 === "0") monthLen = 2;
+      else if (d0 === "1") {
+        if (digits.length >= 2) monthLen = (["0","1","2"].includes(digits[1])) ? 2 : 1;
+        // digits.length === 1 হলে এখনো অনির্ধারিত — পরের অঙ্কের অপেক্ষা
+      } else monthLen = 1;
+    }
+    const formatted = (monthLen && digits.length > monthLen)
+      ? `${digits.slice(0, monthLen)}/${digits.slice(monthLen)}`
+      : digits;
     setShorthand(formatted);
-    if (digits.length < 4) { setShorthandError(""); return; } // অসম্পূর্ণ — এখনো পার্স করব না
-    const mm = digits.slice(0,2);
+    if (monthLen === null) { setShorthandError(""); return; } // মাস এখনো নির্ধারণ হয়নি
+    const yearDigits = digits.slice(monthLen);
+    if (yearDigits.length < 2) { setShorthandError(""); return; } // বছর এখনো সম্পূর্ণ না
+    const mm = digits.slice(0, monthLen).padStart(2, "0");
     const monthNum = parseInt(mm, 10);
     if (monthNum < 1 || monthNum > 12) { setShorthandError("মাস ০১-১২ এর মধ্যে হবে"); return; }
     setShorthandError("");
-    update(String(2000 + parseInt(digits.slice(2,4), 10)), mm, true);
+    update(String(2000 + parseInt(yearDigits.slice(0,2), 10)), mm, true);
   };
 
   const isPast = local.year && local.month && new Date(`${local.year}-${local.month}-01`) < new Date(curYear, new Date().getMonth(), 1);
@@ -10719,11 +10736,11 @@ function ExpiryYearMonthPicker({ value, onChange, style = {} }) {
   return (
     <div style={style}>
       <div>
-        <label style={{ color:"#94a3b8", fontSize:10, fontWeight:700, display:"block", marginBottom:4 }}>⚡ মেয়াদ লিখুন (MM/YY)</label>
+        <label style={{ color:"#94a3b8", fontSize:10, fontWeight:700, display:"block", marginBottom:4 }}>⚡ মেয়াদ লিখুন (M/YY বা MM/YY)</label>
         <input
           value={shorthand}
           onChange={e => handleShorthandChange(e.target.value)}
-          placeholder="যেমনঃ 0327"
+          placeholder="যেমনঃ 126 বা 0327"
           inputMode="numeric"
           maxLength={5}
           autoComplete="off"
@@ -27708,6 +27725,13 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const [peSearch,        setPeSearch]        = useState("");
 
   const [quickStockId, setQuickStockId]= useState(null); // product being quick-edited
+  // 🆕 পার-ব্যাচ এডিটর (কমপ্যাক্ট "পণ্য আপডেট" প্যানেল) — এক্সিস্টিং ব্যাচের qty override
+  // (index কী দিয়ে, যেহেতু batchNo ইউনিক না-ও হতে পারে) + নতুন এক্সপায়ারির ব্যাচ যোগ
+  const [batchEdits,   setBatchEdits]   = useState({}); // { [batchIndex]: newQty }
+  const [newBatchRows, setNewBatchRows] = useState([]); // [{ id, qty, expiryDate }]
+  const addNewBatchRow    = () => setNewBatchRows(rows => [...rows, { id: uid(), qty: "", expiryDate: "" }]);
+  const updateNewBatchRow = (id, patch) => setNewBatchRows(rows => rows.map(r => r.id === id ? { ...r, ...patch } : r));
+  const removeNewBatchRow = (id) => setNewBatchRows(rows => rows.filter(r => r.id !== id));
   const [quickStockVal,setQuickStockVal]= useState("");
   const [companyCustom, setCompanyCustom] = useState(false); // "অন্য কোম্পানি লিখুন" মোড চালু আছে কিনা
   // ── একক পরিচালনা (PRESET_UNITS এর edit/delete) ──────────────────────────────
@@ -27915,16 +27939,35 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       const newPrice = parseFloat(form.price) || 0;
       const oldStock = originalProduct?.stock || 0;
 
-      // ── Delta-based stock update: শুধু পার্থক্যটা লগ করো ─────────────────
+      // ── পার-ব্যাচ আপডেট: এক্সিস্টিং ব্যাচের qty override (batchEdits) +
+      // নতুন এক্সপায়ারির ব্যাচ (newBatchRows) — দুটো মিলিয়ে চূড়ান্ত batches[]/stock ──
       setProducts(prev => prev.map(p => {
         if (p.id !== editId) return p;
         const prevStock = p.stock || 0;
-        const delta = newStockVal - prevStock;
-        const updatedStock = newStockVal;
 
-        // ── Batch sync: stock বদলালে batches[] আপডেট করো ───────────────────
-        // যাতে FIFO deduction সবসময় batches[]-এর সাথে সিংক থাকে
-        let updatedBatches = p.batches || [];
+        let workingBatches = (p.batches || [])
+          .map((b, i) => ({ ...b, qty: parseInt(batchEdits[i] ?? b.qty) || 0 }))
+          .filter(b => b.qty > 0);
+
+        const validNewRows = newBatchRows.filter(r => r.qty && parseInt(r.qty) > 0 && r.expiryDate);
+        validNewRows.forEach(r => {
+          const bno = calcNextBatch(editId, [{ ...p, batches: workingBatches }], purchaseOrders, now);
+          workingBatches = [...workingBatches, {
+            batchNo: bno,
+            qty: parseInt(r.qty),
+            costPrice: parseFloat(form.costPrice) || (p.costPrice || 0),
+            sellPrice: parseFloat(form.price) || 0,
+            expiryDate: r.expiryDate,
+            supplier: form.company || p.company || "",
+            note: "নতুন এক্সপায়ারির স্টক (এডিট)",
+            at: now,
+          }];
+        });
+
+        const updatedBatches = workingBatches;
+        const updatedStock = updatedBatches.reduce((s, b) => s + (b.qty || 0), 0);
+        const delta = updatedStock - prevStock;
+
         if (delta !== 0) {
           const mvEdit = pushStockMovement({
             id: uid(), productId: editId, productName: form.name,
@@ -27932,32 +27975,6 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             at: now, dateKey: now.split("T")[0], source: "edit",
           });
           setStockMovements(su => [mvEdit, ...su]);
-
-          if (delta > 0) {
-            // stock বাড়লে → নতুন adjustment batch যোগ করো
-            const adjBatchNo = calcNextBatch(editId, prev, purchaseOrders, now);
-            updatedBatches = [...updatedBatches, {
-              batchNo: adjBatchNo,
-              qty: delta,
-              costPrice: parseFloat(form.costPrice) || (p.costPrice || 0),
-              sellPrice: parseFloat(form.price) || 0,
-              expiryDate: form.expiryDate || p.expiryDate || "",
-              supplier: form.company || p.company || "",
-              note: "স্টক সংশোধন (এডিট)",
-              at: now,
-            }];
-          } else {
-            // stock কমলে → batches[]-এর শেষ থেকে LIFO বাদ দাও (adjustment)
-            let remaining = Math.abs(delta);
-            const reversed = [...updatedBatches].reverse();
-            const adjusted = reversed.map(b => {
-              if (remaining <= 0) return b;
-              const deduct = Math.min(b.qty, remaining);
-              remaining -= deduct;
-              return { ...b, qty: b.qty - deduct };
-            }).reverse();
-            updatedBatches = adjusted.filter(b => b.qty > 0);
-          }
         }
 
         return { ...p, ...prodFields, stock: updatedStock, batches: updatedBatches };
@@ -27968,14 +27985,19 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           productId: editId, productName: form.name, oldPrice, newPrice,
         });
       }
-      if (newStockVal !== oldStock) {
+      const finalStock =
+        (originalProduct?.batches || []).reduce((s, b, i) => s + (parseInt(batchEdits[i] ?? b.qty) || 0), 0)
+        + newBatchRows.filter(r => r.qty && parseInt(r.qty) > 0 && r.expiryDate).reduce((s, r) => s + (parseInt(r.qty) || 0), 0);
+      if (finalStock !== oldStock) {
         auditLog?.("STOCK_ADJUST", {
           productId: editId, productName: form.name,
-          oldStock, newStock: newStockVal, delta: newStockVal - oldStock,
+          oldStock, newStock: finalStock, delta: finalStock - oldStock,
         });
       }
       showToast("পণ্য আপডেট হয়েছে");
       setEditId(null);
+      setBatchEdits({});
+      setNewBatchRows([]);
     } else {
       const newId = uid();
       const unitCostVal = parseFloat(form.costPrice) || 0;
@@ -29571,7 +29593,18 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                   onClick={(e) => {
                     e.stopPropagation();
                     if (editId === p.id) { setEditId(null); setShowAdd(false); }
-                    else { setEditId(p.id); setForm({ name: p.name, price: String(p.price), stock: String(p.stock || 0), minStockAlert: String(p.minStockAlert || 5), category: p.category || "অন্যান্য", company: p.company || "", productType: (p.productType === "retail" ? "product" : p.productType) || "product", costPrice: String(p.costPrice || ""), spPrice: p.spPrice !== undefined && p.spPrice !== null ? String(p.spPrice) : "", expiryDate: p.expiryDate || "", barcode: p.barcode || "", unit: p.unit || "", demandType: p.demandType || "common", dosageForm: p.dosageForm || "" }); setExtraBatches([]); setShowAdd(false); setCompanyCustom(!!p.company && !BD_PHARMA_COMPANIES.includes(p.company)); }
+                    else {
+                      setEditId(p.id);
+                      setForm({ name: p.name, price: String(p.price), stock: String(p.stock || 0), minStockAlert: String(p.minStockAlert || 5), category: p.category || "অন্যান্য", company: p.company || "", productType: (p.productType === "retail" ? "product" : p.productType) || "product", costPrice: String(p.costPrice || ""), spPrice: p.spPrice !== undefined && p.spPrice !== null ? String(p.spPrice) : "", expiryDate: p.expiryDate || "", barcode: p.barcode || "", unit: p.unit || "", demandType: p.demandType || "common", dosageForm: p.dosageForm || "" });
+                      setExtraBatches([]);
+                      setShowAdd(false);
+                      setCompanyCustom(!!p.company && !BD_PHARMA_COMPANIES.includes(p.company));
+                      // 🆕 এক্সিস্টিং ব্যাচগুলোর qty দিয়ে batchEdits ইনিশিয়ালাইজ (index কী দিয়ে)
+                      const initBE = {};
+                      (p.batches || []).forEach((b, i) => { initBE[i] = b.qty; });
+                      setBatchEdits(initBE);
+                      setNewBatchRows([]);
+                    }
                   }}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
                 </button>}
@@ -29621,10 +29654,60 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                     <label style={{ ...S.label, fontSize:10, color:"#fde68a" }}>মিনিমাম স্টক অ্যালার্ট</label>
                     <input style={{ ...S.input, fontSize:12, padding:"6px 8px", background:"rgba(0,0,0,0.3)", border:"1px solid #f59e0b55", color:"#fde68a", marginBottom:0 }} type="number" value={form.minStockAlert} onChange={e => setForm({...form, minStockAlert:e.target.value})} inputMode="numeric" />
                   </div>
+                  <div style={{ gridColumn:"1 / -1" }}>
+                    <label style={{ ...S.label, fontSize:10, color:"#fde68a" }}>স্টক — ব্যাচ অনুযায়ী (আপডেট চাপলে সিঙ্ক হবে)</label>
+                    {(p.batches || []).length > 0 ? (
+                      <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+                        {p.batches.map((b, i) => (
+                          <div key={i} style={{ display:"flex", alignItems:"center", gap:6, background:"rgba(0,0,0,0.25)", border:"1px solid #f59e0b33", borderRadius:9, padding:"5px 8px" }}>
+                            <div style={{ flex:1, minWidth:0, overflow:"hidden" }}>
+                              <div style={{ color:"#fde68a", fontSize:11, fontWeight:800, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>📦 {b.batchNo}</div>
+                              {b.expiryDate && <div style={{ color:"#fbbf2499", fontSize:9, fontWeight:700 }}>📅 {b.expiryDate}</div>}
+                            </div>
+                            <button type="button" onClick={() => setBatchEdits(be => ({ ...be, [i]: Math.max(0, (parseInt(be[i] ?? b.qty) || 0) - 1) }))}
+                              style={{ width:28, height:28, flexShrink:0, borderRadius:8, border:"1px solid #ef444466", background:"linear-gradient(135deg,#ef444444,#ef444422)", color:"#fca5a5", fontSize:16, fontWeight:900, cursor:"pointer", fontFamily:"inherit" }}>−</button>
+                            <input type="number" inputMode="numeric" value={batchEdits[i] ?? b.qty}
+                              onChange={e => setBatchEdits(be => ({ ...be, [i]: e.target.value === "" ? "" : Math.max(0, parseInt(e.target.value) || 0) }))}
+                              style={{ width:44, flexShrink:0, textAlign:"center", fontSize:13, padding:"4px 2px", background:"rgba(0,0,0,0.3)", border:"1px solid #f59e0b55", borderRadius:7, color:"#fde68a", fontWeight:900, fontFamily:"inherit" }} />
+                            <button type="button" onClick={() => setBatchEdits(be => ({ ...be, [i]: (parseInt(be[i] ?? b.qty) || 0) + 1 }))}
+                              style={{ width:28, height:28, flexShrink:0, borderRadius:8, border:"1px solid #22c55e66", background:"linear-gradient(135deg,#22c55e44,#22c55e22)", color:"#86efac", fontSize:16, fontWeight:900, cursor:"pointer", fontFamily:"inherit" }}>+</button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div style={{ color:"#fbbf2499", fontSize:11 }}>এই পণ্যের কোনো ট্র্যাক করা ব্যাচ নেই — নিচে নতুন ব্যাচ যোগ করলে ট্র্যাকিং শুরু হবে</div>
+                    )}
+
+                    {newBatchRows.map(row => (
+                      <div key={row.id} style={{ display:"grid", gridTemplateColumns:"0.8fr 1.4fr auto", gap:6, alignItems:"end", marginTop:6, background:"#22c55e14", border:"1px solid #22c55e44", borderRadius:9, padding:6 }}>
+                        <div>
+                          <label style={{ ...S.label, fontSize:9, color:"#86efac" }}>পরিমাণ</label>
+                          <input type="number" inputMode="numeric" value={row.qty} onChange={e => updateNewBatchRow(row.id, { qty:e.target.value })}
+                            style={{ width:"100%", textAlign:"center", fontSize:12, padding:"6px 4px", background:"rgba(0,0,0,0.3)", border:"1px solid #22c55e55", borderRadius:7, color:"#e2e8f0", fontWeight:800, fontFamily:"inherit" }} />
+                        </div>
+                        <div>
+                          <ExpiryYearMonthPicker value={row.expiryDate} onChange={v => updateNewBatchRow(row.id, { expiryDate:v })} />
+                        </div>
+                        <button type="button" onClick={() => removeNewBatchRow(row.id)}
+                          style={{ width:30, height:30, borderRadius:8, border:"1px solid #ef444455", background:"#ef444422", color:"#ef4444", fontWeight:900, fontSize:13, cursor:"pointer" }}>✕</button>
+                      </div>
+                    ))}
+                    <button type="button" onClick={addNewBatchRow}
+                      style={{ width:"100%", marginTop:6, padding:"7px", borderRadius:9, border:"1.5px dashed #22c55e66", background:"transparent", color:"#22c55e", fontWeight:700, fontSize:11, cursor:"pointer", fontFamily:"inherit" }}>
+                      ➕ নতুন এক্সপায়ারির স্টক যোগ করুন
+                    </button>
+
+                    <div style={{ marginTop:6, textAlign:"center", color:"#fde68a", fontSize:11, fontWeight:800 }}>
+                      মোট স্টক হবে: {
+                        (p.batches || []).reduce((s, b, i) => s + (parseInt(batchEdits[i] ?? b.qty) || 0), 0)
+                        + newBatchRows.reduce((s, r) => s + (parseInt(r.qty) || 0), 0)
+                      }
+                    </div>
+                  </div>
                   </>)}
                 </div>
                 <div style={{ display:"flex", gap:7 }}>
-                  <button style={{ ...S.cancelBtn, flex:1, padding:"8px", fontSize:12 }} onClick={() => { setEditId(null); }}>বাতিল</button>
+                  <button style={{ ...S.cancelBtn, flex:1, padding:"8px", fontSize:12 }} onClick={() => { setEditId(null); setBatchEdits({}); setNewBatchRows([]); }}>বাতিল</button>
                   <button style={{ ...S.saveBtn, flex:2, padding:"8px", fontSize:12, background:"linear-gradient(135deg,#0369a1,#0ea5e9)" }} onClick={saveProduct}>
                     <IcCheck /> আপডেট
                   </button>
