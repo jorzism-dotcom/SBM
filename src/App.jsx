@@ -18210,21 +18210,84 @@ function ViewerSetupScreen({ onDone, onExit }) {
   );
 }
 
+// 🆕 (২৮ জুলাই ২০২৬ — ইউজার রিকোয়েস্ট "একদম মূল অ্যাপের মতো দেখতে চাই"): এই স্ক্রিন
+// এখন থিম/হেডার/হোম-ড্যাশবোর্ড/নিচের ট্যাব-বার — সবকিছুতেই মূল অ্যাপের আসল কম্পোনেন্ট
+// (T/S থিম-সিস্টেম, আসল <Dashboard/>, আসল nav markup) পুনরায় ব্যবহার করে, যাতে দেখে
+// বোঝা না যায় এটা ভিউয়ার মোড। হোম ট্যাব ১০০% আসল Dashboard কম্পোনেন্ট (cached backup
+// ডেটা দিয়ে ফিড করা)। কাস্টমার/ইনভয়েস/পণ্য ট্যাব — যেহেতু এখানে কোনো লাইভ Firestore
+// সংযোগ নেই, শুধু পর্যায়ক্রমে ডাউনলোড করা ব্যাকআপ ক্যাশ — তাই এই তিনটা সরল, read-only
+// লিস্ট (এডিট/নতুন-এন্ট্রি বাটন নেই), কিন্তু একই থিম/টোকেন ব্যবহার করে যাতে ভিজুয়ালি
+// আলাদা না লাগে। এডিট-সক্ষম setter/action props (voidInvoice, processReturn,
+// onGoToPurchaseEntry) ইচ্ছাকৃতভাবে null/no-op — Dashboard কম্পোনেন্ট নিজেই falsy
+// voidInvoice/processReturn পেলে "ভয়েড" বাটন লুকিয়ে ফেলে (দেখুন Dashboard-এর ভেতরের
+// `{voidInvoice && ...}` গার্ড), তাই আলাদা করে কোনো "ভিউয়ার-অনলি" ফ্ল্যাগ Dashboard-এ
+// পাস করতে হয়নি।
 function ViewerDashboardScreen({ onReconfigure, onExit }) {
   const PREFIX_LABEL = { "": "সিঙ্গেল বিজনেস", pharmacy: "ফার্মেসি", veterinary: "ভেটেরিনারি", semen: "সিমেন বিজনেস" };
   const prefix = localStorage.getItem(VK.prefix) || "";
+
+  // ── থিম রিজলভ — মূল App() কম্পোনেন্ট ঠিক যেভাবে করে (একই storage key/ফলব্যাক),
+  // যাতে ইউজার মূল ডিভাইসে যে থিম/ডার্কমোড/ফন্ট বেছেছে ভিউয়ার ডিভাইসেও ঠিক সেটাই দেখায় ──
+  const [themeReady,  setThemeReady]  = useState(false);
+  const [darkMode,    setVDarkMode]   = useState(true);
+  const [activeTheme, setVActiveTheme]= useState("neon");
+  const [fontSize,    setVFontSize]   = useState(15);
+  const [shopName,    setVShopName]   = useState("SBM");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLocalBusinessPrefix(prefix || null);
+      const [dm, at, fs, sn] = await Promise.all([
+        load(LK(SK.darkMode)), load(LK(SK.activeTheme)), load(LK(SK.fontSize)), load(SK.shopName),
+      ]);
+      if (cancelled) return;
+      setVDarkMode(dm ?? true);
+      setVActiveTheme((at && at !== "dark") ? at : "neon");
+      setVFontSize(fs ?? 15);
+      setVShopName(sn || "SBM");
+      setThemeReady(true);
+    })();
+    return () => { cancelled = true; };
+  }, [prefix]);
+
+  const currentPreset = THEME_PRESETS.find(p => p.id === activeTheme) || THEME_PRESETS[0];
+  const T = useMemo(() => (currentPreset.dark ? {
+    ...DARK,
+    accent: currentPreset.accent, accentDark: currentPreset.accentDark || currentPreset.accent, accentGlow: currentPreset.accent + "33", accentPill: currentPreset.accent + "22",
+    nav: currentPreset.nav, navActive: currentPreset.navActive, navPill: currentPreset.navActive + "18",
+    headingColor: getContrastText(currentPreset.statusBar || currentPreset.bg), statusBar: currentPreset.statusBar || currentPreset.bg,
+    border: currentPreset.border || (currentPreset.dark ? "#1e3a27" : "#d4eddb"),
+    header: currentPreset.header,
+    stepActive: currentPreset.accent, stepDone: currentPreset.accent,
+    bg: currentPreset.bg, card: currentPreset.card,
+    text: currentPreset.text, sub: currentPreset.sub,
+  } : {
+    ...LIGHT,
+    accent: currentPreset.accent, accentDark: currentPreset.accentDark || currentPreset.accent, accentGlow: currentPreset.accent + "22", accentPill: currentPreset.accent + "18",
+    nav: currentPreset.nav, navActive: currentPreset.navActive, navPill: currentPreset.navActive + "18",
+    headingColor: getContrastText(currentPreset.statusBar || currentPreset.bg), statusBar: currentPreset.statusBar || currentPreset.bg,
+    border: currentPreset.border || (currentPreset.dark ? "#d4eddb" : "#1e3a27"),
+    header: currentPreset.header,
+    stepActive: currentPreset.accent, stepDone: currentPreset.accent,
+    bg: currentPreset.bg, card: currentPreset.card,
+    text: currentPreset.text, sub: currentPreset.sub,
+  }), [activeTheme, currentPreset]);
+  const S = useMemo(() => makeS(T), [activeTheme, darkMode, fontSize]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── cached backup (Google Drive থেকে পর্যায়ক্রমে ডাউনলোড হওয়া সর্বশেষ স্ন্যাপশট) ──
   const [data, setData] = useState(() => {
     try { const raw = localStorage.getItem(VK.cache); return raw ? JSON.parse(raw) : null; } catch { return null; }
   });
   const [lastSync, setLastSync] = useState(() => localStorage.getItem(VK.lastSync) || null);
   const [syncing, setSyncing] = useState(false);
   const [err, setErr] = useState("");
-  const [, forceTick] = useState(0); // "X মিনিট আগে" ব্যানার প্রতি মিনিটে রিফ্রেশ করার জন্য
+  const [, forceTick] = useState(0); // "X মিনিট আগে" প্রতি মিনিটে রিফ্রেশ করার জন্য
   const cooldownRef = useRef(0);
 
   const refresh = useCallback(async ({ interactive = false } = {}) => {
     const now = Date.now();
-    if (now - cooldownRef.current < 60 * 1000) return; // একই মিনিটে বারবার না (অনলাইন-ইভেন্ট + টাইমার একসাথে ফায়ার করলে)
+    if (now - cooldownRef.current < 60 * 1000) return;
     cooldownRef.current = now;
     setSyncing(true); setErr("");
     try {
@@ -18245,13 +18308,12 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
     }
   }, [prefix]);
 
-  // টাইমার + ইন্টারনেট-ফিরে-আসা দুটোতেই রিফ্রেশ — যেটা আগে ঘটে
   useEffect(() => {
     const minutes = parseInt(localStorage.getItem(VK.interval) || "15");
     const id = setInterval(() => refresh(), minutes * 60 * 1000);
     const onOnline = () => refresh();
     window.addEventListener("online", onOnline);
-    refresh(); // স্ক্রিন খোলার সাথে সাথেই একবার চেষ্টা
+    refresh();
     return () => { clearInterval(id); window.removeEventListener("online", onOnline); };
   }, [refresh]);
 
@@ -18270,119 +18332,293 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
     return `${Math.floor(hrs / 24)} দিন আগে`;
   }, [lastSync, /* eslint-disable-next-line react-hooks/exhaustive-deps */ Math.floor(Date.now() / 30000)]);
 
-  const stats = useMemo(() => {
-    if (!data) return null;
-    const customers = data.customers || [];
-    const products = data.products || [];
-    const invoices = data.invoices || [];
-    const todayKey = _dateKeyOf(new Date());
-    const todayInvoices = invoices.filter(i => i.dateKey === todayKey);
-    const todaySales = todayInvoices.reduce((s, i) => s + (i.total || 0), 0);
-    const totalBaki = customers.reduce((s, c) => s + (c.balance || 0), 0);
-    const bakiCustomers = customers.filter(c => (c.balance || 0) > 0).length;
-    const lowStock = products.filter(p => (p.stock || 0) > 0 && (p.stock || 0) <= (p.minStockAlert || 5));
-    const outOfStock = products.filter(p => (p.stock || 0) <= 0);
-    const recentInvoices = [...invoices].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 8);
-    return { todaySales, todayCount: todayInvoices.length, totalBaki, bakiCustomers, lowStock, outOfStock, recentInvoices };
-  }, [data]);
+  // ── ব্যাকআপ থেকে collections — Dashboard-এর সব prop এখান থেকেই ফিড হয় ──
+  const customers        = data?.customers || [];
+  const products         = data?.products || [];
+  const invoices         = data?.invoices || [];
+  const txns             = data?.txns || [];
+  const purchaseOrders   = data?.purchaseOrders || [];
+  const stockMovements   = data?.stockMovements || [];
+  const cashLogs         = data?.cashLogs || [];
+  const expenses         = data?.expenses || [];
+  const returns          = data?.returns || [];
+  const supplierPayments = data?.supplierPayments || [];
+  const paymentInvoices  = data?.paymentInvoices || [];
 
-  const cardStyle = { background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.09)", borderRadius: 14, padding: 14 };
+  // ── মূল App()-এর ঠিক একই ফর্মুলা — সংখ্যাগুলো হোম ড্যাশবোর্ডের সাথে হুবহু মিলবে ──
+  const globalProdMap = useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
+  const todayBaki = useMemo(() => {
+    const key = todayEn();
+    const voidedInvIds = new Set(invoices.filter(i => i.status === "voided").map(i => i.id));
+    return txns.filter(t => t.dateKey === key && t.type === "baki" && t.invoiceId && !voidedInvIds.has(t.invoiceId)).reduce((s, t) => s + t.amount, 0);
+  }, [txns, invoices]);
+  const todayJoma = useMemo(() => { const key = todayEn(); return txns.filter(t => t.dateKey === key && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((s, t) => s + t.amount, 0); }, [txns]);
+  const todayInvs = useMemo(() => { const key = todayEn(); return invoices.filter(i => i.dateKey === key && !i.isSelfUse && i.status !== "voided"); }, [invoices]);
+  const todayReturns = useMemo(() => {
+    const key = todayEn();
+    const voidedInvIds = new Set(invoices.filter(i => i.status === "voided").map(i => i.id));
+    return (returns || []).filter(r => r.dateKey === key && !voidedInvIds.has(r.invoiceId));
+  }, [returns, invoices]);
+  const todayReturnsRefund = useMemo(() => todayReturns.reduce((s, r) => s + (r.refundAmount || 0), 0), [todayReturns]);
+  const todayReturnsCashRefund = useMemo(() => todayReturns.filter(r => r.refundMode === "cash").reduce((s, r) => s + (r.refundAmount || 0), 0), [todayReturns]);
+  const todayReturnsProfitImpact = useMemo(() => todayReturns.reduce((s, r) => s + ((r.refundAmount || 0) - (r.costPrice || 0) * (r.qty || 0)), 0), [todayReturns]);
+  const todayTotal = useMemo(() => todayInvs.reduce((s, i) => s + (i.total || 0), 0) - todayReturnsRefund, [todayInvs, todayReturnsRefund]);
+  const totalBaki  = useMemo(() => customers.reduce((s, c) => s + (c.balance || 0), 0), [customers]);
+  const todayCashSale = useMemo(() => todayInvs.reduce((s, i) => {
+    if (i.payType === "cash") return s + i.total;
+    if (i.payType === "partial") return s + Math.min(i.paidAmount || 0, i.total || 0);
+    return s;
+  }, 0) - todayReturnsCashRefund, [todayInvs, todayReturnsCashRefund]);
+  const todayProfit = useMemo(() => calcProfitTotal(todayInvs, globalProdMap) - todayReturnsProfitImpact, [todayInvs, globalProdMap, todayReturnsProfitImpact]);
+  const reorderAlerts = useMemo(() => products.filter(p => (p.stock || 0) > 0 && (p.stock || 0) <= (p.minStockAlert || 5)), [products]);
+
+  // ── UI state — মূল অ্যাপের মতোই ট্যাব + মোডাল + "অন্যান্য" ড্রয়ার ──
+  const [vTab, setVTab] = useState("dashboard");
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [dashModal, setDashModal] = useState(null);
+  const [invModal, setInvModal] = useState(null);
+  const [cashModal, setCashModal] = useState(null);
+
+  const navItemsAll = [
+    { id: "dashboard", label: "হোম",     icon: "M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" },
+    { id: "customers", label: "কাস্টমার", icon: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" },
+    { id: "invoice",   label: "ইনভয়েস",  icon: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6" },
+    { id: "products",  label: "পণ্য",     icon: "M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4zM3 6h18" },
+  ];
+  const tabTitles = { customers: "কাস্টমার", invoice: "ইনভয়েস", products: "পণ্য" };
+
+  if (!themeReady) return <div style={{ minHeight: "100vh", background: "#060d1a" }} />; // থিম-ফ্ল্যাশ এড়াতে
 
   return (
-    <div style={{ minHeight: "100vh", background: "#060d1a", fontFamily: "'Hind Siliguri', system-ui, sans-serif", paddingBottom: 40 }}>
-      <div style={{ padding: "18px 16px 14px", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 18 }}>👁</span>
-            <span style={{ color: "#e0f9ff", fontWeight: 800, fontSize: 15 }}>ভিউয়ার মোড</span>
-            <span style={{ background: "rgba(56,189,248,0.18)", color: "#7dd3fc", fontSize: 10.5, fontWeight: 700, padding: "2px 8px", borderRadius: 8 }}>
-              {PREFIX_LABEL[prefix] || prefix}
-            </span>
-          </div>
-          <button onClick={() => refresh({ interactive: true })} disabled={syncing} style={{
-            background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10,
-            color: "#fff", fontSize: 12, padding: "6px 10px", cursor: syncing ? "default" : "pointer", fontFamily: "inherit",
-          }}>{syncing ? "..." : "↻ রিফ্রেশ"}</button>
-        </div>
-        <div style={{ color: "rgba(255,255,255,0.45)", fontSize: 11 }}>
-          সর্বশেষ আপডেট: {agoText}{err ? ` · ⚠️ ${err}` : ""}
-        </div>
-      </div>
+    <div style={S.root}>
+      <div data-mesh="1" style={{ position: "fixed", inset: 0, zIndex: 0, pointerEvents: "none", background: currentPreset.bg }} />
 
-      {!data ? (
-        <div style={{ padding: 40, textAlign: "center", color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
-          {syncing ? "লোড হচ্ছে..." : "কোনো ডেটা পাওয়া যায়নি"}
-        </div>
-      ) : (
-        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <div style={cardStyle}>
-              <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 11, marginBottom: 4 }}>আজকের বিক্রয়</div>
-              <div style={{ color: "#4ade80", fontWeight: 800, fontSize: 17 }}>৳{fmtMoney(stats.todaySales)}</div>
-              <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10.5 }}>{stats.todayCount}টা ইনভয়েস</div>
+      {/* ── হেডার — মূল App()-এর হেডারের সাথে হুবহু (শপনাম + লাইভ ঘড়ি / মডিউল-শিরোনাম) ── */}
+      <header style={{
+        ...S.header, flexDirection: "column", padding: "0", background: T.header,
+        boxShadow: `0 2px 20px ${T.accent}3a, 0 1px 0 ${T.accent}22`,
+        borderBottom: `1px solid ${T.accent}33`, position: "sticky", top: 0, zIndex: 50,
+      }}>
+        <div style={{ textAlign: "center", padding: `calc(16px + env(safe-area-inset-top, 0px)) 16px 16px`, width: "100%", boxSizing: "border-box", position: "relative" }}>
+          <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", width: 240, height: 70, background: `radial-gradient(ellipse, ${T.accent}1e 0%, transparent 70%)`, pointerEvents: "none" }} />
+          {vTab === "dashboard" ? (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+              <span style={{ fontWeight: 900, fontSize: 27, letterSpacing: 0.8, lineHeight: 1.2, color: T.headingColor, textShadow: `0 0 14px ${T.headingColor}77, 0 1px 8px rgba(0,0,0,0.4)` }}>
+                {shopName}
+              </span>
+              <MemoLiveDateTime themeColor={T.headingColor} accentColor={T.accent} compact />
             </div>
-            <div style={cardStyle}>
-              <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 11, marginBottom: 4 }}>মোট বাকি</div>
-              <div style={{ color: "#fb923c", fontWeight: 800, fontSize: 17 }}>৳{fmtMoney(stats.totalBaki)}</div>
-              <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10.5 }}>{stats.bakiCustomers} জন কাস্টমার</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 11, marginBottom: 4 }}>লো-স্টক</div>
-              <div style={{ color: "#fbbf24", fontWeight: 800, fontSize: 17 }}>{stats.lowStock.length}</div>
-              <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10.5 }}>পণ্য</div>
-            </div>
-            <div style={cardStyle}>
-              <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 11, marginBottom: 4 }}>স্টক শেষ</div>
-              <div style={{ color: "#f87171", fontWeight: 800, fontSize: 17 }}>{stats.outOfStock.length}</div>
-              <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10.5 }}>পণ্য</div>
-            </div>
-          </div>
-
-          <div style={cardStyle}>
-            <div style={{ color: "rgba(255,255,255,0.6)", fontWeight: 700, fontSize: 12.5, marginBottom: 10 }}>সাম্প্রতিক ইনভয়েস</div>
-            {stats.recentInvoices.length === 0 ? (
-              <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 12 }}>কোনো ইনভয়েস নেই</div>
-            ) : stats.recentInvoices.map((inv, idx) => (
-              <div key={inv.id || idx} style={{
-                display: "flex", justifyContent: "space-between", alignItems: "center",
-                padding: "8px 0", borderTop: idx > 0 ? "1px solid rgba(255,255,255,0.06)" : "none",
-              }}>
-                <div>
-                  <div style={{ color: "#fff", fontSize: 12.5 }}>{inv.customerName || "—"}</div>
-                  <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10.5 }}>{inv.dateKey || ""}</div>
-                </div>
-                <div style={{ color: "#4ade80", fontWeight: 700, fontSize: 13 }}>৳{fmtMoney(inv.total)}</div>
-              </div>
-            ))}
-          </div>
-
-          {stats.lowStock.length > 0 && (
-            <div style={cardStyle}>
-              <div style={{ color: "rgba(255,255,255,0.6)", fontWeight: 700, fontSize: 12.5, marginBottom: 10 }}>লো-স্টক পণ্য</div>
-              {stats.lowStock.slice(0, 8).map((p, idx) => (
-                <div key={p.id || idx} style={{
-                  display: "flex", justifyContent: "space-between", alignItems: "center",
-                  padding: "7px 0", borderTop: idx > 0 ? "1px solid rgba(255,255,255,0.06)" : "none",
-                }}>
-                  <div style={{ color: "#fff", fontSize: 12.5 }}>{p.name}</div>
-                  <div style={{ color: "#fbbf24", fontSize: 12.5, fontWeight: 700 }}>{p.stock} বাকি</div>
-                </div>
-              ))}
+          ) : (
+            <div style={{ fontWeight: 900, fontSize: 17, letterSpacing: 0.6, color: T.headingColor, textShadow: `0 0 10px ${T.headingColor}66`, lineHeight: 1.2 }}>
+              {tabTitles[vTab] || ""}
             </div>
           )}
         </div>
-      )}
+        <div style={{ height: 2, background: `linear-gradient(90deg, transparent 0%, ${T.accent} 30%, ${T.headingColor} 50%, ${T.accent} 70%, transparent 100%)`, width: "100%" }} />
+      </header>
 
-      <div style={{ padding: "20px 16px 0", display: "flex", gap: 10, justifyContent: "center" }}>
-        <button onClick={onReconfigure} style={{
-          background: "none", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10,
-          color: "rgba(255,255,255,0.6)", fontSize: 11.5, padding: "8px 14px", cursor: "pointer", fontFamily: "inherit",
-        }}>⚙️ সেটিংস বদলান</button>
-        <button onClick={onExit} style={{
-          background: "none", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10,
-          color: "rgba(255,255,255,0.6)", fontSize: 11.5, padding: "8px 14px", cursor: "pointer", fontFamily: "inherit",
-        }}>✕ ভিউয়ার মোড বন্ধ করুন</button>
-      </div>
+      <main style={S.main}>
+        {!data ? (
+          <div style={{ padding: 40, textAlign: "center", color: T.sub, fontSize: 13 }}>
+            {syncing ? "লোড হচ্ছে..." : "কোনো ব্যাকআপ ডেটা পাওয়া যায়নি — রিফ্রেশ করে দেখুন"}
+          </div>
+        ) : vTab === "dashboard" ? (
+          <ErrorBoundary T={T}>
+            <Dashboard
+              T={T} S={S} businessType={prefix || "pharmacy"}
+              customers={customers} totalBaki={totalBaki}
+              todayBaki={todayBaki} todayJoma={todayJoma} todayTotal={todayTotal}
+              todayInvs={todayInvs} setTab={setVTab} txns={txns}
+              dashModal={dashModal} setDashModal={setDashModal}
+              invModal={invModal} setInvModal={setInvModal}
+              cashModal={cashModal} setCashModal={setCashModal}
+              invoices={invoices} paymentInvoices={paymentInvoices} shopName={shopName}
+              todayCashSale={todayCashSale} todayProfit={todayProfit}
+              products={products} purchaseOrders={purchaseOrders}
+              // 🔴 এডিট-সক্ষম প্রপ ইচ্ছাকৃতভাবে null/no-op — Dashboard নিজে falsy
+              // voidInvoice/processReturn পেলে সংশ্লিষ্ট বাটন লুকিয়ে ফেলে।
+              voidInvoice={null} processReturn={null}
+              currentUser={{ role: "owner", name: shopName }}
+              onGoToPurchaseEntry={null} setProducts={() => {}}
+              stockMovements={stockMovements} setStockMovements={() => {}}
+              setPurchaseOrders={() => {}}
+              cashLogs={cashLogs} setCashLogs={() => {}}
+              reorderAlerts={reorderAlerts} expenses={expenses}
+              cashFlow={null} fssReady={false}
+              supplierPayments={supplierPayments} setSupplierPayments={() => {}}
+              returns={returns}
+            />
+          </ErrorBoundary>
+        ) : vTab === "customers" ? (
+          <ViewerCustomersList T={T} S={S} customers={customers} />
+        ) : vTab === "invoice" ? (
+          <ViewerInvoicesList T={T} S={S} invoices={invoices} />
+        ) : (
+          <ViewerProductsList T={T} S={S} products={products} />
+        )}
+      </main>
+
+      {/* ── নিচের ট্যাব-বার — মূল App()-এর nav মার্কআপ হুবহু ── */}
+      <nav style={S.nav}>
+        {navItemsAll.map(n => {
+          const isActive = vTab === n.id && !showMoreMenu;
+          return (
+            <button key={n.id}
+              style={{ ...S.navBtn, color: isActive ? "#fff" : `${T.headingColor}80` }}
+              onClick={() => { setShowMoreMenu(false); setDashModal(null); setInvModal(null); setCashModal(null); setVTab(n.id); }}>
+              {isActive && <span style={{ position: "absolute", inset: 0, background: `${T.accent}55`, border: `1px solid ${T.accent}88`, borderRadius: 14, animation: "bounceIn 0.25s cubic-bezier(0.4,0,0.2,1)" }} />}
+              <span style={{ position: "relative", zIndex: 1, transition: "transform 0.2s", transform: isActive ? "scale(1.15)" : "scale(1)" }}>
+                <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={isActive ? 2.5 : 1.8} strokeLinecap="round" strokeLinejoin="round">
+                  <path d={n.icon} />
+                </svg>
+              </span>
+              <span style={{ fontSize: 9.5, fontWeight: isActive ? 800 : 600, position: "relative", zIndex: 1, transition: "all 0.2s", letterSpacing: isActive ? 0.3 : 0 }}>{n.label}</span>
+            </button>
+          );
+        })}
+        <button key="more"
+          style={{ ...S.navBtn, color: showMoreMenu ? "#fff" : `${T.headingColor}80` }}
+          onClick={() => setShowMoreMenu(v => !v)}>
+          {showMoreMenu && <span style={{ position: "absolute", inset: 0, background: `${T.accent}55`, border: `1px solid ${T.accent}88`, borderRadius: 14, animation: "bounceIn 0.25s cubic-bezier(0.4,0,0.2,1)" }} />}
+          <span style={{ position: "relative", zIndex: 1 }}>
+            <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="5" cy="12" r="1.8" fill="currentColor" stroke="none" />
+              <circle cx="12" cy="12" r="1.8" fill="currentColor" stroke="none" />
+              <circle cx="19" cy="12" r="1.8" fill="currentColor" stroke="none" />
+            </svg>
+          </span>
+          <span style={{ fontSize: 9.5, fontWeight: 600, position: "relative", zIndex: 1 }}>অন্যান্য</span>
+        </button>
+      </nav>
+
+      {/* ── "অন্যান্য" ড্রয়ার — এখানে ভিউয়ার-নির্দিষ্ট কন্ট্রোল (রিফ্রেশ/সেটিংস/এক্সিট) ── */}
+      {showMoreMenu && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 60, display: "flex", justifyContent: "flex-end" }}>
+          <div onClick={() => setShowMoreMenu(false)} style={{ position: "absolute", inset: 0, background: "#000000aa", animation: "fadeIn 0.2s ease" }} />
+          <div style={{
+            position: "relative", width: "72%", maxWidth: 300, height: "100%",
+            background: T.header, borderLeft: `1px solid ${T.accent}33`,
+            boxShadow: "-4px 0 24px #0008", padding: "18px 12px",
+            paddingBottom: "calc(18px + env(safe-area-inset-bottom, 0px))",
+            display: "flex", flexDirection: "column", gap: 8,
+            animation: "slideInRight 0.22s cubic-bezier(0.4,0,0.2,1)", overflowY: "auto",
+          }}>
+            <div style={{ color: T.headingColor, fontWeight: 900, fontSize: 15, padding: "4px 8px 2px" }}>👁 ভিউয়ার মোড</div>
+            <div style={{ color: `${T.headingColor}99`, fontSize: 11, padding: "0 8px 12px" }}>
+              {PREFIX_LABEL[prefix] || prefix} · সর্বশেষ আপডেট: {agoText}{err ? ` · ⚠️ ${err}` : ""}
+            </div>
+            <button onClick={() => refresh({ interactive: true })} disabled={syncing} style={{
+              background: `${T.accent}18`, border: `1px solid ${T.accent}44`, borderRadius: 12,
+              color: T.headingColor, fontSize: 13, fontWeight: 700, padding: "12px 14px",
+              cursor: syncing ? "default" : "pointer", fontFamily: "inherit", textAlign: "left",
+            }}>{syncing ? "রিফ্রেশ হচ্ছে..." : "↻ রিফ্রেশ করুন"}</button>
+            <button onClick={onReconfigure} style={{
+              background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.14)", borderRadius: 12,
+              color: T.headingColor, fontSize: 13, fontWeight: 700, padding: "12px 14px",
+              cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+            }}>⚙️ সেটিংস বদলান</button>
+            <button onClick={onExit} style={{
+              background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 12,
+              color: "#f87171", fontSize: 13, fontWeight: 700, padding: "12px 14px",
+              cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+            }}>✕ ভিউয়ার মোড বন্ধ করুন</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── ভিউয়ার-অনলি read-only লিস্ট (কাস্টমার/ইনভয়েস/পণ্য) — মূল থিম টোকেন ব্যবহার করে
+// যাতে ভিজুয়ালি Dashboard-এর সাথে সামঞ্জস্যপূর্ণ থাকে, কিন্তু এডিট/নতুন-এন্ট্রি বাটন নেই
+// (ব্যাকআপ ক্যাশে থাকা ডেটা edit করলে সেটা মূল দোকানে sync হবে না বলে ইচ্ছাকৃতভাবে বাদ)।
+function ViewerSearchInput({ T, value, onChange, placeholder }) {
+  return (
+    <input
+      value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+      style={{
+        width: "100%", boxSizing: "border-box", background: T.card, border: `1px solid ${T.border}`,
+        borderRadius: 14, padding: "12px 14px", color: T.text, fontSize: 14, fontFamily: "inherit",
+        marginBottom: 12,
+      }}
+    />
+  );
+}
+
+function ViewerCustomersList({ T, S, customers }) {
+  const [q, setQ] = useState("");
+  const filtered = useMemo(() => {
+    const key = q.trim().toLowerCase();
+    const list = key ? customers.filter(c => (c.name || "").toLowerCase().includes(key) || (c.mobile || "").includes(key)) : customers;
+    return [...list].sort((a, b) => (b.balance || 0) - (a.balance || 0));
+  }, [customers, q]);
+  return (
+    <div style={S.page}>
+      <ViewerSearchInput T={T} value={q} onChange={setQ} placeholder="নাম বা মোবাইল দিয়ে খুঁজুন..." />
+      {filtered.length === 0 ? (
+        <div style={{ padding: "40px 0", textAlign: "center", color: T.sub, fontSize: 13 }}>কোনো কাস্টমার নেই</div>
+      ) : filtered.map(c => (
+        <div key={c.id} style={{ ...S.section, marginBottom: 10, padding: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ color: T.text, fontWeight: 800, fontSize: 14 }}>{c.name}</div>
+            <div style={{ color: T.sub, fontSize: 12 }}>{c.mobile}{c.address ? ` · ${c.address}` : ""}</div>
+          </div>
+          <div style={{ color: (c.balance || 0) > 0 ? "#f87171" : T.sub, fontWeight: 800, fontSize: 14 }}>৳{fmtMoney(c.balance || 0)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ViewerProductsList({ T, S, products }) {
+  const [q, setQ] = useState("");
+  const filtered = useMemo(() => {
+    const key = q.trim().toLowerCase();
+    return key ? products.filter(p => (p.name || "").toLowerCase().includes(key)) : products;
+  }, [products, q]);
+  return (
+    <div style={S.page}>
+      <ViewerSearchInput T={T} value={q} onChange={setQ} placeholder="পণ্যের নাম দিয়ে খুঁজুন..." />
+      {filtered.length === 0 ? (
+        <div style={{ padding: "40px 0", textAlign: "center", color: T.sub, fontSize: 13 }}>কোনো পণ্য নেই</div>
+      ) : filtered.map(p => {
+        const low = (p.stock || 0) > 0 && (p.stock || 0) <= (p.minStockAlert || 5);
+        const out = (p.stock || 0) <= 0;
+        return (
+          <div key={p.id} style={{ ...S.section, marginBottom: 10, padding: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ color: T.text, fontWeight: 800, fontSize: 14 }}>{p.name}</div>
+              <div style={{ color: T.sub, fontSize: 12 }}>৳{fmtMoney(p.price || 0)}</div>
+            </div>
+            <div style={{ color: out ? "#f87171" : low ? "#fbbf24" : T.text, fontWeight: 800, fontSize: 14 }}>{p.stock || 0} {p.unit || ""}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ViewerInvoicesList({ T, S, invoices }) {
+  const [q, setQ] = useState("");
+  const filtered = useMemo(() => {
+    const key = q.trim().toLowerCase();
+    const list = key ? invoices.filter(i => (i.customerName || "").toLowerCase().includes(key)) : invoices;
+    return [...list].filter(i => i.status !== "voided").sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 100);
+  }, [invoices, q]);
+  return (
+    <div style={S.page}>
+      <ViewerSearchInput T={T} value={q} onChange={setQ} placeholder="কাস্টমারের নাম দিয়ে খুঁজুন..." />
+      {filtered.length === 0 ? (
+        <div style={{ padding: "40px 0", textAlign: "center", color: T.sub, fontSize: 13 }}>কোনো ইনভয়েস নেই</div>
+      ) : filtered.map((inv, idx) => (
+        <div key={inv.id || idx} style={{ ...S.section, marginBottom: 10, padding: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ color: T.text, fontWeight: 800, fontSize: 14 }}>{inv.customerName || "—"}</div>
+            <div style={{ color: T.sub, fontSize: 12 }}>{inv.dateKey || ""}</div>
+          </div>
+          <div style={{ color: T.accent, fontWeight: 800, fontSize: 14 }}>৳{fmtMoney(inv.total || 0)}</div>
+        </div>
+      ))}
     </div>
   );
 }
