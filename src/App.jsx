@@ -18332,18 +18332,54 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
     return `${Math.floor(hrs / 24)} দিন আগে`;
   }, [lastSync, /* eslint-disable-next-line react-hooks/exhaustive-deps */ Math.floor(Date.now() / 30000)]);
 
-  // ── ব্যাকআপ থেকে collections — Dashboard-এর সব prop এখান থেকেই ফিড হয় ──
-  const customers        = data?.customers || [];
-  const products         = data?.products || [];
-  const invoices         = data?.invoices || [];
-  const txns             = data?.txns || [];
-  const purchaseOrders   = data?.purchaseOrders || [];
-  const stockMovements   = data?.stockMovements || [];
-  const cashLogs         = data?.cashLogs || [];
-  const expenses         = data?.expenses || [];
-  const returns          = data?.returns || [];
-  const supplierPayments = data?.supplierPayments || [];
-  const paymentInvoices  = data?.paymentInvoices || [];
+  // ── ব্যাকআপ থেকে collections — মূল অ্যাপের মতো এডিটযোগ্য কম্পোনেন্ট (Customers/
+  // Products/ReturnModule) পুনরায় ব্যবহার করার জন্য এগুলো লোকাল state (শুধু derived
+  // const না)। "রিফ্রেশ" চাপলে বা নতুন ব্যাকআপ এলে এই state আবার সার্ভারের আসল ডেটা
+  // দিয়ে রিসেট হয়ে যায় — তাই এখানে কোনো "এডিট" আসলে persist হয় না, পরের সিঙ্কেই
+  // হারিয়ে যাবে। আসল সুরক্ষা অবশ্য এটাও না — এই ডিভাইসে কখনো FSS.init() কল হয় না
+  // (viewer session কোনো Firebase config লোড করে না), তাই FSS.isReady() সবসময়
+  // false থাকে আর Customers/Products/ReturnModule-এর ভেতরের সব সরাসরি Firestore
+  // রাইট (if (FSS.isReady()) ...) নিজে থেকেই স্কিপ হয়ে যায় — real শপের ডেটার সাথে
+  // এই ডিভাইসের কোনো এডিট কখনো sync হওয়ার সুযোগই নেই।
+  const [customers, setCustomers] = useState(() => data?.customers || []);
+  const [products, setProducts]   = useState(() => data?.products  || []);
+  const [purchaseOrders,  setPurchaseOrders]  = useState(() => data?.purchaseOrders  || []);
+  const [stockMovements,  setStockMovements]  = useState(() => data?.stockMovements  || []);
+  const [cashLogs,        setCashLogs]        = useState(() => data?.cashLogs        || []);
+  const [returnsArr,      setReturnsArr]      = useState(() => data?.returns         || []);
+  const [supplierPayments,setSupplierPayments]= useState(() => data?.supplierPayments|| []);
+  const [deletedCustomers, setDeletedCustomers] = useState(() => data?.deletedCustomers || []);
+  const [deletedProducts,  setDeletedProducts]  = useState(() => data?.deletedProducts  || []);
+  const invoices          = data?.invoices || []; // ইনভয়েস তৈরির স্ক্রিন এখানে নেই, তাই এটা শুধুই read
+  const txns              = data?.txns || [];
+  const expenses          = data?.expenses || [];
+  const paymentInvoices   = data?.paymentInvoices || [];
+  const returns = returnsArr;
+  // নতুন ব্যাকআপ সিঙ্ক হলে সব লোকাল এডিট-কপি আসল ডেটা দিয়ে রিসেট
+  useEffect(() => {
+    setCustomers(data?.customers || []);
+    setProducts(data?.products || []);
+    setPurchaseOrders(data?.purchaseOrders || []);
+    setStockMovements(data?.stockMovements || []);
+    setCashLogs(data?.cashLogs || []);
+    setReturnsArr(data?.returns || []);
+    setSupplierPayments(data?.supplierPayments || []);
+    setDeletedCustomers(data?.deletedCustomers || []);
+    setDeletedProducts(data?.deletedProducts || []);
+  }, [data]);
+
+  // ── ভিউয়ার-অনলি টোস্ট — Customers/Products/ReturnModule/TransactionModal এগুলো
+  // ভ্যালিডেশন/স্ট্যাটাস মেসেজের জন্য showToast কল করে, তাই একটা লোকাল ইমপ্লিমেন্টেশন দরকার ──
+  const [vToast, setVToast] = useState(null);
+  const vToastTimer = useRef(null);
+  const showToast = useCallback((msg, color) => {
+    if (vToastTimer.current) clearTimeout(vToastTimer.current);
+    setVToast({ msg, color: color || "#22c55e" });
+    vToastTimer.current = setTimeout(() => setVToast(null), 2600);
+  }, []);
+  const blockedAction = useCallback((msg = "ভিউয়ার মোডে এটা করা যাবে না — লাইভ সংযোগ নেই") => showToast(msg, "#f59e0b"), [showToast]);
+  const noop = useCallback(() => {}, []);
+  const noopAsync = useCallback(async () => null, []);
 
   // ── মূল App()-এর ঠিক একই ফর্মুলা — সংখ্যাগুলো হোম ড্যাশবোর্ডের সাথে হুবহু মিলবে ──
   const globalProdMap = useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
@@ -18378,6 +18414,13 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
   const [dashModal, setDashModal] = useState(null);
   const [invModal, setInvModal] = useState(null);
   const [cashModal, setCashModal] = useState(null);
+  // কাস্টমার ডিটেইল পেজ + জমা/বাকি মোডাল — মূল App()-এর detailCId/modal state-এর মতোই
+  const [detailCId, setDetailCId] = useState(null);
+  const [txModal, setTxModal] = useState(null);
+  const showDetail = vTab === "customers" && !!detailCId;
+  const detailCust = showDetail ? customers.find(c => c.id === detailCId) : null;
+  const detailTxns = useMemo(() => detailCId ? txns.filter(t => t.customerId === detailCId) : [], [txns, detailCId]);
+  const detailPaymentInvoices = useMemo(() => detailCId ? paymentInvoices.filter(p => p.customerId === detailCId) : [], [paymentInvoices, detailCId]);
 
   const navItemsAll = [
     { id: "dashboard", label: "হোম",     icon: "M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" },
@@ -18385,7 +18428,7 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
     { id: "invoice",   label: "ইনভয়েস",  icon: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6" },
     { id: "products",  label: "পণ্য",     icon: "M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4zM3 6h18" },
   ];
-  const tabTitles = { customers: "কাস্টমার", invoice: "ইনভয়েস", products: "পণ্য" };
+  const tabTitles = { customers: "কাস্টমার", invoice: "ইনভয়েস", products: "পণ্য", dailySummary: "দৈনিক সারসংক্ষেপ" };
 
   if (!themeReady) return <div style={{ minHeight: "100vh", background: "#060d1a" }} />; // থিম-ফ্ল্যাশ এড়াতে
 
@@ -18401,7 +18444,16 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
       }}>
         <div style={{ textAlign: "center", padding: `calc(16px + env(safe-area-inset-top, 0px)) 16px 16px`, width: "100%", boxSizing: "border-box", position: "relative" }}>
           <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", width: 240, height: 70, background: `radial-gradient(ellipse, ${T.accent}1e 0%, transparent 70%)`, pointerEvents: "none" }} />
-          {vTab === "dashboard" ? (
+          {showDetail && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "100%" }}>
+              <button
+                onClick={() => setDetailCId(null)}
+                style={{ position: "absolute", left: 0, background: `${T.accent}20`, border: `1px solid ${T.accent}40`, color: T.headingColor, borderRadius: 10, width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center" }}
+              ><IcBack /></button>
+              <div style={{ fontWeight: 900, fontSize: 18, letterSpacing: 0.3, color: T.headingColor, textShadow: `0 0 10px ${T.headingColor}55` }}>{detailCust?.name}</div>
+            </div>
+          )}
+          {!showDetail && (vTab === "dashboard" ? (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
               <span style={{ fontWeight: 900, fontSize: 27, letterSpacing: 0.8, lineHeight: 1.2, color: T.headingColor, textShadow: `0 0 14px ${T.headingColor}77, 0 1px 8px rgba(0,0,0,0.4)` }}>
                 {shopName}
@@ -18412,7 +18464,7 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
             <div style={{ fontWeight: 900, fontSize: 17, letterSpacing: 0.6, color: T.headingColor, textShadow: `0 0 10px ${T.headingColor}66`, lineHeight: 1.2 }}>
               {tabTitles[vTab] || ""}
             </div>
-          )}
+          ))}
         </div>
         <div style={{ height: 2, background: `linear-gradient(90deg, transparent 0%, ${T.accent} 30%, ${T.headingColor} 50%, ${T.accent} 70%, transparent 100%)`, width: "100%" }} />
       </header>
@@ -18435,28 +18487,107 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
               invoices={invoices} paymentInvoices={paymentInvoices} shopName={shopName}
               todayCashSale={todayCashSale} todayProfit={todayProfit}
               products={products} purchaseOrders={purchaseOrders}
-              // 🔴 এডিট-সক্ষম প্রপ ইচ্ছাকৃতভাবে null/no-op — Dashboard নিজে falsy
-              // voidInvoice/processReturn পেলে সংশ্লিষ্ট বাটন লুকিয়ে ফেলে।
+              // 🔴 voidInvoice/processReturn ইচ্ছাকৃতভাবে null — Dashboard নিজে falsy পেলে
+              // সংশ্লিষ্ট "ভয়েড" বাটন লুকিয়ে ফেলে। বাকি সব setter এখন আসল (লোকাল state) —
+              // FSS.isReady()===false থাকায় কোনো এডিটই আসল দোকানে কখনো sync হবে না।
               voidInvoice={null} processReturn={null}
               currentUser={{ role: "owner", name: shopName }}
-              onGoToPurchaseEntry={null} setProducts={() => {}}
-              stockMovements={stockMovements} setStockMovements={() => {}}
-              setPurchaseOrders={() => {}}
-              cashLogs={cashLogs} setCashLogs={() => {}}
+              onGoToPurchaseEntry={null} setProducts={setProducts}
+              stockMovements={stockMovements} setStockMovements={setStockMovements}
+              setPurchaseOrders={setPurchaseOrders}
+              cashLogs={cashLogs} setCashLogs={setCashLogs}
               reorderAlerts={reorderAlerts} expenses={expenses}
               cashFlow={null} fssReady={false}
-              supplierPayments={supplierPayments} setSupplierPayments={() => {}}
+              supplierPayments={supplierPayments} setSupplierPayments={setSupplierPayments}
               returns={returns}
             />
           </ErrorBoundary>
+        ) : showDetail ? (
+          <ErrorBoundary T={T}>
+            <CustomerDetail T={T} S={S}
+              customer={detailCust} txns={detailTxns}
+              invoices={invoices} customers={customers} paymentInvoices={detailPaymentInvoices}
+              shopName={shopName}
+              onGoToInvoice={() => blockedAction("ভিউয়ার মোডে নতুন ইনভয়েস তৈরি করা যায় না")}
+              setModal={setTxModal}
+              products={products} returns={returns}
+              currentUser={{ role: "staff", name: shopName }} showToast={showToast}
+              voidInvoice={null} processReturn={null}
+            />
+          </ErrorBoundary>
         ) : vTab === "customers" ? (
-          <ViewerCustomersList T={T} S={S} customers={customers} />
+          <ErrorBoundary T={T}>
+            <Customers T={T} S={S}
+              customers={customers} setCustomers={setCustomers}
+              showToast={showToast} setModal={setTxModal}
+              onOpenDetail={c => setDetailCId(c.id)}
+              deletedCustomers={deletedCustomers} setDeletedCustomers={setDeletedCustomers}
+              onGoToInvoice={() => blockedAction("ভিউয়ার মোডে নতুন ইনভয়েস তৈরি করা যায় না")}
+              currentUser={{ role: "staff", name: shopName }} hasPerm={() => false}
+              auditLog={noop}
+              invoices={invoices} txns={txns}
+            />
+          </ErrorBoundary>
         ) : vTab === "invoice" ? (
-          <ViewerInvoicesList T={T} S={S} invoices={invoices} />
+          // 🆕 মূল অ্যাপের "ইনভয়েস" ট্যাব নতুন সেল তৈরি করার POS — ভিউয়ার মোডে সেটার
+          // কোনো read-only অর্থ হয় না, তাই একই আইকন/পজিশনে বরং আসল "ইনভয়েস হিস্ট্রি"
+          // মডিউল (ReturnModule) দেখানো হচ্ছে — এটাও অ্যাপেরই আসল, অপরিবর্তিত কম্পোনেন্ট।
+          <ErrorBoundary T={T}>
+            <ReturnModule T={T} S={S}
+              invoices={invoices} products={products} customers={customers}
+              returns={returns} setReturns={setReturnsArr}
+              setProducts={setProducts} setCustomers={setCustomers}
+              setStockMovements={setStockMovements} addTxn={noop}
+              showToast={showToast}
+              currentUser={{ role: "staff", name: shopName }}
+              shopName={shopName} setCashLogs={setCashLogs} auditLog={noop}
+              voidInvoice={null} processReturn={null}
+            />
+          </ErrorBoundary>
+        ) : vTab === "dailySummary" ? (
+          <ErrorBoundary T={T}>
+            <DailySummaryModule T={T} S={S}
+              currentUser={{ role: "owner", name: shopName }} shopName={shopName} showToast={showToast}
+              customers={customers} invoices={invoices} txns={txns} cashLogs={cashLogs}
+              products={products} purchaseOrders={purchaseOrders} expenses={expenses}
+              stockMovements={stockMovements} returns={returns}
+            />
+          </ErrorBoundary>
         ) : (
-          <ViewerProductsList T={T} S={S} products={products} />
+          <ErrorBoundary T={T}>
+            <Products T={T} S={S} products={products} setProducts={setProducts} showToast={showToast}
+              stockMovements={stockMovements} setStockMovements={setStockMovements}
+              purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders}
+              deletedProducts={deletedProducts} setDeletedProducts={setDeletedProducts}
+              currentUser={{ role: "staff", name: shopName }} hasPerm={() => false}
+              shopName={shopName}
+              businessType={prefix || "pharmacy"}
+              auditLog={noop}
+            />
+          </ErrorBoundary>
         )}
       </main>
+
+      {txModal?.type === "transaction" && (
+        <TransactionModal T={T} S={S}
+          customer={txModal.data} setCustomers={setCustomers}
+          sendSMS={noopAsync} showToast={showToast} addTxn={noop}
+          createPaymentInvoice={noopAsync}
+          currentUser={{ role: "staff", name: shopName }}
+          auditLog={noop}
+          shopName={shopName}
+          onClose={() => setTxModal(null)}
+        />
+      )}
+
+      {vToast && (
+        <div style={{
+          position: "fixed", bottom: "calc(80px + env(safe-area-inset-bottom, 0px))", left: "50%", transform: "translateX(-50%)",
+          background: vToast.color, color: "#fff", fontWeight: 800, fontSize: 12.5, padding: "10px 18px",
+          borderRadius: 100, boxShadow: "0 6px 20px rgba(0,0,0,0.35)", zIndex: 200, whiteSpace: "nowrap", maxWidth: "90vw",
+          overflow: "hidden", textOverflow: "ellipsis",
+        }}>{vToast.msg}</div>
+      )}
 
       {/* ── নিচের ট্যাব-বার — মূল App()-এর nav মার্কআপ হুবহু ── */}
       <nav style={S.nav}>
@@ -18465,7 +18596,7 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
           return (
             <button key={n.id}
               style={{ ...S.navBtn, color: isActive ? "#fff" : `${T.headingColor}80` }}
-              onClick={() => { setShowMoreMenu(false); setDashModal(null); setInvModal(null); setCashModal(null); setVTab(n.id); }}>
+              onClick={() => { setShowMoreMenu(false); setDashModal(null); setInvModal(null); setCashModal(null); setDetailCId(null); setVTab(n.id); }}>
               {isActive && <span style={{ position: "absolute", inset: 0, background: `${T.accent}55`, border: `1px solid ${T.accent}88`, borderRadius: 14, animation: "bounceIn 0.25s cubic-bezier(0.4,0,0.2,1)" }} />}
               <span style={{ position: "relative", zIndex: 1, transition: "transform 0.2s", transform: isActive ? "scale(1.15)" : "scale(1)" }}>
                 <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={isActive ? 2.5 : 1.8} strokeLinecap="round" strokeLinejoin="round">
@@ -18477,9 +18608,9 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
           );
         })}
         <button key="more"
-          style={{ ...S.navBtn, color: showMoreMenu ? "#fff" : `${T.headingColor}80` }}
+          style={{ ...S.navBtn, color: (showMoreMenu || vTab === "dailySummary") ? "#fff" : `${T.headingColor}80` }}
           onClick={() => setShowMoreMenu(v => !v)}>
-          {showMoreMenu && <span style={{ position: "absolute", inset: 0, background: `${T.accent}55`, border: `1px solid ${T.accent}88`, borderRadius: 14, animation: "bounceIn 0.25s cubic-bezier(0.4,0,0.2,1)" }} />}
+          {(showMoreMenu || vTab === "dailySummary") && <span style={{ position: "absolute", inset: 0, background: `${T.accent}55`, border: `1px solid ${T.accent}88`, borderRadius: 14, animation: "bounceIn 0.25s cubic-bezier(0.4,0,0.2,1)" }} />}
           <span style={{ position: "relative", zIndex: 1 }}>
             <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
               <circle cx="5" cy="12" r="1.8" fill="currentColor" stroke="none" />
@@ -18507,6 +18638,12 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
             <div style={{ color: `${T.headingColor}99`, fontSize: 11, padding: "0 8px 12px" }}>
               {PREFIX_LABEL[prefix] || prefix} · সর্বশেষ আপডেট: {agoText}{err ? ` · ⚠️ ${err}` : ""}
             </div>
+            <button onClick={() => { setShowMoreMenu(false); setDetailCId(null); setVTab("dailySummary"); }} style={{
+              background: vTab === "dailySummary" ? `${T.accent}30` : "rgba(255,255,255,0.06)",
+              border: `1px solid ${vTab === "dailySummary" ? T.accent + "66" : "rgba(255,255,255,0.14)"}`, borderRadius: 12,
+              color: T.headingColor, fontSize: 13, fontWeight: 700, padding: "12px 14px",
+              cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+            }}>📊 দৈনিক সারসংক্ষেপ</button>
             <button onClick={() => refresh({ interactive: true })} disabled={syncing} style={{
               background: `${T.accent}18`, border: `1px solid ${T.accent}44`, borderRadius: 12,
               color: T.headingColor, fontSize: 13, fontWeight: 700, padding: "12px 14px",
@@ -18525,100 +18662,6 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-// ── ভিউয়ার-অনলি read-only লিস্ট (কাস্টমার/ইনভয়েস/পণ্য) — মূল থিম টোকেন ব্যবহার করে
-// যাতে ভিজুয়ালি Dashboard-এর সাথে সামঞ্জস্যপূর্ণ থাকে, কিন্তু এডিট/নতুন-এন্ট্রি বাটন নেই
-// (ব্যাকআপ ক্যাশে থাকা ডেটা edit করলে সেটা মূল দোকানে sync হবে না বলে ইচ্ছাকৃতভাবে বাদ)।
-function ViewerSearchInput({ T, value, onChange, placeholder }) {
-  return (
-    <input
-      value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
-      style={{
-        width: "100%", boxSizing: "border-box", background: T.card, border: `1px solid ${T.border}`,
-        borderRadius: 14, padding: "12px 14px", color: T.text, fontSize: 14, fontFamily: "inherit",
-        marginBottom: 12,
-      }}
-    />
-  );
-}
-
-function ViewerCustomersList({ T, S, customers }) {
-  const [q, setQ] = useState("");
-  const filtered = useMemo(() => {
-    const key = q.trim().toLowerCase();
-    const list = key ? customers.filter(c => (c.name || "").toLowerCase().includes(key) || (c.mobile || "").includes(key)) : customers;
-    return [...list].sort((a, b) => (b.balance || 0) - (a.balance || 0));
-  }, [customers, q]);
-  return (
-    <div style={S.page}>
-      <ViewerSearchInput T={T} value={q} onChange={setQ} placeholder="নাম বা মোবাইল দিয়ে খুঁজুন..." />
-      {filtered.length === 0 ? (
-        <div style={{ padding: "40px 0", textAlign: "center", color: T.sub, fontSize: 13 }}>কোনো কাস্টমার নেই</div>
-      ) : filtered.map(c => (
-        <div key={c.id} style={{ ...S.section, marginBottom: 10, padding: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div style={{ color: T.text, fontWeight: 800, fontSize: 14 }}>{c.name}</div>
-            <div style={{ color: T.sub, fontSize: 12 }}>{c.mobile}{c.address ? ` · ${c.address}` : ""}</div>
-          </div>
-          <div style={{ color: (c.balance || 0) > 0 ? "#f87171" : T.sub, fontWeight: 800, fontSize: 14 }}>৳{fmtMoney(c.balance || 0)}</div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ViewerProductsList({ T, S, products }) {
-  const [q, setQ] = useState("");
-  const filtered = useMemo(() => {
-    const key = q.trim().toLowerCase();
-    return key ? products.filter(p => (p.name || "").toLowerCase().includes(key)) : products;
-  }, [products, q]);
-  return (
-    <div style={S.page}>
-      <ViewerSearchInput T={T} value={q} onChange={setQ} placeholder="পণ্যের নাম দিয়ে খুঁজুন..." />
-      {filtered.length === 0 ? (
-        <div style={{ padding: "40px 0", textAlign: "center", color: T.sub, fontSize: 13 }}>কোনো পণ্য নেই</div>
-      ) : filtered.map(p => {
-        const low = (p.stock || 0) > 0 && (p.stock || 0) <= (p.minStockAlert || 5);
-        const out = (p.stock || 0) <= 0;
-        return (
-          <div key={p.id} style={{ ...S.section, marginBottom: 10, padding: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <div style={{ color: T.text, fontWeight: 800, fontSize: 14 }}>{p.name}</div>
-              <div style={{ color: T.sub, fontSize: 12 }}>৳{fmtMoney(p.price || 0)}</div>
-            </div>
-            <div style={{ color: out ? "#f87171" : low ? "#fbbf24" : T.text, fontWeight: 800, fontSize: 14 }}>{p.stock || 0} {p.unit || ""}</div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function ViewerInvoicesList({ T, S, invoices }) {
-  const [q, setQ] = useState("");
-  const filtered = useMemo(() => {
-    const key = q.trim().toLowerCase();
-    const list = key ? invoices.filter(i => (i.customerName || "").toLowerCase().includes(key)) : invoices;
-    return [...list].filter(i => i.status !== "voided").sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 100);
-  }, [invoices, q]);
-  return (
-    <div style={S.page}>
-      <ViewerSearchInput T={T} value={q} onChange={setQ} placeholder="কাস্টমারের নাম দিয়ে খুঁজুন..." />
-      {filtered.length === 0 ? (
-        <div style={{ padding: "40px 0", textAlign: "center", color: T.sub, fontSize: 13 }}>কোনো ইনভয়েস নেই</div>
-      ) : filtered.map((inv, idx) => (
-        <div key={inv.id || idx} style={{ ...S.section, marginBottom: 10, padding: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div style={{ color: T.text, fontWeight: 800, fontSize: 14 }}>{inv.customerName || "—"}</div>
-            <div style={{ color: T.sub, fontSize: 12 }}>{inv.dateKey || ""}</div>
-          </div>
-          <div style={{ color: T.accent, fontWeight: 800, fontSize: 14 }}>৳{fmtMoney(inv.total || 0)}</div>
-        </div>
-      ))}
     </div>
   );
 }
