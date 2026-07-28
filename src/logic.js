@@ -368,6 +368,33 @@ export function filterReturnsExcludingVoided(returns, voidedInvoiceIds) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ২৮ জুলাই ২০২৬ ফিক্স — "আজকের ইনভয়েস" (todayInvs) অ্যাপের ৪ জায়গায় ৪ রকম
+// ফিল্টার লজিক দিয়ে বের হতো: useKpiStats (হোম ড্যাশবোর্ড, লাইন ~11136) ও AIPage_
+// (লাইন ~11447) — dateKey === todayKey অথবা (dateKey মিসিং হলে) date ফিল্ড দিয়ে
+// ফলব্যাক চেক করত; কিন্তু মূল Home Dashboard (App()-এর todayInvs) ও Staff/Viewer
+// Dashboard (ViewerDashboardScreen) — শুধু dateKey === key চেক করত, কোনো date
+// ফলব্যাক ছিল না। ফলে dateKey ফাঁকা/মিসিং কোনো (লিগ্যাসি বা সিঙ্ক এজ-কেস) ইনভয়েস
+// AI পেজে "আজকের বিক্রয়/লাভ"-এ ধরা পড়ত, কিন্তু মালিকের হোম ড্যাশবোর্ড ও স্টাফ
+// ড্যাশবোর্ডে ধরা পড়ত না — দুই জায়গায় দুই সংখ্যা। এখন সবগুলো এই একই শেয়ার্ড
+// ফাংশন কল করে (calcProfitTotal/calcCashDrawer-এর মতোই single-source-of-truth),
+// তাই ভবিষ্যতে একটাতে ফিক্স করলে বাকিগুলো এমনিতেই মিলে যাবে।
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * নিজের-ব্যবহার নয় ও ভয়েড হয়নি এমন ইনভয়েসগুলোর মধ্যে যাদের dateKey আজকের সাথে
+ * মেলে — dateKey ফাঁকা/মিসিং থাকলে পুরনো date ফিল্ড দিয়েও ফলব্যাক চেক করা হয়।
+ * @param {Array<{dateKey?:string, date?:string, isSelfUse?:boolean, status?:string}>} invoices
+ * @param {string} todayKey - "YYYY-MM-DD" ফরম্যাটে আজকের dateKey (todayEn()/_dateKeyOf(new Date()))
+ * @returns {Array}
+ */
+export function filterTodayInvoices(invoices, todayKey) {
+  return (invoices || []).filter(i =>
+    i && !i.isSelfUse && i.status !== "voided" &&
+    (i.dateKey === todayKey || (!i.dateKey && i.date && i.date.startsWith(todayKey)))
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ENTERPRISE_MONITORING_PLAN.md ফেজ D / D1 — প্রোডাকশন রানটাইম ইনভ্যারিয়েন্ট-চেক
 // ═══════════════════════════════════════════════════════════════════════════
 // এই ফাংশন সম্পূর্ণ pure (কোনো Firestore/React কল না) — App.jsx একটা periodic

@@ -28,6 +28,7 @@ const finiteNumRequired = () => z.number().finite();
 
 export const invoiceSchema = z.object({
   id: z.string().min(1),
+  invoiceNo: z.string().optional().nullable(),
   total: finiteNumRequired(),
   discount: finiteNum(),
   extraCharge: finiteNum(),

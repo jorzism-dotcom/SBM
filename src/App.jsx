@@ -28,7 +28,7 @@ import {
   calcInvoiceTotal, calcVoidNetChange, calcCashDrawer, restoreBatchQty,
   runInvariantChecks, getReturnedQtyForInvoice, getReturnedAmountForInvoice,
   calcReturnRefundAmount, scaleBatchBreakdownForVoid,
-  getVoidedInvoiceIds, filterReturnsExcludingVoided,
+  getVoidedInvoiceIds, filterReturnsExcludingVoided, filterTodayInvoices,
 } from "./logic.js";
 // 🧪 Schema validation (zod) — Firestore write-এর আগে টাকা/স্টক-সংক্রান্ত
 // ফিল্ডে NaN/undefined ঢুকে যাচ্ছে কিনা যাচাই করে। দেখুন src/schemas.js-এর
@@ -11133,7 +11133,7 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
     const prodAll = products || [];
     const txnAll = txns || [];
 
-    const todayInvs = invAll.filter(i => i.dateKey === todayKey || (i.date && i.date.startsWith(todayKey)));
+    const todayInvs = filterTodayInvoices(invoices, todayKey);
     const monthInvs = invAll.filter(i => (i.dateKey || i.date || "") >= monthStartKey);
     const prevMonthInvs = invAll.filter(i => (i.dateKey || i.date || "") >= prevMonthStartKey && (i.dateKey || i.date || "") < monthStartKey);
 
@@ -11444,7 +11444,7 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
   const prodAll = products || [];
   const txnAll = txns || [];
 
-  const todayInvs = invAll.filter(i => i.dateKey === todayKey || (i.date && i.date.startsWith(todayKey)));
+  const todayInvs = filterTodayInvoices(invoices, todayKey);
   const weekInvs = invAll.filter(i => (i.dateKey || i.date || "") >= d7);
   const monthInvs = invAll.filter(i => (i.dateKey || i.date || "") >= monthStartKey);
   const prevMonthInvs = invAll.filter(i => (i.dateKey || i.date || "") >= prevMonthStartKey && (i.dateKey || i.date || "") < monthStartKey);
@@ -15830,7 +15830,7 @@ function SmartBusinessMgmt() {
               addTxn(
                 inv.customerId, netChange > 0 ? "joma" : "baki", Math.abs(netChange), newBal,
                 inv.id,
-                `ইনভয়েস ভয়েড — #${inv.id.slice(-6).toUpperCase()}${voidReason ? ` · ${voidReason}` : ""}`,
+                `ইনভয়েস ভয়েড — #${inv.invoiceNo || inv.id.slice(-6).toUpperCase()}${voidReason ? ` · ${voidReason}` : ""}`,
                 null, "void-reversal"
               );
             }, 0);
@@ -16196,7 +16196,7 @@ function SmartBusinessMgmt() {
     return txnBaki;
   }, [txns, invoices]);
   const todayJoma  = useMemo(() => { const key = todayEn(); return txns.filter(t => t.dateKey === key && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((s, t) => s + t.amount, 0); }, [txns]);
-  const todayInvs  = useMemo(() => { const key = todayEn(); return invoices.filter(i => i.dateKey === key && !i.isSelfUse && i.status !== "voided"); }, [invoices]);
+  const todayInvs  = useMemo(() => { const key = todayEn(); return filterTodayInvoices(invoices, key); }, [invoices]);
   // 🔴 ফিক্স (রুট কজ — আংশিক ফেরত নিলে ড্যাশবোর্ডের কোনো সংখ্যাই কমে না): আগে
   // todayTotal/todayCashSale/todayProfit কোনোটাই `returns` অ্যারে ব্যবহার করত না —
   // ইনভয়েসের `total` ফিল্ড আংশিক ফেরতের পরও অপরিবর্তিত থাকে বলে সরাসরি সেটা থেকে
@@ -18657,7 +18657,7 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
     return txns.filter(t => t.dateKey === key && t.type === "baki" && t.invoiceId && !voidedInvIds.has(t.invoiceId)).reduce((s, t) => s + t.amount, 0);
   }, [txns, invoices]);
   const todayJoma = useMemo(() => { const key = todayEn(); return txns.filter(t => t.dateKey === key && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((s, t) => s + t.amount, 0); }, [txns]);
-  const todayInvs = useMemo(() => { const key = todayEn(); return invoices.filter(i => i.dateKey === key && !i.isSelfUse && i.status !== "voided"); }, [invoices]);
+  const todayInvs = useMemo(() => { const key = todayEn(); return filterTodayInvoices(invoices, key); }, [invoices]);
   const todayReturns = useMemo(() => {
     const key = todayEn();
     const voidedInvIds = new Set(invoices.filter(i => i.status === "voided").map(i => i.id));
@@ -20129,6 +20129,17 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     // Walk-in বাকি/আংশিক বাকি হলে — পুরোনো কাস্টমার সিলেক্ট করা থাকলে তার balance
     // এখনই (optimistic guess) আপডেট, নাহলে নতুন কাস্টমার তৈরি
     const invId = uid(); // invoice id আগেই তৈরি করি — txn-এ invoiceId লিংক করতে
+    // 🔴 ফিক্স (২৮ জুলাই ২০২৬ — invoiceNo কখনো জেনারেট না হওয়া): আগে ইনভয়েসের
+    // কোনো real invoiceNo ফিল্ড সেভ হতো না — শুধু id (লম্বা, র‍্যান্ডম uid())
+    // থাকত। ফলে অ্যাপের বিভিন্ন জায়গায় (রিসিট, লেজার, ইনভয়েস লিস্ট, ভয়েড
+    // রেফারেন্স) `inv.invoiceNo || inv.id...` ফলব্যাক প্রতিটা জায়গায় আলাদাভাবে
+    // id-কে ভিন্ন ভিন্নভাবে (৬-char slice/৮-char slice/full id) fallback করত —
+    // একই ইনভয়েসের জন্য জায়গাভেদে তিন রকম "নম্বর" দেখাত। এখন একটা real, ছোট,
+    // sequential/readable invoiceNo এখানেই একবার জেনারেট করে ইনভয়েস অবজেক্টে
+    // সেভ করা হচ্ছে — বাকি সব জায়গার fallback নিজে থেকেই এখন থেকে সঠিক, একরকম
+    // নম্বর ব্যবহার করবে (পুরনো ইনভয়েসে invoiceNo না থাকলে সেগুলো আগের মতোই
+    // id-fallback দেখাবে — প্রিন্ট হয়ে যাওয়া পুরনো রিসিটের সাথে মিল রাখতে)।
+    const invoiceNo = `INV-${String((useAppStore.getState().invoices?.length || 0) + 1).padStart(6, "0")}`;
     let walkInCustId = null;
     let newWalkInBal = null; // optimistic guess — নিচে ব্যাকগ্রাউন্ডে রিকনসাইল হবে
     if (walkInHasBaki && walkInBakiAmt > 0) {
@@ -20200,7 +20211,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     if (_productsAfterSale) save(LK(SK.products), _productsAfterSale);
 
     const inv = {
-      id: invId, customerId: isSelfUse ? null : isWalkIn ? walkInCustId : selCust.id,
+      id: invId, invoiceNo, customerId: isSelfUse ? null : isWalkIn ? walkInCustId : selCust.id,
       customerName: isSelfUse ? "নিজের ব্যবহার (Personal Use)" : isWalkIn ? (walkInName.trim() || "Walk-in Customer") : selCust.name,
       customerMobile: isSelfUse ? "" : isWalkIn ? walkInMobile.trim() : selCust.mobile,
       items: items.map(i => {
@@ -20287,13 +20298,13 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       if (effectivePayType === "partial" && paidAmt > 0) {
         const cashPortion = Math.min(paidAmt, total); // শুধু invoice পর্যন্ত নগদ
         const balAfterJoma = newBal;
-        addTxn(selCust.id, "joma", cashPortion, balAfterJoma, inv.id, `আংশিক নগদ — ইনভয়েস #${inv.id.slice(-6).toUpperCase()}`, null, "partial-sale");
-        createPaymentInvoice({ ...selCust, balance: balAfterJoma }, cashPortion, `আংশিক জমা — ইনভয়েস #${inv.id.slice(-6).toUpperCase()}`, "partial-sale");
+        addTxn(selCust.id, "joma", cashPortion, balAfterJoma, inv.id, `আংশিক নগদ — ইনভয়েস #${inv.invoiceNo}`, null, "partial-sale");
+        createPaymentInvoice({ ...selCust, balance: balAfterJoma }, cashPortion, `আংশিক জমা — ইনভয়েস #${inv.invoiceNo}`, "partial-sale");
         // Overpayment অংশ আগের বাকি আদায় হিসেবে joma
         if (_overpayAmt > 0) {
           const balAfterOverpay = newBal;
-          addTxn(selCust.id, "joma", _overpayAmt, balAfterOverpay, inv.id, `অতিরিক্ত জমা (আগের বাকি আদায়) — ইনভয়েস #${inv.id.slice(-6).toUpperCase()}`, null, "overpay");
-          createPaymentInvoice({ ...selCust, balance: balAfterOverpay }, _overpayAmt, `বাকি আদায় — ইনভয়েস #${inv.id.slice(-6).toUpperCase()}`, "overpay");
+          addTxn(selCust.id, "joma", _overpayAmt, balAfterOverpay, inv.id, `অতিরিক্ত জমা (আগের বাকি আদায়) — ইনভয়েস #${inv.invoiceNo}`, null, "overpay");
+          createPaymentInvoice({ ...selCust, balance: balAfterOverpay }, _overpayAmt, `বাকি আদায় — ইনভয়েস #${inv.invoiceNo}`, "overpay");
         }
       }
       await Haptic.heavy();
@@ -20316,7 +20327,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       // পূর্ণ নগদ বিক্রয় (registered কাস্টমার, walk-in/self-use নয়) — txn রেকর্ড করো যাতে
       // কাস্টমার ডিটেইলস পেজে এই ইনভয়েসটি লেনদেন হিস্টোরিতে দেখা যায়।
       if (!isWalkIn && !isSelfUse && effectivePayType === "cash" && selCust) {
-        addTxn(selCust.id, "joma", total, selCust.balance || 0, inv.id, `নগদ বিক্রয় — ইনভয়েস #${inv.id.slice(-6).toUpperCase()}`, null, "cash-sale");
+        addTxn(selCust.id, "joma", total, selCust.balance || 0, inv.id, `নগদ বিক্রয় — ইনভয়েস #${inv.invoiceNo}`, null, "cash-sale");
       }
       if (walkInHasBaki && walkInBakiAmt > 0) {
         showToast(`Walk-in ইনভয়েস — বাকি ৳${fmt(walkInBakiAmt)} সেভ হয়েছে`);
@@ -20511,7 +20522,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     const payLabel = inv.payType==="baki"?"বাকি":inv.payType==="partial"?"আংশিক":"নগদ";
     const html = `<html><head><title>Invoice</title><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Bengali:wght@400;700;800&display=swap"><style>${css}</style></head><body>
       <div class="center bold" style="font-size:16px">${inv.shopName||"SBM"}</div>
-      <div class="center" style="font-size:12px;color:#555">${inv.date} | ইনভয়েস: ${inv.id.slice(-6).toUpperCase()}</div>
+      <div class="center" style="font-size:12px;color:#555">${inv.date} | ইনভয়েস: ${inv.invoiceNo || inv.id.slice(-6).toUpperCase()}</div>
       <div class="line"></div>
       <div><span class="bold">কাস্টমার:</span> ${inv.customerName}</div>
       ${inv.customerMobile ? `<div style="font-size:12px;color:#555">📞 ${inv.customerMobile}</div>` : ""}
@@ -20567,7 +20578,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                   </div>
                   <div style="flex:1;background:#0369a115;border-radius:10px;padding:10px 14px;">
                     <div style="color:#666;font-size:11px;">ইনভয়েস</div>
-                    <div style="font-weight:800;">#${(inv.id||"").slice(-6).toUpperCase()}</div>
+                    <div style="font-weight:800;">#${inv.invoiceNo || (inv.id||"").slice(-6).toUpperCase()}</div>
                     <div style="color:#666;font-size:11px;">${inv.date||""}</div>
                   </div>
                 </div>
@@ -22935,7 +22946,7 @@ function InvoiceVoidModal({ inv, returns = [], products = [], customers = [], cu
 
   if (!inv) return null;
   const fmt = n => fmtMoney(n);
-  const invCode = `#${inv.id?.slice(-6).toUpperCase()}`;
+  const invCode = `#${inv.invoiceNo || inv.id?.slice(-6).toUpperCase()}`;
 
   const close = () => {
     setStage("choice"); setReason(""); setPinInput(""); setBusy(false);
