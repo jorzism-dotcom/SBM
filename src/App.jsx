@@ -21035,10 +21035,27 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                       : <div style={{ position: "absolute", top: 7, right: 7, background:"linear-gradient(155deg, #22c55e48, #22c55e22)", border: "1px solid #22c55e55", color:"#22c55e", fontSize: 8, fontWeight: 800, borderRadius: 6, padding: "2px 6px", zIndex: 2, boxShadow: "0 1px 4px rgba(34,197,94,0.3)" }}>কমন</div>
                   )}
 
-                  {/* পণ্যের নাম */}
-                  <div style={{ color: T.text, fontWeight: 900, fontSize: 17.5, letterSpacing: 0.1, lineHeight: 1.18, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", paddingRight: isSelected ? 28 : 0, textAlign: "center", marginTop: 1 }}>
-                    <DosageBadge dosageForm={p.dosageForm} />{p.name}
-                  </div>
+                  {/* পণ্যের নাম — ডোজ+নাম কালারফুল পিল */}
+                  {(() => {
+                    const ta = medTypeAbbr(p.dosageForm);
+                    return ta ? (
+                      <div style={{
+                        display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                        borderRadius: 999, padding: "4px 12px 4px 5px",
+                        background: `linear-gradient(155deg, ${ta.color}26, ${ta.color}0f)`,
+                        border: `1px solid ${ta.color}55`,
+                        margin: `1px ${isSelected ? "28px" : "auto"} 0 auto`,
+                        maxWidth: "100%",
+                      }}>
+                        <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 900, borderRadius: 999, padding: "3px 8px", background: ta.color, color: "#fff", letterSpacing: 0.3 }}>{ta.abbr}</span>
+                        <span style={{ color: T.text, fontWeight: 900, fontSize: 25.5, letterSpacing: 0.1, lineHeight: 1.15, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", textAlign: "left" }}>{p.name}</span>
+                      </div>
+                    ) : (
+                      <div style={{ color: T.text, fontWeight: 900, fontSize: 25.5, letterSpacing: 0.1, lineHeight: 1.18, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", paddingRight: isSelected ? 28 : 0, textAlign: "center", marginTop: 1 }}>
+                        {p.name}
+                      </div>
+                    );
+                  })()}
                   {(() => {
                     const supplierLabel = p.company || (p.category && p.category !== "অন্যান্য" ? p.category : "");
                     const batchLabel = batch?.batch ? String(batch.batch).replace(/^ব্যাচ-/i, "") : "";
@@ -21046,7 +21063,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                     const expColor = expDays === null ? T.sub : expDays < 0 ? "#ef4444" : expDays <= 30 ? "#f59e0b" : "#6ee7b7";
                     return (
                       (supplierLabel || batchLabel) && (
-                        <div style={{ color: T.sub, fontSize: 7, display: "flex", alignItems: "center", justifyContent: "center", gap: 4, flexWrap: "wrap", opacity: 0.68, lineHeight: 1.15 }}>
+                        <div style={{ color: T.sub, fontSize: 5, display: "flex", alignItems: "center", justifyContent: "center", gap: 4, flexWrap: "wrap", opacity: 0.68, lineHeight: 1.15 }}>
                           {supplierLabel && <span>{supplierLabel}</span>}
                           {supplierLabel && batchLabel && <span style={{ opacity: 0.5 }}>•</span>}
                           {batchLabel && <span>ব্যাচ:{batchLabel}</span>}
@@ -21100,24 +21117,28 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                     </div>
                   )}
 
-                  {/* প্রিসেট কুইক বাটন — প্রতি ক্লিকে যোগ হয়, একাধিকবার ক্লিক করা যাবে */}
+                  {/* প্রিসেট কুইক বাটন — প্রতি ক্লিকে যোগ হয়, একাধিকবার ক্লিক করা যাবে (কালারফুল প্রিমিয়াম স্টাইল) */}
                   {p.productType !== "service" && (
-                    <div style={{ display: "flex", gap: 3, marginTop: 3 }}>
-                      {[1,2,5,10,20,50,100].map(n => {
+                    <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+                      {[
+                        { n: 1, c: "#f59e0b" }, { n: 2, c: "#fb923c" }, { n: 5, c: "#facc15" },
+                        { n: 10, c: "#38bdf8" }, { n: 20, c: "#22d3ee" }, { n: 50, c: "#a78bfa" }, { n: 100, c: "#f472b6" },
+                      ].map(({ n, c }) => {
                         const disabled = liveStock !== null && liveStock < n;
                         return (
                           <button key={n}
                             onClick={(e) => { e.stopPropagation(); changeQty(p, n); }}
                             disabled={disabled}
                             style={{
-                              flex: 1, height: 29, borderRadius: 8,
-                              border: disabled ? `1px solid ${T.border}` : `1px solid ${T.accent}66`,
-                              background: disabled ? T.border + "26" : `linear-gradient(155deg, ${T.accent}2e, ${T.accent}12)`,
-                              color: disabled ? T.sub : T.text,
-                              fontSize: 12, fontWeight: 800, padding: 0, fontFamily: "inherit",
+                              flex: 1, height: 30, borderRadius: 10,
+                              border: disabled ? `1px solid ${T.border}` : `1px solid ${c}88`,
+                              background: disabled ? T.border + "26" : `linear-gradient(155deg, ${c}40, ${c}14)`,
+                              color: disabled ? T.sub : c,
+                              fontSize: 12.5, fontWeight: 900, padding: 0, fontFamily: "inherit",
                               cursor: disabled ? "default" : "pointer",
                               opacity: disabled ? 0.4 : 1,
-                              boxShadow: disabled ? "none" : `0 1px 4px ${T.accent}33`,
+                              boxShadow: disabled ? "none" : `0 2px 6px ${c}4d, inset 0 1px 0 ${c}33`,
+                              textShadow: disabled ? "none" : `0 0 8px ${c}66`,
                               transition: "transform 0.12s",
                             }}>{n}</button>
                         );
@@ -21139,18 +21160,20 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                       )}
                     </div>
                   ) : (
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4, marginTop: 4 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, marginTop: 5 }}>
                     <button
                       onClick={(e) => { e.stopPropagation(); changeQty(p, -1); }}
                       disabled={!isSelected}
                       style={{
-                        flex: 1, height: 32, borderRadius: 8, border: `1px solid ${T.border}`,
-                        background: isSelected ? "#ef444422" : T.border + "33",
-                        color: isSelected ? "#ef4444" : T.sub,
-                        fontSize: 18, fontWeight: 900,
+                        flex: 1, height: 34, borderRadius: 11, border: isSelected ? "1px solid #ef444488" : `1px solid ${T.border}`,
+                        background: isSelected ? "linear-gradient(155deg, #ef444455, #ef444422)" : T.border + "33",
+                        color: isSelected ? "#ff8080" : T.sub,
+                        fontSize: 19, fontWeight: 900,
                         cursor: isSelected ? "pointer" : "default",
                         opacity: isSelected ? 1 : 0.4,
                         display: "flex", alignItems: "center", justifyContent: "center",
+                        boxShadow: isSelected ? "0 2px 8px #ef444455, inset 0 1px 0 #ffffff22" : "none",
+                        transition: "transform 0.12s",
                       }}>−</button>
                     <input
                       type="number" inputMode="numeric" pattern="[0-9]*"
@@ -21158,18 +21181,26 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                       placeholder="0"
                       onClick={(e) => e.stopPropagation()}
                       onChange={(e) => setQty(p.id, e.target.value)}
-                      style={{ flex: 1, textAlign: "center", color: isSelected ? T.accent : T.text, fontWeight: 900, fontSize: 16, borderRadius: 6, background: isSelected ? T.accent+"18" : "transparent", padding: "2px 0", border: "none", outline: "none", fontFamily: "inherit", WebkitAppearance: "none", MozAppearance: "textfield" }} />
+                      style={{
+                        flex: 1.1, textAlign: "center", color: isSelected ? T.accent : T.text, fontWeight: 900, fontSize: 17,
+                        borderRadius: 11, background: isSelected ? `linear-gradient(155deg, ${T.accent}26, ${T.accent}0f)` : "transparent",
+                        padding: "4px 0", border: isSelected ? `1px solid ${T.accent}66` : "1px solid transparent",
+                        outline: "none", fontFamily: "inherit", WebkitAppearance: "none", MozAppearance: "textfield",
+                        boxShadow: isSelected ? `0 2px 8px ${T.accent}33, inset 0 1px 0 #ffffff22` : "none",
+                      }} />
                     <button
                       onClick={(e) => { e.stopPropagation(); changeQty(p, 1); }}
                       disabled={p.productType !== "service" && liveStock !== null && liveStock <= 0}
                       style={{
-                        flex: 1, height: 32, borderRadius: 8, border: "none",
-                        background: (p.productType !== "service" && liveStock !== null && liveStock <= 0) ? T.border : T.accent,
+                        flex: 1, height: 34, borderRadius: 11, border: "none",
+                        background: (p.productType !== "service" && liveStock !== null && liveStock <= 0) ? T.border : `linear-gradient(155deg, ${T.accent}, ${T.accent}cc)`,
                         color: "#fff",
-                        fontSize: 18, fontWeight: 900,
+                        fontSize: 19, fontWeight: 900,
                         cursor: (p.productType !== "service" && liveStock !== null && liveStock <= 0) ? "default" : "pointer",
                         display: "flex", alignItems: "center", justifyContent: "center",
                         opacity: (liveStock !== null && liveStock <= 0) ? 0.4 : 1,
+                        boxShadow: (liveStock !== null && liveStock <= 0) ? "none" : `0 3px 10px ${T.accent}66, inset 0 1px 0 #ffffff33`,
+                        transition: "transform 0.12s",
                       }}>+</button>
                   </div>
                   )}
