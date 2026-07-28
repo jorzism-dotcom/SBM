@@ -5,8 +5,8 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
     inputs:
-      offline_mode:
-        description: '🔴 OFFLINE বিল্ড — শুধু GitHub Actions থেকে ম্যানুয়ালি ডাউনলোড হবে, কখনো পাবলিক GitHub Release তৈরি হবে না (admin.html-এর auto-update বাকি ২ শপে এই APK পাঠাবে না)। শুধু ওই একটা নির্দিষ্ট দোকানের জন্য যে অফলাইন থাকবে।'
+      online_release:
+        description: '🟢 অনলাইন/পাবলিক রিলিজ বিল্ড — চেক করলে স্বাভাবিক অনলাইন অ্যাপ (Firebase/staff-login সহ) বিল্ড হবে এবং GitHub Release তৈরি হবে (admin.html-এর auto-update সব দোকানে এই ভার্সন দেখাবে)। ⚠️ ডিফল্টে (আনচেক থাকলে, এবং প্রতিটা push-এও) এখন থেকে সবসময় OFFLINE বিল্ড হবে — Firebase/staff-login বন্ধ, শুধু এই Actions run থেকে ম্যানুয়ালি ডাউনলোডযোগ্য, কোনো পাবলিক রিলিজ যাবে না।'
         required: false
         type: boolean
         default: false
@@ -181,10 +181,14 @@ jobs:
           echo "APP_SEMVER=$APP_SEMVER" >> "$GITHUB_ENV"
           echo "computed version: $APP_SEMVER"
 
-      - name: 🔴 OFFLINE_MODE ফ্ল্যাগ রিজলভ করা (workflow_dispatch input থেকে; push ট্রিগারে সবসময় false)
+      - name: 🟢 OFFLINE_MODE ফ্ল্যাগ রিজলভ করা (ডিফল্ট এখন OFFLINE=true — push ও চেকবক্স-ছাড়া ম্যানুয়াল রানেও সবসময়; শুধু online_release=true দিলেই স্বাভাবিক অনলাইন বিল্ড + পাবলিক রিলিজ হবে)
         run: |
-          OFFLINE_MODE_VAL="${{ github.event.inputs.offline_mode }}"
-          if [ "$OFFLINE_MODE_VAL" != "true" ]; then OFFLINE_MODE_VAL="false"; fi
+          ONLINE_RELEASE_VAL="${{ github.event.inputs.online_release }}"
+          if [ "$ONLINE_RELEASE_VAL" == "true" ]; then
+            OFFLINE_MODE_VAL="false"
+          else
+            OFFLINE_MODE_VAL="true"
+          fi
           echo "OFFLINE_MODE_VAL=$OFFLINE_MODE_VAL" >> "$GITHUB_ENV"
           echo "OFFLINE_MODE for this build: $OFFLINE_MODE_VAL"
 
@@ -198,9 +202,10 @@ jobs:
           # 🔴 App.jsx-এর APP_VERSION_CODE এখন এই VITE_APP_VERSION থেকে পড়ে —
           # admin.html-এর সাথে সেমান্টিক (x.y.z) কম্পেয়ারের জন্য এটাই সোর্স অফ ট্রুথ।
           export VITE_APP_VERSION="$APP_SEMVER"
-          # 🔴 App.jsx-এর OFFLINE_MODE কনস্ট্যান্ট এই ভ্যালু থেকে পড়ে — শুধু
-          # workflow_dispatch-এ offline_mode=true দিলেই এই একটা বিল্ডে true হবে,
-          # push-triggered normal বিল্ডে সবসময় false।
+          # 🔴 App.jsx-এর OFFLINE_MODE কনস্ট্যান্ট এই ভ্যালু থেকে পড়ে — এখন
+          # ডিফল্ট (push ও চেকবক্স-ছাড়া ম্যানুয়াল রান) সবসময় true (OFFLINE),
+          # শুধু workflow_dispatch-এ online_release=true দিলেই এই একটা
+          # বিল্ডে false (স্বাভাবিক অনলাইন) হবে।
           export VITE_OFFLINE_MODE="$OFFLINE_MODE_VAL"
           echo "VITE_BUILD_ID=$VITE_BUILD_ID"
           echo "VITE_APP_VERSION=$VITE_APP_VERSION"
@@ -447,14 +452,14 @@ jobs:
             cp android/app/build/outputs/apk/release/app-release.apk "release-out/SBM-v${APP_SEMVER}.apk"
           fi
 
-      # 🔴 OFFLINE_MODE বিল্ডে এই দুটো ধাপ (GitHub Release তৈরি + পুরনো রিলিজ
-      # পরিষ্কার) ইচ্ছাকৃতভাবে স্কিপ করা হয় — কারণ admin.html-এর Update ট্যাব
-      # সবসময় সর্বশেষ GitHub Release-কেই "নতুন ভার্সন এসেছে" ধরে সব দোকানকে
-      # (৩ জনকেই) দেখায়। অফলাইন বিল্ড পাবলিক Release হয়ে গেলে ভুলবশত বাকি ২টা
-      # সচল/অনলাইন দোকানও এটা ইনস্টল করে ফেলার ঝুঁকি থাকত। তাই অফলাইন বিল্ড শুধু
-      # উপরের "Upload APK" আর্টিফ্যাক্ট হিসেবেই থাকে — এই Actions run পেজ থেকে
-      # ম্যানুয়ালি ডাউনলোড করে সরাসরি সেই একটা দোকানের ডিভাইসে পাঠাতে হবে।
-      - name: 🚀 GitHub Release তৈরি করা (APK পাবলিক ডাউনলোড লিংক সহ) — শুধু normal বিল্ডে
+      # 🔴 (আপডেট: ফ্ল্যাগ উল্টানো হয়েছে) OFFLINE_MODE বিল্ডে এই দুটো ধাপ
+      # (GitHub Release তৈরি + পুরনো রিলিজ পরিষ্কার) ইচ্ছাকৃতভাবে স্কিপ করা হয়।
+      # প্রতিটা push এখন থেকে ডিফল্টে OFFLINE বিল্ড তৈরি করে (কোনো পাবলিক
+      # রিলিজ/admin.html auto-update হয় না) — শুধু Actions → "Run workflow" →
+      # online_release চেকবক্স টিক দিয়ে ম্যানুয়ালি রান করলেই স্বাভাবিক অনলাইন
+      # অ্যাপ বিল্ড হয়ে GitHub Release পাবলিশ হবে এবং admin.html-এর Update
+      # ট্যাবে সব দোকান এই ভার্সন দেখতে পাবে।
+      - name: 🚀 GitHub Release তৈরি করা (APK পাবলিক ডাউনলোড লিংক সহ) — শুধু online_release=true হলে
         # 🔴 admin.html-এর Update ট্যাব এই Release-গুলো GitHub API দিয়ে পড়ে
         # (jorzism-dotcom/Turjo/releases) — version + APK লিংক auto-fill হয়,
         # ম্যানুয়ালি টাইপ করা লাগে না। Publish করা না হওয়া পর্যন্ত কোনো দোকানে
@@ -473,7 +478,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 🧹 পুরনো/টেস্ট রিলিজ পরিষ্কার (সর্বশেষ ১৫টা রেখে বাকি ডিলিট) — শুধু normal বিল্ডে
+      - name: 🧹 পুরনো/টেস্ট রিলিজ পরিষ্কার (সর্বশেষ ১৫টা রেখে বাকি ডিলিট) — শুধু online_release=true হলে
         if: env.OFFLINE_MODE_VAL != 'true'
         run: |
           gh release list --limit 200 --json tagName --jq '.[].tagName' | tail -n +16 | while read -r tag; do
@@ -483,8 +488,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: ℹ️ OFFLINE বিল্ড — ম্যানুয়াল ডাউনলোড নোট
+      - name: ℹ️ OFFLINE বিল্ড (এখন ডিফল্ট) — ম্যানুয়াল ডাউনলোড নোট
         if: env.OFFLINE_MODE_VAL == 'true'
         run: |
           echo "✅ OFFLINE APK তৈরি হয়েছে (SBM-OFFLINE-v${APP_SEMVER}.apk) — এটা পাবলিক GitHub Release হয়নি।"
           echo "এই Actions run-এর 'Artifacts' সেকশন থেকে 'sbm-apk-v${{ github.run_number }}-OFFLINE' নামের ফাইলটা ডাউনলোড করে সরাসরি ওই একটা দোকানের ফোনে দিন।"
+          echo "ℹ️ স্বাভাবিক অনলাইন বিল্ড + পাবলিক রিলিজ পেতে চাইলে: Actions → 'Run workflow' → 'online_release' চেকবক্স টিক দিয়ে ম্যানুয়ালি রান করুন।"
