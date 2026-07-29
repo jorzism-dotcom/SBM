@@ -12,91 +12,15 @@ on:
         default: false
 
 jobs:
-  # ── ফেজ ০: Firestore Emulator + Security Rules টেস্ট ──────────────────────
-  # firestore.rules-এর বিরুদ্ধে আসল emulator চালিয়ে schema-validation টেস্ট
-  # করে (tests/rules-tests.mjs)। এটা build জবের আগে চলে এবং build এর উপর
-  # নির্ভরশীল (needs) — কেউ ভুল করে rules ঢিলা/ভাঙা করলে APK build-ই আটকে
-  # যাবে, ভুল rules নিয়ে release বেরোবে না।
-  firestore-rules:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Setup Java (JDK 21 — firebase-tools-এর নতুন ভার্সন এখন Java 21+ চায়, JDK 17-এ emulator চলে না)
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'temurin'
-
-      - name: Install dependencies
-        run: npm install --legacy-peer-deps
-
-      - name: 🔒 firestore.rules ↔ admin.html sync-check (drift থাকলে fail)
-        run: npm run test:rules-sync
-
-      - name: 🔥 Firestore Emulator rules টেস্ট (shape/schema validation)
-        run: npm run test:rules
-
-      - name: 🔀🔥 Sync/Backup Emulator ইন্টিগ্রেশন টেস্ট (blocks build — ফেজ B, দেখুন ENTERPRISE_MONITORING_PLAN.md)
-        # ২২ জুলাই ২০২৬: multi-device conflict (real serverTimestamp), network-drop
-        # mid-merge, backup→restore round-trip — এই ৩টা সিনারিও sandbox-এ আসল
-        # Firestore Emulator চালিয়ে যাচাই করা যায়নি, কারণ sandbox-এর network egress
-        # allowlist-এ storage.googleapis.com নেই (emulator jar ডাউনলোড ব্লক হয়ে যায়)।
-        # কোড ম্যানুয়ালি রিভিউ করা হয়েছে ও tests/rules-tests.mjs-এর প্রমাণিত প্যাটার্ন
-        # অনুসরণ করে লেখা, কিন্তু এই CI রান-ই হবে প্রথম আসল যাচাই — তাই ইচ্ছাকৃতভাবে
-        # blocking রাখা হলো (fuzz test-এর মতো "প্রথমে sandbox-এ ১০ বার green" ধাপ এখানে
-        # এড়ানো যায়নি)। প্রথম রান fail করলে সেটা root-cause করে ঠিক করা হবে, merge revert
-        # করা হবে না।
-        run: npm run test:sync-emulator
-
-  # ── ফেজ C: রিলিজ-ক্যানারি (ENTERPRISE_MONITORING_PLAN.md স্তর ৩) ──────────
-  # end-to-end পাইপলাইন: ইনভয়েস তৈরি → সিঙ্ক → ব্যাকআপ → রিস্টোর → ভয়েড, real
-  # Firestore Emulator-এ। firestore-rules জবের rules/schema টেস্ট আলাদা-আলাদা
-  # scenario যাচাই করে — এই জবটা সেগুলো একটা ধারাবাহিক real-world ফ্লো হিসেবে
-  # একসাথে চালিয়ে দেখে। fail হলে build জব-ই শুরু হবে না (needs), অর্থাৎ কোনো
-  # খারাপ রিলিজ/APK তৈরি হবে না।
-  release-canary:
-    runs-on: ubuntu-latest
-    needs: firestore-rules
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Setup Java (JDK 21 — firebase-tools emulator-এর জন্য)
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'temurin'
-
-      - name: Install dependencies
-        run: npm install --legacy-peer-deps
-
-      - name: 🐤 রিলিজ-ক্যানারি — ইনভয়েস→সিঙ্ক→ব্যাকআপ→রিস্টোর→ভয়েড (blocks release — ফেজ C, দেখুন ENTERPRISE_MONITORING_PLAN.md)
-        # ২২ জুলাই ২০২৬: এই টেস্ট sandbox-এ চালানো যায়নি (network egress
-        # allowlist-এ storage.googleapis.com নেই, emulator jar ডাউনলোড ব্লক
-        # হয়ে যায় — ঠিক ফেজ B-এর মতো একই সীমাবদ্ধতা)। কোড src/logic.js ও
-        # src/sync.js-এর আসল ফাংশন ব্যবহার করে লেখা এবং tests/sync-emulator-tests.mjs
-        # (ফেজ B, real CI-তে ইতিমধ্যে pass করা)-এর প্রমাণিত প্যাটার্ন অনুসরণ করে —
-        # কিন্তু এই CI রান-ই হবে এর প্রথম আসল যাচাই। প্রথম রান fail করলে root-cause
-        # করে ঠিক করা হবে, revert করা হবে না।
-        run: npm run test:canary
+  # 🔴 Session C (৩০ জুলাই ২০২৬): এই আগের `firestore-rules` ও `release-canary`
+  # জব দুটো (Firestore Emulator-ভিত্তিক rules/canary টেস্ট, build জবকে গেট
+  # করত) সরানো হয়েছে — App.jsx থেকে Firebase/Firestore ইতিমধ্যে সম্পূর্ণ
+  # সরানো হয়েছে (Session A/B), আর firestore.rules/indexes/database.rules
+  # deploy করার admin.html-ভিত্তিক ওয়ার্কফ্লো আর ব্যবহৃত হয় না। দেখুন
+  # CLAUDE.md সেশন হিস্টোরি (Session C) বিস্তারিত যুক্তির জন্য।
 
   build:
     runs-on: ubuntu-latest
-    needs: [firestore-rules, release-canary]
     permissions:
       contents: write   # 🔴 GitHub Release তৈরি + পুরনো release ডিলিট করার জন্য প্রয়োজন
 
