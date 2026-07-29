@@ -143,6 +143,142 @@
 নতুন এন্ট্রি সবসময় এই সেকশনের সবার উপরে যোগ করুন (সবচেয়ে নতুনটা প্রথমে)।
 পুরনো এন্ট্রি কখনো মুছবেন না বা এডিট করবেন না।
 
+### ৩০ জুলাই ২০২৬ — Session C: Firebase build/test infra ক্লিনআপ (package.json, CI workflow, dead emulator টেস্ট)
+
+**কেন:** নিচের Session B এন্ট্রির প্ল্যান অনুযায়ী পরের ধাপ ছিল
+package.json/firebase.json/firestore.rules/firestore.indexes.json/
+database.rules.json/google-services.json ক্লিনআপ। কাজ শুরুর আগে যাচাই করে
+দেখা গেল প্ল্যানটা যতটা সহজ মনে হয়েছিল ততটা না — নিচে বিস্তারিত।
+
+**যা যাচাই করে পাওয়া গেছে (কোড না বদলে আগে):**
+- `firestore.rules`/`firestore.indexes.json`/`database.rules.json` শুধু
+  emulator টেস্টের জন্যই না — `netlify-site/admin.html`-এর ভেতরেও এদের
+  embedded কপি (`FB_DEFAULT_RULES` ইত্যাদি) আছে, যেটা দোকানদারদের নিজস্ব
+  Firebase প্রজেক্টে deploy করার জন্য (`scripts/check-rules-sync.mjs` এই দুই
+  কপির drift ধরত, `npm test`-এর অংশ ছিল)।
+- `.github/workflows/build-apk.yml`-এর আসল `build` জব (যেটা শপগুলোতে যাওয়া
+  APK বানায়) `needs: [firestore-rules, release-canary]` — এই দুইটা emulator-
+  ভিত্তিক জব আগে সরিয়ে না দিলে শুধু rules ফাইল মুছলেই CI-তে `build` জব আর
+  কখনো ট্রিগার হতো না।
+- `google-services.json` **সম্পূর্ণ আলাদা উদ্বেগ** — এটা App.jsx-এর
+  JS-সাইড Firebase-এর জন্য না, বরং native Android build-এ FCM push
+  notification (`firebase-messaging` Gradle dependency, `google-services`
+  প্লাগিন) সেট করতে ব্যবহৃত হয় (`build-apk.yml`-এর "Add google-services.json"
+  ও "Add Firebase dependencies to build.gradle" স্টেপ)। ব্যবহারকারী নিশ্চিত
+  করেছেন push notification ফিচার থাকবে — তাই এই ফাইল **স্পর্শ করা হয়নি**।
+- ব্যবহারকারী নিশ্চিত করেছেন admin.html-এর দোকান-ডিপ্লয়মেন্ট ফাংশনালিটি আর
+  দরকার নেই, এবং build-apk.yml-এর emulator-গেটেড জব দুটো সরাসরি সরিয়ে ফেলতে
+  বলেছেন (admin.html ফাইল নিজে অস্পৃশ্য রাখা হয়েছে — Session D-র স্কোপ)।
+
+**এই সেশনে যা করা হলো:**
+1. **ডিলিট করা ফাইল:** `firebase.json`, `firestore.rules`,
+   `firestore.indexes.json`, `database.rules.json`, `scripts/check-rules-sync.mjs`
+   (ও খালি হয়ে যাওয়া `scripts/` ফোল্ডার), এবং emulator-নির্ভর dead টেস্ট
+   ফাইল ৪টা: `tests/canary-tests.mjs`, `tests/rules-tests.mjs`,
+   `tests/sync-emulator-tests.mjs`, `tests/release-canary.mjs`।
+2. **`.github/workflows/build-apk.yml`:** `firestore-rules` ও
+   `release-canary` জব দুটো সম্পূর্ণ সরানো হয়েছে; `build` জবের `needs`
+   ফিল্ড মুছে ফেলা হয়েছে (আর কোনো জবের উপর নির্ভরশীল না, সরাসরি চলে)।
+   `google-services.json`/Firebase Gradle স্টেপ **অপরিবর্তিত**।
+3. **`package.json`:** মূল `test` স্ক্রিপ্ট থেকে
+   `node scripts/check-rules-sync.mjs` অংশ সরানো হয়েছে; `test:rules-sync`,
+   `test:rules`, `test:sync-emulator`, `test:canary`, `emulators` স্ক্রিপ্ট
+   ডিলিট। `dependencies`-এ থাকা `firebase` (JS SDK — App.jsx-এ আর কোনো
+   import নেই, bundle-এও ০) এবং `devDependencies`-এ থাকা `firebase-tools`,
+   `@firebase/rules-unit-testing` (শুধু এখন-ডিলিটেড emulator টেস্টের জন্য
+   ছিল) সরানো হয়েছে। `npm install` পুনরায় চালিয়ে `package-lock.json` রিজেনারেট
+   করা হয়েছে — 1081 → 466 প্যাকেজ (firebase/firebase-tools বিশাল dependency
+   ট্রি টেনে আনত)।
+
+**এই সেশনে যাচাই করা হয়েছে (সবগুলো বাস্তবে রান করে):**
+- `rm -rf node_modules package-lock.json && npm install --legacy-peer-deps` —
+  ✅ সফল, ৪৬৬ প্যাকেজ।
+- `npm test` — ✅ সব পাস (logic ৬৮, schema ১৪, integration ১০, sync ২৪) —
+  rules-sync চেক আর নেই কারণ সংশ্লিষ্ট ফাইল ডিলিট হয়ে গেছে।
+- `npm run lint` — ০টা এরর, ৫৩০টা warning (Session B-এর সমান, নতুন কিছু
+  ভাঙেনি)।
+- `npm run typecheck` — ✅ ০টা এরর।
+- `VITE_OFFLINE_MODE=true npm run build` — ✅ সফল, bundle সাইজ অপরিবর্তিত
+  (firebase আগে থেকেই bundle-এ ছিল না, শুধু package.json থেকে ঘোষণা সরলো)।
+- `.github/workflows/build-apk.yml` Python `yaml.safe_load()` দিয়ে পার্স
+  করে নিশ্চিত করা হয়েছে — এখন শুধু `build` জব আছে, কোনো `needs` নেই।
+
+**পরিবর্তনের ফল:** পরিবর্তিত ফাইল — `package.json`, `package-lock.json`,
+`.github/workflows/build-apk.yml`, এই CLAUDE.md। ডিলিট করা ফাইল উপরে
+তালিকাভুক্ত ৯টা। App.jsx/logic.js/sync.js কিছুই ছোঁয়া হয়নি — কোনো
+accounting/stock/invoice/sync লজিক প্রভাবিত হয়নি। CI-তে এখন থেকে প্রতিটা
+push-এ সরাসরি `build` জব চলবে, কোনো emulator-গেট ছাড়াই — build দ্রুত হবে,
+কিন্তু rules/canary যাচাইয়ের সেফটি-নেট (যেটা মূলত admin.html-এর deploy
+ফ্লো-র জন্য ছিল) আর নেই। `netlify-site/vendor/firebasejs/` ও `admin.html`
+নিজে **অস্পৃশ্য** — Session D-তে হবে।
+
+**কনসিকুয়েন্স:** GitHub-এ zip আপলোডের পর **ডিলিট করা ৯টা ফাইল ম্যানুয়ালি
+রিপো থেকে মুছে দিতে হবে** (zip শুধু বদলানো/নতুন ফাইল দেয়, GitHub স্বয়ংক্রিয়ভাবে
+অনুপস্থিত ফাইল ডিলিট করে না) — নাহলে পুরনো `firebase.json`/`firestore.rules`
+ইত্যাদি রিপোতে থেকে যাবে (নিরীহ কিন্তু বিভ্রান্তিকর ও `check-rules-sync.mjs`
+আর নেই বলে আর কেউ drift ধরবে না)। GitHub Actions-এ পরের push-এ workflow
+আসলেই শুধু `build` জব চালায় ও সফল হয় কিনা — এটা sandbox-এ শুধু YAML পার্স
+করে জব-গ্রাফ যাচাই করা হয়েছে, real GitHub Actions রান-ই প্রথম আসল টেস্ট।
+এরপরের ধাপ: Session D (`netlify-site/admin.html`, এখনো সম্পূর্ণ অস্পৃশ্য)।
+
+---
+
+### ৩০ জুলাই ২০২৬ — Session B (সম্পূর্ণ): বাকি `OFFLINE_MODE` কন্ডিশনাল ও কনস্ট্যান্ট সরানো শেষ (src/App.jsx)
+
+**কেন:** নিচের এন্ট্রিতে (২৯ জুলাই, Session B আংশিক) যেখানে থেমেছিল ঠিক সেখান
+থেকে চালিয়ে যাওয়া — বাকি ছিল SMS Template/Logs ব্লক, দুইটা `if (OFFLINE_MODE)`
+ফাংশন (owner PIN change), শেষ role-check ব্লক (ডেটা রিকভারি কার্ড), এবং
+সবশেষে `OFFLINE_MODE` কনস্ট্যান্টের ঘোষণা নিজেই।
+
+**এই সেশনে যা করা হলো (App.jsx-এ):**
+1. SMS Template কার্ড (Due/Payment টেমপ্লেট এডিটর), তার পাশের "১ ক্লিকে বাকি
+   রিমাইন্ডার SMS" বাটন ব্লক, এবং SMS Logs কার্ড — তিনটাই `{!OFFLINE_MODE &&
+   (...)}` গার্ডে dead ছিল, সম্পূর্ণ মুছে ফেলা হয়েছে।
+2. মালিকের PIN পরিবর্তন ফ্লো-র দুইটা জায়গায় (step 1: পুরনো PIN যাচাই, step 3:
+   নতুন PIN সেভ) `if (OFFLINE_MODE) { ... return; }` গার্ড সরিয়ে ভেতরের
+   লোকাল-হ্যাশ কোডকেই একমাত্র পথ করা হয়েছে (non-OFFLINE_MODE Firebase শাখা
+   আগেই Session A-তে সরানো হয়েছিল, তাই শুধু গার্ড তোলা বাকি ছিল)।
+3. "ডেটা রিকভারি (Phone + PIN)" কার্ড (`currentUser?.role !== "staff" &&
+   !OFFLINE_MODE && (...)`) — dead, সম্পূর্ণ মুছে ফেলা হয়েছে (ভেতরের
+   `RecoverySetupCard` কম্পোনেন্ট নিজে ডিলিট করা হয়নি, শুধু কল-সাইট — lint
+   এখন এটাকে unused দেখাবে, প্রত্যাশিত)।
+4. সবশেষে `OFFLINE_MODE` কনস্ট্যান্টের ঘোষণা (লাইন ৬১) ও তার উপরের বড়
+   টপ-অফ-ফাইল কমেন্ট ব্লক ("অফলাইন-বিল্ড ফ্ল্যাগ") ডিলিট করে একটা সংক্ষিপ্ত
+   ঐতিহাসিক নোট দিয়ে প্রতিস্থাপন করা হয়েছে।
+
+সব এডিটের পরে `npx esbuild src/App.jsx --outfile=/dev/null` দিয়ে সিনট্যাক্স
+চেক করা হয়েছে (প্রতিবারই পাস)।
+
+**এই সেশনে যাচাই করা হয়েছে (সবগুলো বাস্তবে রান করে):**
+- `grep -n "if (OFFLINE_MODE)\|!OFFLINE_MODE" src/App.jsx` — ০টা মিল (শুধু
+  কমেন্টে ঐতিহাসিক রেফারেন্স আছে, কোনো লজিক নেই)।
+- `npm test` — সব পাস (logic ৬৮, schema ১৪, integration ১০, sync ২৪,
+  rules-sync ✅)।
+- `npm run lint` — **০টা এরর**, ৫৩০টা warning (আগের ৫২২ থেকে সামান্য বেড়েছে —
+  dead ব্লক/হ্যান্ডলার সরানোয় কিছু state/component এখন unused; `no-undef`
+  ০টা, অর্থাৎ কোনো orphaned রেফারেন্স নেই)।
+- `VITE_OFFLINE_MODE=true npm run build` — ✅ সফল। বিল্ড আউটপুটে গ্রেপ করে
+  নিশ্চিত করা হয়েছে bundle-এ `firebase/app|firestore|auth` কোড ০টা রেফারেন্স,
+  এবং `OFFLINE_MODE` স্ট্রিং নিজেও bundle-এ ০ বার।
+
+**পরিবর্তনের ফল:** পরিবর্তিত ফাইল — শুধু `src/App.jsx`। Session A/B-এর মূল
+যুক্তি একই থাকে: production-এ (৩ দোকানেই) `OFFLINE_MODE` সবসময় `true` ছিল,
+তাই এই সেশনে মোছা/সরলীকৃত প্রতিটা ব্লকই আগে থেকে-অকার্যকর `!OFFLINE_MODE` পাথ
+বা সবসময়-ট্রু `if (OFFLINE_MODE)` গার্ড ছিল — আউটপুট আচরণ অপরিবর্তিত থাকার
+কথা। `**Session B এখন সম্পূর্ণ**` — App.jsx-এ আর কোনো `OFFLINE_MODE`
+কন্ডিশনাল লজিক বা কনস্ট্যান্ট নেই।
+
+**কনসিকুয়েন্স:** যা যাচাই করা যায়নি (শুধু esbuild/lint/build দিয়ে যুক্তি করা
+হয়েছে, বাস্তব ডিভাইসে চালিয়ে না): মালিকের PIN পরিবর্তন ফ্লো (step 1 ও 3)
+আসল ডিভাইসে এখনো টেস্ট হয়নি এই গার্ড-সরানোর পর — লগইন স্ক্রিনের মতোই
+priority-area-সংলগ্ন (owner access) ফিচার, তাই APK ইনস্টল করে PIN পরিবর্তন
+করে দেখে নেওয়া উচিত। SMS/Recovery কার্ড অপসারণে UI-তে কোনো ফাঁকা জায়গা বা
+লেআউট সমস্যা হচ্ছে কিনা তাও Settings পেজ স্ক্রল করে দেখে নেওয়া ভালো।
+এরপরের ধাপ (Session C: package.json/firebase.json/firestore.rules/
+netlify-site vendor ক্লিনআপ, Session D: admin.html) এখনো শুরু হয়নি।
+
+---
+
 ### ২৯ জুলাই ২০২৬ — Session B (আংশিক): ৭৭টা `OFFLINE_MODE` কন্ডিশনাল রিভিউ শুরু (src/App.jsx)
 
 **কেন:** Session A-তে (দেখুন নিচের এন্ট্রি) কেন্দ্রীয় Firebase/FSS সরানোর পর
