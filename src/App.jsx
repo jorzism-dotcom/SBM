@@ -23,7 +23,7 @@ import { Virtuoso, VirtuosoGrid, TableVirtuoso } from "react-virtuoso";
 // টেস্ট চালাতে পারে — CI-তে build হওয়ার আগেই)।
 import {
   BD_OFFSET_MS, _bdParts,
-  calcNextBatch, isBatchExpired, getSortedActiveBatches, getActiveBatch, getSellableStock,
+  calcNextBatch, isBatchExpired, expiryDateFromYearMonth, getSortedActiveBatches, getActiveBatch, getSellableStock,
   computeSupplierDueMap, _itemCostPrice, calcInvoiceProfit, calcProfitTotal,
   calcInvoiceTotal, calcVoidNetChange, calcCashDrawer, restoreBatchQty,
   runInvariantChecks, getReturnedQtyForInvoice, getReturnedAmountForInvoice,
@@ -5168,6 +5168,39 @@ const SCHEMA_MIGRATIONS = {
     // ভবিষ্যতে নতুন ফিল্ড/শেপ বদল লাগলে এখানে { version: 3, label:"...", migrate(p){...} }
     // যোগ করুন — বাকি সিস্টেম (load, FSS sync, Settings-এর মনিটরিং কার্ড) স্বয়ংক্রিয়ভাবেই
     // এটা ব্যবহার করবে, অন্য কোথাও কিছু বদলাতে হবে না।
+    {
+      version: 3,
+      label: "expiryDate ফিক্স — শুধু মাস/সাল এন্ট্রি আগে ভুলভাবে মাসের ১ম দিন (-01) হিসেবে সেভ হতো, এখন সেই মাসের শেষ দিনে ঠিক করা হচ্ছে",
+      // 🔴 ফিক্স: ExpiryYearMonthPicker/AI ছবি-এন্ট্রি সবসময় `${year}-${month}-01`
+      // (মাসের ১ম দিন) সেভ করত, ফলে isBatchExpired() ২য় দিন থেকেই পণ্যটিকে
+      // মেয়াদোত্তীর্ণ ধরে বিক্রি বন্ধ করে দিত। এই অ্যাপে expiryDate শুধু এই দুই
+      // জায়গা দিয়েই সেট হয় (কোনো পূর্ণ-তারিখ ইনপুট নেই), তাই "-01"-এ শেষ হওয়া
+      // যেকোনো expiryDate নিশ্চিতভাবেই শুধু মাস/সাল থেকে অটো-জেনারেটেড — তাই
+      // নিরাপদে সেই মাসের শেষ দিনে পুনরায় গণনা করা যায়। idempotent: একবার শেষ
+      // দিনে বসে গেলে সেই তারিখ আর কখনোই "-01"-এ শেষ হবে না (প্রতিটা মাসেই
+      // শেষ দিন ১-এর বেশি), তাই দ্বিতীয়বার migrate করলে কিছু বদলাবে না।
+      migrate(p) {
+        const fixMonthOnlyDate = (d) => {
+          if (!d || !/^\d{4}-\d{2}-01$/.test(d)) return d;
+          return expiryDateFromYearMonth(d.slice(0, 4), d.slice(5, 7));
+        };
+        const newExpiryDate = fixMonthOnlyDate(p.expiryDate);
+        const oldBatches = p.batches || [];
+        let batchesChanged = false;
+        const newBatches = oldBatches.map(b => {
+          const fixed = fixMonthOnlyDate(b.expiryDate);
+          if (fixed === b.expiryDate) return b;
+          batchesChanged = true;
+          return { ...b, expiryDate: fixed };
+        });
+        if (newExpiryDate === p.expiryDate && !batchesChanged) return p; // কিছুই বদলায়নি
+        return {
+          ...p,
+          expiryDate: newExpiryDate,
+          batches: batchesChanged ? newBatches : oldBatches,
+        };
+      },
+    },
   ],
   // অন্যান্য collection-এ এখনো কোনো migration লাগেনি — খালি/অনুপস্থিত entry মানে
   // no-op; migrateCollection() যেকোনো collection-এর জন্য নিরাপদে কল করা যায়।
@@ -10705,7 +10738,10 @@ function ExpiryYearMonthPicker({ value, onChange, style = {} }) {
   const update = (year, month, skipShorthandSync) => {
     setLocal({ year, month });
     if (!skipShorthandSync) { setShorthand(toShorthand({ year, month })); setShorthandError(""); }
-    if (year && month) onChange(`${year}-${month}-01`);
+    // 🔴 ফিক্স: শুধু সাল+মাস দিলে আগে মাসের ১ম দিন (-01) সংরক্ষণ হতো, ফলে
+    // isBatchExpired() ২য় দিন থেকেই পণ্যটিকে মেয়াদোত্তীর্ণ ধরে নিত। এখন
+    // মাসের শেষ দিন সংরক্ষণ করা হচ্ছে যাতে পুরো মাস জুড়েই বিক্রয়যোগ্য থাকে।
+    if (year && month) onChange(expiryDateFromYearMonth(year, month));
     else onChange("");
   };
 
@@ -29333,7 +29369,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                             name: parsed.name || f.name,
                             company: parsed.company || f.company,
                             expiryDate: (parsed.expiryYear && parsed.expiryMonth)
-                              ? `${parsed.expiryYear}-${String(parsed.expiryMonth).padStart(2,"0")}-01`
+                              ? expiryDateFromYearMonth(parsed.expiryYear, parsed.expiryMonth)
                               : f.expiryDate,
                           }));
                           setFormErrors(er => ({ ...er, name:false, company:false, expiryDate:false }));

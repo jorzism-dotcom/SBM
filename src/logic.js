@@ -53,6 +53,29 @@ export function calcNextBatch(productId, products, purchaseOrders, purchaseDate)
   return `${prefix}${nextN}`;
 }
 
+// ─── expiryDateFromYearMonth — শুধু সাল+মাস (YYYY, MM) দেওয়া হলে সেই মাসের
+// *শেষ দিন* কে "YYYY-MM-DD" স্ট্রিং হিসেবে ফেরত দেয়।
+// 🔴 ফিক্স: আগে ExpiryYearMonthPicker ও AI ছবি-এন্ট্রি পার্সার সরাসরি
+// `${year}-${month}-01` (মাসের ১ম দিন) বসাত। ফলে isBatchExpired() সেই ১ম
+// দিনের 23:59:59-এর পরই (অর্থাৎ ২য় দিন থেকেই, বাস্তবে প্রায় পুরো মাস জুড়েই)
+// পণ্যটিকে মেয়াদোত্তীর্ণ ধরে বিক্রি বন্ধ করে দিত — যদিও দোকানদার আসলে শুধু
+// "জুলাই ২০২৬"-ই বুঝিয়েছিলেন, যার প্রকৃত অর্থ পণ্যটি পুরো জুলাই মাস জুড়েই
+// বিক্রয়যোগ্য থাকবে। এখন থেকে মাসের শেষ দিন-কে expiryDate হিসেবে সংরক্ষণ
+// করা হচ্ছে, তাই isBatchExpired() পুরো মাস শেষ না হওয়া পর্যন্ত পণ্যটিকে
+// সক্রিয় ধরবে।
+/**
+ * @param {string|number} year চার-অঙ্কের সাল (যেমন "2026")
+ * @param {string|number} month ১-১২ (যেমন "07" বা 7)
+ * @returns {string} "YYYY-MM-DD" (মাসের শেষ দিন)
+ */
+export function expiryDateFromYearMonth(year, month) {
+  const y = Number(year), m = Number(month);
+  // new Date(y, m, 0) → m (১-ইনডেক্সড মাস)-এর ঠিক পরের মাসের ০-তম দিন,
+  // অর্থাৎ প্রকৃতপক্ষে m মাসেরই শেষ দিন (leap year ফেব্রুয়ারিসহ সঠিকভাবে হ্যান্ডেল করে)।
+  const lastDay = new Date(y, m, 0).getDate();
+  return `${y}-${String(m).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+}
+
 // ─── isBatchExpired — একটা তারিখ আজকের হিসেবে মেয়াদোত্তীর্ণ কিনা ─────────────
 // date-only ("YYYY-MM-DD") হলে দিনের শেষ (23:59:59) পর্যন্ত সেইদিন এখনো বিক্রয়যোগ্য
 /**
