@@ -143,6 +143,205 @@
 নতুন এন্ট্রি সবসময় এই সেকশনের সবার উপরে যোগ করুন (সবচেয়ে নতুনটা প্রথমে)।
 পুরনো এন্ট্রি কখনো মুছবেন না বা এডিট করবেন না।
 
+### ২৯ জুলাই ২০২৬ — Session A: FSS/useFSSCollection/FBAuth + কেন্দ্রীয় Firebase কানেকশন সম্পূর্ণ সরানো (src/App.jsx)
+
+**কেন:** আগের (প্ল্যানিং) সেশনের সিদ্ধান্ত অনুযায়ী প্রথম আসল ডিলিট ধাপ —
+App.jsx থেকে FSS (Firestore Sync Service), useFSSCollection হুক, FBAuth
+(০ ব্যবহার — মৃত কোড), এবং একটা নতুন-আবিষ্কৃত সবসময়-সক্রিয় কেন্দ্রীয়
+Firebase কানেকশন (protik-aa991 — device-recovery/error-logging/central
+subscription check) সরানো। ব্যবহারকারী নিশ্চিত করেছেন: single-device,
+কেন্দ্রীয় কানেকশনও সম্পূর্ণ বাদ।
+
+**কী কী করা হলো (একমাত্র বদলানো ফাইল: `src/App.jsx`):**
+
+1. **যাচাই (কোড না বদলে আগে প্রমাণ করা হয়েছে এটা নিরাপদ):** `firebaseEnabled`
+   কখনো `true` হয় না প্রোডাকশনে — এটা সেট করার একমাত্র জায়গা (Firebase
+   Settings UI-এর "Enable" বাটন) নিজেই `{!OFFLINE_MODE && ...}` গার্ডের
+   ভেতরে, যা OFFLINE_MODE বিল্ডে কখনো রেন্ডার হয় না। ফলে `FSS._db` সবসময়
+   `null` থেকেছে, এবং FSS-এর প্রতিটা মেথডের `if (!this._db) return ...`
+   গার্ড-শাখাই ছিল প্রোডাকশনে একমাত্র বাস্তবে-চলা পথ।
+2. **FSS পুনর্লিখন (ডিলিট না, Firebase-মুক্ত স্টাব):** একই মেথড নাম/সিগনেচার
+   বজায় রেখে (৩০০+ কল-সাইট একটাও ছোঁয়া হয়নি) প্রতিটা মেথডকে তার
+   "not connected" আচরণে স্থায়ী করা হয়েছে — কোনো Firestore SDK কল নেই।
+   `queuePendingXxx`/`getLocalPendingQueueCounts` (localStorage-only, আগেও
+   Firebase-নির্ভর ছিল না) অপরিবর্তিত রাখা হয়েছে, যাতে Settings-এর "সিঙ্ক
+   ব্যাকলগ" ব্যাজের আচরণ না পাল্টায়।
+3. **useFSSCollection** → সম্পূর্ণ no-op ফাংশন (আগের প্যারামিটার/কল-সাইট
+   অপরিবর্তিত)।
+4. **FBAuth** → সম্পূর্ণ ডিলিট (০ বহিরাগত ব্যবহার নিশ্চিত করে)।
+5. **কেন্দ্রীয় protik-aa991 কানেকশন** (FIREBASE_CONFIG/_fbApp/_db,
+   `centralRecoveryPush`, `centralRecoveryPull`) → no-op স্টাব;
+   `logErrorToCentral` → no-op (৫৪ কল-সাইট, একটাও ছোঁয়া হয়নি)।
+6. **অরফান হয়ে যাওয়া বাকি সব Firebase SDK রেফারেন্স** (`query/where/
+   orderBy/onSnapshot/getDocs/getDoc/setDoc/updateDoc/deleteDoc`) — যাচাই
+   করে প্রতিটার গার্ড দেখা হয়েছে (সব কটাই fssReady/FSS._db/OFFLINE_MODE
+   গার্ডের পেছনে ছিল, তাই ইতিমধ্যেই মৃত কোড ছিল), তারপর সেই মৃত অংশটুকু
+   সরানো হয়েছে, গার্ড/হুক-সিগনেচার/dependency-array অপরিবর্তিত রেখে:
+   - কিল-সুইচ লিসেনার (admin_config/appVersion) — সম্পূর্ণ ডিলিট।
+   - ৬টা windowed Firestore listener effect (invoices/txns/stockMovements/
+     cashLogs/returns/auditLogs) + কাস্টমার-ডিটেইল ফুল-হিস্ট্রি ফেচ +
+     এক্সপায়ার্ড-মান্থলি ফেচ + cashHistFull রেঞ্জ ফেচ — গার্ডের পরের বডি
+     ট্রাংকেট।
+   - "Full App Checkup" ডায়াগনস্টিক (`runMismatchScan`,
+     `runMismatchAutoFix`, `runSyncDiagnostics`) — গার্ডের পরের বডি
+     ট্রাংকেট (রেজাল্ট: এই স্ক্রিনে এখন "Firestore রেডি না" ছাড়া কিছু
+     দেখাবে না — Session C-তে এই UI-ই বাদ দেওয়া উচিত)।
+   - `LoginScreen`-এর owner-PIN Firebase শাখা + Settings-এর PIN-change
+     ফর্মের Firebase শাখা — ডিলিট (OFFLINE_MODE লোকাল-PIN শাখা অপরিবর্তিত)।
+   - `SubscriptionGate`-এর `checkSubscription`/`submitTxn` (দুটোই
+     component-level `if(OFFLINE_MODE) return` গার্ডের কারণে কখনো কল হয়
+     না) — বডি খালি করা হয়েছে।
+   - `AppVersionCard`-এর কেন্দ্রীয় "নীরব আপডেট চেক" — no-op (আগে থেকেই
+     silent-fail ডিজাইন ছিল, তাই আচরণ অপরিবর্তিত: কার্ডে "নতুন ভার্সন"
+     অংশ কখনো দেখাবে না)।
+7. `_fieldTxPending`/`markFieldTxPending`/`clearFieldTxPending`/
+   `getFieldTxPending` — শুধু FSS/useFSSCollection-এর ভেতরেই ব্যবহৃত হতো,
+   দুটোই সরানোর সাথে এগুলোও ডিলিট।
+8. Firebase imports (firebase/app, firebase/app-check, firebase/firestore,
+   firebase/auth) সম্পূর্ণ সরানো; `sync.js` থেকে আর-অব্যবহৃত
+   `FSS_COLLECTIONS` ইমপোর্টও বাদ।
+
+**যাচাই করা হয়েছে (সবগুলো এই সেশনে বাস্তবে রান করে):**
+- `npm test` (logic/schema/integration/sync suite + rules-sync checker) —
+  সব পাস, কোনো পরিবর্তন নেই কারণ এই সেশন শুধু App.jsx ছুঁয়েছে।
+- `npx esbuild` সিনট্যাক্স-চেক প্রতিটা বড় এডিটের পরে (bracket/brace মিলছে
+  কিনা তাৎক্ষণিক ধরার জন্য)।
+- `npm run lint` — **০টা এরর** (467টা warning, সবই আগে থেকে-পরিচিত ধরনের
+  `no-unused-vars`/`react-hooks/exhaustive-deps` — নতুন কোনো `no-undef`
+  নেই, অর্থাৎ কোনো orphaned Firebase রেফারেন্স বাকি নেই)।
+- `VITE_OFFLINE_MODE=true npm run build` — সফল বিল্ড। বিল্ড আউটপুটে grep
+  করে নিশ্চিত করা হয়েছে `firebase` প্যাকেজের কোনো কোড আর bundle-এ নেই
+  (vendor chunk-এ ০টা রেফারেন্স)।
+
+**এর ফলে কী পরিবর্তন হলো:** যুক্তি হলো — প্রোডাকশনে (৩টা দোকানেই) FSS
+কখনোই সংযুক্ত হতো না, তাই এই সেশনের প্রতিটা স্টাব/ট্রাংকেশন তার আগের
+"not-connected" আচরণকেই স্থায়ী করেছে মাত্র। **ইউজার-দৃশ্যমান আচরণ অপরিবর্তিত
+থাকার কথা** — শুধু ব্যতিক্রম: Settings → "Full App Checkup" স্ক্রিন এখন
+সবসময় "Firestore রেডি না" দেখাবে (আগে এটাও কখনো কাজ করত না, কিন্তু এখন
+সেটা স্পষ্ট বার্তা হিসেবে দেখাবে), আর `AppVersionCard`-এর "নতুন ভার্সন
+পাওয়া গেছে" অংশ আর কখনো দেখাবে না (কেন্দ্রীয় ভার্সন-চেক সার্ভার নেই)।
+প্রায়োরিটি-এলাকা ছোঁয়া হয়েছে: #১ অফলাইন-অনলাইন সিঙ্ক, #২ মাল্টি-ডিভাইস
+সিঙ্ক (দুটোই এখন চিরতরে বন্ধ, ইচ্ছাকৃতভাবে)। #৩ ব্যাকআপ/#৪ রিস্টোর/#৫
+হিসাব/#৬ পণ্য/#৭ কাস্টমার/#৮ ইনভয়েস — এগুলোর কোনো লজিক কোড ছোঁয়া হয়নি
+(শুধু তাদের চারপাশের মৃত Firestore sync/listener কোড সরানো হয়েছে)।
+
+**ভবিষ্যতে যা মাথায় রাখতে হবে:**
+- Session B (৭৭টা `OFFLINE_MODE` কন্ডিশনাল রিভিউ) এখনো বাকি — এই সেশনে
+  শুধু যেগুলো FSS/central-connection-এর কারণে সরাসরি ভেঙে গিয়েছিল
+  সেগুলোই ছোঁয়া হয়েছে, বাকি ৭০+ জায়গা (Firebase settings UI ফর্ম, SMS
+  গেটওয়ে, ইত্যাদি) এখনো `!OFFLINE_MODE &&` গার্ডের ভেতরে অক্ষত আছে —
+  dead কিন্তু bundle-এ এখনো আছে।
+- Session C: `package.json` থেকে `firebase`/`firebase-tools`/
+  `@firebase/rules-unit-testing` এখনো বাদ দেওয়া হয়নি;
+  `firebase.json`/`firestore.rules`/`firestore.indexes.json`/
+  `database.rules.json`/`google-services.json`/
+  `netlify-site/vendor/firebasejs/` — কোনোটাই এখনো সরানো হয়নি।
+- Session D: `netlify-site/admin.html` (৭৭ রেফারেন্স, আলাদা ডিপ্লয়মেন্ট)
+  এখনো সম্পূর্ণ অস্পৃশ্য।
+- "Full App Checkup" (`runMismatchScan`/`runMismatchAutoFix`/
+  `runSyncDiagnostics`) আর `AppVersionCard`-এর UI বাটন/কার্ড এখনো JSX-এ
+  আছে (এখন কার্যত অকেজো) — Session B/C-তে এই UI-গুলো সম্পূর্ণ বাদ দেওয়া
+  উচিত কিনা সিদ্ধান্ত নিতে হবে।
+- `test:rules`/`test:sync-emulator`/`test:canary` (Firestore emulator-নির্ভর,
+  `npm test`-এর অংশ না) — এখনো আপডেট হয়নি, Session আছে এখনো emulator-নির্ভর
+  পুরনো কোড রেফার করে (Session ৯-এর কাজ)।
+
+**কনসিকুয়েন্স:** ভুল হলে সম্ভাব্য ক্ষতি — এই সেশনে কোনো accounting/stock/
+invoice লজিক ছোঁয়া হয়নি, তাই ভুল হলেও সরাসরি টাকা/স্টক ভুল হিসাবের ঝুঁকি
+কম। আসল ঝুঁকি ছিল orphaned রেফারেন্স থেকে **সম্পূর্ণ অ্যাপ ক্র্যাশ** (সাদা
+স্ক্রিন) — সেটা `npm run lint` (০ এরর) আর প্রকৃত `vite build` সফল হওয়া
+দিয়ে নিশ্চিত করা হয়েছে, প্রতিটা বড় এডিটের পরেই esbuild দিয়ে
+সিনট্যাক্স-চেক করে। যা যাচাই করা যায়নি (শুধু কোড-রিভিউ দিয়ে যুক্তি করা
+হয়েছে, বাস্তব ডিভাইসে না চালিয়ে): আসল Android ডিভাইসে/এমুলেটরে রান-টাইম
+আচরণ — বিশেষত localStorage `sbm_pending_*` কিউ-নির্ভর "সিঙ্ক ব্যাকলগ"
+ব্যাজ ঠিকঠাক দেখাচ্ছে কিনা। পরের সেশনে (বা ব্যবহারকারী নিজে) এই APK
+আসল ফোনে ইনস্টল করে PIN লগইন, ইনভয়েস তৈরি, এবং Settings পেজ খুলে
+চেক করে নেওয়া উচিত।
+
+
+
+### ২৯ জুলাই ২০২৬ — Firebase/Firestore সম্পূর্ণ সরানোর প্ল্যানিং সেশন (শুধু অনুসন্ধান/প্ল্যান, কোনো লজিক কোড এখনো বদলায়নি)
+
+**কেন:** ব্যবহারকারী (Protik) চান App.jsx ও netlify-site/admin.html দুটো থেকেই
+Firebase/Firestore-সম্পর্কিত সব কোড, প্যাকেজ ও কনফিগ ফাইল সম্পূর্ণ সরিয়ে
+অ্যাপটাকে স্থায়ীভাবে full-offline মোডে নিয়ে যেতে — প্রতিটা দোকান একটাই
+ডিভাইসে চলবে, মাল্টি-ডিভাইস সিঙ্ক আর দরকার নেই। Google Drive + লোকাল ফাইল
+ব্যাকআপ (Firebase-নির্ভর না) অপরিবর্তিত থাকবে।
+
+**এই সেশনে যা করা হলো (শুধু read-only অনুসন্ধান, কোনো ফাইল বদলায়নি — শুধু এই
+CLAUDE.md এন্ট্রি ছাড়া):**
+
+1. পুরো repo স্ক্যান করে Firebase-স্পর্শ করা সব ফাইল ম্যাপ করা হয়েছে:
+   `src/App.jsx` (১৯৫ রেফারেন্স, একমাত্র ফাইল যেখানে আসল Firebase SDK কল আছে),
+   `src/sync.js`/`schemas.js`/`logic.js` (শুধু কমেন্টে উল্লেখ, কোনো import/call
+   নেই — এগুলো এমনিতেই Firebase-মুক্ত), `netlify-site/admin.html` (৭৭
+   রেফারেন্স, সম্পূর্ণ আলাদা ডিপ্লয়মেন্ট), `firebase.json`,
+   `firestore.rules`, `firestore.indexes.json`, `database.rules.json`,
+   `google-services.json`, `netlify-site/vendor/firebasejs/`।
+2. **গুরুত্বপূর্ণ আবিষ্কার:** App.jsx-এ ইতিমধ্যে একটা build-time
+   `OFFLINE_MODE` কনস্ট্যান্ট (লাইন ৭০, `VITE_OFFLINE_MODE` env var থেকে)
+   আছে যেটা ৭৭ জায়গায় ব্যবহৃত — PIN লগইন, সাবস্ক্রিপশন লক, সিঙ্ক/ব্যাকআপ
+   নোটিফিকেশন হাইড ইত্যাদি ইতিমধ্যে দুইটা কোড-পাথে ভাগ করা। আর
+   `.github/workflows/build-apk.yml` অনুযায়ী **প্রতিটা সাধারণ push-এ ডিফল্টভাবে
+   `OFFLINE_MODE=true` বিল্ডই তৈরি হয় (`SBM-OFFLINE-v*.apk`)** — ব্যবহারকারী
+   কনফার্ম করেছেন বর্তমান ৩টা দোকানই এই OFFLINE বিল্ডেই চলছে। অর্থাৎ
+   Firebase পাথটা বর্তমান প্রোডাকশনে আসলে ইতিমধ্যেই অব্যবহৃত (dead) —
+   এটা সরানো নতুন কোনো ব্যবহারিক আচরণ পাল্টাবে না, শুধু dead কোড/dependency
+   পরিষ্কার হবে।
+3. মূল Firebase কোড-ব্লক আইডেন্টিফাই ও সাইজ মাপা হয়েছে (App.jsx-এ):
+   - Firebase imports: লাইন ৩–১৭
+   - `FSS` অবজেক্ট (পুরো Firestore sync ইঞ্জিন): লাইন ৫৫৩১–৭০৮০ (~১৫৫০ লাইন)
+   - `useFSSCollection` হুক (remote↔local sync): লাইন ৭৩৮৬–৭৭৮৩ (~৪০০ লাইন)
+   - `FBAuth` অবজেক্ট (REST-based phone OTP লগইন, SDK ছাড়া): লাইন ৮১৯২ থেকে
+   - Firebase সেটিংস UI (`fbForm`, App Check ফর্ম ইত্যাদি): ৮২ জায়গা, ছড়ানো
+   - বাকি ~১৫০+ ছড়ানো কল-সাইট (collection/doc/setDoc/getDocs/query/...),
+     যার বেশিরভাগ উপরের ব্লকগুলোর ভেতরেই বা `if (!OFFLINE_MODE)` গার্ডের
+     ভেতরে, তাই ব্লক-লেভেল ডিলিটের সাথেই চলে যাবে বলে ধারণা।
+
+**সিদ্ধান্ত হওয়া কৌশল:** নতুন local-storage layer বানানো লাগবে না (App.jsx-এ
+আগে থেকেই `_idb` নামে IndexedDB-ভিত্তিক লোকাল স্টোরেজ আছে, যেটা এমনিতেই
+ডেটার প্রাথমিক উৎস)। বরং **OFFLINE_MODE=true পাথকে স্থায়ী/একমাত্র পাথ বানিয়ে
+`else`/Firebase পাথ সম্পূর্ণ ডিলিট** করা হবে — এটা "শিম/নতুন সিস্টেম বানানো"-র
+চেয়ে অনেক কম ঝুঁকিপূর্ণ কারণ OFFLINE_MODE পাথ ইতিমধ্যেই ৩টা আসল দোকানে
+battle-tested।
+
+**পরবর্তী সেশনের জন্য প্ল্যান (প্রতিটা আলাদা সেশন/PR হওয়া উচিত):**
+- Session A: `FSS`, `useFSSCollection`, `FBAuth` ব্লক ডিলিট + Firebase imports
+  ডিলিট + এতিম হয়ে যাওয়া কল-সাইট পরিষ্কার।
+- Session B: ৭৭টা `OFFLINE_MODE` কন্ডিশনাল রিভিউ — গার্ড তুলে ভেতরের কোড
+  স্থায়ী করা, `if (!OFFLINE_MODE) {...}` ব্লক ডিলিট, শেষে `OFFLINE_MODE`
+  কনস্ট্যান্টটাই বাদ।
+- Session C: Firebase সেটিংস UI সরানো + `package.json`/`firebase.json`/
+  `firestore.rules`/`firestore.indexes.json`/`database.rules.json`/
+  `google-services.json`/vendor ফোল্ডার ক্লিনআপ + build workflow-এর
+  online_release পাথ সরানো।
+- Session D: `netlify-site/admin.html` থেকে Firebase সরানো (আলাদা বড় কাজ —
+  লাইসেন্স/শপ ম্যানেজমেন্ট বিকল্প আগে ঠিক করতে হবে)।
+- Session E: পূর্ণ `npm test` + APK বিল্ড ভ্যালিডেশন + BUGFIX_LOG.md এন্ট্রি।
+
+**ভবিষ্যতে এখানে কাজ করলে যা মাথায় রাখতে হবে:**
+1. `!OFFLINE_MODE` গার্ডের ভেতরের কোড ডিলিট করার আগে নিশ্চিত হন সেটা সত্যিই
+   Firebase-শুধু কোড, কোনো shared লজিক (`logic.js`-এর ফাংশন কল) না — blast
+   radius ৮-প্রায়োরিটি-এলাকার (বিশেষত অফলাইন-অনলাইন সিঙ্ক, মাল্টি-ডিভাইস
+   সিঙ্ক, ব্যাকআপ) সাথে সরাসরি সম্পর্কিত।
+2. `netlify-site/admin.html`-এ embedded `FB_DEFAULT_RULES`/`FB_DEFAULT_INDEXES`/
+   `FB_DEFAULT_RTDB` টেমপ্লেট আছে (দেখুন PHASE0_NOTES.md) — Session D-তে এগুলো
+   আর `firestore.rules`/`firestore.indexes.json`/`database.rules.json`-এর
+   sync-চেকার (`scripts/check-rules-sync.mjs`) একসাথে বিবেচনা করতে হবে,
+   নাহলে CI-এর rules-sync টেস্ট ভেঙে যেতে পারে।
+3. `tests/rules-tests.mjs`, `tests/sync-emulator-tests.mjs`,
+   `tests/canary-tests.mjs` — এগুলো Firestore emulator-নির্ভর, Firebase
+   সম্পূর্ণ সরানোর পর এগুলো বাদ/রিটায়ার করতে হবে, নাহলে `npm test`/CI ভাঙবে।
+4. Session A/B শুরু করার আগে অবশ্যই বর্তমান কোড GitHub-এ কমিট/ব্যাকআপ আছে
+   কিনা নিশ্চিত করতে হবে (৪০,৫৭৫ লাইনের একটাই ফাইলে এত বড় ডিলিট, রিভার্ট করার
+   সহজ উপায় থাকা জরুরি)।
+
+**কনসিকুয়েন্স:** এই সেশনে কোনো লজিক/রানটাইম কোড বদলায়নি (শুধু এই ডকুমেন্টেশন
+এন্ট্রি), তাই ৮-প্রায়োরিটি-এলাকার কোনোটাতেই এখনো কোনো ঝুঁকি নেই। ঝুঁকি শুরু
+হবে Session A থেকে, যখন প্রথম আসল কোড-ডিলিট হবে — তখন থেকে প্রতিটা সেশনের পর
+`npm test` বাধ্যতামূলক এবং সম্ভব হলে অন্তত একটা OFFLINE APK বিল্ড করে
+সাইডলোড টেস্ট সুপারিশ করা হচ্ছে।
+
 ### ২৮ জুলাই ২০২৬ — অফলাইন মাসিক সাবস্ক্রিপশন লক সিস্টেম (নতুন ফিচার, sandbox-এ আংশিক যাচাই)
 
 **কেন:** ব্যবহারকারী (Protik) কয়েকটা দোকানকে Firebase থেকে বের করে সম্পূর্ণ
