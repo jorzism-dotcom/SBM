@@ -10282,6 +10282,28 @@ function SmartBusinessMgmt() {
     setViewerMode(false);
   }, []);
 
+  // 🆕 ফিক্স (৩০ জুলাই ২০২৬): যেকোনো ইনপুট/টেক্সট-এরিয়া ফিল্ডে বাংলা সংখ্যা (০-৯) টাইপ
+  // করলে সেগুলো parseInt() দিয়ে ধরা পড়ত না (NaN → ০ হিসেবে গণ্য হতো), তাই মোট/অগ্রিম/
+  // পরিমাণ ইত্যাদি ভুল হিসাব হতো। প্রতিটা ইনপুট আলাদাভাবে ঠিক না করে — একটাই গ্লোবাল
+  // capture-phase 'input' লিসেনার বসানো হয়েছে যা টাইপ করার সাথে সাথেই যেকোনো ফিল্ডে
+  // বাংলা ডিজিট ইংরেজিতে কনভার্ট করে দেয় (React-এর bubble-phase onChange প্রসেস
+  // হওয়ার আগেই, তাই React সবসময় ইতিমধ্যে-কনভার্টেড ভ্যালু দেখে)।
+  useEffect(() => {
+    const BN_TO_EN = { "০":"0","১":"1","২":"2","৩":"3","৪":"4","৫":"5","৬":"6","৭":"7","৮":"8","৯":"9" };
+    const handler = (e) => {
+      const t = e.target;
+      if (!t || (t.tagName !== "INPUT" && t.tagName !== "TEXTAREA")) return;
+      const v = t.value;
+      if (!v || !/[০-৯]/.test(v)) return;
+      const converted = v.replace(/[০-৯]/g, d => BN_TO_EN[d]);
+      const start = t.selectionStart, end = t.selectionEnd;
+      t.value = converted;
+      try { if (start != null) t.setSelectionRange(start, end); } catch {}
+    };
+    document.addEventListener("input", handler, true);
+    return () => document.removeEventListener("input", handler, true);
+  }, []);
+
   // ── Temp share file cleanup on app start ────────────────────────────────────
   useEffect(() => {
     if (!window.Capacitor?.isNativePlatform?.()) return;
@@ -20454,11 +20476,17 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   // এগুলো normal PO আইটেমের সাথেই সেভ হয় (isCustomerRequest ফ্ল্যাগ সহ), আলাদা কালেকশন লাগে না।
   // 🔴 রিডিজাইন (৩০ জুলাই ২০২৬): ডোজ ফর্ম, ক্যাটালগ-লিংকড সাপ্লায়ার অটো-ফিল, পরিমাণ ও
   // টাকার হিসাব (মোট/অগ্রিম/বাকি) — এখন সবকিছু normal PO আইটেমের মতোই সংরক্ষিত হয়।
-  const [customOrderItems, setCustomOrderItems] = useState([]); // [{ id, name, dosageForm, productId, unit, supplier, qty, qtyLabel, totalPrice, advanceAmount, due, customerName, customerPhone }]
+  const [customOrderItems, setCustomOrderItems] = useState([]); // [{ id, name, dosageForm, productId, unit, supplier, qty, qtyLabel, stripQty, boxQty, pcsQty, totalPrice, advanceAmount, due, customerName, customerPhone, customerAddress }]
   const [showCustomOrderForm, setShowCustomOrderForm] = useState(false);
+  // 🔴 ফিক্স (৩০ জুলাই ২০২৬): "order:create" পেজ থেকে সরে গেলে (রিভিউ পেজে গেলে, লিস্টে
+  // ফিরলে, বা হার্ডওয়্যার ব্যাক দিয়ে পুরো মোডাল বন্ধ করলে) "কাস্টমার অর্ডার" মিনি-ফর্ম আগে
+  // খোলা অবস্থাতেই (showCustomOrderForm=true) থেকে যেত — পরে "এডিট করতে ফিরুন" দিয়ে
+  // create পেজে ফিরলে ফর্মটা অটো বন্ধ হতো না। এখন create পেজ ছাড়া অন্য কোথাও গেলেই বন্ধ হয়ে যায়।
+  useEffect(() => { if (invModal !== 'order:create') setShowCustomOrderForm(false); }, [invModal]);
   // কাস্টমার — ক্যাটালগ থেকে সিলেক্ট অথবা নতুন নাম টাইপ (একই কাস্টমারের একাধিক পণ্য যোগ করার সময় ফর্ম বন্ধ হওয়ার পরও থেকে যায়)
   const [custOrderCustomerName, setCustOrderCustomerName] = useState("");
   const [custOrderCustomerPhone, setCustOrderCustomerPhone] = useState("");
+  const [custOrderCustomerAddress, setCustOrderCustomerAddress] = useState(""); // 🆕 ঠিকানা (ঐচ্ছিক)
   const [custOrderCustomerSuggestOpen, setCustOrderCustomerSuggestOpen] = useState(false);
   // পণ্যের নাম — ক্যাটালগে থাকলে সিলেক্ট করলে productId/সাপ্লায়ার/ডোজ অটো বসে
   const [custOrderName, setCustOrderName] = useState("");
@@ -20473,8 +20501,10 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   const [custOrderSupplierAuto, setCustOrderSupplierAuto] = useState(false); // ক্যাটালগ থেকে অটো-ফিল হয়েছে কিনা
   const [custOrderSupplierCustomMode, setCustOrderSupplierCustomMode] = useState(false);
   const [custOrderSupplierSuggestOpen, setCustOrderSupplierSuggestOpen] = useState(false);
-  // পরিমাণ (ম্যান্ডেটরি) + টাকার হিসাব
-  const [custOrderQty, setCustOrderQty] = useState("");
+  // পরিমাণ (ম্যান্ডেটরি, স্ট্রিপ/বক্স/টি ব্রেকডাউন — সাধারণ পণ্যের কার্ডের মতোই) + টাকার হিসাব
+  const [custOrderQtyStrip, setCustOrderQtyStrip] = useState("");
+  const [custOrderQtyBox, setCustOrderQtyBox] = useState("");
+  const [custOrderQtyPcs, setCustOrderQtyPcs] = useState("");
   const [custOrderTotalPrice, setCustOrderTotalPrice] = useState("");
   const [custOrderAdvance, setCustOrderAdvance] = useState("");
   const [custOrderFormError, setCustOrderFormError] = useState("");
@@ -22183,7 +22213,8 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       setCustOrderName(""); setCustOrderProductId(null); setCustOrderNameSuggestOpen(false);
       setCustOrderDosageForm(""); setCustOrderDosageCustomOpen(false); setCustOrderDosageDraft("");
       setCustOrderSupplier(""); setCustOrderSupplierAuto(false); setCustOrderSupplierCustomMode(false); setCustOrderSupplierSuggestOpen(false);
-      setCustOrderQty(""); setCustOrderTotalPrice(""); setCustOrderAdvance(""); setCustOrderFormError("");
+      setCustOrderQtyStrip(""); setCustOrderQtyBox(""); setCustOrderQtyPcs("");
+      setCustOrderTotalPrice(""); setCustOrderAdvance(""); setCustOrderFormError("");
     };
     // টাইপ করা টেক্সটের সাথে মিলে এমন সাপ্লায়ার সাজেশন (২ অক্ষর থেকে শুরু) — সাপ্লায়ার সিলেক্ট করা না থাকলেই শুধু দেখানো হয়
     const poSupplierSuggestions = (!poSupplierSelected && poSupplierQuery.trim().length >= 2)
@@ -22221,9 +22252,10 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       const newCustomItems = customItems.map(ci => ({
         id: ci.id, productId: ci.productId || null, name: ci.name, unit: "", stock: 0,
         supplier: ci.supplier || "",
-        qty: ci.qty || 1, stripQty: 0, boxQty: 0, pcsQty: ci.qty || 1, qtyLabel: ci.qtyLabel || "",
+        qty: ci.qty || (ci.stripQty||0)+(ci.boxQty||0)+(ci.pcsQty||0) || 1,
+        stripQty: ci.stripQty||0, boxQty: ci.boxQty||0, pcsQty: ci.pcsQty||0, qtyLabel: ci.qtyLabel || "",
         dosageForm: ci.dosageForm || "",
-        isCustomerRequest: true, customerName: ci.customerName || "", customerPhone: ci.customerPhone || "",
+        isCustomerRequest: true, customerName: ci.customerName || "", customerPhone: ci.customerPhone || "", customerAddress: ci.customerAddress || "",
         totalPrice: ci.totalPrice || 0, advanceAmount: ci.advanceAmount || 0, due: ci.due || 0, delivered: false,
       }));
 
@@ -22386,9 +22418,10 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     // পুরনো/PO আইটেম থেকে (stripQty/boxQty/pcsQty সংরক্ষিত থাকলে) ব্রেকডাউন লেবেল বানায় —
     // না থাকলে (পুরনো রেকর্ড) শুধু সংখ্যা + ইউনিট দেখায়, ব্যাকওয়ার্ড-কম্প্যাটিবল।
     const poItemQtyLabel = (it) => {
-      if (it.isCustomerRequest && it.qtyLabel) return it.qtyLabel; // 🆕 কাস্টমার অর্ডার — ফ্রি-টেক্সট পরিমাণ (যেমন "১০ স্ট্রিপ")
       const label = qtyBreakdownLabel({ strip: it.stripQty, box: it.boxQty, pcs: it.pcsQty });
-      return label || `${it.qty}${it.unit||""}`;
+      if (label) return label;
+      if (it.isCustomerRequest && it.qtyLabel) return it.qtyLabel; // পুরনো রেকর্ড — ফ্রি-টেক্সট পরিমাণ (যেমন "১০ স্ট্রিপ")
+      return `${it.qty}${it.unit||""}`;
     };
 
     // 🆕 আজ ইতিমধ্যে কোন পণ্য কতটা (স্ট্রিপ/বক্স/সংখ্যা) অর্ডার করা হয়ে গেছে তার ম্যাপ —
@@ -22683,7 +22716,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                     {custOrderCustomerSuggestOpen && custOrderCustomerSuggestions.length > 0 && (
                       <div style={{ position:"absolute", top:"calc(100% + 4px)", left:0, right:0, zIndex:61, background:"#fff", border:`1px solid ${PRINT.headBorder}`, borderRadius:10, overflow:"hidden", boxShadow:"0 8px 20px rgba(0,0,0,0.12)", maxHeight:180, overflowY:"auto" }}>
                         {custOrderCustomerSuggestions.map(({c}) => (
-                          <div key={c.id} onMouseDown={()=>{ setCustOrderCustomerName(c.name||""); setCustOrderCustomerPhone(c.mobile||""); setCustOrderCustomerSuggestOpen(false); }}
+                          <div key={c.id} onMouseDown={()=>{ setCustOrderCustomerName(c.name||""); setCustOrderCustomerPhone(c.mobile||""); setCustOrderCustomerAddress(c.address||""); setCustOrderCustomerSuggestOpen(false); }}
                             style={{ padding:"8px 12px", fontSize:12.5, fontWeight:700, color:PRINT.textDark, cursor:"pointer", borderBottom:`1px solid ${PRINT.rowBorder}` }}>
                             {c.name}{c.mobile ? <span style={{ color:PRINT.textMuted, fontWeight:600 }}> · {c.mobile}</span> : null}
                           </div>
@@ -22695,6 +22728,11 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                     placeholder="📞 ফোন নম্বর"
                     style={{ flex:1, background:"#f8fafc", border:`1.5px solid ${PRINT.headBorder}`, borderRadius:10, padding:"9px 11px", fontSize:12.5, fontWeight:700, color:PRINT.textDark, outline:"none", fontFamily:"inherit", minWidth:0, boxSizing:"border-box" }} />
                 </div>
+
+                {/* 🆕 ঠিকানা (ঐচ্ছিক) — কাস্টমার সিলেক্ট করলে অটো-ফিল হয় */}
+                <input type="text" value={custOrderCustomerAddress} onChange={(e)=>setCustOrderCustomerAddress(e.target.value)}
+                  placeholder="📍 ঠিকানা (ঐচ্ছিক)"
+                  style={{ width:"100%", background:"#f8fafc", border:`1.5px solid ${PRINT.headBorder}`, borderRadius:10, padding:"9px 11px", fontSize:12.5, fontWeight:700, color:PRINT.textDark, outline:"none", fontFamily:"inherit", boxSizing:"border-box" }} />
 
                 {/* ── পণ্যের নাম — ক্যাটালগে থাকলে সিলেক্ট করলে সাপ্লায়ার/ডোজ অটো বসে ── */}
                 <div style={{ position:"relative" }}>
@@ -22807,9 +22845,20 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                       </>
                     )}
                   </div>
-                  <input type="text" value={custOrderQty} onChange={(e)=>setCustOrderQty(e.target.value)}
-                    placeholder="পরিমাণ *"
-                    style={{ flex:1, background:"#f8fafc", border:`1.5px solid ${custOrderFormError && !custOrderQty.trim() ? "#ef4444" : PRINT.headBorder}`, borderRadius:10, padding:"9px 11px", fontSize:12.5, fontWeight:700, color:PRINT.textDark, outline:"none", fontFamily:"inherit", minWidth:0, boxSizing:"border-box" }} />
+                  <div style={{ display:"flex", gap:5 }}>
+                    {[
+                      { key:"strip", label:"স্ট্রিপ", val:custOrderQtyStrip, set:setCustOrderQtyStrip },
+                      { key:"box",   label:"বক্স",   val:custOrderQtyBox,   set:setCustOrderQtyBox   },
+                      { key:"pcs",   label:"টি",     val:custOrderQtyPcs,   set:setCustOrderQtyPcs   },
+                    ].map(f => (
+                      <div key={f.key} style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:2 }}>
+                        <input type="number" inputMode="numeric" min="0" value={f.val} onChange={(e)=>f.set(e.target.value)}
+                          placeholder="0"
+                          style={{ width:42, background:"#f8fafc", border:`1.5px solid ${custOrderFormError && !(custOrderQtyStrip||custOrderQtyBox||custOrderQtyPcs) ? "#ef4444" : PRINT.headBorder}`, borderRadius:8, padding:"8px 2px", fontSize:12.5, fontWeight:800, color:PRINT.textDark, outline:"none", textAlign:"center", fontFamily:"inherit" }} />
+                        <span style={{ fontSize:9, color:PRINT.textMuted, fontWeight:700 }}>{f.label}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
 
                 {/* ── টাকার হিসাব — মোট মূল্য, অগ্রিম, বাকি (স্বয়ংক্রিয় হিসাব) পাশাপাশি ── */}
@@ -22840,7 +22889,10 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   onClick={()=>{
                     if (!custOrderName.trim()) { setCustOrderFormError("পণ্যের নাম লিখুন"); return; }
                     if (!custOrderSupplier.trim()) { setCustOrderFormError("সাপ্লায়ারের নাম লিখুন"); return; }
-                    if (!custOrderQty.trim()) { setCustOrderFormError("পণ্যের পরিমাণ লিখুন"); return; }
+                    const stripQty = parseInt(custOrderQtyStrip,10) || 0;
+                    const boxQty = parseInt(custOrderQtyBox,10) || 0;
+                    const pcsQty = parseInt(custOrderQtyPcs,10) || 0;
+                    if (stripQty<=0 && boxQty<=0 && pcsQty<=0) { setCustOrderFormError("পণ্যের পরিমাণ (স্ট্রিপ/বক্স/টি) লিখুন"); return; }
                     const totalPrice = parseInt(custOrderTotalPrice,10) || 0;
                     const advanceAmount = parseInt(custOrderAdvance,10) || 0;
                     setCustomOrderItems(prev => [...prev, {
@@ -22849,11 +22901,11 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                       productId: custOrderProductId,
                       dosageForm: custOrderDosageForm,
                       supplier: custOrderSupplier.trim(),
-                      qty: parseInt(custOrderQty,10) || 1,
-                      qtyLabel: custOrderQty.trim(),
+                      qty: stripQty+boxQty+pcsQty, stripQty, boxQty, pcsQty,
                       totalPrice, advanceAmount, due: Math.max(0, totalPrice - advanceAmount),
                       customerName: custOrderCustomerName.trim(),
                       customerPhone: custOrderCustomerPhone.trim(),
+                      customerAddress: custOrderCustomerAddress.trim(),
                     }]);
                     resetCustOrderProductFields();
                   }}
@@ -22865,28 +22917,37 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
 
             {customOrderItems.length > 0 && (
               <div style={{ marginTop:9, display:"flex", flexDirection:"column", gap:6 }}>
-                {customOrderItems.map(ci => (
-                  <div key={ci.id} style={{ display:"flex", alignItems:"flex-start", gap:8, background:"#db277710", border:"1px solid #db277733", borderRadius:10, padding:"8px 10px" }}>
-                    <span style={{ fontSize:13, marginTop:1 }}>🙋</span>
+                {customOrderItems.map(ci => {
+                  const qLabel = qtyBreakdownLabel({ strip:ci.stripQty, box:ci.boxQty, pcs:ci.pcsQty }) || ci.qtyLabel || ci.qty;
+                  return (
+                  <div key={ci.id} style={{ display:"flex", alignItems:"flex-start", gap:6, background:"#db277710", border:"1px solid #db277733", borderRadius:10, padding:"8px 10px" }}>
+                    <span style={{ fontSize:13, marginTop:1, flexShrink:0 }}>🙋</span>
+                    {/* কলাম ১: কাস্টমার — নাম, ফোন, ঠিকানা */}
                     <div style={{ flex:1, minWidth:0 }}>
-                      <div style={{ fontSize:12.5, fontWeight:800, color:PRINT.textDark, display:"flex", alignItems:"center" }}>
+                      {ci.customerName && <div style={{ fontSize:12, fontWeight:800, color:PRINT.textDark }}>👤 {ci.customerName}</div>}
+                      {ci.customerPhone && <div style={{ fontSize:10.5, color:PRINT.textMuted, marginTop:1 }}>📞 {ci.customerPhone}</div>}
+                      {ci.customerAddress && <div style={{ fontSize:10.5, color:PRINT.textMuted, marginTop:1 }}>📍 {ci.customerAddress}</div>}
+                      {!ci.customerName && !ci.customerPhone && !ci.customerAddress && <div style={{ fontSize:10.5, color:PRINT.textMuted }}>—</div>}
+                    </div>
+                    {/* কলাম ২: পণ্য — নাম, সাপ্লায়ার */}
+                    <div style={{ flex:1.2, minWidth:0 }}>
+                      <div style={{ fontSize:12.5, fontWeight:800, color:PRINT.textDark, display:"flex", alignItems:"center", flexWrap:"wrap" }}>
                         <DosageBadge dosageForm={ci.dosageForm} />{ci.name}
-                        <span style={{ marginLeft:6, color:PRINT.accent, fontWeight:700, fontSize:11 }}>· {ci.qtyLabel || ci.qty}</span>
                       </div>
                       {ci.supplier && <div style={{ fontSize:10.5, color:PRINT.textMuted, marginTop:2 }}>🏭 {ci.supplier}</div>}
-                      {(ci.customerName || ci.customerPhone) && <div style={{ fontSize:10.5, color:PRINT.textMuted, marginTop:1 }}>👤 {ci.customerName}{ci.customerName && ci.customerPhone ? " · " : ""}{ci.customerPhone}</div>}
-                      {ci.totalPrice > 0 && (
-                        <div style={{ fontSize:10.5, marginTop:2, display:"flex", gap:8 }}>
-                          <span style={{ color:PRINT.textMuted }}>মোট ৳{fmt(ci.totalPrice)}</span>
-                          {ci.advanceAmount > 0 && <span style={{ color:"#16a34a", fontWeight:700 }}>অগ্রিম ৳{fmt(ci.advanceAmount)}</span>}
-                          {ci.due > 0 && <span style={{ color:"#dc2626", fontWeight:700 }}>বাকি ৳{fmt(ci.due)}</span>}
-                        </div>
-                      )}
+                    </div>
+                    {/* কলাম ৩: অর্ডার পরিমাণ + টাকার হিসাব */}
+                    <div style={{ flex:1, minWidth:0, textAlign:"right" }}>
+                      <div style={{ fontSize:11, color:PRINT.accent, fontWeight:800 }}>{qLabel}</div>
+                      {ci.totalPrice > 0 && <div style={{ fontSize:10.5, color:PRINT.textMuted, marginTop:2 }}>মোট ৳{fmt(ci.totalPrice)}</div>}
+                      {ci.advanceAmount > 0 && <div style={{ fontSize:10.5, color:"#16a34a", fontWeight:700, marginTop:1 }}>অগ্রিম ৳{fmt(ci.advanceAmount)}</div>}
+                      {ci.due > 0 && <div style={{ fontSize:10.5, color:"#dc2626", fontWeight:700, marginTop:1 }}>বাকি ৳{fmt(ci.due)}</div>}
                     </div>
                     <button onClick={()=>setCustomOrderItems(prev => prev.filter(x => x.id !== ci.id))}
                       style={{ width:22, height:22, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background:"#ef444418", border:"none", borderRadius:"50%", color:"#ef4444", fontSize:12, fontWeight:900, padding:0, cursor:"pointer" }}>✕</button>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -22954,27 +23015,36 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             {customOrderItems.length > 0 && (
               <div style={{ background:"#fff", borderRadius:12, overflow:"hidden", boxShadow:"0 1px 4px rgba(0,0,0,0.08)", marginBottom:14, border:"1.5px solid #db277744" }}>
                 <div style={{ background:"linear-gradient(135deg,#db2777,#be185d)", padding:"9px 12px", color:"#fff", fontWeight:800, fontSize:12.5 }}>🙋 কাস্টমার অর্ডার</div>
-                {customOrderItems.map((ci, i) => (
-                  <div key={ci.id} style={{ display:"flex", alignItems:"flex-start", gap:8, padding:"10px 12px", borderBottom: i<customOrderItems.length-1 ? `1px solid ${PRINT.rowBorder}` : "none" }}>
+                {customOrderItems.map((ci, i) => {
+                  const qLabel = qtyBreakdownLabel({ strip:ci.stripQty, box:ci.boxQty, pcs:ci.pcsQty }) || ci.qtyLabel || ci.qty;
+                  return (
+                  <div key={ci.id} style={{ display:"flex", alignItems:"flex-start", gap:6, padding:"10px 12px", borderBottom: i<customOrderItems.length-1 ? `1px solid ${PRINT.rowBorder}` : "none" }}>
+                    {/* কলাম ১: কাস্টমার — নাম, ফোন, ঠিকানা */}
                     <div style={{ flex:1, minWidth:0 }}>
-                      <div style={{ fontWeight:800, fontSize:13, color:PRINT.textDark, display:"flex", alignItems:"center" }}>
+                      {ci.customerName && <div style={{ fontSize:12.5, fontWeight:800, color:PRINT.textDark }}>👤 {ci.customerName}</div>}
+                      {ci.customerPhone && <div style={{ fontSize:11, color:PRINT.textMuted, marginTop:2 }}>📞 {ci.customerPhone}</div>}
+                      {ci.customerAddress && <div style={{ fontSize:11, color:PRINT.textMuted, marginTop:2 }}>📍 {ci.customerAddress}</div>}
+                      {!ci.customerName && !ci.customerPhone && !ci.customerAddress && <div style={{ fontSize:11, color:PRINT.textMuted }}>—</div>}
+                    </div>
+                    {/* কলাম ২: পণ্য — নাম, সাপ্লায়ার */}
+                    <div style={{ flex:1.2, minWidth:0 }}>
+                      <div style={{ fontWeight:800, fontSize:13, color:PRINT.textDark, display:"flex", alignItems:"center", flexWrap:"wrap" }}>
                         <DosageBadge dosageForm={ci.dosageForm} />{ci.name}
-                        <span style={{ marginLeft:6, color:PRINT.accent, fontWeight:700, fontSize:11.5 }}>· {ci.qtyLabel || ci.qty}</span>
                       </div>
                       {ci.supplier && <div style={{ fontSize:11, color:PRINT.textMuted, marginTop:2 }}>🏭 {ci.supplier}</div>}
-                      {(ci.customerName || ci.customerPhone) && <div style={{ fontSize:11, color:PRINT.textMuted, marginTop:2 }}>👤 {ci.customerName}{ci.customerName && ci.customerPhone ? " · " : ""}{ci.customerPhone}</div>}
-                      {ci.totalPrice > 0 && (
-                        <div style={{ fontSize:10.5, marginTop:3, display:"flex", gap:8 }}>
-                          <span style={{ color:PRINT.textMuted }}>মোট ৳{fmt(ci.totalPrice)}</span>
-                          {ci.advanceAmount > 0 && <span style={{ color:"#16a34a", fontWeight:700 }}>অগ্রিম ৳{fmt(ci.advanceAmount)}</span>}
-                          {ci.due > 0 && <span style={{ color:"#dc2626", fontWeight:700 }}>বাকি ৳{fmt(ci.due)}</span>}
-                        </div>
-                      )}
+                    </div>
+                    {/* কলাম ৩: অর্ডার পরিমাণ + টাকার হিসাব */}
+                    <div style={{ flex:1, minWidth:0, textAlign:"right" }}>
+                      <div style={{ fontSize:11.5, color:PRINT.accent, fontWeight:800 }}>{qLabel}</div>
+                      {ci.totalPrice > 0 && <div style={{ fontSize:10.5, color:PRINT.textMuted, marginTop:3 }}>মোট ৳{fmt(ci.totalPrice)}</div>}
+                      {ci.advanceAmount > 0 && <div style={{ fontSize:10.5, color:"#16a34a", fontWeight:700, marginTop:1 }}>অগ্রিম ৳{fmt(ci.advanceAmount)}</div>}
+                      {ci.due > 0 && <div style={{ fontSize:10.5, color:"#dc2626", fontWeight:700, marginTop:1 }}>বাকি ৳{fmt(ci.due)}</div>}
                     </div>
                     <button onClick={()=>setCustomOrderItems(prev => prev.filter(x => x.id !== ci.id))}
                       style={{ width:24, height:24, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background:"#fef2f2", border:"1px solid #fecaca", borderRadius:7, color:"#dc2626", fontSize:12, fontWeight:800, padding:0, cursor:"pointer" }}>✕</button>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
@@ -23131,28 +23201,31 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                     <div style={{ background:"linear-gradient(135deg,#db2777,#be185d)", padding:"9px 12px", color:"#fff", fontWeight:800, fontSize:12.5 }}>🙋 কাস্টমার অর্ডার</div>
                     {custItems.map((it, i) => (
                       <div key={it.id || it.productId || i} style={{ padding:"11px 12px", borderBottom: i<custItems.length-1 ? `1px solid ${PRINT.rowBorder}` : "none", background: it.delivered ? "#f8fafc" : "#fff", opacity: it.delivered ? 0.6 : 1 }}>
-                        <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:8 }}>
-                          <div style={{ fontWeight:800, fontSize:13.5, color:PRINT.textDark, textDecoration: it.delivered ? "line-through" : "none", display:"flex", alignItems:"center", flexWrap:"wrap" }}>
-                            <DosageBadge dosageForm={it.dosageForm} />{it.name}
-                            <span style={{ marginLeft:6, color:PRINT.accent2, fontWeight:700, fontSize:11.5 }}>· {poItemQtyLabel(it)}</span>
-                          </div>
-                          {it.advanceAmount > 0 && <span style={{ fontSize:12, fontWeight:800, color:"#16a34a", flexShrink:0 }}>অগ্রিম ৳{fmt(it.advanceAmount)}</span>}
-                        </div>
-                        {it.supplier && it.supplier !== "কাস্টমার অর্ডার" && <div style={{ fontSize:11.5, color:PRINT.textMuted, marginTop:3 }}>🏭 {it.supplier}</div>}
-                        {(it.customerName || it.customerPhone) && (
-                          <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:5, flexWrap:"wrap" }}>
-                            {it.customerName && <span style={{ fontSize:12, color:PRINT.textMuted, fontWeight:600 }}>👤 {it.customerName}</span>}
+                        <div style={{ display:"flex", alignItems:"flex-start", gap:6, textDecoration: it.delivered ? "line-through" : "none" }}>
+                          {/* কলাম ১: কাস্টমার — নাম, ফোন, ঠিকানা */}
+                          <div style={{ flex:1, minWidth:0 }}>
+                            {it.customerName && <div style={{ fontSize:12.5, fontWeight:800, color:PRINT.textDark }}>👤 {it.customerName}</div>}
                             {it.customerPhone && (
-                              <a href={`tel:${it.customerPhone}`} style={{ fontSize:12, color:PRINT.accent2, fontWeight:800, textDecoration:"none" }}>📞 {it.customerPhone}</a>
+                              <a href={`tel:${it.customerPhone}`} style={{ display:"block", fontSize:11.5, color:PRINT.accent2, fontWeight:800, textDecoration:"none", marginTop:2 }}>📞 {it.customerPhone}</a>
                             )}
+                            {it.customerAddress && <div style={{ fontSize:11, color:PRINT.textMuted, marginTop:2 }}>📍 {it.customerAddress}</div>}
+                            {!it.customerName && !it.customerPhone && !it.customerAddress && <div style={{ fontSize:11, color:PRINT.textMuted }}>—</div>}
                           </div>
-                        )}
-                        {it.totalPrice > 0 && (
-                          <div style={{ fontSize:11, marginTop:4, display:"flex", gap:10 }}>
-                            <span style={{ color:PRINT.textMuted }}>মোট ৳{fmt(it.totalPrice)}</span>
-                            {it.due > 0 && <span style={{ color:"#dc2626", fontWeight:700 }}>বাকি ৳{fmt(it.due)}</span>}
+                          {/* কলাম ২: পণ্য — নাম, সাপ্লায়ার */}
+                          <div style={{ flex:1.2, minWidth:0 }}>
+                            <div style={{ fontWeight:800, fontSize:13, color:PRINT.textDark, display:"flex", alignItems:"center", flexWrap:"wrap" }}>
+                              <DosageBadge dosageForm={it.dosageForm} />{it.name}
+                            </div>
+                            {it.supplier && it.supplier !== "কাস্টমার অর্ডার" && <div style={{ fontSize:11, color:PRINT.textMuted, marginTop:3 }}>🏭 {it.supplier}</div>}
                           </div>
-                        )}
+                          {/* কলাম ৩: অর্ডার পরিমাণ + টাকার হিসাব */}
+                          <div style={{ flex:1, minWidth:0, textAlign:"right" }}>
+                            <div style={{ fontSize:11.5, color:PRINT.accent2, fontWeight:800 }}>{poItemQtyLabel(it)}</div>
+                            {it.totalPrice > 0 && <div style={{ fontSize:10.5, color:PRINT.textMuted, marginTop:3 }}>মোট ৳{fmt(it.totalPrice)}</div>}
+                            {it.advanceAmount > 0 && <div style={{ fontSize:10.5, color:"#16a34a", fontWeight:700, marginTop:1 }}>অগ্রিম ৳{fmt(it.advanceAmount)}</div>}
+                            {it.due > 0 && <div style={{ fontSize:10.5, color:"#dc2626", fontWeight:700, marginTop:1 }}>বাকি ৳{fmt(it.due)}</div>}
+                          </div>
+                        </div>
                         <label style={{ display:"flex", alignItems:"center", gap:7, marginTop:8, cursor:"pointer" }}>
                           <input type="checkbox" checked={!!it.delivered}
                             onChange={()=>toggleCustomOrderDelivered(rec.id, it.id || it.productId)}
