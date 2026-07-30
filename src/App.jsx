@@ -7740,22 +7740,43 @@ const calcProfitByProductWithInvoices = (invList, prodMap, productsFallback = []
     // হচ্ছে, নাহলে extraCharge-সহ ইনভয়েসে প্রতিটা পণ্যের profit বেশি দেখাত।
     const itemsRevenueTotal = (inv.total || 0) - (inv.extraCharge || 0);
     const discountRatio = subtotal > 0 ? itemsRevenueTotal / subtotal : 1;
-    const discountAmt = subtotal - itemsRevenueTotal;
     items.forEach(item => {
       const qty = item.qty || 1;
       const p = prodMap?.get?.(item.productId) || productsFallback.find(pr => pr.name === item.name);
       const cost = _itemCostPrice(item, prodMap) * qty;
-      const revenue = (item.price || 0) * qty * discountRatio;
-      const profit = revenue - cost;
+      const fullPriceRevenue = (item.price || 0) * qty;       // ছাড় ছাড়াই এই লাইনের আয়
+      const revenue = fullPriceRevenue * discountRatio;        // discount-adjusted আসল আয় (যা দিয়ে profit হিসাব হয়)
+      const itemDiscountAmt = fullPriceRevenue - revenue;      // 🔴 ফিক্স: এই লাইনের নিজস্ব ছাড়ের ভাগ —
+      // আগে পুরো ইনভয়েসের সামগ্রিক discountAmt ব্যবহার হতো, ফলে ইনভয়েসের
+      // যেকোনো একটা লাইনে সামান্য ছাড় থাকলেই বাকি সব লাইনের (এমনকি ছাড়হীন
+      // লাইনেরও) লেবেলে পুরো ইনভয়েস-ডিসকাউন্ট "কারণ" হিসেবে দেখাত — যেমন
+      // Histacin-এর আসল কারণ ছিল ভুল/স্টেল ক্রয়মূল্য, তবু লেবেলে দেখাত
+      // "ডিসকাউন্ট ৳204 এর কারণে লস"। এখন প্রতিটা লাইনের নিজস্ব হিসাব।
+      const profit = revenue - cost;                            // আসল (রিপোর্ট করা) লাভ/লস
+      const fullPriceProfit = fullPriceRevenue - cost;          // ছাড় বাদ দিলে (শুধু cost vs তালিকা-মূল্য) কী হতো
       const key = item.productId || item.name;
       const displayName = p?.name || item.name;
       if (!map[key]) map[key] = { name: displayName, profitInvs: [], lossInvs: [], totalProfit: 0, totalLoss: 0 };
       map[key].name = displayName;
-      // কারণ নির্ধারণ
+      // কারণ নির্ধারণ — cost>price (ক্রয়মূল্য বেশি) ও ডিসকাউন্ট, দুটো
+      // স্বাধীন কারণকে আলাদা করে চেক করে, প্রয়োজনে দুটোই একসাথে দেখায়
+      const EPS = 0.009; // পয়সার রাউন্ডিং এড়াতে
       let reason = "স্বাভাবিক বিক্রয়";
-      if (discountAmt > 0 && profit < 0) reason = `ডিসকাউন্ট ৳${Math.round(discountAmt)} এর কারণে লস`;
-      else if (discountAmt > 0) reason = `ডিসকাউন্ট ৳${Math.round(discountAmt)} বাদে`;
-      else if (profit < 0) reason = "ক্রয়মূল্য বেশি";
+      if (profit < 0) {
+        const hasDiscount = itemDiscountAmt > EPS;
+        const costTooHigh = fullPriceProfit < -EPS;
+        if (hasDiscount && costTooHigh) {
+          reason = `ক্রয়মূল্য বেশি + ডিসকাউন্ট ৳${Math.round(itemDiscountAmt)} — উভয়ের কারণে লস`;
+        } else if (hasDiscount) {
+          reason = `ডিসকাউন্ট ৳${Math.round(itemDiscountAmt)} এর কারণে লস`;
+        } else if (costTooHigh) {
+          reason = "ক্রয়মূল্য বেশি — বিক্রয়মূল্যের চেয়ে ক্রয়মূল্য বেশি";
+        } else {
+          reason = "লস"; // সেফটি ফলব্যাক — উপরের দুই শর্তের কোনোটাই মেলেনি এমন প্রায় ঘটবেই না
+        }
+      } else if (itemDiscountAmt > EPS) {
+        reason = `ডিসকাউন্ট ৳${Math.round(itemDiscountAmt)} বাদে`;
+      }
       const entry = { inv, invNo: inv.invoiceNo || inv.id, qty, profit, reason };
       if (profit >= 0) {
         map[key].profitInvs.push(entry);
@@ -13444,6 +13465,13 @@ function SmartBusinessMgmt() {
       { id: "expense",  label: "এক্সপেন্স ট্রেকার", icon: "M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" },
       { id: "returns",  label: "ইনভয়েস হিস্ট্রি", icon: "M3 3v5h5M3.05 13A9 9 0 1 0 6 5.3L3 8M12 7v5l4 2" },
       { id: "supplier",  label: "সাপ্লায়ার", icon: "M19 21V5a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v16m14 0h2m-2 0H5m14 0a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2m14 0V5M5 21V5m0 0a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2M9 7h6M9 11h6m-6 4h6" },
+      // 🆕 লস-ঝুঁকি ও ব্যাচ সিঙ্ক টুল — Histacin-এর মতো "ক্রয়মূল্যের চেয়ে
+      // বিক্রয়মূল্য কম" বা "ব্যাচ costPrice প্রোডাক্টের সাথে অমিল" এই দুই
+      // ধরনের ডেটা-ভুল খুঁজে বের করে ইউজারকে দেখানোর জন্য। সমস্যা সমাধান
+      // হয়ে গেলে ইউজার নিজেই এই মডিউল সরিয়ে দিতে পারবেন — তাই সবকিছু এই
+      // একটা tab-এ ও একটা component-এ (BatchSyncTool) স্বয়ংসম্পূর্ণ রাখা,
+      // অন্য কোথাও ছড়ানো হয়নি (delete করা সহজ হবে)।
+      { id: "batchSync", label: "লস-ঝুঁকি ও ব্যাচ সিঙ্ক", icon: "M12 9v4m0 4h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" },
       { id: "ai",       label: "AI",       icon: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM8 11a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm8 0a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm-4 6c-2.5 0-4.7-1.3-6-3.3h12c-1.3 2-3.5 3.3-6 3.3z" },
       { id: "auditTrail",   label: "অডিট ট্রেইল",       icon: "M9 12h6m-6 4h6m2 5H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5.586a1 1 0 0 1 .707.293l5.414 5.414a1 1 0 0 1 .293.707V19a2 2 0 0 1-2 2z" },
       { id: "staffMgmt",    label: "স্টাফ ব্যবস্থাপনা", icon: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" },
@@ -13452,7 +13480,7 @@ function SmartBusinessMgmt() {
     ];
     // Staff cannot see sms/ai/দৈনিক সারসংক্ষেপ/অডিট ট্রেইল/স্টাফ ব্যবস্থাপনা (settings এখন দেখবে — শুধু theme+font)
     // 🔴 ফিক্স: "ইনভয়েস হিস্ট্রি" (returns) ও "সাপ্লায়ার" (supplier) এখন থেকে শুধু admin/owner দেখবে — স্টাফের জন্য হাইড
-    let visible = isStaff ? all.filter(n => !["sms", "ai", "dailySummary", "auditTrail", "staffMgmt", "returns", "supplier", "subscription"].includes(n.id)) : all;
+    let visible = isStaff ? all.filter(n => !["sms", "ai", "dailySummary", "auditTrail", "staffMgmt", "returns", "supplier", "subscription", "batchSync"].includes(n.id)) : all;
     // 🔴 Session B: OFFLINE_MODE স্থায়ীভাবে true, তাই এই ফিল্টার কখনো চলত না —
     // "সাবস্ক্রিপশন" মেনু আইটেম সবসময় দৃশ্যমান থাকে, সরিয়ে দেওয়া হলো।
     // "এক্সপেন্স ট্রেকার" শুধু Admin রোল দেখতে পাবে — অন্য কোনো রোল (staff/অজানা) দেখবে না
@@ -14298,6 +14326,19 @@ function SmartBusinessMgmt() {
               shopName={shopName}
               cashLogs={cashLogs}
               setCashLogs={setCashLogs}
+            />
+          </ErrorBoundary>
+        )}
+        {tab === "batchSync" && (
+          <ErrorBoundary T={T}>
+            <BatchSyncTool T={T} S={S}
+              products={products}
+              setProducts={setProducts}
+              invoices={invoices}
+              setInvoices={setInvoices}
+              showToast={showToast}
+              currentUser={currentUser}
+              auditLog={auditLog}
             />
           </ErrorBoundary>
         )}
@@ -25863,8 +25904,23 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
         if (p.id !== editId) return p;
         const prevStock = p.stock || 0;
 
+        // 🆕 ফিক্স (ব্যাচ-costPrice সিঙ্ক): প্রোডাক্ট এডিট থেকে ক্রয়/বিক্রয়মূল্য
+        // বদলালে আগে শুধু প্রোডাক্টের উপরের লেভেলের costPrice/price বদলাত,
+        // কিন্তু প্রতিটা ব্যাচের নিজস্ব costPrice/sellPrice অপরিবর্তিত থেকে
+        // যেত — বিক্রির সময় batch-level costPrice-ই ব্যবহার হয় বলে সেল
+        // পুরনো (ভুল) দামেই হিসাব হতে থাকত। এখন থেকে এখানেই সব এক্সিস্টিং
+        // ব্যাচে নতুন দাম অটো-প্রয়োগ হয়ে যাবে — শুধু "ব্যাচ সিঙ্ক" টুল থেকে
+        // ইউজার যেসব ব্যাচকে সরাসরি "রেখে দিন" (ইচ্ছাকৃতভাবে ভিন্ন দামে কেনা)
+        // বলে মার্ক করেছেন (costMismatchIgnored), সেগুলো স্কিপ হবে।
+        const newCostPrice = parseFloat(form.costPrice) || 0;
+        const newSellPrice = parseFloat(form.price) || 0;
+
         let workingBatches = (p.batches || [])
-          .map((b, i) => ({ ...b, qty: parseInt(batchEdits[i] ?? b.qty) || 0 }))
+          .map((b, i) => {
+            const qty = parseInt(batchEdits[i] ?? b.qty) || 0;
+            if (b.costMismatchIgnored) return { ...b, qty };
+            return { ...b, qty, costPrice: newCostPrice, sellPrice: newSellPrice };
+          })
           .filter(b => b.qty > 0);
 
         const validNewRows = newBatchRows.filter(r => r.qty && parseInt(r.qty) > 0 && r.expiryDate);
@@ -27695,6 +27751,301 @@ const MemoProducts = React.memo(Products);
 // ══════════════════════════════════════════════════════════════════════════════
 // 🏭 SupplierPaymentModule — সাপ্লায়ার পেমেন্ট ট্র্যাকিং
 // ══════════════════════════════════════════════════════════════════════════════
+// ─── 🆕 লস-ঝুঁকি ও ব্যাচ সিঙ্ক টুল ──────────────────────────────────────────
+// দুটো সমস্যা খুঁজে বের করে:
+//  (A) "লস-ঝুঁকি পণ্য" — যে পণ্যের বর্তমান বিক্রয়মূল্য ≤ ক্রয়মূল্য (প্রতি বিক্রিতেই লস)
+//  (B) "ব্যাচ মিসম্যাচ" — যে পণ্যের কোনো ব্যাচের costPrice প্রোডাক্টের বর্তমান
+//      costPrice-এর সাথে মেলে না (পুরনো/স্টেল দাম রয়ে গেছে ব্যাচে)
+// এই মডিউলটা স্বয়ংসম্পূর্ণ (self-contained) — সমস্যা সমাধান হয়ে গেলে শুধু
+// এই ফাংশন + navItems-এর "batchSync" এন্ট্রি + tab === "batchSync" রেন্ডার
+// ব্লকটা সরিয়ে দিলেই পুরো ফিচার ক্লিন-আপ হয়ে যাবে, অন্য কোথাও কিছু বদলাতে হবে না।
+function BatchSyncTool({ T, S, products = [], setProducts, invoices = [], setInvoices, showToast, currentUser, auditLog }) {
+  const fmt = n => fmtMoney(n);
+  const [section, setSection] = React.useState("risk"); // "risk" | "mismatch" | "correction"
+  const [editingId, setEditingId] = React.useState(null);
+  const [editPrice, setEditPrice] = React.useState("");
+
+  // ── (A) লস-ঝুঁকি পণ্য ──────────────────────────────────────────────────
+  const riskProducts = React.useMemo(() => {
+    return (products || [])
+      .filter(p => p.productType !== "service" && (p.costPrice || 0) > 0 && (p.price || 0) > 0 && p.price <= p.costPrice)
+      .map(p => ({ ...p, margin: (p.price || 0) - (p.costPrice || 0) }))
+      .sort((a, b) => a.margin - b.margin);
+  }, [products]);
+
+  // ── (B) ব্যাচ costPrice মিসম্যাচ ───────────────────────────────────────
+  const mismatches = React.useMemo(() => {
+    const out = [];
+    (products || []).forEach(p => {
+      if (p.productType === "service") return;
+      (p.batches || []).forEach((b, i) => {
+        if (b.costMismatchIgnored) return; // ইউজার আগেই "রেখে দিন" বলেছেন
+        if (b.costPrice == null) return;
+        const productCost = p.costPrice || 0;
+        if (Math.round((b.costPrice || 0) * 100) !== Math.round(productCost * 100)) {
+          out.push({
+            productId: p.id, productName: p.name, unit: p.unit,
+            batchIndex: i, batchNo: b.batchNo || `#${i + 1}`,
+            batchCost: b.costPrice || 0, productCost, qty: b.qty || 0,
+          });
+        }
+      });
+    });
+    return out;
+  }, [products]);
+
+  const canEdit = currentUser?.role === "admin" || currentUser?.role === "owner";
+
+  // ── (C) পুরনো ইনভয়েসের ভুল ক্রয়মূল্য সংশোধন ─────────────────────────────
+  // শুধু সেসব ইনভয়েস-লাইন যেখানে সেভ-হওয়া costPrice > সেই সময়কার price —
+  // এটাই টাইপো/ডেটা-এন্ট্রি-ভুলের নিশ্চিত সিগনেচার (স্বাভাবিক দাম-বৃদ্ধিতে
+  // এমন হয় না, cost কখনো একক-ইউনিট বিক্রয়মূল্যের চেয়ে বেশি হওয়ার কথা না)।
+  // তাই এখানে "সব সময়ের সব দাম-মিসম্যাচ" না দেখিয়ে শুধু এই সুনির্দিষ্ট,
+  // নিরাপদ সিগন্যালটাই ব্যবহার করা হচ্ছে — যাতে বৈধ ঐতিহাসিক দাম-পরিবর্তন
+  // ভুলবশত "সংশোধনযোগ্য" হিসেবে না দেখায়।
+  const [correctCostInputs, setCorrectCostInputs] = React.useState({}); // productId -> string
+  const [excludedItems, setExcludedItems] = React.useState({});         // "invId-itemIndex" -> true
+
+  const flaggedInvoiceItems = React.useMemo(() => {
+    const out = [];
+    (invoices || []).forEach(inv => {
+      (inv.items || []).forEach((it, itemIndex) => {
+        const cost = it.costPrice || 0;
+        const price = it.price || 0;
+        if (cost > 0 && price > 0 && cost > price) {
+          out.push({
+            invId: inv.id, invNo: inv.invoiceNo || inv.id,
+            dateKey: inv.dateKey || (inv.createdAt || inv.at || "").slice(0, 10),
+            isVoid: inv.status === "void" || !!inv.voided,
+            productId: it.productId, productName: it.name, itemIndex,
+            qty: it.qty || 1, oldCost: cost, price,
+          });
+        }
+      });
+    });
+    return out;
+  }, [invoices]);
+
+  const correctionGroups = React.useMemo(() => {
+    const map = {};
+    flaggedInvoiceItems.forEach(f => {
+      const key = f.productId || f.productName;
+      if (!map[key]) {
+        const prod = products.find(p => p.id === f.productId);
+        map[key] = { productId: f.productId, productName: f.productName, suggestedCost: prod?.costPrice || 0, items: [] };
+      }
+      map[key].items.push(f);
+    });
+    return Object.values(map);
+  }, [flaggedInvoiceItems, products]);
+
+  const applyCorrection = (group) => {
+    const newCost = parseFloat(correctCostInputs[group.productId] ?? group.suggestedCost);
+    if (!newCost || newCost <= 0) { showToast?.("সঠিক ক্রয়মূল্য দিন", "#ef4444"); return; }
+    const itemsToFix = group.items.filter(it => !excludedItems[`${it.invId}-${it.itemIndex}`]);
+    if (itemsToFix.length === 0) { showToast?.("সংশোধনের জন্য কোনো ইনভয়েস নির্বাচিত নেই", "#ef4444"); return; }
+    const totalImpact = itemsToFix.reduce((s, it) => s + (it.oldCost - newCost) * it.qty, 0);
+    const ok = window.confirm(
+      `${group.productName}-এর ${itemsToFix.length}টি পুরনো ইনভয়েসের ক্রয়মূল্য ৳${newCost}-এ সংশোধন হবে।\n` +
+      `এতে মোট লাভ/লস প্রায় ৳${fmt(totalImpact)} বাড়বে।\n\n` +
+      `⚠️ এটা আপনার ঐতিহাসিক আর্থিক রেকর্ড বদলে দেবে (স্থায়ী)। এগোতে চান?`
+    );
+    if (!ok) return;
+    const byInv = {};
+    itemsToFix.forEach(it => { (byInv[it.invId] ||= []).push(it.itemIndex); });
+    setInvoices(prev => prev.map(inv => {
+      const idxList = byInv[inv.id];
+      if (!idxList) return inv;
+      const items = (inv.items || []).map((item, idx) =>
+        idxList.includes(idx)
+          ? { ...item, costPrice: newCost, costCorrected: true, costCorrectedFrom: item.costPrice, costCorrectedAt: new Date().toISOString(), costCorrectedBy: currentUser?.name || currentUser?.role || "" }
+          : item
+      );
+      return { ...inv, items };
+    }));
+    itemsToFix.forEach(it => {
+      auditLog?.("INVOICE_COST_CORRECTION", {
+        invoiceId: it.invId, invoiceNo: it.invNo, productName: it.productName,
+        oldCostPrice: it.oldCost, newCostPrice: newCost, qty: it.qty,
+      });
+    });
+    showToast?.(`${itemsToFix.length}টি ইনভয়েস সংশোধন করা হলো`);
+    setExcludedItems({});
+  };
+
+
+  const saveInlinePrice = (p) => {
+    const val = parseFloat(editPrice);
+    if (!val || val <= 0) { showToast?.("সঠিক বিক্রয়মূল্য দিন", "#ef4444"); return; }
+    setProducts(prev => prev.map(pr => {
+      if (pr.id !== p.id) return pr;
+      const updatedBatches = (pr.batches || []).map(b =>
+        b.costMismatchIgnored ? b : { ...b, sellPrice: val }
+      );
+      return { ...pr, price: val, batches: updatedBatches };
+    }));
+    auditLog?.("PRODUCT_PRICE_CHANGE", { productId: p.id, productName: p.name, oldPrice: p.price, newPrice: val, source: "batchSyncTool" });
+    showToast?.(`${p.name}-এর বিক্রয়মূল্য ৳${val} করা হলো`);
+    setEditingId(null); setEditPrice("");
+  };
+
+  const syncBatch = (m) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== m.productId) return p;
+      const batches = (p.batches || []).map((b, i) =>
+        i === m.batchIndex ? { ...b, costPrice: p.costPrice || 0, sellPrice: p.price || 0, costMismatchIgnored: false } : b
+      );
+      return { ...p, batches };
+    }));
+    showToast?.(`${m.productName} — ব্যাচ ${m.batchNo} সিঙ্ক করা হলো`);
+  };
+
+  const keepBatch = (m) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== m.productId) return p;
+      const batches = (p.batches || []).map((b, i) =>
+        i === m.batchIndex ? { ...b, costMismatchIgnored: true } : b
+      );
+      return { ...p, batches };
+    }));
+    showToast?.(`${m.productName} — ব্যাচ ${m.batchNo} রেখে দেওয়া হলো (ইচ্ছাকৃত ভিন্ন দাম হিসেবে মার্ক)`);
+  };
+
+  const cardStyle = { background: T.card, borderRadius: 14, padding: "12px 14px", marginBottom: 10, border: `1px solid ${T.border}` };
+  const btnBase = { border: "none", borderRadius: 8, padding: "7px 12px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" };
+
+  return (
+    <div style={{ padding: "14px 12px 90px" }}>
+      <div style={{ color: T.headingColor, fontWeight: 900, fontSize: 16, marginBottom: 4 }}>⚠️ লস-ঝুঁকি ও ব্যাচ সিঙ্ক</div>
+      <div style={{ color: T.sub || "#94a3b8", fontSize: 12, marginBottom: 14 }}>
+        ভুল ক্রয়/বিক্রয়মূল্য বা পুরনো ব্যাচ-দামের কারণে লস — সমাধান হয়ে গেলে এই টুলটা মুছে ফেলতে পারবেন।
+      </div>
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+        <button onClick={() => setSection("risk")} style={{
+          ...btnBase, flex: 1, minWidth: 100, background: section === "risk" ? T.accent : "transparent",
+          color: section === "risk" ? "#fff" : T.headingColor, border: `1px solid ${T.accent}88`,
+        }}>ঝুঁকিপূর্ণ পণ্য ({riskProducts.length})</button>
+        <button onClick={() => setSection("mismatch")} style={{
+          ...btnBase, flex: 1, minWidth: 100, background: section === "mismatch" ? T.accent : "transparent",
+          color: section === "mismatch" ? "#fff" : T.headingColor, border: `1px solid ${T.accent}88`,
+        }}>ব্যাচ মিসম্যাচ ({mismatches.length})</button>
+        <button onClick={() => setSection("correction")} style={{
+          ...btnBase, flex: 1, minWidth: 100, background: section === "correction" ? T.accent : "transparent",
+          color: section === "correction" ? "#fff" : T.headingColor, border: `1px solid ${T.accent}88`,
+        }}>পুরনো ইনভয়েস ({flaggedInvoiceItems.length})</button>
+      </div>
+
+      {section === "risk" && (
+        riskProducts.length === 0 ? (
+          <div style={{ textAlign: "center", color: T.sub || "#94a3b8", fontSize: 13, padding: 30 }}>✅ কোনো লস-ঝুঁকিপূর্ণ পণ্য নেই</div>
+        ) : riskProducts.map(p => (
+          <div key={p.id} style={{ ...cardStyle, borderLeft: "3px solid #ef4444" }}>
+            <div style={{ color: T.headingColor, fontWeight: 800, fontSize: 14 }}>{p.name}</div>
+            <div style={{ display: "flex", gap: 14, marginTop: 4, fontSize: 12.5 }}>
+              <span style={{ color: "#f59e0b" }}>ক্রয়: ৳{fmt(p.costPrice)}</span>
+              <span style={{ color: "#ef4444" }}>বিক্রয়: ৳{fmt(p.price)}</span>
+              <span style={{ color: "#ef4444", fontWeight: 700 }}>মার্জিন: ৳{fmt(p.margin)}</span>
+            </div>
+            {canEdit && (
+              editingId === p.id ? (
+                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                  <input autoFocus type="number" value={editPrice} onChange={e => setEditPrice(e.target.value)}
+                    placeholder="নতুন বিক্রয়মূল্য" style={{ flex: 1, padding: "7px 10px", borderRadius: 8, border: `1px solid ${T.border}`, background: T.card, color: T.text, fontSize: 13 }} />
+                  <button onClick={() => saveInlinePrice(p)} style={{ ...btnBase, background: "#16a34a", color: "#fff" }}>সেভ</button>
+                  <button onClick={() => { setEditingId(null); setEditPrice(""); }} style={{ ...btnBase, background: "transparent", color: T.sub, border: `1px solid ${T.border}` }}>বাতিল</button>
+                </div>
+              ) : (
+                <button onClick={() => { setEditingId(p.id); setEditPrice(String(p.price || "")); }}
+                  style={{ ...btnBase, marginTop: 8, background: "#0ea5e9", color: "#fff" }}>বিক্রয়মূল্য ঠিক করুন</button>
+              )
+            )}
+          </div>
+        ))
+      )}
+
+      {section === "mismatch" && (
+        mismatches.length === 0 ? (
+          <div style={{ textAlign: "center", color: T.sub || "#94a3b8", fontSize: 13, padding: 30 }}>✅ কোনো ব্যাচ মিসম্যাচ নেই</div>
+        ) : mismatches.map((m, idx) => (
+          <div key={`${m.productId}-${m.batchIndex}-${idx}`} style={{ ...cardStyle, borderLeft: "3px solid #f59e0b" }}>
+            <div style={{ color: T.headingColor, fontWeight: 800, fontSize: 14 }}>{m.productName}</div>
+            <div style={{ color: T.sub || "#94a3b8", fontSize: 11.5, marginTop: 2 }}>ব্যাচ: {m.batchNo} · স্টক: {m.qty}</div>
+            <div style={{ display: "flex", gap: 14, marginTop: 4, fontSize: 12.5 }}>
+              <span style={{ color: "#f59e0b" }}>ব্যাচের ক্রয়মূল্য: ৳{fmt(m.batchCost)}</span>
+              <span style={{ color: "#0ea5e9" }}>প্রোডাক্টের বর্তমান ক্রয়মূল্য: ৳{fmt(m.productCost)}</span>
+            </div>
+            {canEdit && (
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button onClick={() => syncBatch(m)} style={{ ...btnBase, flex: 1, background: "#16a34a", color: "#fff" }}>✅ সিঙ্ক করুন</button>
+                <button onClick={() => keepBatch(m)} style={{ ...btnBase, flex: 1, background: "transparent", color: T.headingColor, border: `1px solid ${T.border}` }}>রেখে দিন</button>
+              </div>
+            )}
+          </div>
+        ))
+      )}
+
+      {section === "correction" && (
+        correctionGroups.length === 0 ? (
+          <div style={{ textAlign: "center", color: T.sub || "#94a3b8", fontSize: 13, padding: 30 }}>✅ ক্রয়মূল্য-বেশি এমন কোনো পুরনো ইনভয়েস পাওয়া যায়নি</div>
+        ) : correctionGroups.map(group => {
+          const activeItems = group.items.filter(it => !excludedItems[`${it.invId}-${it.itemIndex}`]);
+          const inputVal = correctCostInputs[group.productId] ?? String(group.suggestedCost || "");
+          const previewCost = parseFloat(inputVal) || 0;
+          const previewImpact = activeItems.reduce((s, it) => s + (it.oldCost - previewCost) * it.qty, 0);
+          return (
+            <div key={group.productId || group.productName} style={{ ...cardStyle, borderLeft: "3px solid #ef4444" }}>
+              <div style={{ color: T.headingColor, fontWeight: 800, fontSize: 14 }}>{group.productName}</div>
+              <div style={{ color: T.sub || "#94a3b8", fontSize: 11.5, marginTop: 2 }}>{group.items.length}টি পুরনো ইনভয়েস-লাইনে ক্রয়মূল্য বিক্রয়মূল্যের চেয়ে বেশি</div>
+
+              <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4, maxHeight: 180, overflowY: "auto" }}>
+                {group.items.map(it => {
+                  const key = `${it.invId}-${it.itemIndex}`;
+                  const excluded = !!excludedItems[key];
+                  return (
+                    <div key={key} style={{
+                      display: "flex", justifyContent: "space-between", alignItems: "center",
+                      fontSize: 11.5, padding: "5px 8px", borderRadius: 8,
+                      background: excluded ? "transparent" : `${T.accent}11`,
+                      opacity: excluded ? 0.5 : 1, border: `1px solid ${T.border}`,
+                    }}>
+                      <span style={{ color: T.text }}>
+                        #{it.invNo} {it.isVoid ? "(ভয়েড)" : ""} · {it.qty}× · পুরনো cost ৳{fmt(it.oldCost)}
+                      </span>
+                      <button onClick={() => setExcludedItems(e => ({ ...e, [key]: !excluded }))}
+                        style={{ border: "none", background: "transparent", color: excluded ? "#16a34a" : "#ef4444", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                        {excluded ? "যোগ করুন" : "বাদ দিন"}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {canEdit && (
+                <>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 10 }}>
+                    <span style={{ fontSize: 12, color: T.sub || "#94a3b8", flexShrink: 0 }}>সঠিক ক্রয়মূল্য:</span>
+                    <input type="number" value={inputVal}
+                      onChange={e => setCorrectCostInputs(v => ({ ...v, [group.productId]: e.target.value }))}
+                      style={{ flex: 1, padding: "6px 10px", borderRadius: 8, border: `1px solid ${T.border}`, background: T.card, color: T.text, fontSize: 13 }} />
+                  </div>
+                  <div style={{ fontSize: 12, marginTop: 6, color: previewImpact >= 0 ? "#16a34a" : "#ef4444", fontWeight: 700 }}>
+                    আনুমানিক লাভ পরিবর্তন: {previewImpact >= 0 ? "+" : ""}৳{fmt(previewImpact)} ({activeItems.length}টি ইনভয়েসে)
+                  </div>
+                  <button onClick={() => applyCorrection(group)} disabled={activeItems.length === 0}
+                    style={{ ...btnBase, marginTop: 8, width: "100%", background: activeItems.length === 0 ? T.border : "#ef4444", color: "#fff", opacity: activeItems.length === 0 ? 0.6 : 1 }}>
+                    নির্বাচিত {activeItems.length}টি ইনভয়েস সংশোধন করুন
+                  </button>
+                </>
+              )}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
 function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
   supplierPayments = [], setSupplierPayments, showToast, currentUser, shopName,
   cashLogs = [], setCashLogs }) {
