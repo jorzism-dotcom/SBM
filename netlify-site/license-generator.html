@@ -71,6 +71,7 @@
     <div class="row" style="margin-bottom:16px">
       <button type="button" id="tabLicenseBtn" onclick="switchMode('license')" style="background:linear-gradient(135deg,var(--accentDark),var(--accent))">লাইসেন্স কোড</button>
       <button type="button" id="tabAdminPinBtn" onclick="switchMode('adminpin')" style="background:#0d1526;border:1.5px solid var(--border);color:var(--text)">Admin PIN রিসেট</button>
+      <button type="button" id="tabOwnerPinBtn" onclick="switchMode('ownerpin')" style="background:#0d1526;border:1.5px solid var(--border);color:var(--text)">মালিকের PIN রিসেট</button>
     </div>
     <h1 id="genTitle">📶 মাসিক আনলক কোড জেনারেট করুন</h1>
     <div class="month-pill" id="monthPill"></div>
@@ -128,20 +129,35 @@ async function computeAdminPinCode(deviceId, yearMonth) {
   return String(n).padStart(6, "0");
 }
 
-let genMode = 'license'; // 'license' | 'adminpin'
+// ── মালিকের লগইন PIN রিসেট কোড — App.jsx-এর computeOwnerPinResetCode()-এর
+// সাথে হুবহু মিলতে হবে (একই LICENSE_SECRET, শুধু ":OWNERPIN:" ট্যাগ বাড়তি,
+// তাই লাইসেন্স কোড, Admin PIN কোড আর এই কোড কখনো একই সংখ্যা হবে না)। ──
+async function computeOwnerPinCode(deviceId, yearMonth) {
+  const enc = new TextEncoder().encode(`${LICENSE_SECRET}:OWNERPIN:${deviceId}:${yearMonth}`);
+  const buf = await crypto.subtle.digest("SHA-256", enc);
+  const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+  const n = parseInt(hex.slice(0, 8), 16) % 1000000;
+  return String(n).padStart(6, "0");
+}
+
+let genMode = 'license'; // 'license' | 'adminpin' | 'ownerpin'
 function switchMode(mode) {
   genMode = mode;
   document.getElementById('resultBox').style.display = 'none';
   document.getElementById('genErr').style.display = 'none';
   const licBtn = document.getElementById('tabLicenseBtn');
   const pinBtn = document.getElementById('tabAdminPinBtn');
+  const ownerBtn = document.getElementById('tabOwnerPinBtn');
   const activeStyle = "background:linear-gradient(135deg,var(--accentDark),var(--accent))";
   const inactiveStyle = "background:#0d1526;border:1.5px solid var(--border);color:var(--text)";
   licBtn.setAttribute('style', mode === 'license' ? activeStyle : inactiveStyle);
   pinBtn.setAttribute('style', mode === 'adminpin' ? activeStyle : inactiveStyle);
+  ownerBtn.setAttribute('style', mode === 'ownerpin' ? activeStyle : inactiveStyle);
   document.getElementById('genTitle').textContent = mode === 'license'
     ? '📶 মাসিক আনলক কোড জেনারেট করুন'
-    : '🔑 Admin PIN রিসেট কোড জেনারেট করুন';
+    : mode === 'adminpin'
+      ? '🔑 Admin PIN রিসেট কোড জেনারেট করুন'
+      : '🔓 মালিকের PIN রিসেট কোড জেনারেট করুন';
 }
 
 function doLogin() {
@@ -182,11 +198,15 @@ async function generateCode() {
   }
   const code = genMode === 'license'
     ? await computeLicenseCode(raw, _licenseYearMonth(new Date()))
-    : await computeAdminPinCode(raw, _licenseYearMonth(new Date()));
+    : genMode === 'adminpin'
+      ? await computeAdminPinCode(raw, _licenseYearMonth(new Date()))
+      : await computeOwnerPinCode(raw, _licenseYearMonth(new Date()));
   document.getElementById('codeOut').textContent = code;
   document.getElementById('genHint').textContent = genMode === 'license'
     ? 'এই কোডটা দোকানদারকে পাঠান — শুধু এই মাসের জন্য কাজ করবে'
-    : 'এই কোডটা দোকানদারকে পাঠান — উনি Settings → Admin PIN পরিবর্তন → "ভুলে গেছেন?"-এ বসাবেন';
+    : genMode === 'adminpin'
+      ? 'এই কোডটা দোকানদারকে পাঠান — উনি Settings → Admin PIN পরিবর্তন → "ভুলে গেছেন?"-এ বসাবেন'
+      : 'এই কোডটা দোকানদারকে পাঠান — উনি Settings → মালিকের লগইন PIN পরিবর্তন → "PIN ভুলে গেছেন?"-এ বসাবেন';
   document.getElementById('resultBox').style.display = 'block';
 }
 
