@@ -128,6 +128,31 @@ async function verifyLicenseCode(deviceId, code) {
   return code === curCode || code === prevCode;
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// 🆕 (২৯ জুলাই ২০২৬) Admin PIN রিসেট কোড — দোকানদার Admin PIN ভুলে গেলে
+// লাইসেন্স-আনলক কোডের ঠিক একই অফলাইন সূত্র পুনর্ব্যবহার করে (deviceId + বর্তমান
+// মাস + একই LICENSE_SECRET → SHA-256 → ৬-ডিজিট কোড), শুধু হ্যাশে ":ADMINPIN:"
+// ট্যাগ বাড়তি যোগ করা হয়েছে — তাই লাইসেন্স-আনলক কোড আর Admin PIN রিসেট কোড
+// কখনো একই সংখ্যা হবে না (একটা অন্যটার বদলে ব্যবহার করা যাবে না)। জেনারেট
+// করতে হবে netlify-site/license-generator.html-এর "Admin PIN রিসেট" ট্যাব
+// থেকে, একই ডিভাইস আইডি দিয়ে (Settings → Admin PIN পরিবর্তন → "ভুলে গেছেন?"-এ
+// দোকানদারের ডিভাইস আইডি দেখা যায়)।
+// ══════════════════════════════════════════════════════════════════════════
+async function computeAdminPinResetCode(deviceId, yearMonth) {
+  const enc = new TextEncoder().encode(`${LICENSE_SECRET}:ADMINPIN:${deviceId}:${yearMonth}`);
+  const buf = await crypto.subtle.digest("SHA-256", enc);
+  const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+  const n = parseInt(hex.slice(0, 8), 16) % 1000000;
+  return String(n).padStart(6, "0");
+}
+async function verifyAdminPinResetCode(deviceId, code) {
+  const now = new Date();
+  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const curCode  = await computeAdminPinResetCode(deviceId, _licenseYearMonth(now));
+  const prevCode = await computeAdminPinResetCode(deviceId, _licenseYearMonth(prev));
+  return code === curCode || code === prevCode;
+}
+
 // "সর্বোচ্চ দেখা তারিখ" ট্র্যাক করে ফোনের ঘড়ি ইচ্ছাকৃতভাবে পিছিয়ে দিয়ে মেয়াদ
 // বাড়ানোর চেষ্টা ঠেকায়। কয়েক ঘণ্টার স্বাভাবিক টাইমজোন/DST গোলযোগ সহনীয়
 // রাখতে ৬ ঘণ্টার tolerance রাখা হয়েছে — বড় ধরনের (কয়েক দিনের) পিছিয়ে যাওয়াই
@@ -21224,31 +21249,79 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           </div>
         </div>
 
-        {/* ── এন্ট্রি লিস্ট ── */}
+        {/* ── 🆕 আজকের ক্যাশ ড্রয়ার ব্রেকডাউন — কোথা থেকে টাকা যোগ হচ্ছে বনাম
+            কোথা থেকে বিয়োগ হচ্ছে, দুটো পাশাপাশি কলামে (নির্বাচিত দিন/মাস অনুযায়ী) ── */}
+        <div style={{ marginBottom:20 }}>
+          <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:13, marginBottom:10 }}>ক্যাশ ড্রয়ার ব্রেকডাউন</div>
+          <CashDrawerBreakdownColumns sum={histCashDrawerSummary} T={T} />
+        </div>
+
+        {/* ── 🆕 হিস্ট্রি ডিটেইলস — ৩টি পৃথক কলামে: আজকের ক্যাশ ড্রয়ার (যোগ/বিয়োগ
+            লাইন-বাই-লাইন), ওপেনিং ক্যাশ এন্ট্রি, উইথড্রয়াল এন্ট্রি ── */}
+        <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:13, marginBottom:10 }}>হিস্ট্রি ডিটেইলস</div>
         {histEntries.length === 0 ? (
           <div style={{ textAlign:"center", padding:"32px 0", color:"#64748b", fontSize:13 }}>এই সময়ে কোনো এন্ট্রি নেই</div>
-        ) : (
-          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-            {histEntries.map(c => {
-              const meta = c.type === "opening" ? { label:"ওপেনিং ক্যাশ", icon:"🪙", color:"#0ea5e9" } : (CASH_TYPE_META[c.cashType] || CASH_TYPE_META.other);
-              const timeStr = c.createdAt ? new Date(c.createdAt).toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit", timeZone: "Asia/Dhaka" }) : "";
-              return (
-                <div key={c.id} style={{ display:"flex", alignItems:"center", gap:10, background:"rgba(255,255,255,0.03)", border:`1px solid ${meta.color}33`, borderRadius:12, padding:"10px 12px" }}>
-                  <div style={{ width:34, height:34, borderRadius:10, background:`${meta.color}22`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, flexShrink:0 }}>{meta.icon}</div>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:13 }}>
-                      {meta.label}{c.party ? ` — ${c.party}` : ""} — ৳{fmt(c.amount)}
-                    </div>
-                    <div style={{ color:"#94a3b8", fontSize:11 }}>
-                      {isRangeMode && c.dateKey ? `${c.dateKey} ` : ""}
-                      {c.by ? `${c.by} • ` : ""}{c.note || ""}{timeStr ? ` • ${timeStr}` : ""}
-                    </div>
-                  </div>
+        ) : (() => {
+          const histOpeningRows    = histEntries.filter(c => c.type === "opening");
+          const histWithdrawalRows = histEntries.filter(c => c.type !== "opening"); // withdrawal/return_refund/return_refund_reversal
+          const detailRow = (icon, label, val, color) => (
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:11.5 }}>
+              <span style={{ color:"#94a3b8", display:"flex", alignItems:"center", gap:5 }}>{icon} {label}</span>
+              <span style={{ color, fontWeight:800 }}>৳{fmt(val)}</span>
+            </div>
+          );
+          const entryRow = (c) => {
+            const meta = c.type === "opening" ? { label:"ওপেনিং ক্যাশ", icon:"🪙", color:"#0ea5e9" } : (CASH_TYPE_META[c.cashType] || CASH_TYPE_META.other);
+            const timeStr = c.createdAt ? new Date(c.createdAt).toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit", timeZone:"Asia/Dhaka" }) : "";
+            return (
+              <div key={c.id} style={{ background:"rgba(255,255,255,0.03)", border:`1px solid ${meta.color}33`, borderRadius:10, padding:"8px 9px" }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:6 }}>
+                  <span style={{ color:"#e2e8f0", fontWeight:800, fontSize:11.5, display:"flex", alignItems:"center", gap:4, minWidth:0 }}>
+                    <span>{meta.icon}</span><span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{meta.label}{c.party ? ` — ${c.party}` : ""}</span>
+                  </span>
+                  <span style={{ color:meta.color, fontWeight:900, fontSize:11.5, flexShrink:0 }}>৳{fmt(c.amount)}</span>
                 </div>
-              );
-            })}
-          </div>
-        )}
+                <div style={{ color:"#64748b", fontSize:9.5, marginTop:2 }}>
+                  {isRangeMode && c.dateKey ? `${c.dateKey} ` : ""}{c.by ? `${c.by} • ` : ""}{c.note || ""}{timeStr ? ` • ${timeStr}` : ""}
+                </div>
+              </div>
+            );
+          };
+          return (
+            <div style={{ display:"flex", gap:8, alignItems:"flex-start" }}>
+              {/* কলাম ১ — আজকের ক্যাশ ড্রয়ার (যোগ/বিয়োগ লাইন-বাই-লাইন) */}
+              <div style={{ flex:1, background:"rgba(34,197,94,0.06)", border:"1px solid #22c55e33", borderRadius:14, padding:"10px 10px" }}>
+                <div style={{ color:"#86efac", fontWeight:800, fontSize:11, marginBottom:8 }}>🏦 আজকের ক্যাশ ড্রয়ার</div>
+                <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                  {detailRow("🪙", "ওপেনিং", histCashDrawerSummary.openingCash || 0, "#22c55e")}
+                  {detailRow("💵", "নগদ বিক্রয়", histCashDrawerSummary.cashSale || 0, "#22c55e")}
+                  {detailRow("📥", "জমা", histCashDrawerSummary.jomaToday || 0, "#22c55e")}
+                  {histCashDrawerSummary.returnReversalToday > 0 && detailRow("↩️", "রিভার্সাল", histCashDrawerSummary.returnReversalToday, "#22c55e")}
+                  {detailRow("💸", "উইথড্রয়াল", histCashDrawerSummary.cashOutToday || 0, "#f87171")}
+                  {histCashDrawerSummary.returnRefundToday > 0 && detailRow("📤", "রিফান্ড", histCashDrawerSummary.returnRefundToday, "#f87171")}
+                </div>
+                <div style={{ marginTop:9, paddingTop:7, borderTop:"1px dashed #22c55e55", display:"flex", justifyContent:"space-between", fontSize:12 }}>
+                  <span style={{ color:"#86efac", fontWeight:800 }}>মোট</span>
+                  <span style={{ color:"#86efac", fontWeight:900 }}>৳{fmt(histCashDrawerNow)}</span>
+                </div>
+              </div>
+              {/* কলাম ২ — ওপেনিং ক্যাশ এন্ট্রি */}
+              <div style={{ flex:1, background:"rgba(14,165,233,0.06)", border:"1px solid #0ea5e933", borderRadius:14, padding:"10px 10px" }}>
+                <div style={{ color:"#7dd3fc", fontWeight:800, fontSize:11, marginBottom:8 }}>🪙 ওপেনিং ক্যাশ</div>
+                {histOpeningRows.length === 0
+                  ? <div style={{ color:"#64748b", fontSize:10.5, textAlign:"center", padding:"10px 0" }}>কোনো এন্ট্রি নেই</div>
+                  : <div style={{ display:"flex", flexDirection:"column", gap:6 }}>{histOpeningRows.map(entryRow)}</div>}
+              </div>
+              {/* কলাম ৩ — উইথড্রয়াল এন্ট্রি */}
+              <div style={{ flex:1, background:"rgba(244,63,94,0.06)", border:"1px solid #f43f5e33", borderRadius:14, padding:"10px 10px" }}>
+                <div style={{ color:"#fca5a5", fontWeight:800, fontSize:11, marginBottom:8 }}>💸 উইথড্রয়াল</div>
+                {histWithdrawalRows.length === 0
+                  ? <div style={{ color:"#64748b", fontSize:10.5, textAlign:"center", padding:"10px 0" }}>কোনো এন্ট্রি নেই</div>
+                  : <div style={{ display:"flex", flexDirection:"column", gap:6 }}>{histWithdrawalRows.map(entryRow)}</div>}
+              </div>
+            </div>
+          );
+        })()}
 
       </div>
     );
@@ -23701,10 +23774,11 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               হিস্ট্রি
             </button>
           </div>
-          {/* 🆕 আজকের ক্যাশ ড্রয়ার — এডমিন/স্টাফ সবাই দেখতে পাবে */}
-          <div style={{
+          {/* 🆕 আজকের ক্যাশ ড্রয়ার — এডমিন/স্টাফ সবাই দেখতে পাবে; ক্লিক করলে
+              যোগ/বিয়োগ ব্রেকডাউন + দিন/মাস হিস্ট্রি পেজ খোলে */}
+          <div onClick={() => setCashModal("history")} style={{
             display:"flex", alignItems:"center", justifyContent:"space-between", gap:10,
-            marginBottom:12, position:"relative", borderRadius:14, padding:"12px 14px",
+            marginBottom:12, position:"relative", borderRadius:14, padding:"12px 14px", cursor:"pointer",
             background: DT.dark ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.16)",
             border: DT.dark ? "1px solid rgba(255,255,255,0.1)" : "1px solid rgba(255,255,255,0.3)",
             backdropFilter:"blur(4px)",
@@ -23713,7 +23787,10 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               <span style={{ fontSize:18 }}>🏦</span>
               <span style={{ color: DT.dark ? "#cbd5e1" : "#fff", fontSize:12.5, fontWeight:800 }}>আজকের ক্যাশ ড্রয়ার</span>
             </div>
-            <span style={{ color:"#fff", fontWeight:900, fontSize:18 }}>৳{fmt(todayCashDrawerNow)}</span>
+            <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+              <span style={{ color:"#fff", fontWeight:900, fontSize:18 }}>৳{fmt(todayCashDrawerNow)}</span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={DT.dark ? "#94a3b8" : "#ffffffcc"} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
           </div>
           <div style={{ display:"flex", gap:8, marginBottom: (todayOpening || todayWithdrawTotal > 0) ? 12 : 0, position:"relative" }}>
             <button onClick={() => setCashModal("opening")}
@@ -29124,7 +29201,11 @@ function buildDailySummaryData({ invoices = [], txns = [], customers = [], produ
   // এখন returnRefund/returnReversal-ও ঐচ্ছিক প্যারামিটার হিসেবে নেয় (দেখুন
   // logic.js-এর ফিক্স)।
   const currentCashDrawer = calcCashDrawer(openingCash, cashSale, jomaToday, cashOutToday, returnRefundToday, returnReversalToday);
-  return { revenue, cashSale, bakiToday, jomaToday, totalBakiNow, totalProfit, totalLoss, openingCash, cashOutToday, currentCashDrawer, todayPurchaseCost };
+  // 🆕 (৩০ জুলাই ২০২৬) returnRefundToday/returnReversalToday এখন return object-এও
+  // আছে — আগে শুধু currentCashDrawer হিসাবের ভেতরে ব্যবহৃত হতো, বাইরে থেকে
+  // অ্যাক্সেসযোগ্য ছিল না। "আজকের ক্যাশ ড্রয়ার" ব্রেকডাউন UI (যোগ/বিয়োগ কলাম)
+  // এই দুটো আলাদাভাবে দেখানোর জন্য দরকার।
+  return { revenue, cashSale, bakiToday, jomaToday, totalBakiNow, totalProfit, totalLoss, openingCash, cashOutToday, returnRefundToday, returnReversalToday, currentCashDrawer, todayPurchaseCost };
 }
 
 function buildDailySummaryNotifContent(sum, extra = "") {
@@ -29147,6 +29228,54 @@ function buildDailySummaryNotifContent(sum, extra = "") {
       (sum.todayPurchaseCost > 0 ? `\n🛒 আজকের ক্রয় খরচ: ৳${f(sum.todayPurchaseCost)}` : "") +
       extra,
   };
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// 🆕 (৩০ জুলাই ২০২৬) ক্যাশ ড্রয়ার ব্রেকডাউন — "আজকের ক্যাশ ড্রয়ার" মোট সংখ্যাটা
+// কোথা থেকে যোগ হচ্ছে (নগদ বিক্রয়, বাকি আদায়/জমা, ওপেনিং ক্যাশ, রিটার্ন
+// রিভার্সাল) আর কোথা থেকে বিয়োগ হচ্ছে (উইথড্রয়াল, রিটার্ন রিফান্ড) — দুটো
+// পাশাপাশি কলামে দেখায়। buildDailySummaryData()-এর `sum` অবজেক্ট থেকে সরাসরি
+// রিড করে, তাই ড্যাশবোর্ডের নতুন ব্রেকডাউন পেজ ও ক্যাশ হিস্ট্রি পেজ দুই
+// জায়গাতেই এই একই কম্পোনেন্ট পুনর্ব্যবহার হয় (কোনো ডুপ্লিকেট হিসাব না লিখে)।
+// ══════════════════════════════════════════════════════════════════════════
+function CashDrawerBreakdownColumns({ sum, T }) {
+  const addRows = [
+    { label: "ওপেনিং ক্যাশ", icon: "🪙", val: sum.openingCash || 0 },
+    { label: "নগদ বিক্রয়",   icon: "💵", val: sum.cashSale    || 0 },
+    { label: "বাকি আদায় (জমা)", icon: "📥", val: sum.jomaToday || 0 },
+    ...(sum.returnReversalToday > 0 ? [{ label: "রিটার্ন রিভার্সাল", icon: "↩️", val: sum.returnReversalToday }] : []),
+  ];
+  const subRows = [
+    { label: "উইথড্রয়াল", icon: "💸", val: sum.cashOutToday || 0 },
+    ...(sum.returnRefundToday > 0 ? [{ label: "রিটার্ন রিফান্ড", icon: "📤", val: sum.returnRefundToday }] : []),
+  ];
+  const addTotal = addRows.reduce((s, r) => s + r.val, 0);
+  const subTotal = subRows.reduce((s, r) => s + r.val, 0);
+  const Col = ({ title, rows, total, color, sign }) => (
+    <div style={{ flex: 1, background: `${color}14`, border: `1px solid ${color}3a`, borderRadius: 14, padding: "12px 12px 10px" }}>
+      <div style={{ color, fontWeight: 800, fontSize: 12, marginBottom: 10, display: "flex", alignItems: "center", gap: 5 }}>
+        <span>{sign}</span> {title}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {rows.map((r, i) => (
+          <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12 }}>
+            <span style={{ color: T.sub || "#94a3b8", display: "flex", alignItems: "center", gap: 5 }}>{r.icon} {r.label}</span>
+            <span style={{ color: T.text || "#f1f5f9", fontWeight: 800 }}>৳{fmt(r.val)}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ marginTop: 10, paddingTop: 8, borderTop: `1px dashed ${color}55`, display: "flex", justifyContent: "space-between", fontSize: 12.5 }}>
+        <span style={{ color, fontWeight: 800 }}>মোট</span>
+        <span style={{ color, fontWeight: 900 }}>৳{fmt(total)}</span>
+      </div>
+    </div>
+  );
+  return (
+    <div style={{ display: "flex", gap: 10 }}>
+      <Col title="টাকা যোগ হচ্ছে" rows={addRows} total={addTotal} color="#22c55e" sign="+" />
+      <Col title="টাকা বিয়োগ হচ্ছে" rows={subRows} total={subTotal} color="#f43f5e" sign="−" />
+    </div>
+  );
 }
 
 function DailyNotifCard({ S, T = {}, shopName, showToast, customers = [], invoices = [], txns = [], cashLogs = [], products = [], purchaseOrders = [], returns = [] }) {
@@ -31674,6 +31803,27 @@ function Settings_({ T, S, shopName,
   const [newPinConfirm,  setNewPinConfirm]  = useState("");
   const [pinChangeErr,   setPinChangeErr]   = useState("");
   const [pinStep,        setPinStep]        = useState(1); // 1=old, 2=new, 3=confirm
+  // 🆕 Admin PIN change/forgot state (স্টাফ↔এডমিন সুইচ PIN)
+  const [showAdminPinChange, setShowAdminPinChange] = useState(false);
+  const [adminPinMode,       setAdminPinMode]       = useState("old"); // old|forgotCode|new|confirm
+  const [adminOldPinInput,   setAdminOldPinInput]   = useState("");
+  const [adminNewPinInput,   setAdminNewPinInput]   = useState("");
+  const [adminNewPinConfirm, setAdminNewPinConfirm] = useState("");
+  const [adminPinErr,        setAdminPinErr]        = useState("");
+  const [adminPinHashCur,    setAdminPinHashCur]    = useState(null);
+  const [adminPinDeviceId,   setAdminPinDeviceId]   = useState("");
+  const [forgotCodeInput,    setForgotCodeInput]    = useState("");
+  const [adminPinBusy,       setAdminPinBusy]       = useState(false);
+  const adminPinEntryMode = adminPinHashCur ? "old" : "new";
+  useEffect(() => {
+    if (!showAdminPinChange) return;
+    (async () => {
+      const h = await load(ADMIN_SWITCH_PIN_KEY);
+      setAdminPinHashCur(h);
+      setAdminPinMode(h ? "old" : "new");
+      setAdminPinDeviceId(await getOrCreateLicenseDeviceId());
+    })();
+  }, [showAdminPinChange]);
   // 🆕 সেটিং পেজের নেস্টেড প্যানেলগুলো শেয়ার্ড back-stack-এ — থিম/ফন্ট পিকার ও
   // SMS/রিসাইকেল বিন প্যানেল এক ধাপ (বন্ধ), আর PIN change প্যানেলের ভেতরের
   // নিজস্ব ধাপ (1→2→3) আগে একধাপ করে পিছাবে, পুরোপুরি ১-এ এলে তবেই প্যানেলটাই বন্ধ হবে।
@@ -31683,6 +31833,8 @@ function Settings_({ T, S, shopName,
   useBackHandler(showBinExpanded,  () => { setShowBinExpanded(false); return true; });
   useBackHandler(showPinChange && pinStep > 1, () => { setPinStep(s => Math.max(1, s - 1)); return true; });
   useBackHandler(showPinChange && pinStep === 1, () => { setShowPinChange(false); return true; });
+  useBackHandler(showAdminPinChange && adminPinMode !== adminPinEntryMode, () => { setAdminPinMode(adminPinEntryMode); setAdminPinErr(""); return true; });
+  useBackHandler(showAdminPinChange && adminPinMode === adminPinEntryMode, () => { setShowAdminPinChange(false); return true; });
   // Master Key gate state
   const [mkTarget,       setMkTarget]       = useState(null); // "firebase" | "sms" | "gdrive" | "ldrive"
   // gdUnlocked/ldUnlocked সরানো হয়েছে — BackupRestoreSystem নিজেই handle করে
@@ -33108,6 +33260,135 @@ onChange={()=>{}} />
         )}
       </div>
 
+      {/* 🆕 Admin PIN পরিবর্তন কার্ড — স্টাফ↔এডমিন সুইচ PIN (মালিকের লগইন PIN থেকে
+          আলাদা)। ভুলে গেলে "Admin PIN ভুলে গেছেন?" থেকে ডিভাইস আইডি দেখিয়ে,
+          ডেভেলপারের দেওয়া মাসিক রিসেট কোড দিয়ে (লাইসেন্স কোড সিস্টেমের একই
+          অফলাইন প্যাটার্নে) পুরনো PIN ছাড়াই নতুন PIN বসানো যায়। */}
+      <div className="qc-gradient-card" style={{ ...S.card }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div>
+            <div style={{ color: T.text, fontWeight: 700, fontSize: 14, display:"flex", alignItems:"center", gap:8 }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#a855f7" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+              Admin PIN পরিবর্তন
+            </div>
+            <div style={{ color: T.sub, fontSize: 11, marginTop: 2 }}>স্টাফ থেকে এডমিনে সুইচ করার PIN</div>
+          </div>
+          <button style={S.linkBtn} onClick={() => {
+            setShowAdminPinChange(v => !v);
+            setAdminOldPinInput(""); setAdminNewPinInput(""); setAdminNewPinConfirm("");
+            setForgotCodeInput(""); setAdminPinErr("");
+          }}>
+            {showAdminPinChange ? "বাতিল" : "পরিবর্তন"}
+          </button>
+        </div>
+        {showAdminPinChange && (
+          <div style={{ marginTop: 14 }}>
+            {adminPinMode === "old" && (
+              <>
+                <label style={S.label}>বর্তমান Admin PIN দিন</label>
+                <input type="tel" inputMode="numeric" pattern="[0-9]*" maxLength={8}
+                  placeholder="••••"
+                  value={adminOldPinInput}
+                  onChange={e => { setAdminOldPinInput(e.target.value.replace(/[^0-9]/g,"")); setAdminPinErr(""); }}
+                  style={{ ...S.input, textAlign:"center", letterSpacing:8, fontSize:22, fontWeight:800 }} />
+                {adminPinErr && <div style={{ color:"#ef4444", fontSize:12, marginBottom:8 }}>{adminPinErr}</div>}
+                <button style={{ ...S.saveBtn, width:"100%", background:"linear-gradient(135deg,#7c3aed,#a855f7)" }}
+                  disabled={adminPinBusy}
+                  onClick={async () => {
+                    if (!adminOldPinInput || adminOldPinInput.length < 4) { setAdminPinErr("কমপক্ষে ৪ ডিজিটের PIN দিন"); return; }
+                    setAdminPinBusy(true);
+                    const hashed = await hashPassword(adminOldPinInput);
+                    setAdminPinBusy(false);
+                    if (hashed !== adminPinHashCur) { setAdminPinErr("ভুল PIN, আবার চেষ্টা করুন"); setAdminOldPinInput(""); return; }
+                    setAdminPinMode("new"); setAdminPinErr("");
+                  }}>পরবর্তী →</button>
+                <div style={{ textAlign:"center", marginTop:12 }}>
+                  <button style={{ background:"none", border:"none", color:"#a855f7", fontSize:12, fontWeight:700, cursor:"pointer", textDecoration:"underline", fontFamily:"inherit" }}
+                    onClick={() => { setAdminPinMode("forgotCode"); setAdminPinErr(""); setForgotCodeInput(""); }}>
+                    Admin PIN ভুলে গেছেন?
+                  </button>
+                </div>
+              </>
+            )}
+            {adminPinMode === "forgotCode" && (
+              <>
+                <div style={{ background:"#7c3aed14", border:"1px solid #a855f733", borderRadius:12, padding:12, marginBottom:12 }}>
+                  <div style={{ color:T.sub, fontSize:11, marginBottom:6, lineHeight:1.6 }}>এই ডিভাইস আইডিটা ডেভেলপারকে (Protik) কল/মেসেজ করে পাঠান — উনি একটা রিসেট কোড দেবেন, যেটা শুধু এই মাসের জন্যই কাজ করবে</div>
+                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                    <div style={{ flex:1, fontFamily:"monospace", fontSize:17, fontWeight:900, color:"#a855f7", letterSpacing:2, textAlign:"center", background:"#0d1526", borderRadius:8, padding:"8px 0" }}>
+                      {adminPinDeviceId || "..."}
+                    </div>
+                    <button style={{ ...S.cancelBtn, padding:"8px 12px", fontSize:12 }} onClick={async () => {
+                      try { await navigator.clipboard.writeText(adminPinDeviceId); showToast("✅ কপি হয়েছে"); } catch (e) {}
+                    }}>কপি</button>
+                  </div>
+                </div>
+                <label style={S.label}>রিসেট কোড দিন (৬ ডিজিট)</label>
+                <input type="tel" inputMode="numeric" pattern="[0-9]*" maxLength={6}
+                  placeholder="------"
+                  value={forgotCodeInput}
+                  onChange={e => { setForgotCodeInput(e.target.value.replace(/[^0-9]/g,"")); setAdminPinErr(""); }}
+                  style={{ ...S.input, textAlign:"center", letterSpacing:8, fontSize:22, fontWeight:800 }} />
+                {adminPinErr && <div style={{ color:"#ef4444", fontSize:12, marginBottom:8 }}>{adminPinErr}</div>}
+                <div style={S.rowBtns}>
+                  <button style={S.cancelBtn} onClick={() => { setAdminPinMode(adminPinEntryMode); setAdminPinErr(""); }}>ফিরে যান</button>
+                  <button style={{ ...S.saveBtn, background:"linear-gradient(135deg,#7c3aed,#a855f7)" }} disabled={adminPinBusy} onClick={async () => {
+                    if (forgotCodeInput.length !== 6) { setAdminPinErr("৬ ডিজিটের কোড দিন"); return; }
+                    setAdminPinBusy(true);
+                    const ok = await verifyAdminPinResetCode(adminPinDeviceId, forgotCodeInput);
+                    setAdminPinBusy(false);
+                    if (!ok) { setAdminPinErr("ভুল বা মেয়াদোত্তীর্ণ কোড"); setForgotCodeInput(""); return; }
+                    setAdminPinMode("new"); setAdminPinErr("");
+                  }}>যাচাই করুন</button>
+                </div>
+              </>
+            )}
+            {adminPinMode === "new" && (
+              <>
+                <label style={S.label}>নতুন Admin PIN দিন (কমপক্ষে ৪ ডিজিট)</label>
+                <input type="tel" inputMode="numeric" pattern="[0-9]*" maxLength={8}
+                  placeholder="••••"
+                  value={adminNewPinInput}
+                  onChange={e => { setAdminNewPinInput(e.target.value.replace(/[^0-9]/g,"")); setAdminPinErr(""); }}
+                  style={{ ...S.input, textAlign:"center", letterSpacing:8, fontSize:22, fontWeight:800 }} />
+                {adminPinErr && <div style={{ color:"#ef4444", fontSize:12, marginBottom:8 }}>{adminPinErr}</div>}
+                <button style={{ ...S.saveBtn, width:"100%", background:"linear-gradient(135deg,#7c3aed,#a855f7)" }} onClick={() => {
+                  if (!adminNewPinInput || adminNewPinInput.length < 4) { setAdminPinErr("কমপক্ষে ৪ ডিজিটের PIN দিন"); return; }
+                  setAdminPinMode("confirm"); setAdminPinErr("");
+                }}>পরবর্তী →</button>
+              </>
+            )}
+            {adminPinMode === "confirm" && (
+              <>
+                <label style={S.label}>নতুন PIN আবার লিখুন</label>
+                <input type="tel" inputMode="numeric" pattern="[0-9]*" maxLength={8}
+                  placeholder="••••"
+                  value={adminNewPinConfirm}
+                  onChange={e => { setAdminNewPinConfirm(e.target.value.replace(/[^0-9]/g,"")); setAdminPinErr(""); }}
+                  style={{ ...S.input, textAlign:"center", letterSpacing:8, fontSize:22, fontWeight:800 }} />
+                {adminPinErr && <div style={{ color:"#ef4444", fontSize:12, marginBottom:8 }}>{adminPinErr}</div>}
+                <button style={{ ...S.saveBtn, width:"100%", background:"linear-gradient(135deg,#7c3aed,#a855f7)" }} disabled={adminPinBusy} onClick={async () => {
+                  if (adminNewPinInput !== adminNewPinConfirm) { setAdminPinErr("PIN দুটি মিলছে না"); setAdminNewPinConfirm(""); return; }
+                  setAdminPinBusy(true);
+                  const hashed = await hashPassword(adminNewPinInput);
+                  await save(ADMIN_SWITCH_PIN_KEY, hashed);
+                  setAdminPinBusy(false);
+                  setAdminPinHashCur(hashed);
+                  setShowAdminPinChange(false);
+                  setAdminOldPinInput(""); setAdminNewPinInput(""); setAdminNewPinConfirm(""); setForgotCodeInput("");
+                  setAdminPinMode("old");
+                  showToast("✅ Admin PIN সফলভাবে পরিবর্তন হয়েছে");
+                }}>
+                  <span style={{display:"flex",alignItems:"center",gap:6,justifyContent:"center"}}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    PIN সেভ করুন
+                  </span>
+                </button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* 🔐 Recovery Setup Card — মালিক ছাড়া কেউ দেখতে পারবে না (নিরাপত্তা) */}
       {currentUser?.role !== "staff" && !OFFLINE_MODE && (
