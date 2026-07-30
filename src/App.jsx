@@ -20604,6 +20604,9 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   const [cashType,    setCashType]    = useState("owner"); // "owner" | "supplier" | "expense" | "other"
   const [cashParty,   setCashParty]   = useState(""); // কোম্পানি/পক্ষের নাম (supplier/other এর জন্য)
   const [cashPartyOpen, setCashPartyOpen] = useState(false); // 🆕 সাপ্লায়ার নাম অটো-সাজেস্ট ড্রপডাউন খোলা/বন্ধ
+  // 🆕 (৩০ জুলাই ২০২৬) নিচে "আজকের ওপেনিং ক্যাশ"/"ক্যাশ উইথড্র করুন" পেজে সেদিনের এন্ট্রি
+  // তালিকা থেকে ট্যাপ করে এডিট করার জন্য — null মানে নতুন এন্ট্রি, id থাকলে সেই এন্ট্রি এডিট হচ্ছে।
+  const [editingCashLogId, setEditingCashLogId] = useState(null);
   const cashHistNav = useUnifiedDayMonthNav(); // 🆕 হিস্ট্রি পেজের একক দিন/মাস নেভিগেটর
 
   // ── 📅 dashModal ডিটেইলস পেজের তারিখ রেঞ্জ state — Rules of Hooks অনুযায়ী top-level এ unconditional call ──
@@ -20700,6 +20703,21 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   const addCashLog = (type) => {
     const amt = parseFloat(cashAmount);
     if (!amt || amt <= 0) { return; }
+    // 🆕 (৩০ জুলাই ২০২৬) এডিট মোডে থাকলে (তালিকা থেকে ট্যাপ করে) নতুন এন্ট্রি না বানিয়ে
+    // পুরনো এন্ট্রিটাই আপডেট হবে — id/type/date/createdAt/by অপরিবর্তিত রেখে শুধু
+    // amount/note (ও উইথড্রয়ালের ক্ষেত্রে cashType/party) বদলানো হয়।
+    if (editingCashLogId) {
+      const old = (cashLogs || []).find(c => c.id === editingCashLogId);
+      if (!old) { setEditingCashLogId(null); return; }
+      const updated = {
+        ...old, amount: amt, note: cashNote,
+        ...(type === "withdrawal" ? { cashType, party: (cashType === "supplier" || cashType === "other") ? cashParty : "" } : {}),
+      };
+      pushCashLog(updated);
+      setCashLogs(prev => (prev || []).map(c => c.id === editingCashLogId ? updated : c));
+      setCashAmount(""); setCashNote(""); setCashParty(""); setCashType("owner"); setCashModal(null); setCashPartyOpen(false); setEditingCashLogId(null);
+      return;
+    }
     const entry = {
       id: uid(), type, amount: amt, note: cashNote,
       date: todayStr(), dateKey: todayKeyStr,
@@ -20733,6 +20751,28 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     setCashAmount(""); setCashNote(""); setCashParty(""); setCashType("owner"); setCashModal(null); setCashPartyOpen(false);
   };
 
+  // 🆕 তালিকার এন্ট্রিতে ট্যাপ করলে ফর্মে লোড হয়ে এডিট মোড চালু হবে
+  const startEditCashLog = (entry) => {
+    setEditingCashLogId(entry.id);
+    setCashAmount(String(entry.amount || ""));
+    setCashNote(entry.note || "");
+    if (entry.type === "withdrawal") {
+      setCashType(entry.cashType || "owner");
+      setCashParty(entry.party || "");
+    }
+  };
+  const cancelEditCashLog = () => {
+    setEditingCashLogId(null);
+    setCashAmount(""); setCashNote(""); setCashParty(""); setCashType("owner"); setCashPartyOpen(false);
+  };
+  // 🆕 তালিকা থেকে সরাসরি ডিলিট — supplierPayments মডিউলের deletePayment()-এর একই প্যাটার্ন
+  const deleteCashLogEntry = (id) => {
+    if (!window.confirm("এই এন্ট্রি মুছবেন? এটা ফেরত আনা যাবে না।")) return;
+    setCashLogs(prev => (prev || []).filter(c => c.id !== id));
+    if (FSS.isReady()) FSS.deleteRecord("cashLogs", id);
+    if (editingCashLogId === id) cancelEditCashLog();
+  };
+
 
   // পুরো "order" ফ্লো (landing/create/create-review/view/...) ছেড়ে গেলেই সিলেকশন রিসেট হয়।
   // 🆕 ফিক্স: "পণ্য বেছে নিন" পেজের সার্চবার (poSupplierQuery) আগে রিসেট হতো না — ব্যাক
@@ -20745,6 +20785,16 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       setPoSupplierSelected(null);
       setPoSupplierSuggestOpen(false);
       setPoListDayFilter(todayEn());
+      // 🆕 ফিক্স (৩০ জুলাই ২০২৬): "কাস্টমার অর্ডার" মিনি-ফর্মের ফিল্ডগুলো (নাম/ফোন/
+      // পণ্যের নাম/ডোজ-ফর্ম/সাপ্লায়ার/পরিমাণ/টাকা) আগে এখানে রিসেট হতো না — অর্ডার
+      // ফ্লো ছেড়ে আবার ঢুকলেও আগের টাইপ করা ইনপুট ফর্মে থেকে যেত, ডিফল্টে আসত না।
+      // এখন পুরো ফ্লো ছেড়ে গেলে এই ফর্মও পুরোপুরি খালি/ডিফল্ট অবস্থায় ফিরে যাবে।
+      setCustOrderCustomerName(""); setCustOrderCustomerPhone(""); setCustOrderCustomerSuggestOpen(false);
+      setCustOrderName(""); setCustOrderProductId(null); setCustOrderNameSuggestOpen(false);
+      setCustOrderDosageForm(""); setCustOrderDosageCustomOpen(false); setCustOrderDosageDraft("");
+      setCustOrderSupplier(""); setCustOrderSupplierAuto(false); setCustOrderSupplierCustomMode(false); setCustOrderSupplierSuggestOpen(false);
+      setCustOrderQty(""); setCustOrderTotalPrice(""); setCustOrderAdvance(""); setCustOrderFormError("");
+      setCustomOrderItems([]);
     }
   }, [invModal]);
   // ড্যাশমোডাল বন্ধ হলে (ফিরুন বাটন/ফোনের ব্যাক/নেভিগেশন হোম) ভেতরের ইনভয়েস-ভিউও বন্ধ হবে
@@ -20961,7 +21011,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     const isOpening = cashModal === "opening";
     return (
       <div style={{ ...S.page, minHeight:"100%", background:"linear-gradient(160deg,#150f30,#1e1042 45%,#150f30)" }}>
-        <button style={S.textBtn} onClick={() => { setCashModal(null); setCashAmount(""); setCashNote(""); setCashParty(""); setCashType("owner"); setCashPartyOpen(false); }}>← ড্যাশবোর্ডে ফিরুন</button>
+        <button style={S.textBtn} onClick={() => { setCashModal(null); setCashAmount(""); setCashNote(""); setCashParty(""); setCashType("owner"); setCashPartyOpen(false); setEditingCashLogId(null); }}>← ড্যাশবোর্ডে ফিরুন</button>
 
         <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:20 }}>
           <div style={{ width:46, height:46, borderRadius:14, display:"flex", alignItems:"center", justifyContent:"center", fontSize:22,
@@ -21072,16 +21122,61 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             style={{ width:"100%", background:"rgba(255,255,255,0.04)", border:"1px solid rgba(167,139,250,0.25)", borderRadius:14, padding:"14px 16px", color:"#fff", fontSize:14, fontFamily:"inherit", boxSizing:"border-box" }} />
         </div>
 
+        {/* 🆕 এডিট মোডে থাকলে একটা ছোট ব্যানার — কোন এন্ট্রি এডিট হচ্ছে সেটা স্পষ্ট বোঝাতে */}
+        {editingCashLogId && (
+          <div style={{ marginBottom:14, padding:"9px 14px", borderRadius:12, background:"rgba(250,204,21,0.12)", border:"1px solid rgba(250,204,21,0.35)", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+            <span style={{ color:"#facc15", fontWeight:800, fontSize:12 }}>✏️ পুরনো এন্ট্রি এডিট করছেন</span>
+            <button onClick={cancelEditCashLog} style={{ background:"none", border:"none", color:"#facc15", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", textDecoration:"underline" }}>বাতিল</button>
+          </div>
+        )}
+
         <div style={{ display:"flex", gap:10 }}>
-          <button onClick={() => { setCashModal(null); setCashAmount(""); setCashNote(""); setCashParty(""); setCashType("owner"); setCashPartyOpen(false); }}
+          <button onClick={() => { setCashModal(null); setCashAmount(""); setCashNote(""); setCashParty(""); setCashType("owner"); setCashPartyOpen(false); setEditingCashLogId(null); }}
             style={{ flex:1, background:"rgba(255,255,255,0.06)", color:"#cbd5e1", border:"1px solid rgba(255,255,255,0.1)", borderRadius:14, padding:"14px", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:"inherit" }}>
             বাতিল
           </button>
           <button onClick={() => addCashLog(isOpening ? "opening" : "withdrawal")}
             style={{ flex:1.4, background: isOpening ? "linear-gradient(135deg,#0ea5e9,#0369a1)" : "linear-gradient(135deg,#f43f5e,#b91c1c)", color:"#fff", border:"none", borderRadius:14, padding:"14px", fontWeight:900, fontSize:14, cursor:"pointer", fontFamily:"inherit", boxShadow: isOpening ? "0 8px 20px -8px #0ea5e9aa" : "0 8px 20px -8px #ef4444aa" }}>
-            ✓ সংরক্ষণ করুন
+            {editingCashLogId ? "✓ আপডেট করুন" : "✓ সংরক্ষণ করুন"}
           </button>
         </div>
+
+        {/* 🆕 (৩০ জুলাই ২০২৬) নিচে সেদিনের ওপেনিং ক্যাশ/উইথড্রয়াল হিস্ট্রি — ট্যাপ করলে
+            উপরের ফর্মে লোড হয়ে এডিট করা যাবে, 🗑️ দিয়ে সরাসরি ডিলিটও করা যাবে। */}
+        {(() => {
+          const todaysEntries = isOpening ? todayOpeningEntries : todayWithdrawals;
+          return (
+            <div style={{ marginTop:26 }}>
+              <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:13, marginBottom:10 }}>আজকের {isOpening ? "ওপেনিং ক্যাশ" : "উইথড্রয়াল"} হিস্ট্রি</div>
+              {todaysEntries.length === 0 ? (
+                <div style={{ textAlign:"center", padding:"20px 0", color:"#64748b", fontSize:12.5 }}>আজ এখনো কোনো এন্ট্রি নেই</div>
+              ) : (
+                <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                  {todaysEntries.map(c => {
+                    const meta = c.type === "opening" ? { label:"ওপেনিং ক্যাশ", icon:"🪙" } : (CASH_TYPE_META[c.cashType] || CASH_TYPE_META.other);
+                    const timeStr = c.createdAt ? new Date(c.createdAt).toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit", timeZone:"Asia/Dhaka" }) : "";
+                    const isActive = editingCashLogId === c.id;
+                    return (
+                      <div key={c.id} style={{ display:"flex", alignItems:"center", gap:8, background: isActive ? "rgba(250,204,21,0.10)" : "rgba(255,255,255,0.035)", border: `1px solid ${isActive ? "rgba(250,204,21,0.4)" : "rgba(167,139,250,0.18)"}`, borderRadius:12, padding:"10px 12px" }}>
+                        <div onClick={() => startEditCashLog(c)} style={{ flex:1, cursor:"pointer", minWidth:0 }}>
+                          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:6 }}>
+                            <span style={{ color:"#f1edff", fontWeight:800, fontSize:12.5, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                              {meta.icon} {meta.label}{c.party ? ` — ${c.party}` : ""}
+                            </span>
+                            <span style={{ color: isOpening ? "#7dd3fc" : "#fca5a5", fontWeight:900, fontSize:13, flexShrink:0 }}>৳{fmt(c.amount)}</span>
+                          </div>
+                          <div style={{ color:"#64748b", fontSize:10.5, marginTop:2 }}>{c.by ? `${c.by} • ` : ""}{timeStr}{c.note ? ` • ${c.note}` : ""}</div>
+                        </div>
+                        <button onClick={() => deleteCashLogEntry(c.id)} title="মুছুন"
+                          style={{ background:"rgba(239,68,68,0.14)", border:"1px solid rgba(239,68,68,0.3)", borderRadius:9, width:30, height:30, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", fontSize:13 }}>🗑️</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
     );
   }
@@ -21180,7 +21275,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
         </div>
 
         {/* ── একক দিন/মাস নেভিগেটর ── */}
-        <UnifiedDayMonthNav hook={cashHistNav} accentColor="#a78bfa" T={T} />
+        <UnifiedDayMonthNav hook={cashHistNav} accentColor="#a78bfa" T={{ ...T, text:"#f1f5f9", sub:"#94a3b8", bg:"#1e1042", card:"rgba(255,255,255,0.04)" }} />
 
         {/* তারিখ লেবেল */}
         <div style={{ textAlign:"center", color:"#94a3b8", fontSize:12, fontWeight:700, marginBottom:14 }}>
@@ -21252,72 +21347,42 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
         {/* ── 🆕 আজকের ক্যাশ ড্রয়ার ব্রেকডাউন — কোথা থেকে টাকা যোগ হচ্ছে বনাম
             কোথা থেকে বিয়োগ হচ্ছে, দুটো পাশাপাশি কলামে (নির্বাচিত দিন/মাস অনুযায়ী) ── */}
         <div style={{ marginBottom:20 }}>
-          <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:13, marginBottom:10 }}>ক্যাশ ড্রয়ার ব্রেকডাউন</div>
-          <CashDrawerBreakdownColumns sum={histCashDrawerSummary} T={T} />
+          <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:13, marginBottom:10, textAlign:"center" }}>ক্যাশ ড্রয়ার ব্রেকডাউন</div>
+          {/* 🆕 এই পেজের ব্যাকগ্রাউন্ড সবসময় গাঢ় বেগুনি (থিম যাই হোক), তাই এখানে অ্যাপের
+              আসল থিম T (হালকা থিমে dark টেক্সট রঙ দিতে পারে) না পাঠিয়ে fixed dark-safe
+              রঙ পাঠানো হচ্ছে — যাতে লেখা যেকোনো থিমে সবসময় স্পষ্ট দেখা যায়। */}
+          <CashDrawerBreakdownColumns sum={histCashDrawerSummary} T={{ text:"#f1f5f9", sub:"#94a3b8" }} />
         </div>
 
-        {/* ── 🆕 হিস্ট্রি ডিটেইলস — ৩টি পৃথক কলামে: আজকের ক্যাশ ড্রয়ার (যোগ/বিয়োগ
-            লাইন-বাই-লাইন), ওপেনিং ক্যাশ এন্ট্রি, উইথড্রয়াল এন্ট্রি ── */}
-        <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:13, marginBottom:10 }}>হিস্ট্রি ডিটেইলস</div>
+        {/* 🆕 (৩০ জুলাই ২০২৬) হিস্ট্রি ডিটেইলস — আগে ৩টি পৃথক ছোট কলাম (আজকের ক্যাশ
+            ড্রয়ার + ওপেনিং ক্যাশ এন্ট্রি + উইথড্রয়াল এন্ট্রি) পাশাপাশি দেখানো হতো।
+            এখন শুধু "আজকের ক্যাশ ড্রয়ার" ব্রেকডাউন কার্ডটাই থাকছে (ওপেনিং/উইথড্রয়াল
+            এন্ট্রি কলাম দুটো বাদ দেওয়া হয়েছে — একই ডেটা উপরের "ক্যাশ ড্রয়ার
+            ব্রেকডাউন" সেকশনে আছে), মাঝে বড় করে সেন্টার-অ্যালাইন্ড করে দেখানো হচ্ছে। */}
+        <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:13, marginBottom:10, textAlign:"center" }}>হিস্ট্রি ডিটেইলস</div>
         {histEntries.length === 0 ? (
           <div style={{ textAlign:"center", padding:"32px 0", color:"#64748b", fontSize:13 }}>এই সময়ে কোনো এন্ট্রি নেই</div>
         ) : (() => {
-          const histOpeningRows    = histEntries.filter(c => c.type === "opening");
-          const histWithdrawalRows = histEntries.filter(c => c.type !== "opening"); // withdrawal/return_refund/return_refund_reversal
           const detailRow = (icon, label, val, color) => (
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:11.5 }}>
-              <span style={{ color:"#94a3b8", display:"flex", alignItems:"center", gap:5 }}>{icon} {label}</span>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13.5 }}>
+              <span style={{ color:"#cbd5e1", display:"flex", alignItems:"center", gap:6 }}>{icon} {label}</span>
               <span style={{ color, fontWeight:800 }}>৳{fmt(val)}</span>
             </div>
           );
-          const entryRow = (c) => {
-            const meta = c.type === "opening" ? { label:"ওপেনিং ক্যাশ", icon:"🪙", color:"#0ea5e9" } : (CASH_TYPE_META[c.cashType] || CASH_TYPE_META.other);
-            const timeStr = c.createdAt ? new Date(c.createdAt).toLocaleTimeString("en-US", { hour:"2-digit", minute:"2-digit", timeZone:"Asia/Dhaka" }) : "";
-            return (
-              <div key={c.id} style={{ background:"rgba(255,255,255,0.03)", border:`1px solid ${meta.color}33`, borderRadius:10, padding:"8px 9px" }}>
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:6 }}>
-                  <span style={{ color:"#e2e8f0", fontWeight:800, fontSize:11.5, display:"flex", alignItems:"center", gap:4, minWidth:0 }}>
-                    <span>{meta.icon}</span><span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{meta.label}{c.party ? ` — ${c.party}` : ""}</span>
-                  </span>
-                  <span style={{ color:meta.color, fontWeight:900, fontSize:11.5, flexShrink:0 }}>৳{fmt(c.amount)}</span>
-                </div>
-                <div style={{ color:"#64748b", fontSize:9.5, marginTop:2 }}>
-                  {isRangeMode && c.dateKey ? `${c.dateKey} ` : ""}{c.by ? `${c.by} • ` : ""}{c.note || ""}{timeStr ? ` • ${timeStr}` : ""}
-                </div>
-              </div>
-            );
-          };
           return (
-            <div style={{ display:"flex", gap:8, alignItems:"flex-start" }}>
-              {/* কলাম ১ — আজকের ক্যাশ ড্রয়ার (যোগ/বিয়োগ লাইন-বাই-লাইন) */}
-              <div style={{ flex:1, background:"rgba(34,197,94,0.06)", border:"1px solid #22c55e33", borderRadius:14, padding:"10px 10px" }}>
-                <div style={{ color:"#86efac", fontWeight:800, fontSize:11, marginBottom:8 }}>🏦 আজকের ক্যাশ ড্রয়ার</div>
-                <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
-                  {detailRow("🪙", "ওপেনিং", histCashDrawerSummary.openingCash || 0, "#22c55e")}
-                  {detailRow("💵", "নগদ বিক্রয়", histCashDrawerSummary.cashSale || 0, "#22c55e")}
-                  {detailRow("📥", "জমা", histCashDrawerSummary.jomaToday || 0, "#22c55e")}
-                  {histCashDrawerSummary.returnReversalToday > 0 && detailRow("↩️", "রিভার্সাল", histCashDrawerSummary.returnReversalToday, "#22c55e")}
-                  {detailRow("💸", "উইথড্রয়াল", histCashDrawerSummary.cashOutToday || 0, "#f87171")}
-                  {histCashDrawerSummary.returnRefundToday > 0 && detailRow("📤", "রিফান্ড", histCashDrawerSummary.returnRefundToday, "#f87171")}
-                </div>
-                <div style={{ marginTop:9, paddingTop:7, borderTop:"1px dashed #22c55e55", display:"flex", justifyContent:"space-between", fontSize:12 }}>
-                  <span style={{ color:"#86efac", fontWeight:800 }}>মোট</span>
-                  <span style={{ color:"#86efac", fontWeight:900 }}>৳{fmt(histCashDrawerNow)}</span>
-                </div>
+            <div style={{ maxWidth:420, margin:"0 auto", background:"rgba(34,197,94,0.06)", border:"1px solid #22c55e33", borderRadius:18, padding:"18px 18px 16px" }}>
+              <div style={{ color:"#86efac", fontWeight:800, fontSize:14, marginBottom:12, textAlign:"center" }}>🏦 আজকের ক্যাশ ড্রয়ার</div>
+              <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                {detailRow("🪙", "ওপেনিং", histCashDrawerSummary.openingCash || 0, "#22c55e")}
+                {detailRow("💵", "নগদ বিক্রয়", histCashDrawerSummary.cashSale || 0, "#22c55e")}
+                {detailRow("📥", "জমা", histCashDrawerSummary.jomaToday || 0, "#22c55e")}
+                {histCashDrawerSummary.returnReversalToday > 0 && detailRow("↩️", "রিভার্সাল", histCashDrawerSummary.returnReversalToday, "#22c55e")}
+                {detailRow("💸", "উইথড্রয়াল", histCashDrawerSummary.cashOutToday || 0, "#f87171")}
+                {histCashDrawerSummary.returnRefundToday > 0 && detailRow("📤", "রিফান্ড", histCashDrawerSummary.returnRefundToday, "#f87171")}
               </div>
-              {/* কলাম ২ — ওপেনিং ক্যাশ এন্ট্রি */}
-              <div style={{ flex:1, background:"rgba(14,165,233,0.06)", border:"1px solid #0ea5e933", borderRadius:14, padding:"10px 10px" }}>
-                <div style={{ color:"#7dd3fc", fontWeight:800, fontSize:11, marginBottom:8 }}>🪙 ওপেনিং ক্যাশ</div>
-                {histOpeningRows.length === 0
-                  ? <div style={{ color:"#64748b", fontSize:10.5, textAlign:"center", padding:"10px 0" }}>কোনো এন্ট্রি নেই</div>
-                  : <div style={{ display:"flex", flexDirection:"column", gap:6 }}>{histOpeningRows.map(entryRow)}</div>}
-              </div>
-              {/* কলাম ৩ — উইথড্রয়াল এন্ট্রি */}
-              <div style={{ flex:1, background:"rgba(244,63,94,0.06)", border:"1px solid #f43f5e33", borderRadius:14, padding:"10px 10px" }}>
-                <div style={{ color:"#fca5a5", fontWeight:800, fontSize:11, marginBottom:8 }}>💸 উইথড্রয়াল</div>
-                {histWithdrawalRows.length === 0
-                  ? <div style={{ color:"#64748b", fontSize:10.5, textAlign:"center", padding:"10px 0" }}>কোনো এন্ট্রি নেই</div>
-                  : <div style={{ display:"flex", flexDirection:"column", gap:6 }}>{histWithdrawalRows.map(entryRow)}</div>}
+              <div style={{ marginTop:14, paddingTop:12, borderTop:"1px dashed #22c55e55", display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:15 }}>
+                <span style={{ color:"#86efac", fontWeight:800 }}>মোট</span>
+                <span style={{ color:"#86efac", fontWeight:900, fontSize:18 }}>৳{fmt(histCashDrawerNow)}</span>
               </div>
             </div>
           );
