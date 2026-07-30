@@ -20615,6 +20615,14 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     [cashLogsAll, todayKeyStr]
   );
   const todayWithdrawTotal = todayWithdrawals.reduce((s, c) => s + (c.amount || 0), 0);
+  // 🆕 "আজকের ক্যাশ ড্রয়ার" কার্ড — একই cashLogs থেকে return_refund/return_refund_reversal
+  // বাদ/যোগ করে, আর useKpiStats()/buildDailySummaryData()-এর মতোই একই shared
+  // calcCashDrawer() ফর্মুলা ব্যবহার করে (ডুপ্লিকেট ফর্মুলা এড়াতে)। todayCashSale/
+  // todayJoma props হিসেবে আগে থেকেই পাওয়া যায় (parent থেকে) — এখানে নতুন করে
+  // ইনভয়েস/txns ফিল্টার করার দরকার নেই।
+  const todayReturnRefundForDrawer = cashLogsAll.filter(c => c.type === "return_refund" && c.dateKey === todayKeyStr).reduce((s, c) => s + (c.amount || 0), 0);
+  const todayReturnReversalForDrawer = cashLogsAll.filter(c => c.type === "return_refund_reversal" && c.dateKey === todayKeyStr).reduce((s, c) => s + (c.amount || 0), 0);
+  const todayCashDrawerNow = calcCashDrawer(todayOpening?.amount || 0, todayCashSale || 0, todayJoma || 0, todayWithdrawTotal, todayReturnRefundForDrawer, todayReturnReversalForDrawer);
 
   const addCashLog = (type) => {
     const amt = parseFloat(cashAmount);
@@ -20677,6 +20685,16 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   // ক্যাশ মোডাল বন্ধ হলে (ফিরুন বাটন/ফোনের ব্যাক/নেভিগেশন হোম) হিস্ট্রির সিলেক্টেড তারিখ রিসেট — ডিফল্ট আজকের হিস্ট্রি
   React.useEffect(() => {
     if (!cashModal && (cashHistNav.mode !== "day" || cashHistNav.dateKey !== todayKeyStr)) cashHistNav.reset();
+  }, [cashModal]);
+  // 🆕 ফিক্স: cashModal বন্ধ হওয়ার সব পথেই (বাতিল/ফিরুন বাটন ছাড়াও ফোনের হার্ডওয়্যার
+  // ব্যাক বাটন/নেভিগেশন হোম — দেখুন useBackHandler(!!cashModal, ...) যেটা শুধু
+  // setCashModal(null) করে, নিচের ফিল্ড রিসেট করে না) "সাপ্লায়ারকে দেওয়া"/"অন্যান্য"
+  // ফিল্ড ও অন্যান্য উইথড্রয়াল ইনপুট আগের এন্ট্রি মনে রেখে যেত। এখন cashModal বন্ধ
+  // হলেই (path নির্বিশেষে) সব ইনপুট ডিফল্টে রিসেট হয়ে যাবে।
+  React.useEffect(() => {
+    if (!cashModal) {
+      setCashAmount(""); setCashNote(""); setCashParty(""); setCashType("owner"); setCashPartyOpen(false);
+    }
   }, [cashModal]);
   // Inventory data (memoized for performance)
   const allStock      = React.useMemo(() => products.filter(p => (p.stock||0) > 0).sort((a,b) => b.stock-a.stock), [products]);
@@ -20888,7 +20906,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           <>
             <div style={{ color:"#cbd5e1", fontSize:12, fontWeight:800, marginBottom:8, letterSpacing:0.5 }}>কোন খাতে টাকা গেছে?</div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:16 }}>
-              {Object.entries(CASH_TYPE_META).map(([key, meta]) => (
+              {Object.entries(CASH_TYPE_META).filter(([key]) => key !== "return" && key !== "return_reversal").map(([key, meta]) => (
                 <button key={key} onClick={() => setCashType(key)}
                   style={{
                     display:"flex", alignItems:"center", gap:10, padding:"13px 12px", borderRadius:14,
@@ -21019,6 +21037,11 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     const histOpening = isRangeMode ? null : histOpeningEntries.slice(-1)[0];
     const histWithdrawals = histEntries.filter(c => c.type === "withdrawal");
     const histWithdrawTotal = histWithdrawals.reduce((s, c) => s + (c.amount || 0), 0);
+    // 🆕 "আজকের ক্যাশ ড্রয়ার" (নির্বাচিত দিন/মাসের) — শেয়ার্ড buildDailySummaryData()/
+    // calcCashDrawer() ফর্মুলা দিয়ে, ডুপ্লিকেট হিসাব না লিখে। windowed লোকাল cashLogsAll-ই
+    // এখানে একমাত্র উৎস (histEntries-এর মতোই — cashHistFull ফুল-রেঞ্জ ফেচ দেখুন উপরের কমেন্ট)।
+    const histCashDrawerSummary = buildDailySummaryData({ invoices, txns, customers, products, cashLogs: cashLogsAll, purchaseOrders, returns, dateKeyStart: histStartKey, dateKeyEnd: histEndKey });
+    const histCashDrawerNow = histCashDrawerSummary.currentCashDrawer;
 
     const histDateLabel = cashHistNav.label;
 
@@ -21039,6 +21062,10 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       }).join("");
       const summaryHtml = `
         <div class="section" style="display:flex;gap:12px;margin-bottom:10px;">
+          <div style="flex:1;border:1px solid #22c55e66;border-radius:10px;padding:12px;text-align:center;">
+            <div style="font-size:11px;color:#15803d;font-weight:700;">${isRangeMode ? "ক্যাশ ড্রয়ার" : "আজকের ক্যাশ ড্রয়ার"}</div>
+            <div style="font-size:20px;font-weight:900;color:#0f172a;">৳${fmt(histCashDrawerNow)}</div>
+          </div>
           <div style="flex:1;border:1px solid #0ea5e966;border-radius:10px;padding:12px;text-align:center;">
             <div style="font-size:11px;color:#0ea5e9;font-weight:700;">ওপেনিং ক্যাশ</div>
             <div style="font-size:20px;font-weight:900;color:#0f172a;">৳${fmt(isRangeMode ? histOpeningTotal : (histOpening?.amount||0))}</div>
@@ -21114,8 +21141,19 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           </button>
         </div>
 
-        {/* ── পাশাপাশি: ওপেনিং ক্যাশ ও উইথড্রয়াল ── */}
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:20 }}>
+        {/* ── পাশাপাশি: আজকের ক্যাশ ড্রয়ার, ওপেনিং ক্যাশ ও উইথড্রয়াল ── */}
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:20 }}>
+          {/* আজকের ক্যাশ ড্রয়ার */}
+          <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:8, background:"linear-gradient(135deg,rgba(34,197,94,0.14),rgba(21,128,61,0.08))", border:"1px solid #22c55e3a", borderRadius:16, padding:"14px 12px", textAlign:"center" }}>
+            <div style={{ width:40, height:40, borderRadius:12, background:"linear-gradient(135deg,#22c55e,#15803d)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, boxShadow:"0 4px 14px -4px #22c55eaa" }}>🏦</div>
+            <div>
+              <div style={{ color:"#86efac", fontSize:10.5, fontWeight:800, letterSpacing:0.3, marginBottom:3 }}>
+                {isRangeMode ? "ক্যাশ ড্রয়ার" : "আজকের ক্যাশ ড্রয়ার"}
+              </div>
+              <div style={{ color:"#f0fdf4", fontWeight:900, fontSize:19 }}>৳{fmt(histCashDrawerNow)}</div>
+            </div>
+            <div style={{ color:"#22c55e", fontSize:9.5, fontWeight:800, background:"#22c55e1a", borderRadius:7, padding:"3px 7px" }}>স্থির</div>
+          </div>
           {/* ওপেনিং ক্যাশ */}
           <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:8, background:"linear-gradient(135deg,rgba(14,165,233,0.14),rgba(3,105,161,0.08))", border:"1px solid #0ea5e93a", borderRadius:16, padding:"14px 12px", textAlign:"center" }}>
             <div style={{ width:40, height:40, borderRadius:12, background:"linear-gradient(135deg,#0ea5e9,#0369a1)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, boxShadow:"0 4px 14px -4px #0ea5e9aa" }}>🪙</div>
@@ -23158,6 +23196,20 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
               হিস্ট্রি
             </button>
+          </div>
+          {/* 🆕 আজকের ক্যাশ ড্রয়ার — এডমিন/স্টাফ সবাই দেখতে পাবে */}
+          <div style={{
+            display:"flex", alignItems:"center", justifyContent:"space-between", gap:10,
+            marginBottom:12, position:"relative", borderRadius:14, padding:"12px 14px",
+            background: DT.dark ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.16)",
+            border: DT.dark ? "1px solid rgba(255,255,255,0.1)" : "1px solid rgba(255,255,255,0.3)",
+            backdropFilter:"blur(4px)",
+          }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <span style={{ fontSize:18 }}>🏦</span>
+              <span style={{ color: DT.dark ? "#cbd5e1" : "#fff", fontSize:12.5, fontWeight:800 }}>আজকের ক্যাশ ড্রয়ার</span>
+            </div>
+            <span style={{ color:"#fff", fontWeight:900, fontSize:18 }}>৳{fmt(todayCashDrawerNow)}</span>
           </div>
           <div style={{ display:"flex", gap:8, marginBottom: (todayOpening || todayWithdrawTotal > 0) ? 12 : 0, position:"relative" }}>
             <button onClick={() => setCashModal("opening")}
@@ -28495,17 +28547,28 @@ const NOTIF_MAX_TIMES = 8; // সর্বোচ্চ কতগুলো সম
 // দেখতে পেতেন না। এখন এই দুটো ফাংশন গ্লোবাল/শেয়ার্ড করা হলো, DailyNotifCard ও
 // App — দুই জায়গাতেই এই একই ফাংশন ব্যবহার হয়, তাই নোটিফিকেশন সবসময় আসল
 // হিসাবসহ দেখাবে, কোনটাই একে অপরকে ফাঁকা কনটেন্ট দিয়ে ওভাররাইট করবে না।
-function buildDailySummaryData({ invoices = [], txns = [], customers = [], products = [], cashLogs = [], purchaseOrders = [], returns = [] } = {}) {
-  const todayKey = todayEn();
+function buildDailySummaryData({ invoices = [], txns = [], customers = [], products = [], cashLogs = [], purchaseOrders = [], returns = [], dateKeyStart = null, dateKeyEnd = null } = {}) {
+  // 🆕 dateKeyStart/dateKeyEnd ঐচ্ছিক — না দিলে আগের মতোই শুধু "আজ" (একদিন)।
+  // দেওয়া হলে (Cash History পেজ থেকে) একই ফাংশন যেকোনো দিন/মাস-রেঞ্জের জন্য
+  // cashSale/joma-সহ সম্পূর্ণ ক্যাশ-ড্রয়ার হিসাব দেয় — যাতে নোটিফিকেশন ও
+  // হিস্ট্রি দুই জায়গাতেই একই শেয়ার্ড ফর্মুলা ব্যবহার হয়, আলাদা কপি না।
+  const todayKey   = dateKeyStart || todayEn();
+  const rangeEndKey = dateKeyEnd || todayKey;
+  const inRange = (dk) => dk != null && dk >= todayKey && dk <= rangeEndKey;
   // voided ও isSelfUse বাদ — না হলে নোটিফিকেশনে ভুল revenue/profit দেখায়
   // 🔴 ফিক্স (৩০ জুলাই ২০২৬ — সূক্ষ্ম date-fallback অমিল): আগে এখানে নিজস্ব একটা
   // কপি-করা কন্ডিশন ছিল — `date` ফলব্যাক `dateKey` থাকুক বা না থাকুক চেক হতো,
   // অথচ logic.js-এর filterTodayInvoices()-এ (useKpiStats/AIPage_ যেটা ব্যবহার করে)
   // date ফলব্যাক শুধু dateKey একদম না-থাকলেই চলে। কোনো ইনভয়েসের dateKey অন্য
   // দিনের হলেও তার date স্ট্রিং কাকতালীয়ভাবে আজকের সাথে মিললে এই দুই জায়গা
-  // ভিন্ন ফলাফল দিতে পারত। এখন সরাসরি সেই একই শেয়ার্ড ফাংশন কল হচ্ছে — নিজস্ব
-  // কোনো কপি রাখা হচ্ছে না, তাই ভবিষ্যতে কোনো ফিক্স মিস হওয়ার ঝুঁকি নেই।
-  const todayInvList  = filterTodayInvoices(invoices, todayKey);
+  // ভিন্ন ফলাফল দিতে পারত। এখন সরাসরি সেই একই শেয়ার্ড ফাংশন কল হচ্ছে (single-day
+  // ডিফল্ট কেসে) — নিজস্ব কোনো কপি রাখা হচ্ছে না, তাই ভবিষ্যতে কোনো ফিক্স মিস
+  // হওয়ার ঝুঁকি নেই। রেঞ্জ (todayKey !== rangeEndKey) দেওয়া হলে filterTodayInvoices()
+  // ব্যবহার করা যায় না (ওটা শুধু একদিনের জন্য) — তাই নিচে একই শর্তে inRange() দিয়ে
+  // জেনারেলাইজড ফিল্টার, single-day কলে এটা filterTodayInvoices()-এর সাথে সমতুল্য।
+  const todayInvList  = (todayKey === rangeEndKey)
+    ? filterTodayInvoices(invoices, todayKey)
+    : (invoices || []).filter(i => i && !i.isSelfUse && i.status !== "voided" && inRange(i.dateKey));
   // 🔴 ফিক্স (Phase 4 — returns নেট-আউট): useKpiStats()-এর একই নীতি — আজকের
   // ফেরত যাওয়া পণ্যের refundAmount বিক্রয়/লাভ থেকে বাদ, নাহলে নোটিফিকেশনে
   // দেখানো "আজকের বিক্রয়/লাভ" ফেরত যাওয়া পণ্যসহ ফোলানো থাকবে।
@@ -28513,7 +28576,7 @@ function buildDailySummaryData({ invoices = [], txns = [], customers = [], produ
   // আংশিক ফেরতের পর ইনভয়েস ভয়েড হলে সেই আংশিক-ফেরতের returns এন্ট্রি এখানেও
   // বাদ দেওয়া দরকার — নাহলে নোটিফিকেশনেও ঋণাত্মক "আজকের বিক্রয়" দেখাবে।
   const voidedInvIdsForNotif = new Set((invoices || []).filter(i => i.status === "voided").map(i => i.id));
-  const todayReturns = (returns || []).filter(r => r.dateKey === todayKey && !voidedInvIdsForNotif.has(r.invoiceId));
+  const todayReturns = (returns || []).filter(r => inRange(r.dateKey) && !voidedInvIdsForNotif.has(r.invoiceId));
   const todayReturnsRefund = todayReturns.reduce((s, r) => s + (r.refundAmount || 0), 0);
   const todayReturnsProfitImpact = todayReturns.reduce((s, r) => s + ((r.refundAmount || 0) - (r.costPrice || 0) * (r.qty || 0)), 0);
   const revenue       = todayInvList.reduce((s, i) => s + (i.total || 0), 0) - todayReturnsRefund;
@@ -28523,8 +28586,8 @@ function buildDailySummaryData({ invoices = [], txns = [], customers = [], produ
     return s;
   }, 0);
   const _voidedIds2   = new Set((invoices||[]).filter(i=>i.status==="voided").map(i=>i.id));
-  const bakiToday     = (txns || []).filter(t => t.dateKey === todayKey && t.type === "baki" && t.invoiceId && !_voidedIds2.has(t.invoiceId)).reduce((s, t) => s + t.amount, 0);
-  const jomaToday     = (txns || []).filter(t => t.dateKey === todayKey && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((s, t) => s + t.amount, 0);
+  const bakiToday     = (txns || []).filter(t => inRange(t.dateKey) && t.type === "baki" && t.invoiceId && !_voidedIds2.has(t.invoiceId)).reduce((s, t) => s + t.amount, 0);
+  const jomaToday     = (txns || []).filter(t => inRange(t.dateKey) && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((s, t) => s + t.amount, 0);
   const totalBakiNow  = (customers || []).reduce((s, c) => s + (c.balance || 0), 0);
   // 🟢 আজকের লাভ ও 🔴 আজকের লস — invoice-level আলাদা করে হিসাব
   const prodMap   = new Map((products || []).map(p => [p.id, p]));
@@ -28541,16 +28604,16 @@ function buildDailySummaryData({ invoices = [], txns = [], customers = [], produ
   const netAfterReturns = totalProfit - totalLoss - todayReturnsProfitImpact;
   totalProfit = netAfterReturns > 0 ? netAfterReturns : 0;
   totalLoss   = netAfterReturns < 0 ? -netAfterReturns : 0;
-  // 💰 ক্যাশ ড্রয়ার — ওপেনিং ক্যাশ ও আজ দোকান থেকে বের হওয়া টাকা
+  // 💰 ক্যাশ ড্রয়ার — ওপেনিং ক্যাশ ও আজ (বা নির্বাচিত রেঞ্জে) দোকান থেকে বের হওয়া টাকা
   const cashLogsAll  = cashLogs || [];
-  const openingCash  = cashLogsAll.filter(c => c.type === "opening" && c.dateKey === todayKey).reduce((s, c) => s + (c.amount || 0), 0);
+  const openingCash  = cashLogsAll.filter(c => c.type === "opening" && inRange(c.dateKey)).reduce((s, c) => s + (c.amount || 0), 0);
   // 🔴 ফিক্স (২৪ জুলাই ২০২৬ — উইথড্রয়াল/বাতিল conflation): দেখুন useKpiStats-এর
   // একই ফিক্সের কমেন্ট। "withdrawal" এখন শুধু সত্যিকারের ক্যাশ উত্তোলন।
-  const cashOutToday = cashLogsAll.filter(c => c.type === "withdrawal" && c.dateKey === todayKey).reduce((s, c) => s + (c.amount || 0), 0);
-  const returnRefundToday = cashLogsAll.filter(c => c.type === "return_refund" && c.dateKey === todayKey).reduce((s, c) => s + (c.amount || 0), 0);
-  const returnReversalToday = cashLogsAll.filter(c => c.type === "return_refund_reversal" && c.dateKey === todayKey).reduce((s, c) => s + (c.amount || 0), 0);
+  const cashOutToday = cashLogsAll.filter(c => c.type === "withdrawal" && inRange(c.dateKey)).reduce((s, c) => s + (c.amount || 0), 0);
+  const returnRefundToday = cashLogsAll.filter(c => c.type === "return_refund" && inRange(c.dateKey)).reduce((s, c) => s + (c.amount || 0), 0);
+  const returnReversalToday = cashLogsAll.filter(c => c.type === "return_refund_reversal" && inRange(c.dateKey)).reduce((s, c) => s + (c.amount || 0), 0);
   const todayPurchaseCost = (purchaseOrders || [])
-    .filter(p => p._type === "pe" && (p.dateKey === todayKey || (p.createdAt && p.createdAt.startsWith(todayKey))))
+    .filter(p => p._type === "pe" && (inRange(p.dateKey) || (todayKey === rangeEndKey && !p.dateKey && p.createdAt && p.createdAt.startsWith(todayKey))))
     .reduce((s, p) => s + (p.totalCost || 0), 0);
   // 🧪 shared formula (src/logic.js) — regression test suite এখন সরাসরি এই একই
   // calcCashDrawer() কোড টেস্ট করে, আলাদা "reference-copy" না। calcCashDrawer()
