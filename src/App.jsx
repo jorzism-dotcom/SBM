@@ -14560,6 +14560,9 @@ function SmartBusinessMgmt() {
               currentUser={currentUser}
               auditLogs={auditLogs}
               shopName={shopName}
+              invoices={invoices}
+              products={products}
+              stockMovements={stockMovements}
             />
           </ErrorBoundary>
         )}
@@ -30886,7 +30889,128 @@ function AuditFilterChip({ T, active, onClick, icon, label, count, color }) {
   );
 }
 
-function AuditTrailModule({ T, S, currentUser, auditLogs = [], shopName }) {
+// ── 📊 দৈনিক বিক্রয় ও স্টক বিস্তারিত — সেদিনের বিক্রিত প্রতিটা পণ্যের বিক্রির
+// আগে/পরের স্টক, আর পাশাপাশি কলামে মোট বিক্রি/মোট টাকা/মোট লাভ — অডিট ট্রেইলের
+// ভেতরেই একটা এক্সপ্যান্ডেবল কার্ড হিসেবে (stockMovements-এর source:"sale"
+// এন্ট্রি থেকে prevStock/stock টেনে, একই দিনের একাধিক বিক্রি প্রোডাক্ট-ভিত্তিক
+// একত্র করে) ──────────────────────────────────────────────────────────────
+function DailySalesStockCard({ T, S, invoices = [], products = [], stockMovements = [] }) {
+  const [expanded, setExpanded] = useState(false);
+  const [selDate,  setSelDate]  = useState(() => todayEn());
+
+  const prodMap = useMemo(() => new Map((products || []).map(p => [p.id, p])), [products]);
+
+  const dayInvoices = useMemo(() => (invoices || []).filter(i =>
+    i && !i.isSelfUse && i.status !== "voided" &&
+    (i.dateKey === selDate || (!i.dateKey && i.date && i.date.startsWith(selDate)))
+  ), [invoices, selDate]);
+
+  const totalSaleAmt = useMemo(() => dayInvoices.reduce((s, i) => s + (i.total || 0), 0), [dayInvoices]);
+  const totalProfit  = useMemo(() => calcProfitTotal(dayInvoices, prodMap), [dayInvoices, prodMap]);
+
+  // প্রতিটা বিক্রিত পণ্যের বিক্রির আগে/পরের স্টক — একই দিনে একই পণ্য একাধিকবার
+  // বিক্রি হলে সময়ানুক্রমে সাজিয়ে প্রথমটার prevStock (আগে) ও শেষেরটার stock
+  // (পরে) নেওয়া হয়, আর qty-গুলো যোগ করা হয়।
+  const soldRows = useMemo(() => {
+    const dayMoves = (stockMovements || []).filter(m => m && m.source === "sale" && m.dateKey === selDate);
+    const byProduct = new Map();
+    dayMoves.forEach(m => {
+      if (!byProduct.has(m.productId)) byProduct.set(m.productId, []);
+      byProduct.get(m.productId).push(m);
+    });
+    const rows = [];
+    byProduct.forEach((moves, productId) => {
+      moves.sort((a, b) => new Date(a.at) - new Date(b.at));
+      const first = moves[0], last = moves[moves.length - 1];
+      const qtySold = moves.reduce((s, m) => s + Math.abs(m.delta || 0), 0);
+      const p = prodMap.get(productId);
+      rows.push({
+        productId, name: last.productName || p?.name || "অজানা পণ্য",
+        qtySold, stockBefore: first.prevStock, stockAfter: last.stock,
+      });
+    });
+    rows.sort((a, b) => b.qtySold - a.qtySold);
+    return rows;
+  }, [stockMovements, selDate, prodMap]);
+
+  const totalQtySold = useMemo(() => soldRows.reduce((s, r) => s + r.qtySold, 0), [soldRows]);
+
+  const isToday = selDate === todayEn();
+  const shiftDate = (delta) => {
+    const d = new Date(selDate + "T00:00:00");
+    d.setDate(d.getDate() + delta);
+    setSelDate(_dateKeyOf(d));
+  };
+  const isLightTheme = T.bg && (T.bg.startsWith("#f") || T.bg.startsWith("#e") || T.bg === "#ffffff");
+
+  return (
+    <div className="qc-gradient-card" style={{ ...S.card, marginBottom: 12 }}>
+      <div onClick={() => setExpanded(v => !v)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", userSelect: "none" }}>
+        <div>
+          <div style={{ color: T.text, fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 17 }}>📊</span>
+            দৈনিক বিক্রয় ও স্টক বিস্তারিত
+          </div>
+          <div style={{ color: T.sub, fontSize: 11, marginTop: 2 }}>বিক্রির আগে/পরের স্টক, মোট বিক্রি, টাকা ও লাভ — তারিখ ধরে</div>
+        </div>
+        <span style={{ color: T.sub, fontSize: 12 }}>{expanded ? "▲" : "▼"}</span>
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop: 14 }}>
+          {/* তারিখ নেভিগেটর */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <button onClick={() => shiftDate(-1)} style={{ ...S.cancelBtn, width: 42, padding: 0, flexShrink: 0 }}>◀</button>
+            <input type="date" value={selDate} max={todayEn()}
+              onChange={e => e.target.value && setSelDate(e.target.value)}
+              style={{ ...S.input, marginTop: 0, flex: 1, textAlign: "center", fontWeight: 800, colorScheme: isLightTheme ? "light" : "dark" }} />
+            <button onClick={() => shiftDate(1)} disabled={isToday} style={{ ...S.cancelBtn, width: 42, padding: 0, flexShrink: 0, opacity: isToday ? 0.4 : 1, cursor: isToday ? "not-allowed" : "pointer" }}>▶</button>
+          </div>
+
+          {/* সারসংক্ষেপ — পাশাপাশি ৩ কলাম */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: 14 }}>
+            <div style={{ textAlign: "center", background: `${T.accent}12`, border: `1px solid ${T.accent}33`, borderRadius: 12, padding: "10px 6px" }}>
+              <div style={{ color: T.sub, fontSize: 10, fontWeight: 700 }}>পণ্য বিক্রি হয়েছে</div>
+              <div style={{ color: T.accent, fontWeight: 900, fontSize: 17, marginTop: 2 }}>{totalQtySold.toLocaleString("en-US")}টি</div>
+            </div>
+            <div style={{ textAlign: "center", background: "#0ea5e912", border: "1px solid #0ea5e933", borderRadius: 12, padding: "10px 6px" }}>
+              <div style={{ color: T.sub, fontSize: 10, fontWeight: 700 }}>মোট বিক্রয়</div>
+              <div style={{ color: "#0ea5e9", fontWeight: 900, fontSize: 17, marginTop: 2 }}>৳{fmt(totalSaleAmt)}</div>
+            </div>
+            <div style={{ textAlign: "center", background: "#22c55e12", border: "1px solid #22c55e33", borderRadius: 12, padding: "10px 6px" }}>
+              <div style={{ color: T.sub, fontSize: 10, fontWeight: 700 }}>মোট লাভ</div>
+              <div style={{ color: "#22c55e", fontWeight: 900, fontSize: 17, marginTop: 2 }}>৳{fmt(totalProfit)}</div>
+            </div>
+          </div>
+
+          {/* বিক্রিত পণ্য তালিকা — বিক্রির আগে/পরে স্টক */}
+          {soldRows.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "24px 0", color: T.sub, fontSize: 12.5 }}>
+              এই দিনে কোনো বিক্রি রেকর্ড পাওয়া যায়নি
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1.6fr 0.7fr 1fr", gap: 6, padding: "0 8px", color: T.sub, fontSize: 9.5, fontWeight: 800 }}>
+                <span>পণ্য</span><span style={{ textAlign: "center" }}>বিক্রি</span><span style={{ textAlign: "center" }}>স্টক (আগে → পরে)</span>
+              </div>
+              {soldRows.map(r => (
+                <div key={r.productId} style={{ display: "grid", gridTemplateColumns: "1.6fr 0.7fr 1fr", gap: 6, alignItems: "center", background: T.bg, border: `1px solid ${T.border}`, borderRadius: 10, padding: 8 }}>
+                  <span style={{ color: T.text, fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</span>
+                  <span style={{ textAlign: "center", color: "#f59e0b", fontWeight: 800, fontSize: 12.5 }}>{r.qtySold}</span>
+                  <span style={{ textAlign: "center", color: T.sub, fontSize: 11, fontWeight: 700 }}>
+                    {r.stockBefore} <span style={{ opacity: 0.6 }}>→</span> <span style={{ color: T.text }}>{r.stockAfter}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AuditTrailModule({ T, S, currentUser, auditLogs = [], shopName, invoices = [], products = [], stockMovements = [] }) {
   const [auditFilter, setAuditFilter] = useState("all");
   const [searchQ,     setSearchQ]     = useState("");
   const [dateRange,   setDateRange]   = useState("all"); // all | today | week | month
@@ -31037,6 +31161,9 @@ function AuditTrailModule({ T, S, currentUser, auditLogs = [], shopName }) {
         <AuditStatCard T={T} icon="👥" label="সক্রিয় ব্যবহারকারী" val={activeUsers.toLocaleString("en-US")} color="#0ea5e9" />
         <AuditStatCard T={T} icon={topAction ? topAction.icon : "—"} label="সর্বোচ্চ ঘটিত অ্যাকশন" val={topAction ? topAction.label : "—"} color={topAction ? topAction.color : "#94a3b8"} small />
       </div>
+
+      {/* 🆕 (৩০ জুলাই ২০২৬) দৈনিক বিক্রয় ও স্টক বিস্তারিত — এক্সপ্যান্ডেবল কার্ড */}
+      <DailySalesStockCard T={T} S={S} invoices={invoices} products={products} stockMovements={stockMovements} />
 
       {/* ── প্রধান কার্ড — সার্চ, ফিল্টার ও লগ লিস্ট ── */}
       <div className="qc-gradient-card" style={{ ...S.card, padding: "14px 16px" }}>
