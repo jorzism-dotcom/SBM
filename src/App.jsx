@@ -22220,7 +22220,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       // কাস্টমারের তথ্য+টাকার হিসাব (মোট/অগ্রিম/বাকি) সহ সংরক্ষিত হয়
       const newCustomItems = customItems.map(ci => ({
         id: ci.id, productId: ci.productId || null, name: ci.name, unit: "", stock: 0,
-        supplier: ci.supplier || "কাস্টমার অর্ডার",
+        supplier: ci.supplier || "",
         qty: ci.qty || 1, stripQty: 0, boxQty: 0, pcsQty: ci.qty || 1, qtyLabel: ci.qtyLabel || "",
         dosageForm: ci.dosageForm || "",
         isCustomerRequest: true, customerName: ci.customerName || "", customerPhone: ci.customerPhone || "",
@@ -22328,6 +22328,8 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       const custItems = items.filter(it => it.isCustomerRequest);
       const normalItems = items.filter(it => !it.isCustomerRequest);
       let html = "";
+      let serialCounter = 0; // 🆕 (৩০ জুলাই ২০২৬) কাস্টমার অর্ডার থেকে শুরু করে দুই টেবিল মিলিয়ে একটানা সিরিয়াল (১,২,৩...) — আলাদা আলাদা সিরিয়াল নয়
+      let custGroupCount = 0;
       if (custItems.length > 0) {
         // 🆕 শুধু এই প্রিন্ট/PDF/WhatsApp কপিতে (সাপ্লায়ারকে পাঠানো হয়) — একই পণ্য একাধিক
         // কাস্টমার চাইলে শুধু মোট পরিমাণ একসাথে এক লাইনে দেখানো হয়, কোনো কাস্টমারের
@@ -22342,16 +22344,19 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           custGroups[key].totalQty += (it.qty || 0);
           custGroups[key].entries.push(it);
         });
-        const custRows = custGroupOrder.map((key, i) => {
+        custGroupCount = custGroupOrder.length;
+        const custRows = custGroupOrder.map((key) => {
           const g = custGroups[key];
           const qtyDisplay = g.entries.length > 1 ? `${g.totalQty}${g.unit||""}` : poItemQtyLabel(g.entries[0]);
-          return `<tr><td class="serial">${i+1}</td><td>${medBadgeHtmlStr(g.dosageForm)}${g.name}</td><td>${g.supplier}</td><td class="num">${qtyDisplay}</td></tr>`;
+          serialCounter += 1;
+          return `<tr><td class="serial">${serialCounter}</td><td>${medBadgeHtmlStr(g.dosageForm)}${g.name}</td><td>${g.supplier}</td><td class="num">${qtyDisplay}</td></tr>`;
         }).join('');
         html += `<div class="section"><div style="background:linear-gradient(135deg,#db2777,#be185d);color:#fff;font-weight:800;font-size:12.5px;padding:9px 16px;border-radius:12px 12px 0 0;">🙋 কাস্টমার অর্ডার</div><table style="border-radius:0 0 12px 12px;"><thead><tr><th class="serial" style="background:linear-gradient(135deg,#db2777,#be185d);">#</th><th style="background:linear-gradient(135deg,#db2777,#be185d);">পণ্যের নাম</th><th style="background:linear-gradient(135deg,#db2777,#be185d);">সাপ্লায়ার</th><th class="num" style="background:linear-gradient(135deg,#db2777,#be185d);">অর্ডার পরিমাণ</th></tr></thead><tbody>${custRows}</tbody></table></div>`;
       }
       if (normalItems.length > 0) {
-        const rows = normalItems.map((p,i) => `<tr><td class="serial">${i+1}</td><td>${medBadgeHtmlStr(p.dosageForm)}${p.name}</td><td>${p.supplier}</td><td class="num">${poItemQtyLabel(p)}</td></tr>`).join('');
-        html += `<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্যের নাম</th><th>সাপ্লায়ার</th><th class="num">অর্ডার পরিমাণ</th></tr></thead><tbody>${rows}</tbody><tfoot><tr class="total-row"><td class="serial"></td><td colspan="2"><b>মোট পণ্য</b></td><td class="num">${normalItems.length}</td></tr></tfoot></table></div>`;
+        const rows = normalItems.map((p) => { serialCounter += 1; return `<tr><td class="serial">${serialCounter}</td><td>${medBadgeHtmlStr(p.dosageForm)}${p.name}</td><td>${p.supplier}</td><td class="num">${poItemQtyLabel(p)}</td></tr>`; }).join('');
+        // 🆕 "মোট পণ্য" এখন কাস্টমার অর্ডার (গ্রুপ করা) + স্বাভাবিক পণ্য — দুটো মিলিয়ে মোট গণনা করে
+        html += `<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্যের নাম</th><th>সাপ্লায়ার</th><th class="num">অর্ডার পরিমাণ</th></tr></thead><tbody>${rows}</tbody><tfoot><tr class="total-row"><td class="serial"></td><td colspan="2"><b>মোট পণ্য</b></td><td class="num">${custGroupCount + normalItems.length}</td></tr></tfoot></table></div>`;
       }
       return html;
     };
@@ -22783,8 +22788,8 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                           onFocus={()=>setCustOrderSupplierSuggestOpen(true)}
                           onBlur={()=>setTimeout(()=>setCustOrderSupplierSuggestOpen(false), 200)}
                           readOnly={custOrderSupplierAuto}
-                          placeholder="🏭 সাপ্লায়ার"
-                          style={{ width:"100%", background: custOrderSupplierAuto ? "#f0fdf4" : "#f8fafc", border:`1.5px solid ${custOrderSupplierAuto ? "#22c55e55" : PRINT.headBorder}`, borderRadius:10, padding:"9px 11px", fontSize:12.5, fontWeight:700, color:PRINT.textDark, outline:"none", fontFamily:"inherit", boxSizing:"border-box" }} />
+                          placeholder="🏭 সাপ্লায়ার *"
+                          style={{ width:"100%", background: custOrderSupplierAuto ? "#f0fdf4" : "#f8fafc", border:`1.5px solid ${custOrderFormError && !custOrderSupplier.trim() ? "#ef4444" : custOrderSupplierAuto ? "#22c55e55" : PRINT.headBorder}`, borderRadius:10, padding:"9px 11px", fontSize:12.5, fontWeight:700, color:PRINT.textDark, outline:"none", fontFamily:"inherit", boxSizing:"border-box" }} />
                         {custOrderSupplierSuggestOpen && !custOrderSupplierAuto && (
                           <div style={{ position:"absolute", top:"calc(100% + 4px)", left:0, right:0, zIndex:59, background:"#fff", border:`1px solid ${PRINT.headBorder}`, borderRadius:10, overflow:"hidden", boxShadow:"0 8px 20px rgba(0,0,0,0.12)", maxHeight:200, overflowY:"auto" }}>
                             <div onMouseDown={()=>{ setCustOrderSupplierCustomMode(true); setCustOrderSupplierSuggestOpen(false); }}
@@ -22834,6 +22839,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                 <button
                   onClick={()=>{
                     if (!custOrderName.trim()) { setCustOrderFormError("পণ্যের নাম লিখুন"); return; }
+                    if (!custOrderSupplier.trim()) { setCustOrderFormError("সাপ্লায়ারের নাম লিখুন"); return; }
                     if (!custOrderQty.trim()) { setCustOrderFormError("পণ্যের পরিমাণ লিখুন"); return; }
                     const totalPrice = parseInt(custOrderTotalPrice,10) || 0;
                     const advanceAmount = parseInt(custOrderAdvance,10) || 0;
@@ -22842,7 +22848,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                       name: custOrderName.trim(),
                       productId: custOrderProductId,
                       dosageForm: custOrderDosageForm,
-                      supplier: custOrderSupplier.trim() || "কাস্টমার অর্ডার",
+                      supplier: custOrderSupplier.trim(),
                       qty: parseInt(custOrderQty,10) || 1,
                       qtyLabel: custOrderQty.trim(),
                       totalPrice, advanceAmount, due: Math.max(0, totalPrice - advanceAmount),
@@ -23096,10 +23102,10 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       const poOrdersByCreated = [...allPOOrders].sort((a,b) => (a.createdAt||"").localeCompare(b.createdAt||""));
       const recSerial = poOrdersByCreated.findIndex(r => r.id === rec.id) + 1;
       const buildRecOrderHtml = () => {
-        return buildPdfHtml(buildOrderSectionsHtml(items), shopName, `ক্রয় অর্ডার-${recSerial} — ${dayLabelPO(rec.dateKey)}`);
+        return buildPdfHtml(buildOrderSectionsHtml(items), shopName, `ক্রয় অর্ডার — ${dayLabelPO(rec.dateKey)}`);
       };
       const sendRecWhatsApp = () => {
-        sharePdfWhatsApp(buildRecOrderHtml(), `ক্রয় অর্ডার-${recSerial} — ${dayLabelPO(rec.dateKey)}`);
+        sharePdfWhatsApp(buildRecOrderHtml(), `ক্রয় অর্ডার — ${dayLabelPO(rec.dateKey)}`);
       };
       return (
         <div style={{ ...S.page, padding:"0", display:"flex", flexDirection:"column", height:"100%", overflow:"hidden", background:PRINT.pageBg }}>
