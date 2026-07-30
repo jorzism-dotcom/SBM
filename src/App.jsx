@@ -20864,7 +20864,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       setCustOrderName(""); setCustOrderProductId(null); setCustOrderNameSuggestOpen(false);
       setCustOrderDosageForm(""); setCustOrderDosageCustomOpen(false); setCustOrderDosageDraft("");
       setCustOrderSupplier(""); setCustOrderSupplierAuto(false); setCustOrderSupplierCustomMode(false); setCustOrderSupplierSuggestOpen(false);
-      setCustOrderQty(""); setCustOrderTotalPrice(""); setCustOrderAdvance(""); setCustOrderFormError("");
+      setCustOrderQtyStrip(""); setCustOrderQtyBox(""); setCustOrderQtyPcs(""); setCustOrderTotalPrice(""); setCustOrderAdvance(""); setCustOrderFormError("");
       setCustomOrderItems([]);
     }
   }, [invModal]);
