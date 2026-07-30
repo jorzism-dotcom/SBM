@@ -8468,6 +8468,13 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
     const monthReturnsRefund = monthReturns.reduce((s, r) => s + (r.refundAmount || 0), 0);
     const todayReturnsProfitImpact = todayReturns.reduce((s, r) => s + ((r.refundAmount || 0) - (r.costPrice || 0) * (r.qty || 0)), 0);
     const monthReturnsProfitImpact = monthReturns.reduce((s, r) => s + ((r.refundAmount || 0) - (r.costPrice || 0) * (r.qty || 0)), 0);
+    // 🔴 ফিক্স (৩০ জুলাই ২০২৬ — Home ড্যাশবোর্ড vs AI পেজ "আজকের নগদ বিক্রয়" মিসম্যাচ):
+    // AIPage_/অন্য ২টা কম্পোনেন্টে (লাইন ~১৩৩৫৫, ~১৫৭৯৮) আগে থেকেই cash-mode রিটার্নের
+    // refundAmount todayCashSale থেকে বাদ যেত, কিন্তু এই হুকে (Home পেজের KPI গ্রিড)
+    // এই একই ফিক্স কখনো কপি হয়নি — ফলে নগদ-রিটার্নের দিনগুলোতে Home পেজ ও AI পেজ
+    // ভিন্ন সংখ্যা দেখাত। বাকি-মোড রিটার্ন কাস্টমারের balance সমন্বয় করে, ক্যাশ
+    // ড্রয়ারকে প্রভাবিত করে না — তাই শুধু cash-mode রিটার্ন এখানে বাদ যাচ্ছে।
+    const todayReturnsCashRefund = todayReturns.filter(r => r.refundMode === "cash").reduce((s, r) => s + (r.refundAmount || 0), 0);
 
     const todaySale = todayInvs.reduce((s, i) => s + (i.total || 0), 0) - todayReturnsRefund;
     const monthSale = monthInvs.reduce((s, i) => s + (i.total || 0), 0) - monthReturnsRefund;
@@ -8513,7 +8520,7 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
       if (i.payType === "cash") return s + (i.total || 0);
       if (i.payType === "partial") return s + Math.min(i.paidAmount || 0, i.total || 0);
       return s;
-    }, 0);
+    }, 0) - todayReturnsCashRefund;
     // 🔴 ফিক্স (২৮ জুলাই ২০২৬ — "নগদ বিক্রয়ে লাভ" মিসম্যাচ): আগে partial-pay
     // ইনভয়েসের পুরো লাভ (বাকি অংশসহ) এখানে যোগ হতো, অথচ todayCashSale-এ শুধু
     // paid (ক্যাশ) অংশ ধরা হতো — ফলে লাভ রেভিনিউর চেয়ে বেশি দেখাত (মার্জিন
@@ -8543,7 +8550,8 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
     // না। ক্যাশ ড্রয়ারের প্রকৃত হিসাবে সেগুলো এখনও লাগে (আসল টাকা বেরিয়েছিল),
     // তাই আলাদাভাবে যোগ/বিয়োগ করা হচ্ছে।
     const withdrawalToday = cashLogsAll.filter(c => c.type === "withdrawal" && c.dateKey === todayKeyEn).reduce((s, c) => s + (c.amount || 0), 0);
-    const returnRefundToday = cashLogsAll.filter(c => c.type === "return_refund" && c.dateKey === todayKeyEn).reduce((s, c) => s + (c.amount || 0), 0);
+    // 🔴 ফিক্স (৩০ জুলাই ২০২৬): returnRefundToday (cashLogs "return_refund") আর এখানে
+    // আলাদাভাবে দরকার নেই — todayCashSale-এই এখন cash-mode রিটার্ন বাদ যায় (উপরে দেখুন)।
     const returnReversalToday = cashLogsAll.filter(c => c.type === "return_refund_reversal" && c.dateKey === todayKeyEn).reduce((s, c) => s + (c.amount || 0), 0);
 
     const purchaseOrdersAll = (purchaseOrders || []).filter(p => p._type === "pe");
@@ -8556,7 +8564,12 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
     const todayPurchaseCount = todayPurchases.length;
     const monthPurchaseCost = purchaseOrdersAll.filter(p => (p.dateKey || "") >= monthStartKey).reduce((s, p) => s + (p.totalCost || 0), 0);
 
-    const currentCashDrawer = openingCashToday + todayCashSale + todayJoma - withdrawalToday - returnRefundToday + returnReversalToday;
+    // 🔴 ফিক্স (৩০ জুলাই ২০২৬ — ক্যাশড্রয়ার ডাবল-কাউন্ট): todayCashSale এখন
+    // ইতিমধ্যে todayReturnsCashRefund বাদ দিয়ে হিসাব হয় (উপরে দেখুন) — তাই এখানে
+    // returnRefundToday আবার আলাদাভাবে বাদ দিলে একই cash-refund দুইবার বিয়োগ
+    // হয়ে যেত, ক্যাশড্রয়ার আসল অঙ্কের চেয়ে কম দেখাত। returnReversalToday
+    // (ভয়েড-রিভার্সাল) আলাদা, স্বাধীন ঘটনা — সেটা অপরিবর্তিত থাকছে।
+    const currentCashDrawer = openingCashToday + todayCashSale + todayJoma - withdrawalToday + returnReversalToday;
 
     const todayExpense = (expenses || []).filter(e => (e.dateKey || e.date) === todayKey).reduce((s, e) => s + (e.amount || 0), 0);
     const monthExpense = (expenses || []).filter(e => (e.dateKey || e.date || "") >= monthStartKey).reduce((s, e) => s + (e.amount || 0), 0);
@@ -8875,7 +8888,8 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
   // একই ফিক্সের কমেন্ট — "withdrawal" এখন শুধু সত্যিকারের ক্যাশ উত্তোলন,
   // পণ্য ফেরত/ভয়েড-রিভার্সাল আলাদাভাবে ধরা হচ্ছে।
   const withdrawalToday = cashLogsAll.filter(c => c.type === "withdrawal" && c.dateKey === todayKeyEn).reduce((s, c) => s + (c.amount || 0), 0);
-  const returnRefundToday = cashLogsAll.filter(c => c.type === "return_refund" && c.dateKey === todayKeyEn).reduce((s, c) => s + (c.amount || 0), 0);
+  // 🔴 ফিক্স (৩০ জুলাই ২০২৬): returnRefundToday (cashLogs "return_refund") আর এখানে
+  // আলাদাভাবে দরকার নেই — todayCashSale-এই এখন cash-mode রিটার্ন বাদ যায় (উপরে দেখুন)।
   const returnReversalToday = cashLogsAll.filter(c => c.type === "return_refund_reversal" && c.dateKey === todayKeyEn).reduce((s, c) => s + (c.amount || 0), 0);
 
   // ── ক্রয় (আজ/এই মাস) ────────────────────────────────────────────────────
@@ -8885,7 +8899,12 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
   const todayPurchaseCount = todayPurchases.length;
   const monthPurchaseCost = purchaseOrdersAll.filter(p => (p.dateKey || "") >= monthStartKey).reduce((s, p) => s + (p.totalCost || 0), 0);
 
-  const currentCashDrawer = openingCashToday + todayCashSale + todayJoma - withdrawalToday - returnRefundToday + returnReversalToday;
+  // 🔴 ফিক্স (৩০ জুলাই ২০২৬ — ক্যাশড্রয়ার ডাবল-কাউন্ট): todayCashSale এখানে
+  // আগে থেকেই todayReturnsCashRefund বাদ দিয়ে হিসাব হয় (উপরে দেখুন) — তাই
+  // returnRefundToday এখানে আবার বাদ দিলে একই cash-refund দুইবার বিয়োগ হয়ে
+  // যেত, ক্যাশড্রয়ার আসল অঙ্কের চেয়ে কম দেখাত (Home পেজের সাথেও মিলত না)।
+  // returnReversalToday (ভয়েড-রিভার্সাল) স্বাধীন ঘটনা, অপরিবর্তিত থাকছে।
+  const currentCashDrawer = openingCashToday + todayCashSale + todayJoma - withdrawalToday + returnReversalToday;
 
   // ── খরচ (আজ/এই মাস) ─────────────────────────────────────────────────────
   const todayExpense = (expenses || []).filter(e => (e.dateKey || e.date) === todayKey).reduce((s, e) => s + (e.amount || 0), 0);
@@ -9123,11 +9142,11 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
           throw new Error("API error");
         }
       } catch {
-        setChatMessages(prev => [...prev, { role: "ai", text: ruleBasedAnswer(q, { todaySale, monthSale, totalBaki, stockValue, lowStockItems, monthProfit, monthMargin, todayInvs, custAll, prodAll, healthScore, forecastData, invAll }) }]);
+        setChatMessages(prev => [...prev, { role: "ai", text: ruleBasedAnswer(q, { todaySale, monthSale, totalBaki, stockValue, lowStockItems, monthProfit, monthMargin, todayProfit, todayInvs, custAll, prodAll, healthScore, forecastData, invAll }) }]);
       }
     } else {
       setTimeout(() => {
-        setChatMessages(prev => [...prev, { role: "ai", text: ruleBasedAnswer(q, { todaySale, monthSale, totalBaki, stockValue, lowStockItems, monthProfit, monthMargin, todayInvs, custAll, prodAll, healthScore, forecastData, invAll }) }]);
+        setChatMessages(prev => [...prev, { role: "ai", text: ruleBasedAnswer(q, { todaySale, monthSale, totalBaki, stockValue, lowStockItems, monthProfit, monthMargin, todayProfit, todayInvs, custAll, prodAll, healthScore, forecastData, invAll }) }]);
         setChatLoading(false);
       }, 500);
       return;
@@ -9922,8 +9941,6 @@ function ruleBasedAnswer(q, data) {
   // 🔴 ফিক্স: এটা একটা সাধারণ (plain) ফাংশন — React কম্পোনেন্ট/হুক নয়, event handler থেকে
   // সরাসরি কল হয় (রেন্ডারের বাইরে) — তাই useMemo ব্যবহার করলে "Invalid hook call" ক্র্যাশ
   // হতো (বিশেষত API key ছাড়া AI চ্যাট ফিচার ব্যবহার করলে)। এখন সাধারণ ভ্যারিয়েবল।
-  const prodMap = new Map((prodAll || []).map(p => [p.id, p]));
-
   // ── আজকের বিক্রয় ───────────────────────────────────────────────────────────
   if (has("আজ","আজকে","today","আজকের")) {
     if (has("বিক্রয়","বিক্রি","sale","income","আয়")) {
@@ -9931,13 +9948,13 @@ function ruleBasedAnswer(q, data) {
       return `📊 আজকের রিপোর্ট\n• বিক্রয়: ৳${fmt(todaySale)}\n• ইনভয়েস: ${todayInvs.length}টি\n• গড় ইনভয়েস: ৳${fmt(avg)}\n${todaySale > 0 ? "🎯 আজ ভালোই চলছে!" : "⚠️ আজ এখনো কোনো বিক্রয় নেই।"}`;
     }
     if (has("লাভ","profit")) {
-      const todayP = todayInvs.reduce((s,i)=>{
-        const c=(i.items||[]).reduce((cs,it)=>{
-          const pr=prodMap.get(it.productId);
-          return cs+(it.costPrice||pr?.costPrice||0)*(it.qty||1);
-        },0);
-        return s+(i.total||0)-c;
-      },0);
+      // 🔴 ফিক্স (৩০ জুলাই ২০২৬ — চ্যাটবট vs Home ড্যাশবোর্ড "আজকের লাভ" মিসম্যাচ):
+      // আগে এখানে হাতে-লেখা প্রফিট ফর্মুলা ছিল যা calcInvoiceProfit() (ছাড়-স্কেল +
+      // সেবা-পণ্য cost-শূন্য নিয়ম) ব্যবহার করত না, এবং আজকের রিটার্নের লাভ-প্রভাবও
+      // বাদ দিত না — ফলে রিটার্ন/ছাড় থাকা দিনে চ্যাটবটের উত্তর ড্যাশবোর্ড কার্ডের
+      // সাথে মিলত না। এখন AIPage_-এ ইতিমধ্যে গণনা করা সঠিক todayProfit ব্যবহার হচ্ছে
+      // (single source of truth — দেখুন সেই ভ্যারিয়েবলের কমেন্ট)।
+      const todayP = data.todayProfit ?? 0;
       return `💰 আজকের লাভ: ৳${fmt(todayP)}\n• বিক্রয়: ৳${fmt(todaySale)}\n• মার্জিন: ${todaySale>0?Math.round(todayP/todaySale*100):0}%`;
     }
   }
@@ -28481,11 +28498,14 @@ const NOTIF_MAX_TIMES = 8; // সর্বোচ্চ কতগুলো সম
 function buildDailySummaryData({ invoices = [], txns = [], customers = [], products = [], cashLogs = [], purchaseOrders = [], returns = [] } = {}) {
   const todayKey = todayEn();
   // voided ও isSelfUse বাদ — না হলে নোটিফিকেশনে ভুল revenue/profit দেখায়
-  // 🔴 ফিক্স (হোম পেজ vs "দৈনিক সারসংক্ষেপ" পেজের হিসাব অমিল): আগে শুধু dateKey
-  // চেক হতো, কিন্তু useKpiStats()-এ (হোম পেজ) dateKey না থাকা ইনভয়েসের জন্য
-  // date ফলব্যাকও চেক হতো — ফলে dateKey-বিহীন পুরনো ইনভয়েস দুই জায়গায় ভিন্নভাবে
-  // গোনা হতো। এখন দুই জায়গায়ই একই (dateKey অথবা date ফলব্যাক) শর্ত।
-  const todayInvList  = (invoices || []).filter(i => (i.dateKey === todayKey || (i.date && i.date.startsWith(todayKey))) && !i.isSelfUse && i.status !== "voided");
+  // 🔴 ফিক্স (৩০ জুলাই ২০২৬ — সূক্ষ্ম date-fallback অমিল): আগে এখানে নিজস্ব একটা
+  // কপি-করা কন্ডিশন ছিল — `date` ফলব্যাক `dateKey` থাকুক বা না থাকুক চেক হতো,
+  // অথচ logic.js-এর filterTodayInvoices()-এ (useKpiStats/AIPage_ যেটা ব্যবহার করে)
+  // date ফলব্যাক শুধু dateKey একদম না-থাকলেই চলে। কোনো ইনভয়েসের dateKey অন্য
+  // দিনের হলেও তার date স্ট্রিং কাকতালীয়ভাবে আজকের সাথে মিললে এই দুই জায়গা
+  // ভিন্ন ফলাফল দিতে পারত। এখন সরাসরি সেই একই শেয়ার্ড ফাংশন কল হচ্ছে — নিজস্ব
+  // কোনো কপি রাখা হচ্ছে না, তাই ভবিষ্যতে কোনো ফিক্স মিস হওয়ার ঝুঁকি নেই।
+  const todayInvList  = filterTodayInvoices(invoices, todayKey);
   // 🔴 ফিক্স (Phase 4 — returns নেট-আউট): useKpiStats()-এর একই নীতি — আজকের
   // ফেরত যাওয়া পণ্যের refundAmount বিক্রয়/লাভ থেকে বাদ, নাহলে নোটিফিকেশনে
   // দেখানো "আজকের বিক্রয়/লাভ" ফেরত যাওয়া পণ্যসহ ফোলানো থাকবে।
