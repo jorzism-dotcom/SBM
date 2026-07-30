@@ -18273,21 +18273,8 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
               const glowColor = "#22c55e"; // theme-agnostic, always-visible selection glow
               return (
                 <div key={p.id}
-                  onDoubleClick={() => {
-                    if (isSelected) return;
-                    if (isUnavailable) { showToast(isExpiredAllStock ? "⚠️ এই পণ্যের সব স্টক মেয়াদ-উত্তীর্ণ" : "⚠️ পণ্যটি স্টকে নেই", "#ef4444"); return; }
-                    changeQty(p, 1);
-                  }}
-                  onClick={(e) => {
-                    if (!isSelected) {
-                      if (isUnavailable) showToast(isExpiredAllStock ? "⚠️ এই পণ্যের সব স্টক মেয়াদ-উত্তীর্ণ" : "⚠️ পণ্যটি স্টকে নেই", "#ef4444");
-                      return;
-                    }
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    const clickX = e.clientX - rect.left;
-                    const half = rect.width / 2;
-                    if (clickX < half) changeQty(p, -1);
-                    else changeQty(p, 1);
+                  onClick={() => {
+                    if (!isSelected && isUnavailable) showToast(isExpiredAllStock ? "⚠️ এই পণ্যের সব স্টক মেয়াদ-উত্তীর্ণ" : "⚠️ পণ্যটি স্টকে নেই", "#ef4444");
                   }}
                   style={{
                     position: "relative",
@@ -18302,7 +18289,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                       ? `0 0 0 1px ${glowColor}55, 0 0 16px ${glowColor}66, 0 3px 10px rgba(0,0,0,0.18)`
                       : `0 1px 6px rgba(0,0,0,0.10)`,
                     transition: "all 0.2s cubic-bezier(.2,.8,.2,1)",
-                    cursor: isSelected ? "default" : isUnavailable ? "not-allowed" : "pointer",
+                    cursor: isUnavailable ? "not-allowed" : "default",
                     userSelect: "none",
                     overflow: "hidden",
                     opacity: isUnavailable ? 0.55 : 1,
