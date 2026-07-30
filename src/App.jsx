@@ -19782,16 +19782,27 @@ function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, set
     const newCostPrice = oldStock + qty > 0
       ? (oldStock * oldCost + qty * unitCost) / (oldStock + qty)
       : unitCost;
+    const roundedNewCost = Math.round(newCostPrice * 10000) / 10000;
     newStock = oldStock + qty;
+    // 🆕 ফিক্স (৩০ জুলাই ২০২৬ — ইউজারের অনুরোধে): আগে শুধু প্রোডাক্ট-লেভেলের
+    // costPrice-ই weighted-average হতো, প্রতিটা ব্যাচ তার নিজের আসল ক্রয়মূল্যে
+    // থেকে যেত (FIFO ব্যাচ-কস্টিং)। এখন থেকে ক্রয়-এন্ট্রি দিলে বিদ্যমান সব
+    // ব্যাচও (costMismatchIgnored বাদে) নতুন গড়ে সিঙ্ক হয়ে যাবে — পুরো
+    // অ্যাপ এখন Weighted-Average Costing পদ্ধতি অনুসরণ করবে, ব্যাচ মিসম্যাচ
+    // ক্রয়-এন্ট্রি থেকে আর তৈরি হবে না। নতুন ব্যাচও গড় দামেই যোগ হয়।
+    newBatch.costPrice = roundedNewCost;
     setProducts(prev => prev.map(p => p.id === peForm.productId
       ? {
           ...p,
           stock: newStock,
-          costPrice: Math.round(newCostPrice * 10000) / 10000,
+          costPrice: roundedNewCost,
           price: unitSell || p.price,
           lastUpdated: now,
           expiryDate: peForm.expiryDate || p.expiryDate,
-          batches: [...(p.batches || []), newBatch],
+          batches: [
+            ...(p.batches || []).map(b => b.costMismatchIgnored ? b : { ...b, costPrice: roundedNewCost }),
+            newBatch,
+          ],
         }
       : p
     ));
@@ -26159,15 +26170,24 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                 const newCostPrice = oldStock + qty > 0
                   ? (oldStock * oldCost + qty * cost) / (oldStock + qty)
                   : cost;
+                const roundedNewCost = Math.round(newCostPrice * 10000) / 10000;
+                // 🆕 ফিক্স (৩০ জুলাই ২০২৬ — ইউজারের অনুরোধে): ক্রয়-এন্ট্রি দিলে
+                // এখন বিদ্যমান সব ব্যাচও (costMismatchIgnored বাদে) নতুন গড়ে
+                // সিঙ্ক হয়ে যাবে — শুধু প্রোডাক্ট-লেভেল costPrice না, পুরো অ্যাপ
+                // এখন Weighted-Average Costing অনুসরণ করবে (নতুন ব্যাচও গড় দামেই)।
+                newBatch.costPrice = roundedNewCost;
                 return {
                   ...p,
                   stock: newStock,
-                  costPrice: Math.round(newCostPrice * 10000) / 10000,
+                  costPrice: roundedNewCost,
                   price: sell || p.price,
                   spPrice: (spPrice !== undefined && spPrice !== "") ? (parseFloat(spPrice) || 0) : p.spPrice,
                   lastUpdated: now,
                   expiryDate: expiryDate || p.expiryDate,
-                  batches: [...(p.batches || []), newBatch],
+                  batches: [
+                    ...(p.batches || []).map(b => b.costMismatchIgnored ? b : { ...b, costPrice: roundedNewCost }),
+                    newBatch,
+                  ],
                 };
               });
               computedArr = mapped;
@@ -27764,6 +27784,10 @@ function BatchSyncTool({ T, S, products = [], setProducts, invoices = [], setInv
   const [section, setSection] = React.useState("risk"); // "risk" | "mismatch" | "correction"
   const [editingId, setEditingId] = React.useState(null);
   const [editPrice, setEditPrice] = React.useState("");
+  // 🆕 ফিক্স (৩০ জুলাই ২০২৬): "ঝুঁকিপূর্ণ পণ্য" ট্যাবে আগে শুধু বিক্রয়মূল্য ঠিক
+  // করা যেত — কিন্তু নেগেটিভ মার্জিনের কারণ ক্রয়মূল্য (টাইপো/স্টেল weighted-avg
+  // cost)-ও হতে পারে, শুধু বিক্রয়মূল্য না। এখন দুটোই একসাথে এডিট করা যাবে।
+  const [editCost, setEditCost] = React.useState("");
 
   // ── (A) লস-ঝুঁকি পণ্য ──────────────────────────────────────────────────
   const riskProducts = React.useMemo(() => {
@@ -27877,16 +27901,28 @@ function BatchSyncTool({ T, S, products = [], setProducts, invoices = [], setInv
   const saveInlinePrice = (p) => {
     const val = parseFloat(editPrice);
     if (!val || val <= 0) { showToast?.("সঠিক বিক্রয়মূল্য দিন", "#ef4444"); return; }
+    // 🆕 ক্রয়মূল্য ইনপুট খালি রাখলে/অপরিবর্তিত থাকলে শুধু বিক্রয়মূল্যই বদলাবে —
+    // ক্রয়মূল্য দিলে (এবং আগের থেকে ভিন্ন হলে) সেটাও একসাথে সংশোধন হবে।
+    const costVal = editCost !== "" ? parseFloat(editCost) : null;
+    if (editCost !== "" && (!costVal || costVal <= 0)) { showToast?.("সঠিক ক্রয়মূল্য দিন", "#ef4444"); return; }
+    const oldCost = p.costPrice || 0;
+    const costChanged = costVal != null && Math.round(costVal * 100) !== Math.round(oldCost * 100);
     setProducts(prev => prev.map(pr => {
       if (pr.id !== p.id) return pr;
-      const updatedBatches = (pr.batches || []).map(b =>
-        b.costMismatchIgnored ? b : { ...b, sellPrice: val }
-      );
-      return { ...pr, price: val, batches: updatedBatches };
+      const updatedBatches = (pr.batches || []).map(b => {
+        if (b.costMismatchIgnored) return b;
+        const next = { ...b, sellPrice: val };
+        if (costChanged) next.costPrice = costVal; // পণ্যের সাথে সব ব্যাচও সিঙ্ক করা হচ্ছে, নাহলে এটাই নতুন "ব্যাচ মিসম্যাচ" তৈরি করবে
+        return next;
+      });
+      return { ...pr, price: val, ...(costChanged ? { costPrice: costVal } : {}), batches: updatedBatches };
     }));
     auditLog?.("PRODUCT_PRICE_CHANGE", { productId: p.id, productName: p.name, oldPrice: p.price, newPrice: val, source: "batchSyncTool" });
-    showToast?.(`${p.name}-এর বিক্রয়মূল্য ৳${val} করা হলো`);
-    setEditingId(null); setEditPrice("");
+    if (costChanged) {
+      auditLog?.("PRODUCT_COST_CHANGE", { productId: p.id, productName: p.name, oldCostPrice: oldCost, newCostPrice: costVal, source: "batchSyncTool" });
+    }
+    showToast?.(costChanged ? `${p.name}-এর ক্রয়মূল্য ৳${costVal} ও বিক্রয়মূল্য ৳${val} করা হলো` : `${p.name}-এর বিক্রয়মূল্য ৳${val} করা হলো`);
+    setEditingId(null); setEditPrice(""); setEditCost("");
   };
 
   const syncBatch = (m) => {
@@ -27949,15 +27985,27 @@ function BatchSyncTool({ T, S, products = [], setProducts, invoices = [], setInv
             </div>
             {canEdit && (
               editingId === p.id ? (
-                <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-                  <input autoFocus type="number" value={editPrice} onChange={e => setEditPrice(e.target.value)}
-                    placeholder="নতুন বিক্রয়মূল্য" style={{ flex: 1, padding: "7px 10px", borderRadius: 8, border: `1px solid ${T.border}`, background: T.card, color: T.text, fontSize: 13 }} />
-                  <button onClick={() => saveInlinePrice(p)} style={{ ...btnBase, background: "#16a34a", color: "#fff" }}>সেভ</button>
-                  <button onClick={() => { setEditingId(null); setEditPrice(""); }} style={{ ...btnBase, background: "transparent", color: T.sub, border: `1px solid ${T.border}` }}>বাতিল</button>
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ color: T.sub || "#94a3b8", fontSize: 10.5, marginBottom: 2 }}>ক্রয়মূল্য</div>
+                      <input type="number" value={editCost} onChange={e => setEditCost(e.target.value)}
+                        placeholder="ক্রয়মূল্য" style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", borderRadius: 8, border: `1px solid ${T.border}`, background: T.card, color: T.text, fontSize: 13 }} />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ color: T.sub || "#94a3b8", fontSize: 10.5, marginBottom: 2 }}>বিক্রয়মূল্য</div>
+                      <input autoFocus type="number" value={editPrice} onChange={e => setEditPrice(e.target.value)}
+                        placeholder="বিক্রয়মূল্য" style={{ width: "100%", boxSizing: "border-box", padding: "7px 10px", borderRadius: 8, border: `1px solid ${T.border}`, background: T.card, color: T.text, fontSize: 13 }} />
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                    <button onClick={() => saveInlinePrice(p)} style={{ ...btnBase, flex: 1, background: "#16a34a", color: "#fff" }}>সেভ</button>
+                    <button onClick={() => { setEditingId(null); setEditPrice(""); setEditCost(""); }} style={{ ...btnBase, flex: 1, background: "transparent", color: T.sub, border: `1px solid ${T.border}` }}>বাতিল</button>
+                  </div>
                 </div>
               ) : (
-                <button onClick={() => { setEditingId(p.id); setEditPrice(String(p.price || "")); }}
-                  style={{ ...btnBase, marginTop: 8, background: "#0ea5e9", color: "#fff" }}>বিক্রয়মূল্য ঠিক করুন</button>
+                <button onClick={() => { setEditingId(p.id); setEditPrice(String(p.price || "")); setEditCost(String(p.costPrice || "")); }}
+                  style={{ ...btnBase, marginTop: 8, background: "#0ea5e9", color: "#fff" }}>মূল্য ঠিক করুন</button>
               )
             )}
           </div>
