@@ -153,6 +153,28 @@ async function verifyAdminPinResetCode(deviceId, code) {
   return code === curCode || code === prevCode;
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// 🆕 (৩০ জুলাই ২০২৬) মালিকের লগইন PIN রিসেট কোড — Admin PIN রিসেটের ঠিক একই
+// অফলাইন সূত্র (deviceId + বর্তমান মাস + একই LICENSE_SECRET → SHA-256 →
+// ৬-ডিজিট কোড), শুধু হ্যাশে ":OWNERPIN:" ট্যাগ — তাই লাইসেন্স কোড, Admin PIN
+// রিসেট কোড আর এই কোড কখনো একই সংখ্যা হবে না। জেনারেট করতে হবে
+// netlify-site/license-generator.html-এর "মালিকের PIN রিসেট" ট্যাব থেকে।
+// ══════════════════════════════════════════════════════════════════════════
+async function computeOwnerPinResetCode(deviceId, yearMonth) {
+  const enc = new TextEncoder().encode(`${LICENSE_SECRET}:OWNERPIN:${deviceId}:${yearMonth}`);
+  const buf = await crypto.subtle.digest("SHA-256", enc);
+  const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+  const n = parseInt(hex.slice(0, 8), 16) % 1000000;
+  return String(n).padStart(6, "0");
+}
+async function verifyOwnerPinResetCode(deviceId, code) {
+  const now = new Date();
+  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const curCode  = await computeOwnerPinResetCode(deviceId, _licenseYearMonth(now));
+  const prevCode = await computeOwnerPinResetCode(deviceId, _licenseYearMonth(prev));
+  return code === curCode || code === prevCode;
+}
+
 // "সর্বোচ্চ দেখা তারিখ" ট্র্যাক করে ফোনের ঘড়ি ইচ্ছাকৃতভাবে পিছিয়ে দিয়ে মেয়াদ
 // বাড়ানোর চেষ্টা ঠেকায়। কয়েক ঘণ্টার স্বাভাবিক টাইমজোন/DST গোলযোগ সহনীয়
 // রাখতে ৬ ঘণ্টার tolerance রাখা হয়েছে — বড় ধরনের (কয়েক দিনের) পিছিয়ে যাওয়াই
@@ -18271,11 +18293,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                     position: "relative",
                     background: isSelected
                       ? `linear-gradient(155deg, ${glowColor}2b 0%, ${glowColor}12 100%)`
-                      : isUnavailable
-                        ? `linear-gradient(155deg, #ef444414 0%, transparent 60%), ${T.card}`
-                        : (p.demandType === "uncommon"
-                            ? `linear-gradient(155deg, #a78bfa22 0%, transparent 65%), ${T.card}`
-                            : `linear-gradient(155deg, #22c55e1e 0%, transparent 65%), ${T.card}`),
+                      : T.card,
                     border: `1.5px solid ${isSelected ? glowColor : isUnavailable ? "#ef444455" : (p.demandType === "uncommon" ? "#a78bfa55" : "#22c55e3d")}`,
                     borderRadius: 14,
                     padding: "10px 10px",
@@ -32346,6 +32364,18 @@ function Settings_({ T, S, shopName,
   const [newPinConfirm,  setNewPinConfirm]  = useState("");
   const [pinChangeErr,   setPinChangeErr]   = useState("");
   const [pinStep,        setPinStep]        = useState(1); // 1=old, 2=new, 3=confirm
+  // 🆕 (৩০ জুলাই ২০২৬) মালিকের লগইন PIN ভুলে গেলে — Admin PIN ফরগট ফ্লোর
+  // সাথে একই প্যাটার্নে, ডেভেলপারের দেওয়া মাসিক রিসেট কোড দিয়ে পুরনো PIN
+  // ছাড়াই নতুন PIN বসানো যায়।
+  const [pinForgotMode,        setPinForgotMode]        = useState(false);
+  const [ownerPinDeviceId,     setOwnerPinDeviceId]      = useState("");
+  const [ownerForgotCodeInput, setOwnerForgotCodeInput]  = useState("");
+  const [ownerPinBusy,         setOwnerPinBusy]          = useState(false);
+  useEffect(() => {
+    if (!showPinChange) return;
+    (async () => { setOwnerPinDeviceId(await getOrCreateLicenseDeviceId()); })();
+  }, [showPinChange]);
+  useBackHandler(showPinChange && pinForgotMode, () => { setPinForgotMode(false); setPinChangeErr(""); return true; });
   // 🆕 Admin PIN change/forgot state (স্টাফ↔এডমিন সুইচ PIN)
   const [showAdminPinChange, setShowAdminPinChange] = useState(false);
   const [adminPinMode,       setAdminPinMode]       = useState("old"); // old|forgotCode|new|confirm
@@ -32375,7 +32405,7 @@ function Settings_({ T, S, shopName,
   useBackHandler(showSmsSection,   () => { setShowSmsSection(false);  return true; });
   useBackHandler(showBinExpanded,  () => { setShowBinExpanded(false); return true; });
   useBackHandler(showPinChange && pinStep > 1, () => { setPinStep(s => Math.max(1, s - 1)); return true; });
-  useBackHandler(showPinChange && pinStep === 1, () => { setShowPinChange(false); return true; });
+  useBackHandler(showPinChange && pinStep === 1 && !pinForgotMode, () => { setShowPinChange(false); return true; });
   useBackHandler(showAdminPinChange && adminPinMode !== adminPinEntryMode, () => { setAdminPinMode(adminPinEntryMode); setAdminPinErr(""); return true; });
   useBackHandler(showAdminPinChange && adminPinMode === adminPinEntryMode, () => { setShowAdminPinChange(false); return true; });
   // Master Key gate state
@@ -33712,13 +33742,13 @@ onChange={()=>{}} />
             </div>
             <div style={{ color: T.sub, fontSize: 11, marginTop: 2 }}>নতুন ৬-ডিজিটের PIN সেট করুন</div>
           </div>
-          <button style={S.linkBtn} onClick={() => { setShowPinChange(v => !v); setOldPinInput(""); setNewPinInput(""); setNewPinConfirm(""); setPinChangeErr(""); setPinStep(1); }}>
+          <button style={S.linkBtn} onClick={() => { setShowPinChange(v => !v); setOldPinInput(""); setNewPinInput(""); setNewPinConfirm(""); setPinChangeErr(""); setPinStep(1); setPinForgotMode(false); setOwnerForgotCodeInput(""); }}>
             {showPinChange ? "বাতিল" : "পরিবর্তন"}
           </button>
         </div>
         {showPinChange && (
           <div style={{ marginTop: 14 }}>
-            {pinStep === 1 && (
+            {pinStep === 1 && !pinForgotMode && (
               <>
                 <label style={S.label}>বর্তমান PIN দিন</label>
                 <input type="tel" inputMode="numeric" pattern="[0-9]*" maxLength={6}
@@ -33747,6 +33777,48 @@ onChange={()=>{}} />
                   // return করে — নিচে আগে থাকা non-OFFLINE_MODE Firebase শাখা
                   // (২৯ জুলাই ২০২৬, Session A) সরানো হয়েছে।
                 }}>পরবর্তী →</button>
+                <div style={{ textAlign:"center", marginTop:12 }}>
+                  <button style={{ background:"none", border:"none", color:"#10b981", fontSize:12, fontWeight:700, cursor:"pointer", textDecoration:"underline", fontFamily:"inherit" }}
+                    onClick={() => { setPinForgotMode(true); setPinChangeErr(""); setOwnerForgotCodeInput(""); }}>
+                    PIN ভুলে গেছেন?
+                  </button>
+                </div>
+              </>
+            )}
+            {/* 🆕 (৩০ জুলাই ২০২৬) মালিকের PIN ভুলে গেলে — পুরনো PIN ছাড়াই,
+                ডেভেলপারের দেওয়া মাসিক রিসেট কোড দিয়ে সরাসরি নতুন PIN বসানো
+                যায় (Admin PIN ফরগট-কোড কার্ডের হুবহু একই প্যাটার্ন)। */}
+            {pinStep === 1 && pinForgotMode && (
+              <>
+                <div style={{ background:"#05966914", border:"1px solid #10b98133", borderRadius:12, padding:12, marginBottom:12 }}>
+                  <div style={{ color:T.sub, fontSize:11, marginBottom:6, lineHeight:1.6 }}>এই ডিভাইস আইডিটা ডেভেলপারকে (Protik) কল/মেসেজ করে পাঠান — উনি একটা রিসেট কোড দেবেন, যেটা শুধু এই মাসের জন্যই কাজ করবে</div>
+                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                    <div style={{ flex:1, fontFamily:"monospace", fontSize:17, fontWeight:900, color:"#10b981", letterSpacing:2, textAlign:"center", background:"#0d1526", borderRadius:8, padding:"8px 0" }}>
+                      {ownerPinDeviceId || "..."}
+                    </div>
+                    <button style={{ ...S.cancelBtn, padding:"8px 12px", fontSize:12 }} onClick={async () => {
+                      try { await navigator.clipboard.writeText(ownerPinDeviceId); showToast("✅ কপি হয়েছে"); } catch (e) {}
+                    }}>কপি</button>
+                  </div>
+                </div>
+                <label style={S.label}>রিসেট কোড দিন (৬ ডিজিট)</label>
+                <input type="tel" inputMode="numeric" pattern="[0-9]*" maxLength={6}
+                  placeholder="------"
+                  value={ownerForgotCodeInput}
+                  onChange={e => { setOwnerForgotCodeInput(e.target.value.replace(/[^0-9]/g,"")); setPinChangeErr(""); }}
+                  style={{ ...S.input, textAlign:"center", letterSpacing:8, fontSize:22, fontWeight:800 }} />
+                {pinChangeErr && <div style={{ color:"#ef4444", fontSize:12, marginBottom:8 }}>{pinChangeErr}</div>}
+                <div style={S.rowBtns}>
+                  <button style={S.cancelBtn} onClick={() => { setPinForgotMode(false); setPinChangeErr(""); }}>ফিরে যান</button>
+                  <button style={{ ...S.saveBtn, background:"linear-gradient(135deg,#059669,#10b981)" }} disabled={ownerPinBusy} onClick={async () => {
+                    if (ownerForgotCodeInput.length !== 6) { setPinChangeErr("৬ ডিজিটের কোড দিন"); return; }
+                    setOwnerPinBusy(true);
+                    const ok = await verifyOwnerPinResetCode(ownerPinDeviceId, ownerForgotCodeInput);
+                    setOwnerPinBusy(false);
+                    if (!ok) { setPinChangeErr("ভুল বা মেয়াদোত্তীর্ণ কোড"); setOwnerForgotCodeInput(""); return; }
+                    setPinForgotMode(false); setPinChangeErr(""); setPinStep(2);
+                  }}>যাচাই করুন</button>
+                </div>
               </>
             )}
             {pinStep === 2 && (
