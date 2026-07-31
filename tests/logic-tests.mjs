@@ -14,7 +14,7 @@ import {
   calcCashDrawer, restoreBatchQty, isBatchExpired, getSortedActiveBatches,
   getActiveBatch, getSellableStock, computeSupplierDueMap, calcNextBatch,
   runInvariantChecks, getReturnedQtyForInvoice, getReturnedAmountForInvoice,
-  calcReturnRefundAmount, scaleBatchBreakdownForVoid,
+  calcReturnRefundAmount, calcLineDiscountedRevenue, scaleBatchBreakdownForVoid,
 } from "../src/logic.js";
 
 let passCount = 0;
@@ -187,21 +187,71 @@ t("রিটার্ন রিফান্ড অ্যামাউন্ট", 
   return { pass: approx(actual, 100), expected: 100, actual };
 });
 t("রিটার্ন রিফান্ড অ্যামাউন্ট", "ইনভয়েস-লেভেল discount অনুপাতে রিফান্ড কমা উচিত", () => {
-  // subtotal=200 (2×100), discount=20 → discountRatio=0.9 → ১ ইউনিট ফেরত হলে রিফান্ড ৯০ হওয়া উচিত
-  const inv = { items: [{ price: 100, qty: 2 }], discount: 20, itemDiscount: 0 };
-  const actual = calcReturnRefundAmount(inv, { price: 100 }, 1);
+  // subtotal=200 (2×100), discount=20 → ratio=0.9 → ১ ইউনিট ফেরত হলে রিফান্ড ৯০ হওয়া উচিত
+  const line = { price: 100, qty: 2 };
+  const inv = { items: [line], discount: 20, itemDiscount: 0 };
+  const actual = calcReturnRefundAmount(inv, line, 1);
   return { pass: approx(actual, 90), expected: 90, actual };
 });
 t("রিটার্ন রিফান্ড অ্যামাউন্ট", "itemDiscount (পণ্যভিত্তিক ছাড়)-ও ধরা উচিত, discount-এর মতোই", () => {
-  // subtotal=200, itemDiscount=20 → discountRatio=0.9 → ২ ইউনিট ফেরত হলে রিফান্ড ১৮০ হওয়া উচিত
-  const inv = { items: [{ price: 100, qty: 2 }], discount: 0, itemDiscount: 20 };
-  const actual = calcReturnRefundAmount(inv, { price: 100 }, 2);
+  // এই লাইনের নিজস্ব itemDiscount=20 (subtotal=200 এর উপর) → net=180 → ২ ইউনিট ফেরত হলে রিফান্ড ১৮০ হওয়া উচিত
+  const line = { price: 100, qty: 2, itemDiscount: 20 };
+  const inv = { items: [line], discount: 0, itemDiscount: 20 };
+  const actual = calcReturnRefundAmount(inv, line, 2);
   return { pass: approx(actual, 180), expected: 180, actual };
+});
+t("রিটার্ন রিফান্ড অ্যামাউন্ট", "🔴 রিগ্রেশন — মিশ্র-ডিসকাউন্ট মাল্টি-লাইন ইনভয়েসে এক পণ্যের ছাড় আরেক পণ্যের রিফান্ডে না মেশা উচিত", () => {
+  // B-50 Forte: ছাড়হীন লাইন, Acelon: ৫০% item-discount + ইনভয়েস-লেভেল সাধারণ ছাড়।
+  // B-50 ফেরত দিলে তার রিফান্ড Acelon-এর ছাড়ের কারণে কমে যাওয়া উচিত না।
+  const b50 = { price: 1.74, qty: 10, itemDiscount: 0 };
+  const acelon = { price: 3, qty: 10, itemDiscount: 15 };
+  const inv = { items: [b50, acelon], discount: 2, itemDiscount: 15 };
+  const actualB50 = calcReturnRefundAmount(inv, b50, 1);
+  const actualAcelon = calcReturnRefundAmount(inv, acelon, 1);
+  // b50: netSubtotal=17.4+15=32.4, ratio=(32.4-2)/32.4=0.93827..., perUnit=1.74*0.93827=1.6326
+  // acelon: lineNet=15, perUnit=(15*0.93827)/10=1.4074
+  const pass = approx(actualB50, 1.6326, 0.01) && approx(actualAcelon, 1.4074, 0.01) && actualB50 > 1.6 && actualAcelon < 1.5;
+  return { pass, expected: "B50≈1.63, Acelon≈1.41 (b50 আর acelon-এর রিফান্ড আলাদা)", actual: `B50=${actualB50.toFixed(4)}, Acelon=${actualAcelon.toFixed(4)}` };
 });
 t("রিটার্ন রিফান্ড অ্যামাউন্ট", "subtotal শূন্য (crash না করে ফুল প্রাইসেই রিফান্ড ফেরত দেওয়া উচিত)", () => {
   const inv = { items: [], discount: 0, itemDiscount: 0 };
   const actual = calcReturnRefundAmount(inv, { price: 50 }, 2);
   return { pass: approx(actual, 100), expected: 100, actual };
+});
+
+// ── calcLineDiscountedRevenue — single-source-of-truth per-line revenue ─────
+t("লাইন-ভিত্তিক ডিসকাউন্ট রেভিনিউ", "ছাড়হীন সিঙ্গেল-লাইন ইনভয়েসে পুরো দামই রেভিনিউ", () => {
+  const item = { price: 100, qty: 2 };
+  const actual = calcLineDiscountedRevenue(item, [item], 0);
+  return { pass: approx(actual, 200), expected: 200, actual };
+});
+t("লাইন-ভিত্তিক ডিসকাউন্ট রেভিনিউ", "🔴 রিগ্রেশন (B-50 Forte স্ক্রিনশট কেস) — এক লাইনের itemDiscount আরেক লাইনে না মেশা", () => {
+  // B-50 Forte: qty=10,price=1.74, ছাড়হীন। Acelon: qty=10,price=3, item-discount ৳15 (৫০%)।
+  // ইনভয়েস-লেভেল সাধারণ ছাড় ৳2। costPrice: B-50=1.50, Acelon=0.52 (রেফারেন্সের জন্য, এখানে অপ্রাসঙ্গিক)।
+  const b50 = { price: 1.74, qty: 10, itemDiscount: 0 };
+  const acelon = { price: 3, qty: 10, itemDiscount: 15 };
+  const items = [b50, acelon];
+  const revB50 = calcLineDiscountedRevenue(b50, items, 2);
+  const revAcelon = calcLineDiscountedRevenue(acelon, items, 2);
+  // netSubtotal = 17.4 + 15 = 32.4; ratio = (32.4-2)/32.4 = 0.938272...
+  // b50: 17.4*ratio ≈ 16.326 → লাভ = 16.326-15.00 = +1.33 (আগে বাগ-সহ ছিল -3.84)
+  // acelon: 15*ratio ≈ 14.074 → লাভ = 14.074-5.20 = +8.87
+  const profitB50 = revB50 - 15.00;
+  const pass = approx(revB50, 16.326, 0.01) && approx(revAcelon, 14.074, 0.01) && profitB50 > 0
+    && approx(revB50 + revAcelon, 30.40, 0.01); // মোট রেভিনিউ অপরিবর্তিত (শুধু ভাগ ঠিক হলো)
+  return {
+    pass,
+    expected: "B50 রেভিনিউ≈16.33 (লাভজনক, লস না), Acelon≈14.07, যোগফল=30.40",
+    actual: `B50=${revB50.toFixed(3)} (লাভ=${profitB50.toFixed(3)}), Acelon=${revAcelon.toFixed(3)}, যোগফল=${(revB50+revAcelon).toFixed(3)}`,
+  };
+});
+t("লাইন-ভিত্তিক ডিসকাউন্ট রেভিনিউ", "একাধিক লাইনের যোগফল ইনভয়েস-টোটাল রেভিনিউর সাথে মেলা উচিত", () => {
+  const a = { price: 50, qty: 3, itemDiscount: 10 };
+  const b = { price: 20, qty: 5, itemDiscount: 0 };
+  const items = [a, b];
+  const sum = calcLineDiscountedRevenue(a, items, 5) + calcLineDiscountedRevenue(b, items, 5);
+  // netSubtotal = (150-10) + 100 = 240; মোট রেভিনিউ = 240 - 5 = 235
+  return { pass: approx(sum, 235), expected: 235, actual: sum };
 });
 
 t("ব্যালেন্স ক্ল্যাম্প", "ভয়েড রিভার্সালে balance কখনো নেগেটিভ হয়ে যাওয়া উচিত না", () => {
