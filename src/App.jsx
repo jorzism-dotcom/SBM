@@ -15,10 +15,10 @@ import { Virtuoso, VirtuosoGrid, TableVirtuoso } from "react-virtuoso";
 import {
   BD_OFFSET_MS, _bdParts,
   calcNextBatch, isBatchExpired, expiryDateFromYearMonth, getSortedActiveBatches, getActiveBatch, getSellableStock,
-  computeSupplierDueMap, _itemCostPrice, calcInvoiceProfit, calcProfitTotal,
+  computeSupplierDueMap, uniqueSupplierRows, normalizeSupplierKey, _itemCostPrice, calcInvoiceProfit, calcProfitTotal,
   calcInvoiceTotal, calcVoidNetChange, calcCashDrawer, restoreBatchQty,
   runInvariantChecks, getReturnedQtyForInvoice, getReturnedAmountForInvoice,
-  calcReturnRefundAmount, scaleBatchBreakdownForVoid,
+  calcReturnRefundAmount, calcLineDiscountedRevenue, scaleBatchBreakdownForVoid,
   getVoidedInvoiceIds, filterReturnsExcludingVoided, filterTodayInvoices,
 } from "./logic.js";
 // 🧪 Schema validation (zod) — Firestore write-এর আগে টাকা/স্টক-সংক্রান্ত
@@ -526,19 +526,64 @@ function computeStockDeductionFIFO(product, qty) {
     expiryDate = product.expiryDate || "";
     if (qty > 0) batchBreakdown.push({ batchNo: "", qty, costPrice, expiryDate });
   }
-  const updatedBatches = sortedBatches
-    .map(b => {
-      if (remaining <= 0) return b;
-      const deduct = Math.min(remaining, b.qty || 0);
-      remaining -= deduct;
-      return { ...b, qty: (b.qty || 0) - deduct };
-    })
-    .filter(b => b.qty > 0);
+  // 🔴 ফিক্স (ক্রিটিক্যাল — মেয়াদোত্তীর্ণ ব্যাচ নীরবে হারিয়ে যাওয়া): আগে এখানে
+  // sortedBatches (= getSortedActiveBatches(product), যেটা মেয়াদোত্তীর্ণ ও
+  // qty<=0 ব্যাচ বাদ দিয়ে ফিল্টার করে) থেকেই সরাসরি updatedBatches বানানো হতো,
+  // আর caller (createInvoice) সেটা দিয়ে পণ্যের পুরো `batches[]` অ্যারে বদলে
+  // দিত। ফলে যেকোনো পণ্যের একটা মেয়াদোত্তীর্ণ ব্যাচে এখনো ভৌত স্টক (qty>0)
+  // থাকলেও — সেই পণ্যের *যেকোনো* সাধারণ বিক্রি হলেই (এমনকি সেই ব্যাচ থেকে না
+  // কেটেও) সেটা নীরবে `batches[]` থেকে মুছে যেত (removeExpiredBatch()-এর
+  // মাধ্যমে সরিয়ে কোনো stockMovement/monthExpiredValue লগ না রেখেই) — ফলে
+  // দোকানদার তার শেলফে থাকা মেয়াদোত্তীর্ণ পণ্যের রেকর্ড হারাতেন এবং "এই মাসের
+  // মেয়াদোত্তীর্ণ পণ্যের মূল্য" KPI-ও ঘটনাটা ধরতে পারত না। এখন পূর্ণ
+  // product.batches অ্যারের ওপর ম্যাপ করা হচ্ছে — শুধু যেসব ব্যাচ থেকে সত্যিই
+  // কাটা হয়েছে (sortedBatches-এ ছিল, একই object reference দিয়ে মেলানো) সেগুলোর
+  // qty আপডেট হয় (এবং শূন্য হয়ে গেলে বাদ পড়ে, আগের আচরণের মতোই); বাকি সব
+  // ব্যাচ (মেয়াদোত্তীর্ণ বা অন্য কোনো কারণে sortedBatches-এ বাদ পড়া) অপরিবর্তিত
+  // থেকে যায়।
+  const _deductedQtyByRef = new Map();
+  sortedBatches.forEach(b => {
+    if (remaining <= 0) return;
+    const deduct = Math.min(remaining, b.qty || 0);
+    remaining -= deduct;
+    _deductedQtyByRef.set(b, (b.qty || 0) - deduct);
+  });
+  const updatedBatches = (product.batches || []).reduce((acc, b) => {
+    if (_deductedQtyByRef.has(b)) {
+      const newQty = _deductedQtyByRef.get(b);
+      if (newQty > 0) acc.push({ ...b, qty: newQty }); // পুরোপুরি শেষ হয়ে গেলে বাদ (আগের আচরণের মতোই)
+    } else {
+      acc.push(b); // sortedBatches-এ ছিল না (মেয়াদোত্তীর্ণ ইত্যাদি) — অপরিবর্তিত
+    }
+    return acc;
+  }, []);
   return { newStock, updatedBatches, batchNo, costPrice, expiryDate, batchBreakdown };
 }
 
 // ─── smartMatch — fuzzy/contains scorer for Bengali+English ───────────────────
 // Returns: 2=exact start, 1=contains/fuzzy, 0=no match
+// ─── levenshteinDistance — দুটো স্ট্রিং কতটা কাছাকাছি (এডিট-ডিস্ট্যান্স) তা মাপা ───
+// SupplierPicker-এ "did you mean" সাজেশনের জন্য ব্যবহৃত — normalizeSupplierKey
+// শুধু Ltd./পাংচুয়েশন/স্পেস-জাতীয় নিয়মমাফিক ভিন্নতা ধরে, কিন্তু আসল বানান-ভুল
+// (Boshundhora vs Bashundhara) ধরতে অক্ষরের পার্থক্য গোনা দরকার।
+function levenshteinDistance(a, b) {
+  a = a || ""; b = b || "";
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) {
+      cur[j] = a[i - 1] === b[j - 1]
+        ? prev[j - 1]
+        : 1 + Math.min(prev[j - 1], prev[j], cur[j - 1]);
+    }
+    prev = cur;
+  }
+  return prev[n];
+}
+
 function smartMatch(text, query) {
   if (!query || !text) return query ? 0 : 1;
   const t = text.toLowerCase();
@@ -578,14 +623,8 @@ function HighlightText({ text, query, style, highlightColor = "#22c55e" }) {
 // Pharmaceuticals/পাংচুয়েশন) আলাদা এন্ট্রি হিসেবে সাজেশনে দুইবার দেখাত। এই
 // ফাংশন একটা "মূল নাম" (normalized key) বের করে — নিচে allSuppliers এই key
 // দিয়ে ডিডুপ্লিকেট করে, তাই একই কোম্পানি এখন থেকে একবারই দেখাবে।
-function normalizeSupplierKey(name) {
-  return String(name || "")
-    .toLowerCase()
-    .replace(/[.,()]/g, "")
-    .replace(/\b(ltd|limited|pharmaceuticals?|pharma|plc|inc|company|corporation|corp|group|bd|bangladesh)\b/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+// (৩১ জুলাই ২০২৬: এখন src/logic.js থেকে import করা হয়, যাতে computeSupplierDueMap-ও
+// ঠিক এই একই normalize-লজিক দিয়ে ভিন্ন বানানের সাপ্লায়ার একত্র করতে পারে।)
 
 // ─── SupplierPicker — টাইপাহেড সার্চ-করে-বাছাই সাপ্লায়ার সিলেক্টর ───────────
 // BD_PHARMA_COMPANIES (MEDICINE_DATASET থেকে ডিরাইভ করা, ২১১টি) এর মধ্যে ফাজি সার্চ (smartMatch),
@@ -633,23 +672,56 @@ function SupplierPicker({ value, onChange, error, T, S, autoFocus, extraSupplier
       .map(x => x.c);
   }, [query, allSuppliers]);
 
+  // 🆕 ফিক্স (৩১ জুলাই ২০২৬ — সাপ্লায়ার টাইপো প্রতিরোধ, permanent/root-cause fix):
+  // এতদিন "নিজে লিখুন" মোডে যেকোনো বানান সরাসরি সেভ হয়ে যেত, তাই নতুন টাইপো
+  // (Boshundhora, Jolly camemical ইত্যাদির মতো) ভবিষ্যতেও তৈরি হতেই থাকত —
+  // রিপোর্ট-লেয়ারের merge ফিক্স শুধু already-known ভ্যারিয়েন্ট ধরে, নতুন
+  // ভুল বানান ধরতে পারে না। এখন টাইপ করার সময়ই এক্সিস্টিং তালিকার সাথে
+  // এডিট-ডিস্ট্যান্স মিলিয়ে কাছাকাছি নাম থাকলে "এটা বলছেন?" সাজেশন দেখানো
+  // হয় — ইউজার এক ট্যাপে এক্সিস্টিং (সঠিক) নামটা বেছে নিতে পারেন, ফলে নতুন
+  // ডুপ্লিকেট/টাইপো তৈরিই হবে না, উৎসেই সমাধান হয়ে যাবে।
+  const didYouMean = useMemo(() => {
+    const typed = (value || "").trim();
+    if (typed.length < 3) return null;
+    const typedKey = normalizeSupplierKey(typed);
+    if (!typedKey) return null;
+    let best = null, bestDist = Infinity;
+    allSuppliers.forEach(s => {
+      const sKey = normalizeSupplierKey(s);
+      if (sKey === typedKey) return; // হুবহু/নিয়মমাফিক মিল — টাইপো না
+      const d = levenshteinDistance(typedKey, sKey);
+      const threshold = typedKey.length <= 5 ? 1 : typedKey.length <= 9 ? 2 : 3;
+      if (d <= threshold && d < bestDist) { bestDist = d; best = s; }
+    });
+    return best;
+  }, [value, allSuppliers]);
+
   if (customMode) {
     return (
-      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-        <input style={{ ...S.input, flex: 1, marginBottom: 0, border: error ? "1.5px solid #ef4444" : S.input.border }}
-          placeholder="সাপ্লায়ারের নাম লিখুন"
-          defaultValue={value || ""}
-          ref={el => { if (el && !el._b) { el._b = true;
-            // বাংলা IME কম্পোজিশনের সাথে কনফ্লিক্ট এড়াতে uncontrolled ইনপুট — controlled হলে প্রতি
-            // কি-স্ট্রোকে React re-render কম্পোজিশন ভেঙে দিতে পারে, ফলে টাইপ করা নাম সেভ হতো না।
-            el.addEventListener("input", () => onChange(el.value), { passive: true });
-            el.addEventListener("compositionend", () => onChange(el.value), { passive: true });
-            el.addEventListener("blur", () => onChange(el.value), { passive: true });
-          } }}
-          onChange={() => {}}
-          autoFocus={autoFocus !== false} autoComplete="off" />
-        <button type="button" onClick={() => { setCustomMode(false); onChange(""); }}
-          style={{ background: "none", border: `1px solid ${T.border}`, color: T.sub, borderRadius: 8, padding: "10px 10px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", flexShrink: 0 }}>↩ তালিকা</button>
+      <div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <input style={{ ...S.input, flex: 1, marginBottom: 0, border: error ? "1.5px solid #ef4444" : S.input.border }}
+            placeholder="সাপ্লায়ারের নাম লিখুন"
+            defaultValue={value || ""}
+            ref={el => { if (el && !el._b) { el._b = true;
+              // বাংলা IME কম্পোজিশনের সাথে কনফ্লিক্ট এড়াতে uncontrolled ইনপুট — controlled হলে প্রতি
+              // কি-স্ট্রোকে React re-render কম্পোজিশন ভেঙে দিতে পারে, ফলে টাইপ করা নাম সেভ হতো না।
+              el.addEventListener("input", () => onChange(el.value), { passive: true });
+              el.addEventListener("compositionend", () => onChange(el.value), { passive: true });
+              el.addEventListener("blur", () => onChange(el.value), { passive: true });
+            } }}
+            onChange={() => {}}
+            autoFocus={autoFocus !== false} autoComplete="off" />
+          <button type="button" onClick={() => { setCustomMode(false); onChange(""); }}
+            style={{ background: "none", border: `1px solid ${T.border}`, color: T.sub, borderRadius: 8, padding: "10px 10px", cursor: "pointer", fontSize: 12, fontFamily: "inherit", flexShrink: 0 }}>↩ তালিকা</button>
+        </div>
+        {didYouMean && (
+          <div onMouseDown={() => { onChange(didYouMean); setCustomMode(false); }}
+            style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6, background: "#f59e0b15", border: "1px solid #f59e0b44", borderRadius: 8, padding: "6px 10px", cursor: "pointer" }}>
+            <span style={{ fontSize: 12 }}>💡</span>
+            <span style={{ fontSize: 11, color: "#fbbf24" }}>এটা বলছেন কি? <b>{didYouMean}</b> — চাপুন এটাই ব্যবহার করতে</span>
+          </div>
+        )}
       </div>
     );
   }
@@ -6043,7 +6115,7 @@ function buildEscPosBuffer(inv, shopName) {
   write(shopName || "SBM"); nl();
   size(false); bold(false);
   write("--------------------------------"); nl();
-  write("Invoice #" + ((inv.id || "").slice(0, 8).toUpperCase())); nl();
+  write("Invoice " + dispInvNo(inv)); nl();
   write(inv.date || ""); nl();
 
   // ── Customer ──
@@ -7473,6 +7545,17 @@ const SEED_USERS = [{ id: "u1", username: "admin", password: "", pin: "", name: 
 
 // ─── Utils ────────────────────────────────────────────────────────────────────
 const uid      = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+// 🔴 ফিক্স (ইনভয়েস নাম্বার কনভেনশন — ৪ রকম অসামঞ্জস্য একত্রিত): আগে অ্যাপ জুড়ে
+// ৪ রকম ভিন্ন ফরম্যাটে "ইনভয়েস/রশিদ নং" দেখানো হতো — (১) নতুন সেলস-ইনভয়েসে real
+// sequential invoiceNo (INV-000001), (২) কিছু জায়গায় fallback হিসেবে id-র শেষ ৬
+// ক্যারেক্টার, (৩) ভয়েড অডিট-লগে id-র শেষ ৮ ক্যারেক্টার (আলাদা length), (৪) কিছু
+// জায়গায় id-র শুরুর ৬ ক্যারেক্টার (আর real invoiceNo থাকলেও সেটা চেক না করেই) —
+// আর জমা-রশিদে (paymentInvoices) কোনো real নাম্বারই ছিল না, সবসময় পুরো লম্বা
+// random id দেখাত। একই ইনভয়েস/রশিদ জায়গাভেদে ভিন্ন ভিন্ন নাম্বার দেখাত — কাস্টমার/
+// দোকানদার কনফিউজড হতেন। এখন একটাই কেন্দ্রীয় হেল্পার — সব জায়গায় consistent
+// ফরম্যাট (real invoiceNo থাকলে সেটা, নাহলে সবসময় id-র শেষ ৬ ক্যারেক্টার + সঠিক prefix)।
+const dispInvNo = (inv, prefix = "INV") =>
+  (inv && inv.invoiceNo) || `${prefix}-${((inv && inv.id) || "").slice(-6).toUpperCase()}`;
 const todayStr = () => new Date().toLocaleDateString("en-US", { timeZone: "Asia/Dhaka" });
 const nowStr   = () => new Date().toLocaleString("en-US");
 const fmt      = (n) => fmtMoney(n);
@@ -7490,14 +7573,14 @@ const dateStrFromKey = (dk) => {
 const MONTH_NAMES_BN = ["জানুয়ারি","ফেব্রুয়ারি","মার্চ","এপ্রিল","মে","জুন","জুলাই","আগস্ট","সেপ্টেম্বর","অক্টোবর","নভেম্বর","ডিসেম্বর"];
 function fmtExpiryMonth(dateStr) {
   if (!dateStr) return "—";
-  const d = new Date(dateStr);
+  const d = new Date(dateStr + "T00:00:00");
   if (isNaN(d.getTime())) return "—";
   return `${MONTH_NAMES_BN[d.getMonth()]} ${d.getFullYear()}`;
 }
 // পূর্ণ লেবেল সহ — মেয়াদ শেষ হয়ে গেছে নাকি এখনো বাকি আছে তা বোঝাতে
 function fmtExpiryLabel(dateStr, now = new Date()) {
   if (!dateStr) return "—";
-  const d = new Date(dateStr);
+  const d = new Date(dateStr + "T00:00:00");
   if (isNaN(d.getTime())) return "—";
   const monthYear = fmtExpiryMonth(dateStr);
   return d < now ? `⚠️ মেয়াদ শেষ (${monthYear})` : `⏳ মেয়াদ: ${monthYear}`;
@@ -7721,20 +7804,17 @@ const calcProfitByProduct = (invList, prodMap, productsFallback = []) => {
   const map = {};
   invList.forEach(inv => {
     const items = inv.items || [];
-    const subtotal = items.reduce((s, it) => s + (it.price || 0) * (it.qty || 1), 0);
-    // 🔴 ফিক্স: আগে (inv.total||0)/subtotal ব্যবহার হতো — inv.total-এর মধ্যে
-    // extraCharge-ও যোগ থাকে (যেটার কোনো নির্দিষ্ট পণ্য/cost নেই), তাই ratio-টা
-    // extraCharge-সহ ইনভয়েসে ১-এর বেশি হয়ে যেত আর প্রতিটা পণ্যের revenue/profit
-    // সেই অনুপাতে (extraCharge-এর ভাগ পেয়ে) বাস্তবের চেয়ে বেশি দেখাত। extraCharge
-    // বাদ দিয়ে শুধু items-এর নিজস্ব revenue (subtotal - itemDiscount - discount)
-    // থেকে ratio বানানো হচ্ছে — calcInvoiceProfit-এর সাথেও এখন সামঞ্জস্যপূর্ণ।
-    const itemsRevenueTotal = (inv.total || 0) - (inv.extraCharge || 0);
-    const discountRatio = subtotal > 0 ? itemsRevenueTotal / subtotal : 1;
+    // 🔴 ফিক্স (৩১ জুলাই ২০২৬ — ব্লেন্ডেড ডিসকাউন্ট-রেশিও রুট-কজ): আগে সব লাইনে
+    // একটাই uniform discountRatio বসানো হতো, ফলে একটা পণ্যের নিজস্ব ছাড়ের দায়
+    // অন্য (ছাড়হীন) পণ্যের ঘাড়ে গিয়ে পড়ত (সেটা ভুলভাবে "লস" দেখাত)। এখন প্রতিটা
+    // লাইনের নিজস্ব itemDiscount সেই লাইনেই বসিয়ে, শুধু সাধারণ discount-টুকু
+    // অনুপাতে ভাগ করা হয় — logic.js-এর calcLineDiscountedRevenue() (single
+    // source of truth) দিয়ে, calcReturnRefundAmount-এর সাথেও সামঞ্জস্যপূর্ণ।
     items.forEach(item => {
       const qty = item.qty || 1;
       const p = prodMap?.get?.(item.productId) || productsFallback.find(pr => pr.name === item.name);
       const cost = _itemCostPrice(item, prodMap) * qty;
-      const revenue = (item.price || 0) * qty * discountRatio;
+      const revenue = calcLineDiscountedRevenue(item, items, inv.discount || 0);
       const profit = revenue - cost;
       // productId দিয়ে গ্রুপ করা হয় যাতে পণ্যের নাম পরে এডিট/পরিবর্তন হলেও পুরোনো ও নতুন ইনভয়েসের বিক্রি একই সারিতে মিলে যায়
       const key = item.productId || item.name;
@@ -7757,17 +7837,16 @@ const calcProfitByProductWithInvoices = (invList, prodMap, productsFallback = []
   const map = {};
   invList.forEach(inv => {
     const items = inv.items || [];
-    const subtotal = items.reduce((s, it) => s + (it.price || 0) * (it.qty || 1), 0);
-    // 🔴 ফিক্স: calcProfitByProduct-এর মতোই — extraCharge বাদ দিয়ে ratio বানানো
-    // হচ্ছে, নাহলে extraCharge-সহ ইনভয়েসে প্রতিটা পণ্যের profit বেশি দেখাত।
-    const itemsRevenueTotal = (inv.total || 0) - (inv.extraCharge || 0);
-    const discountRatio = subtotal > 0 ? itemsRevenueTotal / subtotal : 1;
+    // 🔴 ফিক্স (৩১ জুলাই ২০২৬ — ব্লেন্ডেড ডিসকাউন্ট-রেশিও রুট-কজ): calcProfitByProduct-এর
+    // মতোই — একটা uniform discountRatio-এর বদলে logic.js-এর
+    // calcLineDiscountedRevenue() ব্যবহার করা হচ্ছে, যা প্রতিটা লাইনের নিজস্ব
+    // itemDiscount সেই লাইনেই বসায় (অন্য লাইনের ছাড়ের দায় এখানে আসে না)।
     items.forEach(item => {
       const qty = item.qty || 1;
       const p = prodMap?.get?.(item.productId) || productsFallback.find(pr => pr.name === item.name);
       const cost = _itemCostPrice(item, prodMap) * qty;
       const fullPriceRevenue = (item.price || 0) * qty;       // ছাড় ছাড়াই এই লাইনের আয়
-      const revenue = fullPriceRevenue * discountRatio;        // discount-adjusted আসল আয় (যা দিয়ে profit হিসাব হয়)
+      const revenue = calcLineDiscountedRevenue(item, items, inv.discount || 0);        // discount-adjusted আসল আয় (যা দিয়ে profit হিসাব হয়)
       const itemDiscountAmt = fullPriceRevenue - revenue;      // 🔴 ফিক্স: এই লাইনের নিজস্ব ছাড়ের ভাগ —
       // আগে পুরো ইনভয়েসের সামগ্রিক discountAmt ব্যবহার হতো, ফলে ইনভয়েসের
       // যেকোনো একটা লাইনে সামান্য ছাড় থাকলেই বাকি সব লাইনের (এমনকি ছাড়হীন
@@ -7799,7 +7878,7 @@ const calcProfitByProductWithInvoices = (invList, prodMap, productsFallback = []
       } else if (itemDiscountAmt > EPS) {
         reason = `ডিসকাউন্ট ৳${Math.round(itemDiscountAmt)} বাদে`;
       }
-      const entry = { inv, invNo: inv.invoiceNo || inv.id, qty, profit, reason };
+      const entry = { inv, invNo: dispInvNo(inv), qty, profit, reason };
       if (profit >= 0) {
         map[key].profitInvs.push(entry);
         map[key].totalProfit += profit;
@@ -8456,7 +8535,6 @@ const MemoInventorySection = React.memo(InventorySection);
 const MemoProfitStatement  = React.memo(ProfitStatementCard);
 const MemoDailyNotif       = React.memo(DailyNotifCard);
 const MemoPasswordChange   = React.memo(PasswordChange);
-const MemoDashPurchaseEntry = React.memo(DashPurchaseEntryModal);
 const MemoCustomerDetail   = React.memo(CustomerDetail);
 const MemoLoginScreen      = React.memo(LoginScreen);
 // ══════════════════════════════════════════════════════════════════════════════
@@ -9000,13 +9078,16 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
     const map = {};
     invAll.forEach(inv => {
       const items = inv.items || [];
-      const subtotal = items.reduce((s, it) => s + (it.price || 0) * (it.qty || 1), 0);
-      const discountRatio = subtotal > 0 ? (inv.total || 0) / subtotal : 1;
+      // 🔴 ফিক্স (৩১ জুলাই ২০২৬): আগে (inv.total||0)/subtotal দিয়ে uniform ratio
+      // বানানো হতো — এতে extraCharge (কোনো পণ্যের cost নেই) যোগ থাকায় ratio
+      // ১-এর বেশি হয়ে যেত, আর সেটাও সব লাইনে সমানভাবে বসত (এক পণ্যের ছাড়ের দায়
+      // অন্য পণ্যের ঘাড়ে)। এখন logic.js-এর calcLineDiscountedRevenue() (single
+      // source of truth) — extraCharge বাদ, প্রতি-লাইন নিজস্ব itemDiscount।
       items.forEach(it => {
         if (!map[it.name]) map[it.name] = { name: it.name, m1: 0, m2: 0, m3: 0, rev: 0, cost: 0, qty: 0 };
         const d = inv.date || inv.dateKey || "";
         const qty = it.qty || 1;
-        const rev = qty * (it.price || 0) * discountRatio; // discount-adjusted
+        const rev = calcLineDiscountedRevenue(it, items, inv.discount || 0); // discount-adjusted
         const cost = qty * _itemCostPrice(it, prodMap); // it.costPrice ?? prodMap fallback
         if (d >= d30) { map[it.name].m1 += qty; }
         else if (d >= d60) { map[it.name].m2 += qty; }
@@ -11013,10 +11094,6 @@ function SmartBusinessMgmt() {
   // 🆕 কম্পোজিট কলব্যাক (পারফরম্যান্স ফিক্স ২৫ জুলাই ২০২৬): আগে JSX-এ ইনলাইন
   // arrow function হিসেবে পাস হতো (প্রতি রেন্ডারে নতুন রেফারেন্স তৈরি হতো,
   // যেটা React.memo-কে অকেজো করে দিত)। এখন useCallback দিয়ে স্থিতিশীল রেফারেন্স।
-  const goToPurchaseEntry = useCallback(() => {
-    setDashModal({ type: "purchase-entry" });
-  }, [setDashModal]);
-
   const openCustomerDetail = useCallback((id) => {
     setDetailCId(id);
   }, [setDetailCId]);
@@ -12723,8 +12800,12 @@ function SmartBusinessMgmt() {
 
   const createPaymentInvoice = useCallback((customer, amount, note, source = "collection", opts = {}) => {
     const { dateKey: dkOverride, isHistorical = false } = opts || {};
+    // 🔴 ফিক্স (রশিদ নং কনভেনশন): সেলস-ইনভয়েসের মতোই জমা-রশিদেও এখন একটা real,
+    // sequential invoiceNo (RC-000001) জেনারেট করা হচ্ছে — আগে এই ফিল্ড কখনোই সেট
+    // হতো না, ফলে রশিদে সবসময় লম্বা random id-ই "রশিদ নং" হিসেবে দেখাতে হতো।
+    const invoiceNo = `RC-${String((useAppStore.getState().paymentInvoices?.length || 0) + 1).padStart(6, "0")}`;
     const inv = {
-      id: uid(), customerId: customer.id, customerName: customer.name,
+      id: uid(), invoiceNo, customerId: customer.id, customerName: customer.name,
       customerMobile: customer.mobile, amount, note, date: dkOverride ? dateStrFromKey(dkOverride) : todayStr(),
       dateKey: dkOverride || todayEn(), time: nowStr(), shopName, type: "payment",
       source, // "collection" = পুরোনো বাকি আদায়, "partial-sale" = নতুন বিক্রয়ের নগদ অংশ
@@ -13069,7 +13150,7 @@ function SmartBusinessMgmt() {
               addTxn(
                 inv.customerId, netChange > 0 ? "joma" : "baki", Math.abs(netChange), newBal,
                 inv.id,
-                `ইনভয়েস ভয়েড — #${inv.invoiceNo || inv.id.slice(-6).toUpperCase()}${voidReason ? ` · ${voidReason}` : ""}`,
+                `ইনভয়েস ভয়েড — #${dispInvNo(inv)}${voidReason ? ` · ${voidReason}` : ""}`,
                 null, "void-reversal"
               );
             }, 0);
@@ -13097,7 +13178,7 @@ function SmartBusinessMgmt() {
       const cashReversalEntry = {
         id: uid(), type: "return_refund_reversal", cashType: "return_reversal", party: "",
         amount: cashRefundedAmount,
-        note: `ভয়েড-রিভার্সাল — ইনভয়েস ${inv.invoiceNo || inv.id.slice(-6).toUpperCase()}-এর আগের নগদ রিটার্ন-রিফান্ড বাতিল`,
+        note: `ভয়েড-রিভার্সাল — ইনভয়েস ${dispInvNo(inv)}-এর আগের নগদ রিটার্ন-রিফান্ড বাতিল`,
         date: todayStr(), dateKey: todayEn(),
         createdAt: new Date().toISOString(),
         by: currentUser?.name || "মালিক",
@@ -13140,7 +13221,7 @@ function SmartBusinessMgmt() {
     showToast("ইনভয়েস ভয়েড হয়েছে ও স্টক পুনরুদ্ধার হয়েছে", "#f59e0b");
     auditLog("INVOICE_VOID", {
       invoiceId: inv.id,
-      invoiceNo: inv.invoiceNo || inv.id.slice(-8).toUpperCase(),
+      invoiceNo: dispInvNo(inv),
       customerName: inv.customerName || "হাঁটা কাস্টমার",
       amount: inv.total || 0,
       reason: voidReason || "(কারণ উল্লেখ করা হয়নি)",
@@ -13349,7 +13430,7 @@ function SmartBusinessMgmt() {
       const cashEntry = {
         id: uid(), type: "return_refund", cashType: "return", party: "",
         amount: refundAmount,
-        note: `পণ্য ফেরত (নগদ) — ইনভয়েস ${inv.invoiceNo || inv.id} — ${item.name || localP?.name || ""}${reason ? " (" + reason + ")" : ""}`,
+        note: `পণ্য ফেরত (নগদ) — ইনভয়েস ${dispInvNo(inv)} — ${item.name || localP?.name || ""}${reason ? " (" + reason + ")" : ""}`,
         date: todayStr(), dateKey: todayKey,
         createdAt: new Date().toISOString(),
         by: currentUser?.name || "মালিক",
@@ -13359,7 +13440,7 @@ function SmartBusinessMgmt() {
     }
 
     const retEntry = {
-      id: uid(), invoiceId: inv.id, invoiceNo: inv.invoiceNo || inv.id,
+      id: uid(), invoiceId: inv.id, invoiceNo: dispInvNo(inv),
       productId, productName: item.name || localP?.name || "",
       qty, unit: item.unit || localP?.unit || "",
       unitPrice: item.price ?? 0, costPrice: item.costPrice || localP?.costPrice || 0,
@@ -13393,7 +13474,7 @@ function SmartBusinessMgmt() {
 
     auditLog?.("PRODUCT_RETURN", {
       invoiceId: inv.id,
-      invoiceNo: inv.invoiceNo || inv.id,
+      invoiceNo: dispInvNo(inv),
       productName: item.name || localP?.name || "",
       qty, unit: item.unit || localP?.unit || "",
       refundAmount, refundMode: mode,
@@ -14269,7 +14350,6 @@ function SmartBusinessMgmt() {
               supplierPayments={supplierPayments}
               setSupplierPayments={setSupplierPayments}
               returns={returns}
-              onGoToPurchaseEntry={goToPurchaseEntry}
             />
           </ErrorBoundary>
         )}
@@ -15700,8 +15780,8 @@ function ViewerSetupScreen({ onDone, onExit }) {
 // ডেটা দিয়ে ফিড করা)। কাস্টমার/ইনভয়েস/পণ্য ট্যাব — যেহেতু এখানে কোনো লাইভ Firestore
 // সংযোগ নেই, শুধু পর্যায়ক্রমে ডাউনলোড করা ব্যাকআপ ক্যাশ — তাই এই তিনটা সরল, read-only
 // লিস্ট (এডিট/নতুন-এন্ট্রি বাটন নেই), কিন্তু একই থিম/টোকেন ব্যবহার করে যাতে ভিজুয়ালি
-// আলাদা না লাগে। এডিট-সক্ষম setter/action props (voidInvoice, processReturn,
-// onGoToPurchaseEntry) ইচ্ছাকৃতভাবে null/no-op — Dashboard কম্পোনেন্ট নিজেই falsy
+// আলাদা না লাগে। এডিট-সক্ষম setter/action props (voidInvoice, processReturn)
+// ইচ্ছাকৃতভাবে null/no-op — Dashboard কম্পোনেন্ট নিজেই falsy
 // voidInvoice/processReturn পেলে "ভয়েড" বাটন লুকিয়ে ফেলে (দেখুন Dashboard-এর ভেতরের
 // `{voidInvoice && ...}` গার্ড), তাই আলাদা করে কোনো "ভিউয়ার-অনলি" ফ্ল্যাগ Dashboard-এ
 // পাস করতে হয়নি।
@@ -16021,7 +16101,7 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
               // FSS.isReady()===false থাকায় কোনো এডিটই আসল দোকানে কখনো sync হবে না।
               voidInvoice={null} processReturn={null}
               currentUser={{ role: "owner", name: shopName }}
-              onGoToPurchaseEntry={null} setProducts={setProducts}
+              setProducts={setProducts}
               stockMovements={stockMovements} setStockMovements={setStockMovements}
               setPurchaseOrders={setPurchaseOrders}
               cashLogs={cashLogs} setCashLogs={setCashLogs}
@@ -17099,7 +17179,10 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
 
   const setQty = (pid, qty) => {
     const isSelfUse = selCust?.id === "__selfuse__";
-    const q = parseInt(qty) || 0;
+    // 🔴 ফিক্স (Qty parseInt/parseFloat মিসম্যাচ — ওজন-ভিত্তিক স্টক): parseInt আগে
+    // "0.5" জাতীয় ওজন-ভিত্তিক (কেজি/গ্রাম কাস্টম ইউনিট) কোয়ান্টিটিকে 0 বানিয়ে ফেলত,
+    // ফলে আইটেমটাই কার্ট থেকে বাদ পড়ে যেত। parseFloat দিয়ে দশমিক সংরক্ষিত থাকছে।
+    const q = parseFloat(qty) || 0;
     setItems(prev => {
       if (q <= 0) return prev.filter(i => i.productId !== pid);
       const prod = products.find(p => p.id === pid);
@@ -17674,7 +17757,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
     const payLabel = inv.payType==="baki"?"বাকি":inv.payType==="partial"?"আংশিক":"নগদ";
     const html = `<html><head><title>Invoice</title><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Bengali:wght@400;700;800&display=swap"><style>${css}</style></head><body>
       <div class="center bold" style="font-size:16px">${inv.shopName||"SBM"}</div>
-      <div class="center" style="font-size:12px;color:#555">${inv.date} | ইনভয়েস: ${inv.invoiceNo || inv.id.slice(-6).toUpperCase()}</div>
+      <div class="center" style="font-size:12px;color:#555">${inv.date} | ইনভয়েস: ${dispInvNo(inv)}</div>
       <div class="line"></div>
       <div><span class="bold">কাস্টমার:</span> ${inv.customerName}</div>
       ${inv.customerMobile ? `<div style="font-size:12px;color:#555">📞 ${inv.customerMobile}</div>` : ""}
@@ -17730,7 +17813,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                   </div>
                   <div style="flex:1;background:#0369a115;border-radius:10px;padding:10px 14px;">
                     <div style="color:#666;font-size:11px;">ইনভয়েস</div>
-                    <div style="font-weight:800;">#${inv.invoiceNo || (inv.id||"").slice(-6).toUpperCase()}</div>
+                    <div style="font-weight:800;">#${dispInvNo(inv)}</div>
                     <div style="color:#666;font-size:11px;">${inv.date||""}</div>
                   </div>
                 </div>
@@ -17752,7 +17835,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                   ` : ""}
                 </div>`;
               const html = buildPdfHtml(content, shopNameLocal, "ক্রেতার ইনভয়েস");
-              sharePdfWhatsApp(html, `ইনভয়েস_${(inv.id||"").slice(0,6).toUpperCase()}`);
+              sharePdfWhatsApp(html, `ইনভয়েস_${dispInvNo(inv)}`);
             }}
             style={{ ...S.saveBtn, width: "100%", marginTop: 10, marginBottom: 4,
               background: "linear-gradient(135deg,#22c55e,#16a34a)",
@@ -18458,7 +18541,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                         transition: "transform 0.12s",
                       }}>−</button>
                     <input
-                      type="number" inputMode="numeric" pattern="[0-9]*"
+                      type="number" inputMode="decimal" step="any"
                       value={qty === 0 ? "" : qty}
                       placeholder="0"
                       onClick={(e) => e.stopPropagation()}
@@ -19212,7 +19295,7 @@ function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [],
 const AnalyticsSection = React.memo(AnalyticsSection_);
 
 // ── InventorySection ─────────────────────────────────────────────────────────
-function InventorySection({ T, S, products, setDashModal, shopName, setInvModal, purchaseOrders = [], onGoToPurchaseEntry }) {
+function InventorySection({ T, S, products, setDashModal, shopName, setInvModal, purchaseOrders = [] }) {
   // setInvModal triggers full-page navigation in Dashboard
   const openPage = setInvModal || (() => {});
   const DT = getDashTokens(T);
@@ -19460,18 +19543,22 @@ function ProfitStatementCard({ T, S, invoices, products, shopName, expenses = []
       // discount কোনোটাই ধরত না — ফলে ডিসকাউন্ট দেওয়া ইনভয়েসের দিনে "দৈনিক লাভ"
       // বেশি দেখাত, আর দৈনিক রো-গুলোর যোগফল উপরের headline গ্রস-লাভের সাথে মিলত
       // না। এখন calcInvoiceProfit-এর মতোই discount-adjusted revenue ব্যবহার হয়।
-      const itemsSubtotal = (inv.items||[]).reduce((s, it) => s + (it.price||0)*(it.qty||1), 0);
-      const invDiscount = (inv.discount||0) + (inv.itemDiscount||0);
-      const discountRatio = itemsSubtotal > 0 ? (itemsSubtotal - invDiscount) / itemsSubtotal : 1;
-      (inv.items||[]).forEach(it => {
+      // 🔴 ফিক্স (৩১ জুলাই ২০২৬ — ব্লেন্ডেড ডিসকাউন্ট-রেশিও রুট-কজ): dailyMap.profit-এর
+      // যোগফল আগেও ঠিক ছিল (uniform ratio হলেও ইনভয়েস-টোটাল অপরিবর্তিত থাকে),
+      // কিন্তু topProducts-এর প্রতি-পণ্য revenue ভাগ ভুল হতো — একটা পণ্যের ছাড়ের
+      // দায় অন্য (ছাড়হীন) পণ্যের ঘাড়ে গিয়ে পড়ত। এখন logic.js-এর
+      // calcLineDiscountedRevenue() (single source of truth) দিয়ে প্রতিটা লাইনের
+      // নিজস্ব itemDiscount সেই লাইনেই বসানো হচ্ছে।
+      const invItems = inv.items || [];
+      invItems.forEach(it => {
         const p = prodMap.get(it.productId);
-        const lineRevenue = (it.price||0)*(it.qty||1);
+        const lineRevenue = calcLineDiscountedRevenue(it, invItems, inv.discount || 0);
         const cost = (p?.costPrice||0) * (it.qty||1);
         cogs += cost;
-        dailyMap[dateKey].profit += lineRevenue*discountRatio - cost;
+        dailyMap[dateKey].profit += lineRevenue - cost;
         const key = it.name || it.productId;
         if (!topProducts[key]) topProducts[key] = { name: it.name||key, revenue: 0, qty: 0 };
-        topProducts[key].revenue += lineRevenue*discountRatio;
+        topProducts[key].revenue += lineRevenue;
         topProducts[key].qty += it.qty||1;
       });
       // extraCharge-এর কোনো cost/পণ্য নেই — সরাসরি সেই দিনের লাভে যোগ (headline
@@ -19696,397 +19783,6 @@ function ProfitStatementCard({ T, S, invoices, products, shopName, expenses = []
   );
 }
 
-// ── DashPurchaseEntryModal — হোম পেজ থেকে সরাসরি ক্রয় এন্ট্রি ──────────────
-function DashPurchaseEntryModal({ T, S, businessType = "pharmacy", products, setProducts, setStockMovements, purchaseOrders = [], setPurchaseOrders, suppliers = [], onBack }) {
-  const EMPTY_PE = { productId: "", productSearch: "", qty: "", unitCost: "", unitSell: "", spPrice: "", expiryDate: "", supplier: "", note: "", isFreeStock: false };
-  const [peForm, setPeForm] = React.useState(EMPTY_PE);
-  const [toast,  setToast]  = React.useState(null);
-  const [searchOpen, setSearchOpen] = React.useState(false);
-  // 🔴 ফিক্স (২৪ জুলাই ২০২৬ — ক্রয় এন্ট্রি ডাবল-সাবমিট বাগ): savePE() async
-  // (FSS.transactionAddStock await করে), কিন্তু বাটনে আগে কোনো disable/guard
-  // ছিল না — দ্রুত একাধিকবার ট্যাপ করলে প্রথম কলটার await শেষ হওয়ার আগেই
-  // দ্বিতীয় কলটাও শুরু হয়ে যেত, ফলে একই ক্রয় এন্ট্রি দুই/তিনবার সেভ হয়ে
-  // স্টক ভুলভাবে বেড়ে যেত। এই isSaving গার্ড দিয়ে সেভ চলাকালীন বাটন
-  // disabled/no-op থাকবে।
-  const [isSaving, setIsSaving] = React.useState(false);
-
-  const showToast = (msg, color = "#22c55e") => {
-    setToast({ msg, color });
-    setTimeout(() => setToast(null), 2500);
-  };
-
-  const allEntries = useMemo(() => purchaseOrders.filter(p => p._type === "pe"), [purchaseOrders]);
-  const todayKey   = _dateKeyOf(new Date());
-  const knownSuppliers = useMemo(() => getKnownSuppliers(products, purchaseOrders), [products, purchaseOrders]);
-
-  const getNextBatch = (productId) => calcNextBatch(productId, products, purchaseOrders);
-  const nextBatchLabel = peForm.productId ? getNextBatch(peForm.productId) : "—";
-  const selProd = useMemo(() => products.find(p => p.id === peForm.productId), [products, peForm.productId]);
-  // সর্বশেষ ব্যাচ যা বর্তমানে স্টকে আছে (তথ্যমূলক ব্যাজের জন্য) — nextBatchLabel থেকে আলাদা
-  const latestBatchLabel = useMemo(() => {
-    if (!selProd?.batches?.length) return null;
-    const inStock = selProd.batches.filter(b => (b.qty || 0) > 0);
-    const pool = inStock.length ? inStock : selProd.batches;
-    const latest = [...pool].sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0))[0];
-    return latest?.batchNo || null;
-  }, [selProd]);
-
-  // Filtered product search list
-  const filteredProds = useMemo(() => (
-    peForm.productSearch
-      ? products.filter(p => p.name.toLowerCase().includes(peForm.productSearch.toLowerCase()) || (p.unit||"").includes(peForm.productSearch))
-      : products
-  ), [products, peForm.productSearch]);
-
-  const savePE = async () => {
-    if (isSaving) return; // 🔴 ফিক্স — ইতিমধ্যে সেভ চলছে, দ্বিতীয় ক্লিক উপেক্ষা করা হচ্ছে
-    if (!peForm.productId) { showToast("পণ্য নির্বাচন করুন", "#ef4444"); return; }
-    if (!peForm.qty || parseFloat(peForm.qty) <= 0) { showToast("পরিমাণ দিন", "#ef4444"); return; }
-    const prod = products.find(p => p.id === peForm.productId);
-    if (!prod) return;
-    setIsSaving(true);
-    try {
-    const qty      = parseFloat(peForm.qty);
-    const unitCost = peForm.isFreeStock ? 0 : (parseFloat(peForm.unitCost) || prod.costPrice || 0);
-    const unitSell = parseFloat(peForm.unitSell) || prod.price || 0;
-    const total    = qty * unitCost;
-    const now      = new Date().toISOString();
-    let batchNo = getNextBatch(peForm.productId);
-    const noteText = peForm.isFreeStock
-      ? `🎁 ফ্রি স্টক${peForm.note ? " — " + peForm.note : ""}`
-      : peForm.note || "";
-
-    const entryId = "pe_" + Date.now();
-    const newBatch = {
-      batchNo, qty, costPrice: unitCost, sellPrice: unitSell,
-      expiryDate: peForm.expiryDate || "", supplier: peForm.supplier || "",
-      note: noteText, at: now, isFreeStock: peForm.isFreeStock || false,
-    };
-    const entry = {
-      id: entryId, _type: "pe",
-      productId: peForm.productId, productName: prod.name,
-      qty, unitCost, unitSell, totalCost: total,
-      expiryDate: peForm.expiryDate || "",
-      batch: batchNo,
-      supplier: peForm.supplier || "",
-      note: noteText,
-      isFreeStock: peForm.isFreeStock || false,
-      at: now, dateKey: now.split("T")[0],
-      unit: prod.unit || "",
-      dosageForm: prod.dosageForm || "", // 🔴 ফিক্স — প্রিন্ট/PDF-এ Tab./Cap. ব্যাজ দেখানোর জন্য
-    };
-
-    // 🆕 পারফরম্যান্স ফিক্স (২৫ জুলাই ২০২৬ — ক্রয় এন্ট্রি সেভ-এ ধীরগতি): আগে
-    // FSS.transactionAddStock() (Firestore সার্ভার transaction, নেটওয়ার্ক
-    // রাউন্ড-ট্রিপ) শেষ না হওয়া পর্যন্ত এই পুরো ফাংশন (ও তাই "সেভ" বাটন)
-    // await-ব্লকড থাকত। এখন আগে instant optimistic local calculation প্রয়োগ
-    // হয় (batchNo কলিশন-প্রোটেকশনসহ, ফিক্স #৮-এর মতোই) — ফর্ম/UI সাথে সাথে
-    // রিসেট হয়ে যায়, আর transaction ব্যাকগ্রাউন্ডে চলে গিয়ে সার্ভার-কনফার্মড
-    // মান দিয়ে পরে reconcile করে (ফিক্স #১০-এর atomic multi-device correctness
-    // অক্ষুণ্ণ রেখেই)।
-    let newStock;
-    const oldStock = prod.stock || 0;
-    const oldCost  = prod.costPrice || 0;
-    const newCostPrice = oldStock + qty > 0
-      ? (oldStock * oldCost + qty * unitCost) / (oldStock + qty)
-      : unitCost;
-    const roundedNewCost = Math.round(newCostPrice * 10000) / 10000;
-    newStock = oldStock + qty;
-    // 🆕 ফিক্স (৩০ জুলাই ২০২৬ — ইউজারের অনুরোধে): আগে শুধু প্রোডাক্ট-লেভেলের
-    // costPrice-ই weighted-average হতো, প্রতিটা ব্যাচ তার নিজের আসল ক্রয়মূল্যে
-    // থেকে যেত (FIFO ব্যাচ-কস্টিং)। এখন থেকে ক্রয়-এন্ট্রি দিলে বিদ্যমান সব
-    // ব্যাচও (costMismatchIgnored বাদে) নতুন গড়ে সিঙ্ক হয়ে যাবে — পুরো
-    // অ্যাপ এখন Weighted-Average Costing পদ্ধতি অনুসরণ করবে, ব্যাচ মিসম্যাচ
-    // ক্রয়-এন্ট্রি থেকে আর তৈরি হবে না। নতুন ব্যাচও গড় দামেই যোগ হয়।
-    newBatch.costPrice = roundedNewCost;
-    setProducts(prev => prev.map(p => p.id === peForm.productId
-      ? {
-          ...p,
-          stock: newStock,
-          costPrice: roundedNewCost,
-          price: unitSell || p.price,
-          lastUpdated: now,
-          expiryDate: peForm.expiryDate || p.expiryDate,
-          batches: [
-            ...(p.batches || []).map(b => b.costMismatchIgnored ? b : { ...b, costPrice: roundedNewCost }),
-            newBatch,
-          ],
-        }
-      : p
-    ));
-    const optimisticStock = newStock; // পরে সার্ভার-রেজাল্টের সাথে তুলনা করার জন্য মূল optimistic মান ধরে রাখা হলো
-    const mv1 = pushStockMovement({
-      id: "sm_" + Date.now(), productId: peForm.productId,
-      productName: prod.name, stock: newStock,
-      prevStock: newStock - qty, delta: qty,
-      at: now, dateKey: now.split("T")[0], source: "purchase"
-    });
-    setStockMovements(prev => [mv1, ...prev]);
-    setPurchaseOrders(prev => [entry, ...prev]);
-    setPeForm(f => ({ ...EMPTY_PE, supplier: f.supplier }));
-    showToast(`✅ ${prod.name} — ${qty} ${prod.unit||"পিস"} স্টকে যোগ হয়েছে`, "#a78bfa");
-
-    // 🔴 ফিক্স (রুট কজ — ক্রয় এন্ট্রিতে রিট্রাই-কিউ না থাকা): FSS.isReady()
-    // false বা transaction ব্যর্থ/exception হলে এখন queuePendingPurchaseStock()-এ
-    // জমা থাকে — boot/online ইভেন্টে flushPendingPurchaseStock() রিট্রাই করবে,
-    // দেখুন সেই ফাংশনগুলোর কমেন্ট।
-    const pendingEntry = {
-      entryId, productId: peForm.productId, qty, unitCost, unitSell,
-      expiryDate: peForm.expiryDate, supplier: peForm.supplier,
-      note: noteText, isFreeStock: peForm.isFreeStock, batchNoHint: newBatch.batchNo,
-    };
-    if (FSS.isReady()) {
-      // 🔴 ফিক্স (ক্রয় এন্ট্রি — স্টক ডাবল-অ্যাড): entryId-ভিত্তিক opId, যাতে
-      // নেটওয়ার্ক-রেসপন্স হারিয়ে queuePendingPurchaseStock/flush রিট্রাই হলেও
-      // এই একই এন্ট্রি দ্বিতীয়বার স্টকে যোগ না হয়।
-      FSS.transactionAddStock(peForm.productId, {
-        qty, unitCost, unitSell, expiryDate: peForm.expiryDate, supplier: peForm.supplier,
-        note: noteText, isFreeStock: peForm.isFreeStock, batchNoHint: newBatch.batchNo,
-      }, `purchase:${entryId}:${peForm.productId}`).then(txResult => {
-        if (!txResult) { FSS.queuePendingPurchaseStock(pendingEntry); return; } // ব্যর্থ হলে রিট্রাই-কিউতে
-        setProducts(prev => prev.map(p => p.id === peForm.productId
-          ? { ...p, stock: txResult.stock, costPrice: txResult.costPrice, batches: txResult.batches }
-          : p));
-        if (txResult.batchNo && txResult.batchNo !== newBatch.batchNo) {
-          setPurchaseOrders(prev => prev.map(e => e.id === entryId ? { ...e, batch: txResult.batchNo } : e));
-        }
-        // 🔴 ফিক্স (স্টক ড্রিফট false-positive — ক্রয় এন্ট্রি): উপরে optimistic
-        // newStock দিয়ে movement-log এন্ট্রি (mv1) আগেই পুশ হয়ে গেছে। সার্ভার
-        // transaction-এর আসল ফলাফল (txResult.stock) যদি সেই optimistic মান থেকে
-        // আলাদা হয় (যেমন পরপর দুইটা ক্রয়-এন্ট্রি দ্রুত দিলে দ্বিতীয়টার optimistic
-        // হিসাব প্রথমটার সার্ভার-কনফার্মড রেজাল্ট এখনো জানত না) — তাহলে
-        // products.stock ঠিক হয়ে যায় কিন্তু movement-log-এ ভুল মানই থেকে যায়,
-        // আর Settings-এর "স্টক ড্রিফট" চেক এটাকে false-positive হিসেবে ধরে।
-        // এখানে একটা সংশোধনী movement এন্ট্রি পুশ করে movement-log-কে
-        // authoritative মানের সাথে মিলিয়ে দেওয়া হচ্ছে।
-        if (txResult.stock !== optimisticStock) {
-          const mvFix = pushStockMovement({
-            id: "sm_" + Date.now() + "_fix", productId: peForm.productId,
-            productName: prod.name, stock: txResult.stock,
-            prevStock: optimisticStock, delta: txResult.stock - optimisticStock,
-            at: new Date().toISOString(), dateKey: now.split("T")[0], source: "purchase_correction",
-          });
-          setStockMovements(prev => [mvFix, ...prev]);
-        }
-      }).catch(e => {
-        logErrorToCentral?.("transaction:addStock:bg", e, { productId: peForm.productId, qty });
-        FSS.queuePendingPurchaseStock(pendingEntry);
-      });
-    } else {
-      FSS.queuePendingPurchaseStock(pendingEntry);
-    }
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const todayEntries = allEntries.filter(e => e.dateKey === todayKey);
-  const todayTotal   = todayEntries.reduce((s, e) => s + (e.totalCost || 0), 0);
-
-  return (
-    <div style={S.page}>
-      {toast && (
-        <div style={{ position:"fixed", top:16, left:"50%", transform:"translateX(-50%)", background:toast.color, color:"#fff", borderRadius:12, padding:"10px 20px", fontWeight:700, fontSize:13, zIndex:9999, boxShadow:"0 4px 20px #0006" }}>
-          {toast.msg}
-        </div>
-      )}
-
-      <button style={S.textBtn} onClick={() => { setPeForm(EMPTY_PE); setSearchOpen(false); onBack(); }}>← ড্যাশবোর্ডে ফিরুন</button>
-      <div style={{ color:"#a78bfa", fontWeight:800, fontSize:16, marginBottom:12, display:"flex", alignItems:"center", gap:8 }}>
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
-        ক্রয় এন্ট্রি
-      </div>
-
-      {/* আজকের ক্রয় সারাংশ — compact */}
-      <div style={{ background:"#a78bfa15", border:"1px solid #a78bfa33", borderRadius:12, padding:"10px 14px", marginBottom:12, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-        <div style={{ color:T.sub, fontSize:12, fontWeight:700 }}>📦 মোট এন্ট্রি: <span style={{color:"#a78bfa"}}>{allEntries.length}</span></div>
-        <div style={{ color:"#22c55e", fontWeight:800, fontSize:13 }}>আজকের ক্রয়: ৳{fmtMoney(todayTotal)}</div>
-      </div>
-
-      {/* ফর্ম */}
-      <div className="qc-gradient-card" style={{ ...S.card, background:"linear-gradient(135deg,#2d1a5e18,#4c1d9518)" }}>
-        <div style={{ color:"#a78bfa", fontWeight:800, fontSize:14, marginBottom:10, display:"flex", alignItems:"center", gap:6 }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
-          নতুন ক্রয় এন্ট্রি
-        </div>
-
-        {/* Search-based product input */}
-        <label style={S.label}>📦 পণ্য খুঁজুন *</label>
-        <div style={{ position:"relative", marginBottom: selProd ? 4 : 12 }}>
-          <input
-            style={{ ...S.input, marginBottom:0, paddingRight:36 }}
-            placeholder=""
-            value={selProd ? `${selProd.name}${selProd.unit ? ` (${selProd.unit})` : ""}` : peForm.productSearch}
-            onFocus={() => { if (selProd) setPeForm(f => ({ ...f, productId: "", productSearch: "" })); setSearchOpen(true); }}
-            onChange={e => { setPeForm(f => ({ ...f, productSearch: e.target.value, productId: "" })); setSearchOpen(true); }}
-            onBlur={() => setTimeout(() => setSearchOpen(false), 350)}
-            autoComplete="off"
-          />
-          {selProd && (
-            <button onClick={() => setPeForm(f => ({ ...f, productId: "", productSearch: "" }))}
-              style={{ position:"absolute", right:10, top:"50%", transform:"translateY(-50%)", background:"none", border:"none", color:"#64748b", cursor:"pointer", fontSize:16, padding:4 }}>✕</button>
-          )}
-          {searchOpen && !selProd && filteredProds.length > 0 && (
-            <div style={{ position:"absolute", top:"100%", left:0, right:0, background:T.card, border:`1px solid ${T.border}`, borderRadius:12, zIndex:200, maxHeight:220, overflowY:"auto", boxShadow:"0 8px 24px rgba(0,0,0,0.4)", marginTop:4 }}>
-              {filteredProds.slice(0,15).map(p => (
-                <div key={p.id}
-                  onMouseDown={() => {
-                    const nextBatch = getNextBatch(p.id);
-                    setPeForm(f => ({
-                      ...f,
-                      productId: p.id,
-                      productSearch: "",
-                      supplier: p.company || p.category || f.supplier || "",
-                      unitCost: p.costPrice ? String(p.costPrice) : f.unitCost,
-                      unitSell: p.price ? String(p.price) : f.unitSell,
-                      batch: nextBatch,
-                    }));
-                    setSearchOpen(false);
-                  }}
-                  style={{ padding:"10px 14px", cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center", borderBottom:`1px solid ${T.border}` }}>
-                  <div>
-                    <div style={{ color:T.text, fontWeight:700, fontSize:13 }}><DosageBadge dosageForm={p.dosageForm} />{p.name}{p.unit ? <span style={{color:T.sub, fontSize:11}}> ({p.unit})</span> : null}</div>
-                    <div style={{ color:T.sub, fontSize:11 }}>স্টক: {p.stock||0} · ক্রয়: ৳{p.costPrice||0}</div>
-                  </div>
-                  <div style={{ color:"#a78bfa", fontWeight:900, fontSize:12 }}>৳{p.price||0}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-        {selProd && (
-          <div style={{ display:"flex", gap:8, marginBottom:8, flexWrap:"wrap" }}>
-            <span style={{ background:"#22c55e22", color:"#22c55e", fontSize:11, borderRadius:6, padding:"2px 8px", fontWeight:700 }}>বর্তমান স্টক: {selProd.stock || 0}</span>
-            {selProd.costPrice > 0 && (
-              <span style={{ background:"#a78bfa22", color:"#a78bfa", fontSize:11, borderRadius:6, padding:"2px 8px", fontWeight:700 }}>বর্তমান ক্রয়মূল্য: ৳{selProd.costPrice}</span>
-            )}
-            {selProd.price > 0 && (
-              <span style={{ background:"#0ea5e922", color:"#38bdf8", fontSize:11, borderRadius:6, padding:"2px 8px", fontWeight:700 }}>বর্তমান বিক্রয়মূল্য: ৳{selProd.price}</span>
-            )}
-            {latestBatchLabel && (
-              <span style={{ background:"#f59e0b22", color:"#f59e0b", fontSize:11, borderRadius:6, padding:"2px 8px", fontWeight:700 }}>🏷️ {latestBatchLabel}</span>
-            )}
-          </div>
-        )}
-
-        {/* সাপ্লায়ার — পরিমাণ ও ক্রয়মূল্যের উপরে */}
-        <div style={{ marginBottom: 12 }}>
-          <label style={S.label}>🏭 সাপ্লায়ার</label>
-          <SupplierPicker T={T} S={S} businessType={businessType}
-            value={peForm.supplier}
-            extraSuppliers={knownSuppliers}
-            onChange={v => setPeForm(f => ({ ...f, supplier: v }))} />
-        </div>
-
-        {/* SP — শুধু রেফারেন্সের জন্য, ঐচ্ছিক — শুধু ভেটেরিনারি মোডে দেখানো হয় */}
-        {businessType === "veterinary" && (
-          <div style={{ marginBottom: 12 }}>
-            <label style={S.label}>🏷️ SP (৳) <span style={{ color:T.sub, fontWeight:500, fontSize:11 }}>— শুধু রেফারেন্সের জন্য, ঐচ্ছিক</span></label>
-            <input style={{ ...S.input, marginBottom:0 }} type="number" placeholder="" inputMode="numeric"
-              value={peForm.spPrice || ""} onChange={e => setPeForm(f => ({ ...f, spPrice: e.target.value }))} />
-          </div>
-        )}
-
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
-          <div>
-            <label style={S.label}>📊 পরিমাণ *</label>
-            <input style={S.input} type="number" placeholder="" inputMode="numeric"
-              value={peForm.qty}
-              onChange={e => setPeForm(f => ({ ...f, qty: e.target.value }))} />
-          </div>
-          <div>
-            <label style={S.label}>💵 নতুন একক ক্রয়মূল্য (৳)</label>
-            <input style={S.input} type="number" placeholder="" inputMode="numeric"
-              value={peForm.unitCost}
-              onChange={e => setPeForm(f => ({ ...f, unitCost: e.target.value }))} />
-          </div>
-        </div>
-
-        <div>
-          <label style={S.label}>🏷️ নতুন একক বিক্রয়মূল্য (৳)</label>
-          <input style={S.input} type="number" placeholder="" inputMode="numeric"
-            value={peForm.unitSell}
-            onChange={e => setPeForm(f => ({ ...f, unitSell: e.target.value }))} />
-        </div>
-
-        {peForm.qty && peForm.unitCost && parseFloat(peForm.qty) > 0 && parseFloat(peForm.unitCost) > 0 && (
-          <div style={{ background:"#a78bfa18", border:"1px solid #a78bfa44", borderRadius:10, padding:"8px 12px", marginTop:-4, marginBottom:8 }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
-              <span style={{ color:T.sub, fontSize:12 }}>মোট ক্রয় মূল্য</span>
-              <span style={{ color:"#a78bfa", fontWeight:900, fontSize:17 }}>৳{(parseFloat(peForm.qty) * parseFloat(peForm.unitCost)).toLocaleString()}</span>
-            </div>
-            {selProd && (
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
-                <span style={{ color:T.sub, fontSize:11 }}>নতুন এভারেজ ক্রয়মূল্য</span>
-                <span style={{ color:"#22c55e", fontWeight:700, fontSize:12 }}>
-                  ৳{((((selProd.stock||0) * (selProd.costPrice||0)) + (parseFloat(peForm.qty) * parseFloat(peForm.unitCost))) / ((selProd.stock||0) + parseFloat(peForm.qty))).toFixed(2)}
-                </span>
-              </div>
-            )}
-            {selProd && peForm.unitSell && parseFloat(peForm.unitSell) > 0 && (
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                <span style={{ color:T.sub, fontSize:11 }}>নতুন এভারেজ বিক্রয়মূল্য</span>
-                <span style={{ color:"#38bdf8", fontWeight:700, fontSize:12 }}>
-                  ৳{(((selProd.price||0) + parseFloat(peForm.unitSell)) / 2).toFixed(2)}
-                </span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* মেয়াদ উত্তীর্ণের তারিখ — full width */}
-        <div>
-          <label style={S.label}>📅 মেয়াদ উত্তীর্ণের তারিখ</label>
-          <ExpiryYearMonthPicker
-            value={peForm.expiryDate}
-            onChange={v => setPeForm(f => ({ ...f, expiryDate: v }))} />
-        </div>
-
-        {/* ব্যাচ নম্বর — auto chip */}
-        <div style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 14px", borderRadius:12, border:"1px solid #a78bfa44", background:"#a78bfa10" }}>
-          <span style={{ color:"#a78bfa", fontWeight:900, fontSize:14 }}>{nextBatchLabel}</span>
-          <span style={{ color:T.sub, fontSize:11 }}>🏷️ ব্যাচ নম্বর — স্বয়ংক্রিয়ভাবে যুক্ত হবে</span>
-        </div>
-
-        <button onClick={savePE} disabled={isSaving}
-          style={{ width:"100%", marginTop:4, padding:"13px 0", borderRadius:14, border:"none", background:"linear-gradient(135deg,#7c3aed,#a78bfa)", color:"#fff", fontSize:15, fontWeight:800, cursor: isSaving ? "not-allowed" : "pointer", opacity: isSaving ? 0.6 : 1, fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:8, boxShadow:"0 4px 18px #a78bfa44" }}>
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-          {isSaving ? "সেভ হচ্ছে..." : "ক্রয় এন্ট্রি সেভ করুন"}
-        </button>
-      </div>
-
-      {/* আজকের ইতিহাস */}
-      {todayEntries.length > 0 && (
-        <>
-          <div style={{ color:T.sub, fontSize:12, fontWeight:700, marginBottom:8, marginTop:8 }}>
-            আজকের ক্রয় ইতিহাস ({todayEntries.length}টি)
-          </div>
-          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-            {todayEntries.map(e => (
-              <div key={e.id} className="qc-gradient-card" style={{ ...S.card, marginBottom:0, padding:"12px 14px", borderLeft:"3px solid #a78bfa55" }}>
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                  <div>
-                    <div style={{ color:T.text, fontWeight:700, fontSize:14 }}>{e.productName}</div>
-                    <div style={{ display:"flex", gap:6, marginTop:4, flexWrap:"wrap" }}>
-                      <span style={{ background:"#a78bfa22", color:"#a78bfa", fontSize:11, borderRadius:6, padding:"2px 8px", fontWeight:700 }}>📊 {e.qty}{e.unit||""}</span>
-                      <span style={{ background:"#22c55e22", color:"#22c55e", fontSize:11, borderRadius:6, padding:"2px 8px", fontWeight:700 }}>৳{(e.unitCost||0).toLocaleString()}/একক</span>
-                      {e.unitSell > 0 && <span style={{ background:"#0ea5e922", color:"#38bdf8", fontSize:11, borderRadius:6, padding:"2px 8px", fontWeight:700 }}>বিক্রয়: ৳{e.unitSell}</span>}
-                      {e.batch && <span style={{ background:"#f59e0b22", color:"#f59e0b", fontSize:11, borderRadius:6, padding:"2px 8px", fontWeight:700 }}>🏷️ {e.batch}</span>}
-                      {e.supplier && <span style={{ background:"#1d4ed822", color:"#60a5fa", fontSize:11, borderRadius:6, padding:"2px 8px", fontWeight:700 }}>🏭 {e.supplier}</span>}
-                    </div>
-                    {e.note && <div style={{ color:T.sub, fontSize:11, marginTop:3 }}>📝 {e.note}</div>}
-                  </div>
-                  <div style={{ color:"#a78bfa", fontWeight:900, fontSize:16 }}>৳{(e.totalCost||0).toLocaleString()}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
 // ══════════════════════════════════════════════════════════════════════════════
 // 🗑️ InvoiceVoidModal — একক শেয়ার্ড কম্পোনেন্ট: Dashboard, CustomerDetail,
 // ইনভয়েস হিস্ট্রি (ReturnModule) — এই ৩ জায়গার যেকোনোটা থেকে খুলে "ইনভয়েস ভয়েড"
@@ -20106,7 +19802,7 @@ function InvoiceVoidModal({ inv, returns = [], products = [], customers = [], cu
 
   if (!inv) return null;
   const fmt = n => fmtMoney(n);
-  const invCode = `#${inv.invoiceNo || inv.id?.slice(-6).toUpperCase()}`;
+  const invCode = `#${dispInvNo(inv)}`;
 
   const close = () => {
     setStage("choice"); setReason(""); setPinInput(""); setBusy(false);
@@ -20518,7 +20214,7 @@ function InvoiceVoidModal({ inv, returns = [], products = [], customers = [], cu
 const MemoSmartInvoiceBuilder = React.memo(SmartInvoiceBuilder);
 
 // ── Dashboard ──────────────────────────────────────────────────────────────────
-function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, processReturn, currentUser, onGoToPurchaseEntry, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, supplierPayments = [], setSupplierPayments, returns = [] }) {
+function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, processReturn, currentUser, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, supplierPayments = [], setSupplierPayments, returns = [] }) {
   const [viewInv,    setViewInv]    = useState(null);
   const [viewPayInv, setViewPayInv] = useState(null);
   const [listDate,   setListDate]   = useState(() => todayEn()); // YYYY-MM-DD
@@ -20725,7 +20421,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     [products, purchaseOrders, supplierPayments]
   );
   const dashSupplierNames = useMemo(() =>
-    Object.values(dashSupplierDueMap).sort((a, b) => b.due - a.due).map(s => s.name),
+    uniqueSupplierRows(dashSupplierDueMap).sort((a, b) => b.due - a.due).map(s => s.name),
     [dashSupplierDueMap]
   );
   const cashPartyFiltered = useMemo(() => {
@@ -20786,9 +20482,15 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   // calcCashDrawer() ফর্মুলা ব্যবহার করে (ডুপ্লিকেট ফর্মুলা এড়াতে)। todayCashSale/
   // todayJoma props হিসেবে আগে থেকেই পাওয়া যায় (parent থেকে) — এখানে নতুন করে
   // ইনভয়েস/txns ফিল্টার করার দরকার নেই।
-  const todayReturnRefundForDrawer = cashLogsAll.filter(c => c.type === "return_refund" && c.dateKey === todayKeyStr).reduce((s, c) => s + (c.amount || 0), 0);
+  // 🔴 ফিক্স (৩১ জুলাই ২০২৬ — ডাবল-কাউন্ট): parent থেকে আসা todayCashSale prop-এ
+  // আজকের ক্যাশ-রিফান্ড ইতিমধ্যেই বাদ দেওয়া আছে (দেখুন todayReturnsCashRefund,
+  // যেখান থেকে todayCashSale বের হয়)। এখানে calcCashDrawer()-এর ৫ম প্যারামিটারে
+  // todayReturnRefundForDrawer আবার পাঠালে একই রিফান্ড দুইবার বিয়োগ হয়ে যেত —
+  // ঠিক এই একই বাগ useKpiStats()-এ ৩০ জুলাই ফিক্স হয়েছিল, এই আলাদা কার্ডে হয়নি।
+  // এখন ৫ম প্যারামিটারে 0 পাঠানো হচ্ছে (যেহেতু ইতিমধ্যেই বিয়োগ হয়ে আছে); রিভার্সাল
+  // (৬ষ্ঠ প্যারামিটার) todayCashSale-এ ধরা নেই বলে সেটা অপরিবর্তিত রাখা হলো।
   const todayReturnReversalForDrawer = cashLogsAll.filter(c => c.type === "return_refund_reversal" && c.dateKey === todayKeyStr).reduce((s, c) => s + (c.amount || 0), 0);
-  const todayCashDrawerNow = calcCashDrawer(todayOpening?.amount || 0, todayCashSale || 0, todayJoma || 0, todayWithdrawTotal, todayReturnRefundForDrawer, todayReturnReversalForDrawer);
+  const todayCashDrawerNow = calcCashDrawer(todayOpening?.amount || 0, todayCashSale || 0, todayJoma || 0, todayWithdrawTotal, 0, todayReturnReversalForDrawer);
 
   const addCashLog = (type) => {
     const amt = parseFloat(cashAmount);
@@ -21050,16 +20752,31 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       }
     : (() => {
         const invs = invoices.filter(i => inRepRange(i.dateKey) && !i.isSelfUse && i.status !== "voided");
-        const total = invs.reduce((s, i) => s + (i.total || 0), 0);
+        // 🔴 ফিক্স (৩১ জুলাই ২০২৬ — কাস্টম-রেঞ্জ রিপোর্টে রিটার্ন একদমই বাদ পড়ত না):
+        // "আজ" স্কোপে (todayTotal/todayCashSale/todayProfit) returns[] থেকে
+        // refundAmount/profit-impact বাদ দেওয়া হয়, কিন্তু ৭/৩০/৯০/১৮০/৩৬৫-দিনের
+        // এই রেঞ্জ-ব্লকে সেটা করা হতো না — ফলে যত রিটার্ন হয়েছে সেই পরিমাণ বিক্রয়/
+        // নগদ-বিক্রয়/লাভ বাস্তবের চেয়ে বেশি দেখাত (শপ-মালিকরা ঠিক এই পেজেই টোটাল
+        // মিলিয়ে দেখেন)। এখন todayReturns-এর মতোই একই netting প্রয়োগ করা হলো।
+        const voidedInvIds = new Set(invoices.filter(i => i.status === "voided").map(i => i.id));
+        const repReturns = (returns || []).filter(r => inRepRange(r.dateKey) && !voidedInvIds.has(r.invoiceId));
+        const repReturnsRefund = repReturns.reduce((s, r) => s + (r.refundAmount || 0), 0);
+        const repReturnsCashRefund = repReturns.filter(r => r.refundMode === "cash").reduce((s, r) => s + (r.refundAmount || 0), 0);
+        const repReturnsProfitImpact = repReturns.reduce((s, r) => s + ((r.refundAmount || 0) - (r.costPrice || 0) * (r.qty || 0)), 0);
+        const total = invs.reduce((s, i) => s + (i.total || 0), 0) - repReturnsRefund;
         const cashSale = invs.reduce((s, i) => {
           if (i.payType === "cash") return s + (i.total || 0);
           if (i.payType === "partial") return s + Math.min(i.paidAmount || 0, i.total || 0);
           return s;
-        }, 0);
-        const voidedInvIds = new Set(invoices.filter(i => i.status === "voided").map(i => i.id));
-        const baki = txns.filter(t => inRepRange(t.dateKey) && t.type === "baki" && !voidedInvIds.has(t.invoiceId)).reduce((s, t) => s + t.amount, 0);
+        }, 0) - repReturnsCashRefund;
+        // 🔴 ফিক্স (৩১ জুলাই ২০২৬ — ম্যানুয়াল বাকি এন্ট্রি বাদ পড়ছিল না): todayBaki-এর
+        // মতোই t.invoiceId truthy-চেক যোগ করা হলো — কাস্টমার-পেজ থেকে সরাসরি করা
+        // ম্যানুয়াল বাকি এন্ট্রি (invoiceId নেই) শুধু মোট বাকিতে (customer.balance)
+        // থাকবে, এই রেঞ্জ-রিপোর্টের বাকিতে আসবে না (আগে t.invoiceId-এর truthy চেক
+        // না থাকায় এই এন্ট্রিগুলোও ঢুকে যেত)।
+        const baki = txns.filter(t => inRepRange(t.dateKey) && t.type === "baki" && t.invoiceId && !voidedInvIds.has(t.invoiceId)).reduce((s, t) => s + t.amount, 0);
         const prodMap = new Map(products.map(p => [p.id, p]));
-        const profit = calcProfitTotal(invs, prodMap);
+        const profit = calcProfitTotal(invs, prodMap) - repReturnsProfitImpact;
         // range-ভুক্ত baki-txn আছে এমন invoiceId-গুলোর Set — O(1) lookup, .find() এড়ানো হলো
         const bakiTxnInvIds = new Set();
         txns.forEach(t => { if (inRepRange(t.dateKey) && t.type === "baki" && t.invoiceId != null) bakiTxnInvIds.add(t.invoiceId); });
@@ -21076,7 +20793,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
         const voidedInvs = invoices.filter(inv => inRepRange(inv.dateKey) && inv.status === "voided");
         return { invs, total, cashSale, baki, profit, bakiInvs, selfUseInvs, selfUseCost, voidedInvs };
       })()
-  ), [isToday, todayInvs, todayTotal, todayCashSale, todayBaki, todayProfit, todayBakiInvsFull, todaySelfUseInvs, todaySelfUseCost, todayVoidedInvs, invoices, txns, products, repStart, repEnd]);
+  ), [isToday, todayInvs, todayTotal, todayCashSale, todayBaki, todayProfit, todayBakiInvsFull, todaySelfUseInvs, todaySelfUseCost, todayVoidedInvs, invoices, txns, products, returns, repStart, repEnd]);
 
   if (viewInv) {
     const cust = customers.find(c => c.id === viewInv.customerId);
@@ -22386,7 +22103,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       });
     };
 
-    const dayLabelPO = (dk) => { const d = new Date(dk); if (isNaN(d.getTime())) return dk; return `${d.getDate()} ${MONTH_NAMES_BN[d.getMonth()]}, ${d.getFullYear()}`; };
+    const dayLabelPO = (dk) => { const d = new Date(dk + "T00:00:00"); if (isNaN(d.getTime())) return dk; return `${d.getDate()} ${MONTH_NAMES_BN[d.getMonth()]}, ${d.getFullYear()}`; };
     // 🆕 দিন পাল্টানোর হেল্পার (ডে-নেভিগেটরের জন্য) — dateKey (YYYY-MM-DD) থেকে ±delta দিন
     const shiftDayKey = (dk, delta) => {
       const [y, m, d] = (dk || "").split("-").map(Number);
@@ -23530,22 +23247,6 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
         </div>
       );
     }
-    if (dashModal.type === "purchase-entry") {
-      return (
-        <DashPurchaseEntryModal
-          T={T} S={S}
-          businessType={businessType}
-          products={products}
-          setProducts={setProducts}
-          setStockMovements={setStockMovements}
-          setPurchaseOrders={setPurchaseOrders}
-          purchaseOrders={purchaseOrders}
-          suppliers={[]}
-          showToast={() => {}}
-          onBack={() => setDashModal(null)}
-        />
-      );
-    }
     if (dashModal.type === "today-purchase") {
       const purchaseDate = listDate;
       const setPurchaseDate = setListDate;
@@ -23681,6 +23382,22 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     if (dashModal.type === "invoices") {
       // ── তারিখ রেঞ্জ অনুযায়ী ফিল্টার ও সর্ট (নতুনতম উপরে) ──
       const allItems    = dashModal.allItems || dashModal.items || [];
+      // 🔴 ফিক্স (ইনভয়েস কার্ড সিরিয়াল): কার্ড লিস্ট এতদিন শুধু LIFO (নতুনতম আগে)
+      // অর্ডারে দেখাত, কোনো ক্রমিক নাম্বার ছাড়াই — খুঁজে পেতে অসুবিধা হতো, বিশেষত
+      // পুরনো ইনভয়েসে যেখানে real invoiceNo নেই (hash-fallback কোড দেখায়)। এখন
+      // প্রতিটা কার্ডে creation-order অনুযায়ী (যেটা সবার আগে তৈরি হয়েছে সেটা ১)
+      // একটা স্থায়ী, সরল সিরিয়াল ব্যাজ দেখানো হচ্ছে — শুধু ডিসপ্লে-লেয়ারে হিসাব করা,
+      // কোনো ডেটা/invoiceNo ফিল্ড পরিবর্তন হচ্ছে না। কার্ডের প্রদর্শন-অর্ডার (LIFO)
+      // অপরিবর্তিতই থাকছে।
+      const invSerialMap = new Map(
+        allItems.slice()
+          .sort((a, b) => {
+            const ta = a.createdAt || (a.dateKey + "T00:00:00");
+            const tb = b.createdAt || (b.dateKey + "T00:00:00");
+            return ta.localeCompare(tb);
+          })
+          .map((it, idx) => [it.id, idx + 1])
+      );
       const rangedItems = allItems
         .filter(inv => dmRange.inRange(inv.dateKey))
         .slice()
@@ -23689,9 +23406,17 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           const tb = b.createdAt || (b.dateKey + "T00:00:00");
           return tb.localeCompare(ta);
         });
-      const rangeTotal  = rangedItems.reduce((s, i) => s + (i.total || 0), 0);
       // নগদ বিক্রয় modal-এ admin-only মোট লাভ/লস
       const _isCashModal = dashModal.baseTitle === "নগদ বিক্রয়ের ইনভয়েস";
+      // 🔴 ফিক্স (নগদ বিক্রয়ের ইনভয়েস total): আংশিক (partial) পেমেন্টের ইনভয়েসে
+      // আগে পুরো invoice total যোগ হতো, অথচ ক্যাশ ড্রয়ারে/হোম ড্যাশবোর্ডে শুধু
+      // paidAmount অংশটাই ঢোকে — ফলে এই রিপোর্টের টোটাল হোম KPI-এর সাথে মিলত না়।
+      // এখন হোম ড্যাশবোর্ডের মতোই partial ইনভয়েসে paidAmount (capped at total) ধরা হচ্ছে;
+      // অন্য রিপোর্ট (বাকির ইনভয়েস ইত্যাদি) অপরিবর্তিত — সেখানে পুরো total-ই সঠিক।
+      const rangeTotal  = rangedItems.reduce((s, i) => {
+        if (_isCashModal && i.payType === "partial") return s + Math.min(i.paidAmount || 0, i.total || 0);
+        return s + (i.total || 0);
+      }, 0);
       const _cashProdMap = new Map(products.map(p => [p.id, p]));
       const _cashProfit  = _isCashModal ? calcProfitTotal(rangedItems, _cashProdMap) : 0;
       const pdfHtml = buildPdfHtml(
@@ -23803,9 +23528,9 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                 )}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div style={{ ...S.avatar, width: 34, height: 34, fontSize: 13,
+                    <div style={{ ...S.avatar, width: 34, height: 34, fontSize: 14,
                       background: isVoided ? "#6b728033" : isBaki ? "linear-gradient(135deg,#7f1d1d,#ef4444)" : isPartial ? "linear-gradient(135deg,#78350f,#f59e0b)" : "linear-gradient(135deg,#14532d,#22c55e)" }}>
-                      {inv.customerName[0]}
+                      {invSerialMap.get(inv.id) || "—"}
                     </div>
                     <div>
                       <div style={{ color: "#0ea5e9", fontWeight: 700, fontSize: 14 }}>{inv.customerName}</div>
@@ -23849,7 +23574,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                 <div style={{ display: "flex", gap: 6 }}>
                   <button style={{ ...S.invBtn, flex: 3 }} onClick={() => setViewInv(inv)}>
                     <IcInvoice /><span>ইনভয়েস দেখুন</span>
-                    <span style={{ marginLeft: "auto", color: T.sub }}>#{inv.id?.toUpperCase?.()?.slice(0,6)}</span>
+                    <span style={{ marginLeft: "auto", color: T.sub }}>{dispInvNo(inv)}</span>
                   </button>
                   {voidInvoice && currentUser?.role !== "staff" && !isVoided && (
                     <button
@@ -23937,7 +23662,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                 </div>
                 <button style={{ ...S.invBtn, color: "#22c55e", borderColor: "#22c55e44" }} onClick={() => setViewPayInv(pinv)}>
                   <IcCheck /><span>জমার রসিদ দেখুন</span>
-                  <span style={{ marginLeft: "auto", color: T.sub }}>#{pinv.id?.toUpperCase?.()?.slice(0,6)}</span>
+                  <span style={{ marginLeft: "auto", color: T.sub }}>{dispInvNo(pinv, "RC")}</span>
                 </button>
               </div>
             )}
@@ -24237,7 +23962,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
         </div>
 
         {/* ══ ইনভেন্টরি/স্টক বিশ্লেষণ ══ */}
-        <InventorySection T={T} S={S} products={products} setDashModal={setDashModal} shopName={shopName} setInvModal={setInvModal} purchaseOrders={purchaseOrders || []} onGoToPurchaseEntry={onGoToPurchaseEntry} />
+        <InventorySection T={T} S={S} products={products} setDashModal={setDashModal} shopName={shopName} setInvModal={setInvModal} purchaseOrders={purchaseOrders || []} />
 
       </div>
     </div>
@@ -24517,9 +24242,9 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
               </button>
               <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 8 }}>
                 {/* 🆕 (ইউজার ফিডব্যাক — ২৮ জুলাই ২০২৬) ফন্ট 20→26, ড্যাশবোর্ড কার্ডের মতোই বড় দেখাতে */}
-                <div style={{ color: c.balance > 0 ? "#ef4444" : "#22c55e", fontWeight: 900, fontSize: 26, letterSpacing:-0.5, textShadow: `0 0 16px ${c.balance > 0 ? "#ef4444" : "#22c55e"}44` }}>৳{fmt(c.balance)}</div>
+                <div style={{ color: c.balance > 0 ? "#ef4444" : "#22c55e", fontWeight: 900, fontSize: 26, letterSpacing:-0.5, textShadow: `0 0 16px ${c.balance > 0 ? "#ef4444" : "#22c55e"}44` }}>৳{fmt(Math.abs(c.balance))}</div>
                 <div style={{ background: c.balance > 0 ? "#ef444418" : "#22c55e18", color: c.balance > 0 ? "#f87171" : "#4ade80", fontSize: 11, fontWeight: 800, borderRadius:8, padding:"2px 8px", marginTop:4, border: `1px solid ${c.balance > 0 ? "#ef444433" : "#22c55e33"}` }}>
-                  {c.balance > 0 ? "বাকি আছে" : "✓ পরিশোধ"}
+                  {c.balance > 0 ? "বাকি আছে" : c.balance < 0 ? "অগ্রিম জমা আছে" : "✓ পরিশোধ"}
                 </div>
               </div>
             </div>
@@ -24680,8 +24405,8 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
           </div>
           {/* Balance badge */}
           <div style={{ background: customer.balance > 0 ? "linear-gradient(135deg,#7f1d1d55,#ef444433)" : "linear-gradient(135deg,#14532d55,#22c55e33)", border:`1.5px solid ${customer.balance > 0 ? "#ef444455" : "#22c55e55"}`, borderRadius:12, padding:"6px 10px", textAlign:"center", flexShrink:0 }}>
-            <div style={{ color: customer.balance > 0 ? "#fca5a5" : "#86efac", fontSize:9, fontWeight:700, letterSpacing:0.4, marginBottom:1 }}>বাকী</div>
-            <div style={{ color: customer.balance > 0 ? "#ef4444" : "#22c55e", fontWeight:900, fontSize:18, lineHeight:1 }}>৳{fmt(customer.balance)}</div>
+            <div style={{ color: customer.balance > 0 ? "#fca5a5" : "#86efac", fontSize:9, fontWeight:700, letterSpacing:0.4, marginBottom:1 }}>{customer.balance < 0 ? "অগ্রিম" : "বাকী"}</div>
+            <div style={{ color: customer.balance > 0 ? "#ef4444" : "#22c55e", fontWeight:900, fontSize:18, lineHeight:1 }}>৳{fmt(Math.abs(customer.balance))}</div>
           </div>
         </div>
         {/* Action buttons row — compact */}
@@ -24886,14 +24611,14 @@ function PaymentInvoiceReceipt({ T, S, inv }) {
   const printRef = useRef(null);
   const handleShare = () => {
     const shopName = inv.shopName || "SBM";
-    const title = `জমার_রশিদ_${inv.id?.slice(0,6)?.toUpperCase()}`;
+    const title = `জমার_রশিদ_${dispInvNo(inv, "RC")}`;
     const remainingBaki = inv.remainingBalance ?? 0;
     const prevBakiShare = (inv.remainingBalance ?? 0) + (inv.amount || 0);
     const content = `
       <div class="info-row"><span class="info-label">কাস্টমার:</span><span class="info-val">${inv.customerName}</span></div>
       <div class="info-row"><span class="info-label">মোবাইল:</span><span class="info-val">${inv.customerMobile||"—"}</span></div>
       <div class="info-row"><span class="info-label">তারিখ:</span><span class="info-val">${inv.date} · ${inv.time||""}</span></div>
-      <div class="info-row"><span class="info-label">রশিদ নং:</span><span class="info-val">#${(inv.id||"").toUpperCase()}</span></div>
+      <div class="info-row"><span class="info-label">রশিদ নং:</span><span class="info-val">#${dispInvNo(inv, "RC")}</span></div>
       <div style="text-align:center;background:#22c55e18;border-radius:12px;padding:20px;margin:16px 0;">
         <div style="color:#22c55e;font-size:12px;font-weight:700;">জমার পরিমাণ</div>
         <div style="color:#22c55e;font-size:32px;font-weight:900;">৳${(inv.amount||0).toLocaleString("en-US")}</div>
@@ -24911,7 +24636,7 @@ function PaymentInvoiceReceipt({ T, S, inv }) {
         <div style={{ textAlign: "center", marginBottom: 16 }}>
           <div style={{ width:48, height:48, borderRadius:"50%", background:"linear-gradient(135deg,#16a34a,#22c55e)", display:"flex", alignItems:"center", justifyContent:"center", margin:"0 auto 8px", boxShadow:"0 4px 16px #22c55e44" }}><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>
           <div style={{ color: T.text, fontWeight: 800, fontSize: 18, marginTop: 4 }}>{inv.shopName || "SBM"}</div>
-          <div style={{ color: T.sub, fontSize: 11, marginTop: 2 }}>জমার রসিদ · #{inv.id.toUpperCase()}</div>
+          <div style={{ color: T.sub, fontSize: 11, marginTop: 2 }}>জমার রসিদ · {dispInvNo(inv, "RC")}</div>
           <div style={{ color: T.sub, fontSize: 11 }}>{inv.date} · {inv.time}</div>
         </div>
         <div style={S.dashed} />
@@ -24946,7 +24671,7 @@ function PaymentInvoiceReceipt({ T, S, inv }) {
             const prevBaki = remainingBaki + (inv.amount || 0);
             const content = `<div class="info"><span class="info-l">কাস্টমার:</span><span class="info-r">${inv.customerName}</span></div>
               <div class="info"><span class="info-l">তারিখ:</span><span class="info-r">${inv.date}</span></div>
-              <div class="info"><span class="info-l">রশিদ নং:</span><span class="info-r">#${(inv.id||"").toUpperCase()}</span></div>
+              <div class="info"><span class="info-l">রশিদ নং:</span><span class="info-r">#${dispInvNo(inv, "RC")}</span></div>
               <hr class="dashed">
               <div class="info"><span class="info-l">জমার পরিমাণ:</span><span class="info-r total">৳${(inv.amount||0).toLocaleString("en-US")}</span></div>
               <div class="info"><span class="info-l">পূর্বের বাকি:</span><span class="info-r">৳${prevBaki.toLocaleString("en-US")}</span></div>
@@ -25012,9 +24737,15 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
     // হয় — staff ও admin একই মুহূর্তে একই কাস্টমারের payment collect করলেও
     // কোনো delta হারাবে না (আগে LWW merge-এ একটা delta silently হারিয়ে যেত)।
     // ব্যর্থ/local-only mode হলে local state থেকে fallback (single-device-এ নিরাপদ)।
+    // 🔴 ফিক্স (Overpayment হ্যান্ডলিং — সবচেয়ে ঝুঁকিপূর্ণ হিসেবে ফ্ল্যাগ করা): আগে
+    // "জমা" মোডে Math.max(0, serverBal - amt) দিয়ে balance 0-তে ফ্লোর করা হতো —
+    // কাস্টমার বাকির চেয়ে বেশি টাকা দিলে বাড়তি অংশ (advance) কোথাও সংরক্ষণ না
+    // হয়ে সম্পূর্ণ হারিয়ে যেত। এখন ঋণাত্মক balance-কেই "অগ্রিম" (advance/credit)
+    // হিসেবে ধরা হচ্ছে — invoice-payment flow-এর overpay হ্যান্ডলিং-এর (newBalance
+    // = prevBalance + bakiAmt - overpayAmt, কোনো ফ্লোর ছাড়াই) সাথে সামঞ্জস্যপূর্ণ।
     const txBal = await FSS.transactionUpdateBalance(
       customer.id,
-      (serverBal) => mode === "baki" ? (serverBal + amt) : Math.max(0, serverBal - amt)
+      (serverBal) => mode === "baki" ? (serverBal + amt) : (serverBal - amt)
     );
     // 🔴 ফিক্স (রুট কজ — পেমেন্ট কালেকশন/বাকি-সংযোজন ট্রানজেকশন ব্যর্থ হলে হারিয়ে
     // যাওয়া, ক্রস-ডিভাইস ব্যালেন্স গরমিল): এটাই অ্যাপের সবচেয়ে বেশি ব্যবহৃত
@@ -25045,13 +24776,13 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
       setCustomers(prev => {
         const current = prev.find(c => c.id === customer.id);
         const currentBalance = current ? current.balance : customer.balance;
-        const newBal = mode === "baki" ? currentBalance + amt : Math.max(0, currentBalance - amt);
+        const newBal = mode === "baki" ? currentBalance + amt : (currentBalance - amt);
         computedNewBalance = newBal;
         return prev.map(c => c.id === customer.id ? { ...c, balance: newBal } : c);
       });
       // Wait one microtask for state to settle
       await new Promise(r => setTimeout(r, 0));
-      newBalance = computedNewBalance ?? (mode === "baki" ? customer.balance + amt : Math.max(0, customer.balance - amt));
+      newBalance = computedNewBalance ?? (mode === "baki" ? customer.balance + amt : (customer.balance - amt));
     }
     // 🗓️ পুরাতন এন্ট্রি হলে সিলেক্ট করা dateKey পাস করি — addTxn/createPaymentInvoice
     // এই dateKey-তেই entry বসাবে, আজকের তারিখে না।
@@ -25105,7 +24836,7 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
                 <div class="info-row"><span class="info-label">কাস্টমার:</span><span class="info-val">${inv.customerName}</span></div>
                 <div class="info-row"><span class="info-label">মোবাইল:</span><span class="info-val">${inv.customerMobile||"—"}</span></div>
                 <div class="info-row"><span class="info-label">তারিখ:</span><span class="info-val">${inv.date} · ${inv.time||""}</span></div>
-                <div class="info-row"><span class="info-label">রশিদ নং:</span><span class="info-val">#${(inv.id||"").toUpperCase()}</span></div>
+                <div class="info-row"><span class="info-label">রশিদ নং:</span><span class="info-val">#${dispInvNo(inv, "RC")}</span></div>
                 <div style="text-align:center;background:#22c55e18;border-radius:12px;padding:20px;margin:16px 0;">
                   <div style="color:#22c55e;font-size:12px;font-weight:700;">জমার পরিমাণ</div>
                   <div style="color:#22c55e;font-size:32px;font-weight:900;">৳${(inv.amount||0).toLocaleString("en-US")}</div>
@@ -25114,7 +24845,7 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
                 <div class="info-row"><span class="info-label" style="color:#ef4444;font-weight:700;">বর্তমান বাকি:</span><span class="info-val" style="color:#ef4444;font-size:16px;font-weight:800;">৳${remainingBaki.toLocaleString("en-US")}</span></div>
                 <div style="text-align:center;color:#999;font-size:12px;margin-top:10px;">ধন্যবাদ! জমা নিশ্চিত হয়েছে।</div>`;
               const html = buildPdfHtml(content, shopNameLocal, "জমার রশিদ");
-              sharePdfWhatsApp(html, `জমার_রশিদ_${(inv.id||"").slice(0,6).toUpperCase()}`);
+              sharePdfWhatsApp(html, `জমার_রশিদ_${dispInvNo(inv, "RC")}`);
             }}
             style={{ ...S.saveBtn, width: "100%", marginTop: 10, background: "linear-gradient(135deg,#22c55e,#16a34a)",
               display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
@@ -25130,7 +24861,7 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
   // ── ২য় ধাপ: নিশ্চিতকরণ স্ক্রিন ──
   if (confirmStep && mode === "joma") {
     const amt = parseFloat(amount) || 0;
-    const newBalance = Math.max(0, customer.balance - amt);
+    const newBalance = customer.balance - amt;
     return (
       <div style={S.overlay}>
         <div style={S.modalCard}>
@@ -25162,8 +24893,8 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
               <span style={{ color: "#8b5cf6", fontSize: 13, fontWeight: 700 }}>{dateStrFromKey(entryDateKey)}</span>
             </div> : null}
             <div style={{ borderTop: `1px dashed ${T.border}`, paddingTop: 10, display: "flex", justifyContent: "space-between" }}>
-              <span style={{ color: T.sub, fontSize: 13, fontWeight: 700 }}>নতুন বাকি</span>
-              <span style={{ color: newBalance > 0 ? "#ef4444" : "#22c55e", fontWeight: 900, fontSize: 18 }}>৳{fmt(newBalance)}</span>
+              <span style={{ color: T.sub, fontSize: 13, fontWeight: 700 }}>{newBalance < 0 ? "অগ্রিম জমা হবে" : "নতুন বাকি"}</span>
+              <span style={{ color: newBalance > 0 ? "#ef4444" : "#22c55e", fontWeight: 900, fontSize: 18 }}>৳{fmt(Math.abs(newBalance))}</span>
             </div>
           </div>
           <div style={{ color: T.sub, fontSize: 11, textAlign: "center", marginBottom: 14 }}>⬆ ভুল থাকলে "এডিট করুন" চাপুন</div>
@@ -25185,7 +24916,7 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
           <div style={S.avatar}>{customer.name[0]}</div>
           <div>
             <div style={S.rowName}>{customer.name}</div>
-            <div style={S.rowSub}>বর্তমান বাকি: ৳{fmt(customer.balance)}</div>
+            <div style={S.rowSub}>{customer.balance < 0 ? `বর্তমান অগ্রিম: ৳${fmt(Math.abs(customer.balance))}` : `বর্তমান বাকি: ৳${fmt(customer.balance)}`}</div>
           </div>
         </div>
         <div style={S.modeToggle}>
@@ -25314,7 +25045,7 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
         </div>
         <div style="flex:1;background:#0369a115;border-radius:10px;padding:10px 14px;">
           <div style="color:#666;font-size:11px;">ইনভয়েস</div>
-          <div style="font-weight:800;">#${(inv.id||"").toUpperCase()}</div>
+          <div style="font-weight:800;">#${dispInvNo(inv)}</div>
           <div style="color:#666;font-size:11px;">${inv.date||""}</div>
           <div style="color:#666;font-size:11px;">${isBuyer?"ক্রেতার কপি":"বিক্রেতার কপি"}</div>
         </div>
@@ -25338,7 +25069,7 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
         ${inv.note?`<div class="info-row"><span class="info-label">নোট:</span><span class="info-val">${inv.note}</span></div>`:""}
       </div>`;
     const html = buildPdfHtml(content, shopName, `${isBuyer?"ক্রেতার":"বিক্রেতার"} ইনভয়েস`);
-    sharePdfWhatsApp(html, `ইনভয়েস_${(inv.id||"").slice(0,6).toUpperCase()}`);
+    sharePdfWhatsApp(html, `ইনভয়েস_${dispInvNo(inv)}`);
   };
   return (
     <div>
@@ -25347,7 +25078,7 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
           <div style={{ fontSize: 28 }}>🛒</div>
           <div style={{ color: T.text, fontWeight: 800, fontSize: 18, marginTop: 4 }}>{inv.shopName || "SBM"}</div>
           <div style={{ color: T.sub, fontSize: 11, marginTop: 2 }}>
-            {isBuyer ? "ক্রেতার কপি" : "বিক্রেতার কপি"} · #{inv.id.toUpperCase()}
+            {isBuyer ? "ক্রেতার কপি" : "বিক্রেতার কপি"} · {dispInvNo(inv)}
           </div>
           <div style={{ color: T.sub, fontSize: 11 }}>{inv.date}</div>
           {inv.status === "voided" && (
@@ -25494,7 +25225,7 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
               return `<tr><td>${i+1}</td><td>${medBadgeHtmlStr(item.dosageForm)}${item.name}${_d>0?` <span style="color:#16a34a;font-size:10px;">(–৳${fmtMoney(_d)}${_p>0?` ${_p}%`:""})</span>`:""}</td><td class="right">${item.qty}</td><td class="right">৳${fmtMoney(item.price)}</td><td class="right" style="color:#3b82f6;">৳${fmtMoney(_g-_d)}</td></tr>`;
             }).join("");
             const content = `<div class="info"><span class="info-l">কাস্টমার:</span><span class="info-r">${inv.customerName}</span></div>
-              <div class="info"><span class="info-l">ইনভয়েস:</span><span class="info-r">#${(inv.id||"").toUpperCase()}</span></div>
+              <div class="info"><span class="info-l">ইনভয়েস:</span><span class="info-r">#${dispInvNo(inv)}</span></div>
               <div class="info"><span class="info-l">তারিখ:</span><span class="info-r">${inv.date||""}</span></div>
               <hr class="dashed">
               <table><thead><tr><th>#</th><th>পণ্য</th><th class="right">পরি.</th><th class="right">দাম</th><th class="right">মোট</th></tr></thead><tbody>${itemRows}</tbody></table>
@@ -25532,7 +25263,7 @@ function InvoiceReceiptPrint({ inv, customer, type }) {
   return (
     <div>
       <div className="center bold" style={{ fontSize: 16 }}>{inv.shopName || "SBM"}</div>
-      <div className="center" style={{ fontSize: 11 }}>{isBuyer ? "ক্রেতার কপি" : "বিক্রেতার কপি"} | #{inv.id.toUpperCase()}</div>
+      <div className="center" style={{ fontSize: 11 }}>{isBuyer ? "ক্রেতার কপি" : "বিক্রেতার কপি"} | {dispInvNo(inv)}</div>
       <div className="center" style={{ fontSize: 11 }}>{inv.date}</div>
       {inv.status === "voided" && (
         <div className="center bold" style={{ fontSize: 12, marginTop: 2 }}>
@@ -25598,7 +25329,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const addExtraBatch    = () => setExtraBatches(b => [...b, { id: uid(), qty: "", expiryDate: "" }]);
   const updateExtraBatch = (id, patch) => setExtraBatches(b => b.map(r => r.id === id ? { ...r, ...patch } : r));
   const removeExtraBatch = (id) => setExtraBatches(b => b.filter(r => r.id !== id));
-  const totalNewStock = (parseInt(form.stock) || 0) + extraBatches.reduce((s, r) => s + (parseInt(r.qty) || 0), 0);
+  const totalNewStock = (parseFloat(form.stock) || 0) + extraBatches.reduce((s, r) => s + (parseFloat(r.qty) || 0), 0);
   const [search,       setSearch]       = useState("");
   // React 18 useDeferredValue — type করলে UI block হবে না
   const deferredSearch = useDeferredValue(search);
@@ -25706,8 +25437,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   // ── Mandatory field validation — নতুন পণ্য/সার্ভিস ফর্ম ও ক্রয় এন্ট্রি ফর্মের জন্য ──
   const [formErrors, setFormErrors] = useState({}); // { name, price }
   const [peFormErrors, setPeFormErrors] = useState({}); // { productId, qty }
-  // 🔴 ফিক্স (২৪ জুলাই ২০২৬ — ক্রয় এন্ট্রি ডাবল-সাবমিট বাগ, দেখুন
-  // DashPurchaseEntryModal-এর একই ফিক্সের কমেন্ট): savePE()/নতুন-পণ্য-তৈরির
+  // 🔴 ফিক্স (২৪ জুলাই ২০২৬ — ক্রয় এন্ট্রি ডাবল-সাবমিট বাগ): savePE()/নতুন-পণ্য-তৈরির
   // ব্লক দুটোই async কল করে কিন্তু বাটনে কোনো গার্ড ছিল না — দ্রুত একাধিকবার
   // ট্যাপে একই ক্রয় এন্ট্রি একাধিকবার সেভ হয়ে যেত।
   const [peSaving, setPeSaving] = useState(false);
@@ -25748,7 +25478,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const peShiftMonth = useCallback((delta) => {
     setPeNavMonth(prev => { const [y, m] = prev.split("-").map(Number); const d = new Date(y, (m - 1) + delta, 1); return _monthKeyOf(d); });
   }, []);
-  const peDayLabel   = (dk) => { const d = new Date(dk); if (isNaN(d.getTime())) return dk; return `${d.getDate()} ${MONTH_NAMES_BN[d.getMonth()]}, ${d.getFullYear()}`; };
+  const peDayLabel   = (dk) => { const d = new Date(dk + "T00:00:00"); if (isNaN(d.getTime())) return dk; return `${d.getDate()} ${MONTH_NAMES_BN[d.getMonth()]}, ${d.getFullYear()}`; };
   const peMonthLabel = (mk) => { const [y, m] = (mk || "").split("-"); return m ? `${MONTH_NAMES_BN[parseInt(m, 10) - 1]} ${y}` : mk; };
   const retailTodayPurchases = useMemo(() => {
     const todayKey2 = _dateKeyOf(new Date());
@@ -25835,7 +25565,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     if (form.productType !== "service") {
       if (!form.company || !form.company.trim()) errs.company = true;
       if (!form.costPrice || parseFloat(form.costPrice) <= 0) errs.costPrice = true;
-      if (form.stock === "" || form.stock === null || form.stock === undefined || parseInt(form.stock) < 0 || isNaN(parseInt(form.stock))) errs.stock = true;
+      if (form.stock === "" || form.stock === null || form.stock === undefined || parseFloat(form.stock) < 0 || isNaN(parseFloat(form.stock))) errs.stock = true;
       if (form.minStockAlert === "" || form.minStockAlert === null || form.minStockAlert === undefined || parseInt(form.minStockAlert) < 0 || isNaN(parseInt(form.minStockAlert))) errs.minStockAlert = true;
       if (!form.expiryDate && !pfHidden.includes("expiryDate")) errs.expiryDate = true;
     }
@@ -25865,8 +25595,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     // ── #৪ মাল্টি-ব্যাচ ভ্যালিডেশন — প্রতিটি অতিরিক্ত ব্যাচে পরিমাণ ও মেয়াদ দুটোই থাকতে হবে ──
     if (!editId && form.productType !== "service") {
       const incompleteExtra = extraBatches.some(r =>
-        (r.qty && parseInt(r.qty) > 0 && !r.expiryDate) ||
-        (!r.qty || parseInt(r.qty) <= 0) && r.expiryDate
+        (r.qty && parseFloat(r.qty) > 0 && !r.expiryDate) ||
+        (!r.qty || parseFloat(r.qty) <= 0) && r.expiryDate
       );
       if (incompleteExtra) {
         showToast("প্রতিটি অতিরিক্ত ব্যাচে পরিমাণ ও মেয়াদ দুটোই সঠিকভাবে দিতে হবে", "#ef4444");
@@ -25880,8 +25610,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     // পারতেন না যে স্টক আসলে যোগ হয়নি। এখন এডিট মোডেও একই ভ্যালিডেশন প্রযোজ্য হবে।
     if (editId && form.productType !== "service") {
       const incompleteNew = newBatchRows.some(r =>
-        (r.qty && parseInt(r.qty) > 0 && !r.expiryDate) ||
-        ((!r.qty || parseInt(r.qty) <= 0) && r.expiryDate)
+        (r.qty && parseFloat(r.qty) > 0 && !r.expiryDate) ||
+        ((!r.qty || parseFloat(r.qty) <= 0) && r.expiryDate)
       );
       if (incompleteNew) {
         showToast("নতুন এক্সপায়ারির ব্যাচে পরিমাণ ও মেয়াদ দুটোই সঠিকভাবে দিতে হবে (মেয়াদ ঘরে ৪ ডিজিট সম্পূর্ণ করুন, যেমন 1226 → 12/26)", "#ef4444");
@@ -25891,7 +25621,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     if (editId && currentUser?.role === "staff") { showToast("পণ্য এডিট করার অনুমতি নেই", "#ef4444"); return; }
     if (!editId && currentUser?.role === "staff" && !currentUser?.canAddProduct) { showToast("নতুন পণ্য যোগ করার অনুমতি নেই", "#ef4444"); return; }
     const now = new Date().toISOString();
-    const newStockVal = parseInt(form.stock) || 0;
+    const newStockVal = parseFloat(form.stock) || 0;
     const prodFields = {
       ...form,
       price: parseFloat(form.price) || 0,
@@ -25936,18 +25666,18 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
 
         let workingBatches = (p.batches || [])
           .map((b, i) => {
-            const qty = parseInt(batchEdits[i] ?? b.qty) || 0;
+            const qty = parseFloat(batchEdits[i] ?? b.qty) || 0;
             if (b.costMismatchIgnored) return { ...b, qty };
             return { ...b, qty, costPrice: newCostPrice, sellPrice: newSellPrice };
           })
           .filter(b => b.qty > 0);
 
-        const validNewRows = newBatchRows.filter(r => r.qty && parseInt(r.qty) > 0 && r.expiryDate);
+        const validNewRows = newBatchRows.filter(r => r.qty && parseFloat(r.qty) > 0 && r.expiryDate);
         validNewRows.forEach(r => {
           const bno = calcNextBatch(editId, [{ ...p, batches: workingBatches }], purchaseOrders, now);
           workingBatches = [...workingBatches, {
             batchNo: bno,
-            qty: parseInt(r.qty),
+            qty: parseFloat(r.qty),
             costPrice: parseFloat(form.costPrice) || (p.costPrice || 0),
             sellPrice: parseFloat(form.price) || 0,
             expiryDate: r.expiryDate,
@@ -25979,8 +25709,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
         });
       }
       const finalStock =
-        (originalProduct?.batches || []).reduce((s, b, i) => s + (parseInt(batchEdits[i] ?? b.qty) || 0), 0)
-        + newBatchRows.filter(r => r.qty && parseInt(r.qty) > 0 && r.expiryDate).reduce((s, r) => s + (parseInt(r.qty) || 0), 0);
+        (originalProduct?.batches || []).reduce((s, b, i) => s + (parseFloat(batchEdits[i] ?? b.qty) || 0), 0)
+        + newBatchRows.filter(r => r.qty && parseFloat(r.qty) > 0 && r.expiryDate).reduce((s, r) => s + (parseFloat(r.qty) || 0), 0);
       if (finalStock !== oldStock) {
         auditLog?.("STOCK_ADJUST", {
           productId: editId, productName: form.name,
@@ -25995,12 +25725,12 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       const newId = uid();
       const unitCostVal = parseFloat(form.costPrice) || 0;
       // ── #৪ মাল্টি-ব্যাচ: প্রাথমিক স্টক-সারি + অতিরিক্ত (আলাদা এক্সপায়ারির) সারিগুলো মিলিয়ে batches[] তৈরি ──
-      const validExtra = (extraBatches || []).filter(r => r.qty && parseInt(r.qty) > 0 && r.expiryDate);
-      const extraQtyTotal = validExtra.reduce((s, r) => s + (parseInt(r.qty) || 0), 0);
+      const validExtra = (extraBatches || []).filter(r => r.qty && parseFloat(r.qty) > 0 && r.expiryDate);
+      const extraQtyTotal = validExtra.reduce((s, r) => s + (parseFloat(r.qty) || 0), 0);
       const totalStockVal = newStockVal + extraQtyTotal;
       const batchRows = [
         ...(newStockVal > 0 ? [{ qty: newStockVal, expiryDate: form.expiryDate || "" }] : []),
-        ...validExtra.map(r => ({ qty: parseInt(r.qty), expiryDate: r.expiryDate })),
+        ...validExtra.map(r => ({ qty: parseFloat(r.qty), expiryDate: r.expiryDate })),
       ];
       // brand-new পণ্য বলে B-YYMM-N প্রিফিক্স নিজেই বানাচ্ছি (calcNextBatch-এর মতোই), শুধু N ক্রমান্বয়ে বাড়ছে প্রতি সারিতে
       const byy = String(new Date(now).getFullYear()).slice(2);
@@ -27379,7 +27109,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             </div>
             <div>
               <label style={{ ...S.label, fontSize:11, marginBottom:3 }}>📦 প্রাথমিক স্টক *</label>
-              <input style={{ ...S.input, marginBottom:0, border: formErrors.stock ? "1.5px solid #ef4444" : S.input.border }} placeholder="" type="number" value={form.stock} onChange={e => { setForm({ ...form, stock: e.target.value }); if (e.target.value !== "" && parseInt(e.target.value) >= 0) setFormErrors(er=>({...er,stock:false})); }} inputMode="numeric" pattern="[0-9]*" />
+              <input style={{ ...S.input, marginBottom:0, border: formErrors.stock ? "1.5px solid #ef4444" : S.input.border }} placeholder="" type="number" value={form.stock} onChange={e => { setForm({ ...form, stock: e.target.value }); if (e.target.value !== "" && parseFloat(e.target.value) >= 0) setFormErrors(er=>({...er,stock:false})); }} inputMode="decimal" step="any" />
               {formErrors.stock && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ প্রাথমিক স্টক আবশ্যক</div>}
             </div>
             <div>
@@ -27405,8 +27135,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                মেয়াদবিহীন পণ্যে "আলাদা মেয়াদের ব্যাচ" ধারণাটাই প্রযোজ্য না। */}
           {!editId && !pfHidden.includes("addBatchButton") && (() => {
             const validRows = [
-              ...(form.stock && parseInt(form.stock) > 0 ? [{ qty: parseInt(form.stock), expiryDate: form.expiryDate }] : []),
-              ...extraBatches.filter(r => r.qty && parseInt(r.qty) > 0 && r.expiryDate).map(r => ({ qty: parseInt(r.qty), expiryDate: r.expiryDate })),
+              ...(form.stock && parseFloat(form.stock) > 0 ? [{ qty: parseFloat(form.stock), expiryDate: form.expiryDate }] : []),
+              ...extraBatches.filter(r => r.qty && parseFloat(r.qty) > 0 && r.expiryDate).map(r => ({ qty: parseFloat(r.qty), expiryDate: r.expiryDate })),
             ];
             // ── #৬ ডুপ্লিকেট-এক্সপায়ারি সতর্কতা — একই মেয়াদ একাধিকবার দেওয়া হলে (অ-বাধ্যতামূলক সতর্কতা) ──
             const expirySeen = {};
@@ -27418,7 +27148,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                   <div key={row.id} style={{ display:"grid", gridTemplateColumns:"1fr 2fr auto", gap:8, alignItems:"end", marginBottom:8, background:"#a78bfa0c", border:"1px solid #a78bfa33", borderRadius:10, padding:8 }}>
                     <div>
                       <label style={{ ...S.label, fontSize:10 }}>📦 পরিমাণ</label>
-                      <input style={{ ...S.input, marginBottom:0 }} type="number" inputMode="numeric" pattern="[0-9]*" placeholder=""
+                      <input style={{ ...S.input, marginBottom:0 }} type="number" inputMode="decimal" step="any" placeholder=""
                         value={row.qty} onChange={e => updateExtraBatch(row.id, { qty: e.target.value })} />
                     </div>
                     <div>
@@ -27477,7 +27207,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           </>)}
           {/* নতুন পণ্যে অটো ব্যাচ প্রিভিউ — শুধু পণ্যের জন্য */}
           {!editId && form.productType !== "service" && (() => {
-            const validExtraCount = extraBatches.filter(r => r.qty && parseInt(r.qty) > 0 && r.expiryDate).length;
+            const validExtraCount = extraBatches.filter(r => r.qty && parseFloat(r.qty) > 0 && r.expiryDate).length;
             const totalBatchCount = 1 + validExtraCount;
             const previewBatch = calcNextBatch(null, [], [], new Date().toISOString());
             return (
@@ -27666,12 +27396,12 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                               <div style={{ color:"#fde68a", fontSize:11, fontWeight:800, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>📦 {b.batchNo}</div>
                               {b.expiryDate && <div style={{ color:"#fbbf2499", fontSize:9, fontWeight:700 }}>📅 {b.expiryDate}</div>}
                             </div>
-                            <button type="button" onClick={() => setBatchEdits(be => ({ ...be, [i]: Math.max(0, (parseInt(be[i] ?? b.qty) || 0) - 1) }))}
+                            <button type="button" onClick={() => setBatchEdits(be => ({ ...be, [i]: Math.max(0, (parseFloat(be[i] ?? b.qty) || 0) - 1) }))}
                               style={{ width:28, height:28, flexShrink:0, borderRadius:8, border:"1px solid #ef444466", background:"linear-gradient(135deg,#ef444444,#ef444422)", color:"#fca5a5", fontSize:16, fontWeight:900, cursor:"pointer", fontFamily:"inherit" }}>−</button>
-                            <input type="number" inputMode="numeric" value={batchEdits[i] ?? b.qty}
-                              onChange={e => setBatchEdits(be => ({ ...be, [i]: e.target.value === "" ? "" : Math.max(0, parseInt(e.target.value) || 0) }))}
+                            <input type="number" inputMode="decimal" step="any" value={batchEdits[i] ?? b.qty}
+                              onChange={e => setBatchEdits(be => ({ ...be, [i]: e.target.value === "" ? "" : Math.max(0, parseFloat(e.target.value) || 0) }))}
                               style={{ width:44, flexShrink:0, textAlign:"center", fontSize:13, padding:"4px 2px", background:"rgba(0,0,0,0.3)", border:"1px solid #f59e0b55", borderRadius:7, color:"#fde68a", fontWeight:900, fontFamily:"inherit" }} />
-                            <button type="button" onClick={() => setBatchEdits(be => ({ ...be, [i]: (parseInt(be[i] ?? b.qty) || 0) + 1 }))}
+                            <button type="button" onClick={() => setBatchEdits(be => ({ ...be, [i]: (parseFloat(be[i] ?? b.qty) || 0) + 1 }))}
                               style={{ width:28, height:28, flexShrink:0, borderRadius:8, border:"1px solid #22c55e66", background:"linear-gradient(135deg,#22c55e44,#22c55e22)", color:"#86efac", fontSize:16, fontWeight:900, cursor:"pointer", fontFamily:"inherit" }}>+</button>
                           </div>
                         ))}
@@ -27686,16 +27416,16 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                       // মতোই একটার পর একটা অ্যাকিউমুলেট করে যাতে একই সাথে একাধিক রো যোগ করলে
                       // প্রতিটির নম্বর ঠিকঠাক ক্রমান্বয়ে (যেমন B-2607-2, B-2607-3...) দেখায়।
                       let previewBatches = (p.batches || [])
-                        .map((b, i) => ({ ...b, qty: parseInt(batchEdits[i] ?? b.qty) || 0 }))
+                        .map((b, i) => ({ ...b, qty: parseFloat(batchEdits[i] ?? b.qty) || 0 }))
                         .filter(b => b.qty > 0);
                       return newBatchRows.map(row => {
                         const bno = calcNextBatch(editId, [{ ...p, batches: previewBatches }], purchaseOrders, new Date().toISOString());
-                        previewBatches = [...previewBatches, { batchNo: bno, qty: parseInt(row.qty) || 0 }];
+                        previewBatches = [...previewBatches, { batchNo: bno, qty: parseFloat(row.qty) || 0 }];
                         return (
                           <div key={row.id} style={{ display:"grid", gridTemplateColumns:"0.8fr 1.4fr auto", gap:6, alignItems:"end", marginTop:6, background:"#22c55e14", border:"1px solid #22c55e44", borderRadius:9, padding:6 }}>
                             <div>
                               <label style={{ ...S.label, fontSize:9, color:"#86efac" }}>পরিমাণ</label>
-                              <input type="number" inputMode="numeric" value={row.qty} onChange={e => updateNewBatchRow(row.id, { qty:e.target.value })}
+                              <input type="number" inputMode="decimal" step="any" value={row.qty} onChange={e => updateNewBatchRow(row.id, { qty:e.target.value })}
                                 style={{ width:"100%", textAlign:"center", fontSize:12, padding:"6px 4px", background:"rgba(0,0,0,0.3)", border:"1px solid #22c55e55", borderRadius:7, color:"#e2e8f0", fontWeight:800, fontFamily:"inherit" }} />
                             </div>
                             <div>
@@ -27718,11 +27448,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
 
                     <div style={{ marginTop:6, textAlign:"center", color:"#fde68a", fontSize:11, fontWeight:800 }}>
                       মোট স্টক হবে: {
-                        (p.batches || []).reduce((s, b, i) => s + (parseInt(batchEdits[i] ?? b.qty) || 0), 0)
-                        + newBatchRows.filter(r => r.qty && parseInt(r.qty) > 0 && r.expiryDate).reduce((s, r) => s + (parseInt(r.qty) || 0), 0)
+                        (p.batches || []).reduce((s, b, i) => s + (parseFloat(batchEdits[i] ?? b.qty) || 0), 0)
+                        + newBatchRows.filter(r => r.qty && parseFloat(r.qty) > 0 && r.expiryDate).reduce((s, r) => s + (parseFloat(r.qty) || 0), 0)
                       }
                     </div>
-                    {newBatchRows.some(r => r.qty && parseInt(r.qty) > 0 && !r.expiryDate) && (
+                    {newBatchRows.some(r => r.qty && parseFloat(r.qty) > 0 && !r.expiryDate) && (
                       <div style={{ marginTop:4, textAlign:"center", color:"#ef4444", fontSize:10, fontWeight:800 }}>
                         ⚠️ উপরের নতুন ব্যাচের মেয়াদ এখনো অসম্পূর্ণ — এই স্টক এখনো মোটে যোগ হয়নি
                       </div>
@@ -27846,9 +27576,9 @@ function BatchSyncTool({ T, S, products = [], setProducts, invoices = [], setInv
         const price = it.price || 0;
         if (cost > 0 && price > 0 && cost > price) {
           out.push({
-            invId: inv.id, invNo: inv.invoiceNo || inv.id,
+            invId: inv.id, invNo: dispInvNo(inv),
             dateKey: inv.dateKey || (inv.createdAt || inv.at || "").slice(0, 10),
-            isVoid: inv.status === "void" || !!inv.voided,
+            isVoid: inv.status === "voided",
             productId: it.productId, productName: it.name, itemIndex,
             qty: it.qty || 1, oldCost: cost, price,
           });
@@ -28115,7 +27845,7 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
     [products, purchaseOrders, supplierPayments]
   );
   const suppliers = useMemo(() =>
-    Object.values(supplierDueMap).sort((a, b) => b.totalPurchased - a.totalPurchased),
+    uniqueSupplierRows(supplierDueMap).sort((a, b) => b.totalPurchased - a.totalPurchased),
     [supplierDueMap]
   );
   // ── Per-supplier পেমেন্ট সামারি (lastPaid/count — শুধু ইতিহাস তালিকায় দেখানোর জন্য) ──
@@ -28242,7 +27972,7 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
   // আলাদাভাবে যোগ করা হয় — তাই এখানে শুধু প্রকৃত/ম্যানুয়াল বাকিই যোগ হয়, কোনো
   // সাপ্লায়ারের ওভারপেমেন্ট অন্য সাপ্লায়ারের বাকিকে প্রভাবিত করতে পারে না।
   const totalPurchased = suppliers.reduce((s, sup) => s + sup.totalPurchased, 0);
-  const totalPaid = Object.values(supplierDueMap).reduce((s, sup) => s + sup.paid, 0);
+  const totalPaid = uniqueSupplierRows(supplierDueMap).reduce((s, sup) => s + sup.paid, 0);
   const totalDue = suppliers.reduce((s, sup) => s + (sup.due || 0), 0);
   // 🆕 আজকের পরিশোধ — আজ যত টাকা প্রকৃত পরিশোধ হয়েছে (ম্যানুয়াল বাকি-যোগ এর মধ্যে ধরা হয়নি)
   const todayPaidTotal = useMemo(() =>
@@ -28549,7 +28279,7 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
 // ══════════════════════════════════════════════════════════════════════════════
 
 const RH_MONTH_NAMES_BN = ["জানুয়ারি","ফেব্রুয়ারি","মার্চ","এপ্রিল","মে","জুন","জুলাই","আগস্ট","সেপ্টেম্বর","অক্টোবর","নভেম্বর","ডিসেম্বর"];
-const rhDayLabel   = (dk) => { const d = new Date(dk); if (isNaN(d.getTime())) return dk; return `${d.getDate()} ${RH_MONTH_NAMES_BN[d.getMonth()]}, ${d.getFullYear()}`; };
+const rhDayLabel   = (dk) => { const d = new Date(dk + "T00:00:00"); if (isNaN(d.getTime())) return dk; return `${d.getDate()} ${RH_MONTH_NAMES_BN[d.getMonth()]}, ${d.getFullYear()}`; };
 const rhMonthLabel = (mk) => { const [y, m] = (mk || "").split("-"); return m ? `${RH_MONTH_NAMES_BN[parseInt(m, 10) - 1]} ${y}` : mk; };
 
 function ReturnModule({ T, S, invoices, products, customers, returns, setReturns, setProducts, setCustomers, setStockMovements, addTxn, showToast, currentUser, shopName, setCashLogs, auditLog, voidInvoice, processReturn }) {
@@ -28897,7 +28627,7 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
                       style={{ background: T.bg, border:`1px solid ${T.border}`, borderRadius:12, padding:"11px 13px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:10, cursor:"pointer" }}>
                       <div style={{ minWidth:0 }}>
                         <div style={{ color:T.text, fontWeight:800, fontSize:13, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{cust?.name || inv.customerName || "ওয়াক-ইন"}</div>
-                        <div style={{ color:T.sub, fontSize:10.5, marginTop:2 }}>{inv.date || inv.dateKey || "—"} · {inv.invoiceNo || inv.id}{inv.status==="voided" ? " · ❌ বাতিল" : ""}{hasReturn ? " · 🔄 ফেরত হয়েছে" : ""}</div>
+                        <div style={{ color:T.sub, fontSize:10.5, marginTop:2 }}>{inv.date || inv.dateKey || "—"} · {dispInvNo(inv)}{inv.status==="voided" ? " · ❌ বাতিল" : ""}{hasReturn ? " · 🔄 ফেরত হয়েছে" : ""}</div>
                       </div>
                       <div style={{ textAlign:"right", flexShrink:0 }}>
                         <div style={{ color:T.text, fontWeight:900, fontSize:13 }}>৳{fmt(inv.total || 0)}</div>
@@ -29006,7 +28736,7 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
                           style={{ background:T.bg, border:"1px solid #ef444433", borderRadius:12, padding:"11px 13px", display:"flex", justifyContent:"space-between", alignItems:"center", gap:8, cursor:"pointer" }}>
                           <div style={{ minWidth:0, flex:1 }}>
                             <div style={{ color:T.text, fontWeight:800, fontSize:13, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{cust?.name || inv.customerName || "ওয়াক-ইন"}</div>
-                            <div style={{ color:T.sub, fontSize:10.5, marginTop:2 }}>{inv.date || inv.dateKey || "—"} · {inv.invoiceNo || inv.id}</div>
+                            <div style={{ color:T.sub, fontSize:10.5, marginTop:2 }}>{inv.date || inv.dateKey || "—"} · {dispInvNo(inv)}</div>
                             {inv.voidReason && <div style={{ color:"#f59e0b", fontSize:10.5, marginTop:2 }}>📝 {inv.voidReason}</div>}
                           </div>
                           <div style={{ color:"#ef4444", fontWeight:900, fontSize:13, flexShrink:0 }}>৳{fmt(inv.total || 0)}</div>
@@ -29144,7 +28874,7 @@ function ExpenseTracker({ T, S, expenses = [], setExpenses, showToast, currentUs
   const monthKeyNow = _monthKeyOf(new Date());
 
   const MONTH_NAMES_BN = ["জানুয়ারি","ফেব্রুয়ারি","মার্চ","এপ্রিল","মে","জুন","জুলাই","আগস্ট","সেপ্টেম্বর","অক্টোবর","নভেম্বর","ডিসেম্বর"];
-  const dayLabel      = (dk) => { const d = new Date(dk); if (isNaN(d.getTime())) return dk; return `${d.getDate()} ${MONTH_NAMES_BN[d.getMonth()]}, ${d.getFullYear()}`; };
+  const dayLabel      = (dk) => { const d = new Date(dk + "T00:00:00"); if (isNaN(d.getTime())) return dk; return `${d.getDate()} ${MONTH_NAMES_BN[d.getMonth()]}, ${d.getFullYear()}`; };
   const monthLabelBn  = (mk) => { const [y, m] = (mk || "").split("-"); return m ? `${MONTH_NAMES_BN[parseInt(m, 10) - 1]} ${y}` : mk; };
 
   // ── আজ ও এই মাসের সারসংক্ষেপ — সবসময় প্রকৃত আজ/চলতি মাস দেখাবে, নেভিগেটর নির্বিশেষে ──
@@ -29712,11 +29442,22 @@ function buildDailySummaryData({ invoices = [], txns = [], customers = [], produ
   const todayReturnsRefund = todayReturns.reduce((s, r) => s + (r.refundAmount || 0), 0);
   const todayReturnsProfitImpact = todayReturns.reduce((s, r) => s + ((r.refundAmount || 0) - (r.costPrice || 0) * (r.qty || 0)), 0);
   const revenue       = todayInvList.reduce((s, i) => s + (i.total || 0), 0) - todayReturnsRefund;
-  const cashSale      = todayInvList.reduce((s, i) => {
+  const cashSaleRaw   = todayInvList.reduce((s, i) => {
     if (i.payType === "cash") return s + (i.total || 0);
     if (i.payType === "partial") return s + Math.min(i.paidAmount || 0, i.total || 0);
     return s;
   }, 0);
+  // 🔴 ফিক্স (৩১ জুলাই ২০২৬ — "নগদ বিক্রয়" mismatch, Daily Summary vs Home Dashboard):
+  // আগে এই cashSale প্রোডাক্ট-রিটার্নের ক্যাশ-রিফান্ড বাদ দিত না, অথচ Home
+  // Dashboard-এর todayCashSale (todayReturnsCashRefund দিয়ে) বাদ দিয়েই হিসাব
+  // করত — ফলে আজ কোনো নগদ-রিফান্ড হলে "দৈনিক সারসংক্ষেপ"/নোটিফিকেশনে "নগদ
+  // বিক্রয়" Home Dashboard-এর চেয়ে বেশি দেখাত। এখন শুধু cash-mode রিটার্নের
+  // রিফান্ড এখানেও বাদ দেওয়া হচ্ছে (Home Dashboard-এর সাথে সামঞ্জস্যপূর্ণ)।
+  // নিচের calcCashDrawer()-এ অপরিবর্তিত cashSaleRaw পাঠানো হচ্ছে, কারণ
+  // calcCashDrawer() নিজেই returnRefundToday আলাদা প্যারামিটারে বিয়োগ করে —
+  // এখানে netted cashSale পাঠালে সেই একই রিফান্ড দুইবার বিয়োগ হয়ে যেত।
+  const todayReturnsCashRefund = todayReturns.filter(r => r.refundMode === "cash").reduce((s, r) => s + (r.refundAmount || 0), 0);
+  const cashSale      = cashSaleRaw - todayReturnsCashRefund;
   const _voidedIds2   = new Set((invoices||[]).filter(i=>i.status==="voided").map(i=>i.id));
   const bakiToday     = (txns || []).filter(t => inRange(t.dateKey) && t.type === "baki" && t.invoiceId && !_voidedIds2.has(t.invoiceId)).reduce((s, t) => s + t.amount, 0);
   const jomaToday     = (txns || []).filter(t => inRange(t.dateKey) && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((s, t) => s + t.amount, 0);
@@ -29751,7 +29492,7 @@ function buildDailySummaryData({ invoices = [], txns = [], customers = [], produ
   // calcCashDrawer() কোড টেস্ট করে, আলাদা "reference-copy" না। calcCashDrawer()
   // এখন returnRefund/returnReversal-ও ঐচ্ছিক প্যারামিটার হিসেবে নেয় (দেখুন
   // logic.js-এর ফিক্স)।
-  const currentCashDrawer = calcCashDrawer(openingCash, cashSale, jomaToday, cashOutToday, returnRefundToday, returnReversalToday);
+  const currentCashDrawer = calcCashDrawer(openingCash, cashSaleRaw, jomaToday, cashOutToday, returnRefundToday, returnReversalToday);
   // 🆕 (৩০ জুলাই ২০২৬) returnRefundToday/returnReversalToday এখন return object-এও
   // আছে — আগে শুধু currentCashDrawer হিসাবের ভেতরে ব্যবহৃত হতো, বাইরে থেকে
   // অ্যাক্সেসযোগ্য ছিল না। "আজকের ক্যাশ ড্রয়ার" ব্রেকডাউন UI (যোগ/বিয়োগ কলাম)
@@ -32227,17 +31968,27 @@ function Settings_({ T, S, shopName,
       const prodMap = new Map((products || []).map(p => [p.id, p]));
       const computeFor = (matchKey) => {
         const invList = (invoices || []).filter(i => i.dateKey && matchKey(i.dateKey) && !i.isSelfUse && i.status !== "voided");
-        const totalSale = invList.reduce((s, i) => s + (i.total || 0), 0);
+        // 🔴 ফিক্স (৩১ জুলাই ২০২৬ — admin.html vs ইন-অ্যাপ ড্যাশবোর্ড মিসম্যাচ):
+        // আগে এখানে returns[] বাদই যেত না, ফলে রিটার্ন থাকা দোকানে admin panel-এর
+        // totalSale/totalCash দোকানের নিজের অ্যাপের ড্যাশবোর্ড থেকে বেশি দেখাত —
+        // todayTotal/todayCashSale/todayProfit-এর একই returns-netting এখানেও।
+        const rangeReturns = (returns || []).filter(r => r.dateKey && matchKey(r.dateKey) && !voidedIds.has(r.invoiceId));
+        const rangeReturnsRefund = rangeReturns.reduce((s, r) => s + (r.refundAmount || 0), 0);
+        const rangeReturnsCashRefund = rangeReturns.filter(r => r.refundMode === "cash").reduce((s, r) => s + (r.refundAmount || 0), 0);
+        const rangeReturnsProfitImpact = rangeReturns.reduce((s, r) => s + ((r.refundAmount || 0) - (r.costPrice || 0) * (r.qty || 0)), 0);
+        const totalSale = invList.reduce((s, i) => s + (i.total || 0), 0) - rangeReturnsRefund;
         const totalCash = invList.reduce((s, i) => {
           if (i.payType === "cash") return s + (i.total || 0);
           if (i.payType === "partial") return s + Math.min(i.paidAmount || 0, i.total || 0);
           return s;
-        }, 0);
+        }, 0) - rangeReturnsCashRefund;
         const totalBaki = (txns || []).filter(t => t.dateKey && matchKey(t.dateKey) && t.type === "baki" && t.invoiceId && !voidedIds.has(t.invoiceId)).reduce((s, t) => s + (t.amount || 0), 0);
-        const totalProfit = invList.reduce((s, inv) => {
-          const p = calcInvoiceProfit(inv, prodMap);
-          return s + (p > 0 ? p : 0);
-        }, 0);
+        // 🔴 ফিক্স: আগে শুধু পজিটিভ-লাভ ইনভয়েস যোগ হতো (p > 0 ? p : 0) — অর্থাৎ
+        // লস-ইনভয়েসগুলো বাদ পড়ে যেত, যেটা বাকি সব জায়গায় ব্যবহৃত calcProfitTotal()
+        // (নেট লাভ-লস) থেকে সম্পূর্ণ ভিন্ন একটা সংজ্ঞা ছিল। এখন একই calcProfitTotal()
+        // ব্যবহার করে (তারপর returns-এর profit-impact বাদ দিয়ে), যাতে "totalProfit"
+        // মানেটা পুরো অ্যাপে সবসময় একই জিনিস বোঝায়।
+        const totalProfit = calcProfitTotal(invList, prodMap) - rangeReturnsProfitImpact;
         return { totalSale, totalCash, totalBaki, totalProfit };
       };
       const dayKey = todayEn();

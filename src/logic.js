@@ -127,16 +127,67 @@ export function getSellableStock(product) {
   return product.stock || 0;
 }
 
+// ─── normalizeSupplierKey — সাপ্লায়ার নাম normalize করে একটা "মূল নাম" (merge-key)
+// বের করা (Ltd./Limited/Pharmaceuticals/পাংচুয়েশন/স্পেস-ভিন্নতা উপেক্ষা করে) ────
+// আগে শুধু App.jsx-এ SupplierPicker-এর সাজেশনে ব্যবহার হতো; এখন এখানেও এক্সপোর্ট
+// করা হলো যাতে computeSupplierDueMap ভিন্ন বানানের একই কোম্পানিকে (যেমন
+// "Bashundhara"/"Bashundhara "/"Boshundhora") একই সারিতে মার্জ করতে পারে।
+// 🆕 ম্যানুয়াল টাইপো-অ্যালিয়াস টেবিল — normalizeSupplierKey শুধু Ltd./পাংচুয়েশন/
+// স্পেস-জাতীয় "নিয়মমাফিক" ভিন্নতা ধরতে পারে, কিন্তু "Boshundhora" vs
+// "Bashundhara" বা "Jolly camemical" vs "Jolly chemicals"-এর মতো প্রকৃত
+// বানান-ভুল আলাদাই থেকে যায় (এগুলো নিয়ম দিয়ে ধরা সম্ভব না)। এই দোকানের
+// ব্যাকআপে চিহ্নিত এমন জোড়াগুলো এখানে হাতে ম্যাপ করা হলো, যাতে রিপোর্টে
+// এরাও একত্র দেখায়। ভবিষ্যতে নতুন ভুল বানান দেখা দিলে এখানে যোগ করে দিলেই হবে।
+const SUPPLIER_TYPO_ALIASES = {
+  "boshundhora": "bashundhara",
+  "jolly camemical": "jolly chemicals",
+  "get well": "getwell", // "Get Well Ltd." → normalizeSupplierKey suffix-strip করে "get well", কিন্তু "Getwell Ltd"/"Getwell limited" হয় "getwell" (স্পেসবিহীন)
+};
+export function normalizeSupplierKey(name) {
+  const k = String(name || "")
+    .toLowerCase()
+    .replace(/[.,()]/g, "")
+    .replace(/\b(ltd|limited|pharmaceuticals?|pharma|plc|inc|company|corporation|corp|group|bd|bangladesh)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return SUPPLIER_TYPO_ALIASES[k] || k;
+}
+
 // ─── computeSupplierDueMap — সাপ্লায়ার-ভিত্তিক বাকি হিসাব ────────────────────
 // due শুধুমাত্র ম্যানুয়াল "বাকি যোগ" এন্ট্রি (type:"due") ও পেমেন্ট (type:"payment")
 // দিয়ে নির্ধারিত হয় — ক্রয় অর্ডারের মোট মূল্যের (totalPurchased) সাথে due-এর
 // কোনো সরাসরি সম্পর্ক নেই (আগে একটা বাগ ছিল যেখানে শুধু ক্রয় অর্ডার থাকলেই
 // বাকি দেখাতো, ম্যানুয়ালি যোগ না করলেও — এখন ফিক্সড)।
+// 🔴 ফিক্স (৩১ জুলাই ২০২৬ — সাপ্লায়ার নাম-ভ্যারিয়েন্ট মার্জ): আগে এই ফাংশন raw
+// নাম (trim করা কিন্তু normalize না-করা) দিয়ে সরাসরি map key বানাত — ফলে একই
+// কোম্পানির সামান্য ভিন্ন বানান/স্পেস ("Bashundhara" vs "Bashundhara " vs
+// "Boshundhora") আলাদা সারি হিসেবে গণনা হতো এবং "কোন সাপ্লায়ার থেকে কত
+// কিনেছি" রিপোর্ট বিভক্ত/ভুল দেখাত (টাকার হিসাবে গরমিল না, শুধু ব্রেকডাউন ভুল)।
+// এখন normalizeSupplierKey দিয়ে সব ভ্যারিয়েন্ট একটাই merged সারিতে যোগ হয়
+// (ডিসপ্লে নাম হিসেবে সবচেয়ে লম্বা/সম্পূর্ণ ভ্যারিয়েন্টটা বাছাই করা হয়) —
+// কিন্তু ফলাফলের map-এ প্রতিটা raw নামও (backward-compat) একই merged সারি
+// পয়েন্ট করে, তাই পুরনো কোড/ডেটা raw নাম দিয়ে লুকআপ করলেও ঠিক ফলাফল পাবে।
+// list বানানোর সময় অবশ্যই uniqueSupplierRows() দিয়ে ডিডুপ্লিকেট করতে হবে,
+// নইলে Object.values(map) একই merged সারি একাধিকবার (প্রতিটা raw-নাম key-এ) দেখাবে।
 export function computeSupplierDueMap(products = [], purchaseOrders = [], supplierPayments = []) {
-  const map = {};
-  const ensure = (name) => {
-    if (!map[name]) map[name] = { name, productCount: 0, totalStock: 0, totalPurchased: 0, paid: 0, due: 0 };
-    return map[name];
+  const rawNames = new Set();
+  (products || []).forEach(p => { const n = (p.company || p.supplier || "").trim(); if (n) rawNames.add(n); });
+  (purchaseOrders || []).forEach(po => { const n = (po.supplier || po.company || "").trim(); if (n) rawNames.add(n); });
+  (supplierPayments || []).forEach(p => { const n = (p.supplierName || "").trim(); if (n) rawNames.add(n); });
+
+  // ধাপ ১: normalized key অনুযায়ী প্রতিটা গ্রুপের জন্য canonical (সবচেয়ে লম্বা) ডিসপ্লে-নাম বাছাই
+  const keyToCanonical = {};
+  rawNames.forEach(n => {
+    const k = normalizeSupplierKey(n) || n.toLowerCase();
+    if (!keyToCanonical[k] || n.length > keyToCanonical[k].length) keyToCanonical[k] = n;
+  });
+  const canonicalOf = (raw) => keyToCanonical[normalizeSupplierKey(raw) || raw.toLowerCase()] || raw;
+
+  const rowsByCanonical = {};
+  const ensure = (rawName) => {
+    const name = canonicalOf(rawName);
+    if (!rowsByCanonical[name]) rowsByCanonical[name] = { name, productCount: 0, totalStock: 0, totalPurchased: 0, paid: 0, due: 0 };
+    return rowsByCanonical[name];
   };
   (products || []).forEach(p => {
     const name = (p.company || p.supplier || "").trim();
@@ -159,8 +210,28 @@ export function computeSupplierDueMap(products = [], purchaseOrders = [], suppli
     const signed = p.type === "due" ? -(p.amount || 0) : (p.amount || 0);
     row.paid += signed;
   });
-  Object.values(map).forEach(row => { row.due = Math.max(0, -row.paid); });
-  return map;
+  Object.values(rowsByCanonical).forEach(row => { row.due = Math.max(0, -row.paid); });
+
+  // ধাপ ২: backward-compat — প্রতিটা raw নাম-ভ্যারিয়েন্টেও একই merged row রেফারেন্স করা,
+  // যাতে পুরনো কল-সাইট রাগ নামে map[name] লুকআপ করলেও merged ফলাফল পায়।
+  const finalMap = {};
+  rawNames.forEach(raw => { finalMap[raw] = rowsByCanonical[canonicalOf(raw)]; });
+  Object.values(rowsByCanonical).forEach(row => { finalMap[row.name] = row; });
+  return finalMap;
+}
+
+// ─── uniqueSupplierRows — computeSupplierDueMap-এর ফলাফল থেকে ডুপ্লিকেট-মুক্ত
+// (একটা কোম্পানি একবারই) লিস্ট বের করা — object-reference দিয়ে ডিডুপ্লিকেট
+// করা হয়, কারণ একই merged সারি একাধিক raw-নাম key-এ শেয়ার হয়ে থাকতে পারে।
+export function uniqueSupplierRows(supplierDueMap) {
+  const seen = new Set();
+  const out = [];
+  Object.values(supplierDueMap || {}).forEach(row => {
+    if (!row || seen.has(row)) return;
+    seen.add(row);
+    out.push(row);
+  });
+  return out;
 }
 
 // ─── Shared Profit Utilities ──────────────────────────────────────────────────
@@ -269,24 +340,63 @@ export function getReturnedAmountForInvoice(returns, invoiceId, mode = null) {
   }, 0);
 }
 
+// ─── লাইন-ভিত্তিক ডিসকাউন্ট-সমন্বিত রেভিনিউ — single source of truth ──────────
+/**
+ * 🔴 ফিক্স (৩১ জুলাই ২০২৬ — "ব্লেন্ডেড ডিসকাউন্ট-রেশিও" রুট-কজ):
+ * আগে ৫টা আলাদা জায়গায় (calcReturnRefundAmount, calcProfitByProduct,
+ * calcProfitByProductWithInvoices, productSales/forecastData, P&L
+ * topProducts) একটা মাত্র uniform discountRatio (= ইনভয়েসের মোট
+ * discount-adjusted-revenue ÷ মোট subtotal) হিসাব করে সেটা সব লাইনে
+ * সমানভাবে বসানো হতো। ফলে কোনো একটা লাইনের নিজস্ব itemDiscount (যেমন একটা
+ * পণ্যে ৫০% ছাড়) অন্য (সম্পূর্ণ ছাড়হীন) লাইনের ঘাড়ে গিয়ে পড়ত — সেই লাইন
+ * ভুলভাবে "লস" দেখাত, আর রিটার্নে ভুল টাকা রিফান্ড হতো।
+ *
+ * সঠিক নিয়ম: প্রতিটা লাইনের নিজস্ব itemDiscount শুধু সেই লাইনেই কাটা হয়,
+ * তারপর ইনভয়েস-লেভেল সাধারণ discount (item-discount বাদ দেওয়ার পরের
+ * নেট-সাবটোটালের উপর) সব লাইনে revenue-অনুপাতে ভাগ হয়।
+ *
+ * @param {{price?:number, qty?:number, itemDiscount?:number}} item - যে লাইনের রেভিনিউ বের করতে হবে
+ * @param {Array<{price?:number, qty?:number, itemDiscount?:number}>} items - পুরো ইনভয়েসের সব লাইন (item নিজেও এর মধ্যে থাকা উচিত)
+ * @param {number} invDiscount - ইনভয়েস-লেভেল সাধারণ ছাড় (item-discount বাদে, শুধু inv.discount)
+ * @returns {number} - এই লাইনের পূর্ণ qty-এর জন্য discount-adjusted রেভিনিউ
+ */
+export function calcLineDiscountedRevenue(item, items, invDiscount) {
+  const allItems = Array.isArray(items) ? items : [];
+  const lineGross = (item?.price || 0) * (item?.qty || 0);
+  const lineItemDisc = Math.min(Math.max(item?.itemDiscount || 0, 0), lineGross);
+  const lineNet = lineGross - lineItemDisc;
+
+  const netSubtotal = allItems.reduce((s, it) => {
+    const g = (it?.price || 0) * (it?.qty || 0);
+    const d = Math.min(Math.max(it?.itemDiscount || 0, 0), g);
+    return s + (g - d);
+  }, 0);
+
+  const safeDiscount = Math.min(Math.max(invDiscount || 0, 0), netSubtotal);
+  const ratio = netSubtotal > 0 ? (netSubtotal - safeDiscount) / netSubtotal : 1;
+  return lineNet * ratio;
+}
+
 // ─── রিটার্ন রিফান্ড অ্যামাউন্ট — discount-adjusted ────────────────────────────
 /**
  * processReturn()-এ একটা লাইন-আইটেমের qty ইউনিট ফেরত নেওয়ার সময় প্রকৃত রিফান্ড
  * অ্যামাউন্ট বের করে — শুধু item.price × qty ধরলে ইনভয়েসে দেওয়া ডিসকাউন্ট
- * (discount + itemDiscount) উপেক্ষিত থেকে যায় আর গ্রাহক আসল বিক্রয়মূল্যের চেয়ে
- * বেশি টাকা ফেরত পেয়ে যান। calcInvoiceProfit()-এর discountRatio-এর ঠিক একই
- * সূত্র পুনর্ব্যবহার করা হচ্ছে যাতে দুই জায়গায় হিসাব সবসময় সামঞ্জস্যপূর্ণ থাকে।
+ * (itemDiscount + discount) উপেক্ষিত থেকে যায় আর গ্রাহক আসল বিক্রয়মূল্যের চেয়ে
+ * বেশি/কম টাকা ফেরত পেয়ে যান। calcLineDiscountedRevenue() (single source of
+ * truth) দিয়ে আগে এই নির্দিষ্ট লাইনের নিজস্ব discount-adjusted মূল্য বের করে,
+ * তারপর সেখান থেকে প্রতি-ইউনিট দাম বের করে qty দিয়ে গুণ করা হয় — এভাবে অন্য
+ * লাইনের ডিসকাউন্ট আর এই লাইনের রিফান্ডে মিশে যায় না।
  * @param {{items?:Array,discount?:number,itemDiscount?:number}} inv
- * @param {{price?:number}} item - যে লাইন-আইটেম থেকে রিটার্ন হচ্ছে
+ * @param {{price?:number,qty?:number,itemDiscount?:number}} item - যে লাইন-আইটেম থেকে রিটার্ন হচ্ছে (inv.items-এর ঠিক সেই লাইন)
  * @param {number} qty - কত ইউনিট ফেরত নেওয়া হচ্ছে
  * @returns {number}
  */
 export function calcReturnRefundAmount(inv, item, qty) {
   const items = (inv && inv.items) || [];
-  const subtotal = items.reduce((s, it) => s + (it.price || 0) * (it.qty || 1), 0);
-  const discount = ((inv && inv.discount) || 0) + ((inv && inv.itemDiscount) || 0);
-  const discountRatio = subtotal > 0 ? (subtotal - discount) / subtotal : 1;
-  return (item?.price || 0) * (qty || 0) * discountRatio;
+  const lineQty = item?.qty || 0;
+  const lineTotal = calcLineDiscountedRevenue(item, items, (inv && inv.discount) || 0);
+  const perUnit = lineQty > 0 ? lineTotal / lineQty : (item?.price || 0);
+  return perUnit * (qty || 0);
 }
 
 // ─── ক্যাশ ড্রয়ার সূত্র — buildDailySummaryData() সরাসরি এই ফাংশন কল করে ──────
