@@ -1,1 +1,18 @@
-
+{
+  "name": "capacitor-backup-service",
+  "version": "1.0.0",
+  "description": "SBM-এর জন্য নেটিভ Foreground keep-alive service + battery-optimization-exemption হেল্পার — অটো-ব্যাকআপ যেন MIUI/Android কর্তৃক প্রসেস কিল হয়ে বন্ধ না হয়ে যায়। কোনো JS wrapper নেই ইচ্ছাকৃতভাবে — App.jsx থেকে সরাসরি window.Capacitor.Plugins.BackupService দিয়ে কল করা হয় (এই কোডবেসের অন্যান্য কাস্টম প্লাগইনের মতোই, দেখুন BluetoothSerial ব্যবহারের প্যাটার্ন)।",
+  "main": "index.js",
+  "files": [
+    "android",
+    "index.js"
+  ],
+  "capacitor": {
+    "android": {
+      "src": "android"
+    }
+  },
+  "peerDependencies": {
+    "@capacitor/core": "^6.0.0"
+  }
+}
