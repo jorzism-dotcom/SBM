@@ -12518,7 +12518,24 @@ function SmartBusinessMgmt() {
   // Drive token না থাকলে runDriveBackup নিজেই ভেতরে silent skip করে
   // (নিচে দেখুন), local backup সবসময় স্বাধীনভাবে চলবে।
   useEffect(() => {
-    if (!loaded) return;
+    // 🔴 ফিক্স (১ আগস্ট ২০২৬ — ভিউয়ার মোডে মাঝে মাঝে হঠাৎ শূন্য ডেটা): আগে এখানে
+    // শুধু `loaded` (wave-1/CRITICAL_KEYS শেষ) চেক হতো। কিন্তু cashLogs/
+    // stockMovements/expenses/returns/suppliers/purchaseOrders/auditLogs/
+    // quotations/supplierPayments — এই কালেকশনগুলো wave-2/DEFERRED_KEYS-এ
+    // আছে, যেটা `loaded=true` হওয়ার পরে setTimeout(0)-এ আলাদাভাবে লোড হয়
+    // (দেখুন উপরের boot effect-এর কমেন্ট)। প্রথম auto-backup ৩০ সেকেন্ড পরে
+    // চলে (firstRun), যা সাধারণত wave-2 শেষ হওয়ার জন্য যথেষ্ট — কিন্তু কম-দামি/
+    // ধীরগতির ফোনে (৫০০+ দোকানের অনেকগুলোই) বড় IndexedDB read wave-2-কে দেরি
+    // করিয়ে দিতে পারে, বিশেষ করে app প্রায়ই Android কর্তৃক kill/restart হলে
+    // (প্রতিবার cold-boot-এ race আবার ঘটার সুযোগ পায়)। এই race জিতলে
+    // buildBackupData() আংশিক-খালি cashLogs/stockMovements ইত্যাদি দিয়ে
+    // Drive-এ backup আপলোড করে ফেলত — শপে আসল ডেটা অক্ষত থাকলেও, Viewer Mode
+    // (যেটা শুধু Drive backup থেকেই পড়ে) হঠাৎ শূন্য/আংশিক দেখাত, পরের সফল
+    // (সম্পূর্ণ) backup সাইকেলে আবার ঠিক হয়ে যেত — ঠিক যে "মাঝে মাঝে হঠাৎ শূন্য"
+    // প্যাটার্ন রিপোর্ট হয়েছে। এখন `settingsLoaded` (wave-2 শেষ হলে true)-ও
+    // অতিরিক্ত গার্ড হিসেবে চেক করা হয়, যাতে backup timer/tick কখনোই আংশিক
+    // ডেটা নিয়ে শুরু না হয়।
+    if (!loaded || !settingsLoaded) return;
     // 🔴 ফিক্স (১ আগস্ট ২০২৬ — Drive ব্যাকআপ ইন্টারভাল ৩০→২০ মিনিট): হেডারের
     // এক-ক্লিক বাটনের অটো-cadence ২০ মিনিটে চাওয়া হয়েছে। পুরনো ইনস্টলে
     // hg_gd_interval আগের ডিফল্ট "30" হিসেবে explicit-ly সেভ থাকতে পারে (কখনো
@@ -12874,6 +12891,16 @@ function SmartBusinessMgmt() {
     document.addEventListener("visibilitychange", rescheduleExactAlarm);
     window.addEventListener("focus", rescheduleExactAlarm);
 
+    // 🔴 ফিক্স (১ আগস্ট ২০২৬ — "ব্যাটারি নোটিফিকেশন আসছে, exact-alarm-এরটা
+    // আসছে না"): আগে এই দুটো permission request একটাই async চেইনে পরপর
+    // (sequential await) চাওয়া হতো। প্রথমটা (battery exemption) ফায়ার হওয়া
+    // মাত্র Android app থেকে বের করে সরাসরি Settings স্ক্রিনে নিয়ে যায় — app
+    // background-এ চলে যাওয়ায় WebView-এর এই চলমান JS execution (এই একই async
+    // ফাংশন) সেখানেই থেমে যেত, ফলে দ্বিতীয় ধাপ (exact-alarm request) কখনো
+    // চলার সুযোগই পেত না, পুরো বুট-সাইকেলের জন্য হারিয়ে যেত। এখন দুটোকে
+    // সম্পূর্ণ স্বাধীন/সমান্তরাল IIFE-তে ভাগ করা হলো, একটা আরেকটার completion-এর
+    // অপেক্ষায় নেই — প্রথমটা Settings-এ নিয়ে গেলেও, দ্বিতীয়টার request ততক্ষণে
+    // ইতিমধ্যে ফায়ার হয়ে গেছে।
     (async () => {
       try {
         // battery exemption — প্রতি বুটে জিজ্ঞাসা না করে, সর্বোচ্চ ৩ দিনে একবার
@@ -12887,9 +12914,14 @@ function SmartBusinessMgmt() {
           }
         }
       } catch {}
+    })();
+    (async () => {
       try {
         // 🆕 exact-alarm অনুমতি — Android 12+ (S) হলেই প্রযোজ্য, নিচেরটা নিজেই
         // পুরনো Android-এ can:true রিটার্ন করে (কিছুই করার দরকার নেই)।
+        // ইচ্ছাকৃতভাবে উপরের battery-request IIFE-এর সাথে একই চেইনে নেই (দেখুন
+        // উপরের কমেন্ট) — আলাদা IIFE হওয়ায় উপরেরটা Settings-এ নেভিগেট করলেও
+        // এটা independently চলে।
         const res = await BackupSvc.canScheduleExactAlarms();
         if (!res?.can) {
           const lastAsked = parseInt(localStorage.getItem("sbm_exact_alarm_asked_at") || "0", 10) || 0;
@@ -12909,7 +12941,7 @@ function SmartBusinessMgmt() {
       try { BackupSvc.cancelExactBackupAlarm(); } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded]);
+  }, [loaded, settingsLoaded]);
 
   // ── 🆕 ব্যাকআপ-দেরি ওয়ার্নিং — Drive ব্যাকআপ নিজের ঠিক করা ইন্টারভালের চেয়ে
   // অনেক বেশি দেরি হয়ে গেলে (কমপক্ষে ২ ঘণ্টা, বা ইউজারের ইন্টারভালের ৩ গুণ —
