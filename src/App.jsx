@@ -12836,6 +12836,44 @@ function SmartBusinessMgmt() {
     try { BackupSvc.startForegroundKeepAlive(); } catch {}
     try { BackupSvc.scheduleExactBackupAlarm(); } catch {}
 
+    // 🆕 (২ আগস্ট ২০২৬) তৃতীয় লেয়ার — WorkManager সেফটি-নেট, AlarmManager-এর
+    // পাশাপাশি স্বাধীনভাবে চলে (exact-alarm permission ছাড়াই কাজ করে, reboot-
+    // এর পরও নিজে থেকে টিকে থাকে)। enqueueUniquePeriodicWork + KEEP policy-র
+    // কারণে বারবার কল করলেও ডুপ্লিকেট schedule হয় না, তাই নিশ্চিন্তে প্রতি
+    // boot-এ কল করা হয়। পাশাপাশি "মিসড" কাউন্ট চেক করে — যদি WorkManager অনেকবার
+    // চললেও WebView জীবিত না পায় (প্রসেস বারবার kill হচ্ছে), ইউজারকে একটা
+    // নরম সতর্কতা দেখানো হয় যাতে তিনি ব্যাটারি সেটিংস চেক করতে পারেন।
+    try { BackupSvc.schedulePeriodicSafetyNetWorker(); } catch {}
+    (async () => {
+      try {
+        const res = await BackupSvc.getMissedSafetyNetCount();
+        if ((res?.missed || 0) >= 5) {
+          showToast("🔋 ব্যাকআপ বারবার মিস হচ্ছে — ব্যাটারি অপ্টিমাইজেশন থেকে অ্যাপ বাদ দিন", "#f59e0b");
+        }
+      } catch {}
+    })();
+
+    // 🔴 ফিক্স (২ আগস্ট ২০২৬): আগে scheduleExactBackupAlarm() শুধু app বুট
+    // হওয়ার মুহূর্তে (এই effect-এর প্রথম রান, [loaded] বদলালে) একবারই কল
+    // হতো। রিয়েল-ওয়ার্ল্ড সিকোয়েন্স: app বুট → exact-alarm permission তখনো
+    // OFF → native কোড SecurityException ধরে inexact fallback (AlarmManager.set())
+    // ব্যবহার করে (ইচ্ছাকৃত সেফটি-নেট) → ইউজার পরে Settings থেকে ফিরে
+    // permission ON করলেন — কিন্তু app-এর কোনো কোড ছিল না যেটা তখন আবার
+    // scheduleExactBackupAlarm() কল করে সেই আগের inexact অ্যালার্মটাকে exact-এ
+    // upgrade করত, তাই সিস্টেম সেই অনির্দিষ্ট-সময়ের inexact অ্যালার্মের
+    // অপেক্ষাতেই বসে থাকত। এখন app যতবারই foreground-এ ফেরে (Settings screen
+    // থেকে ফিরে আসাসহ — visibilitychange/focus), scheduleExactBackupAlarm()
+    // আবার কল হয়। এটা native পাশে idempotent (scheduleNext শুধু আগের পেন্ডিং
+    // অ্যালার্ম replace করে, বাড়তি ব্যাকআপ ট্রিগার করে না), তাই permission
+    // granted অবস্থায় ফিরলেই সাথে সাথে exact অ্যালার্মে upgrade হয়ে যায়।
+    const rescheduleExactAlarm = () => {
+      if (document.visibilityState === "visible") {
+        try { BackupSvc.scheduleExactBackupAlarm(); } catch {}
+      }
+    };
+    document.addEventListener("visibilitychange", rescheduleExactAlarm);
+    window.addEventListener("focus", rescheduleExactAlarm);
+
     (async () => {
       try {
         // battery exemption — প্রতি বুটে জিজ্ঞাসা না করে, সর্বোচ্চ ৩ দিনে একবার
@@ -12865,6 +12903,8 @@ function SmartBusinessMgmt() {
     })();
 
     return () => {
+      document.removeEventListener("visibilitychange", rescheduleExactAlarm);
+      window.removeEventListener("focus", rescheduleExactAlarm);
       try { BackupSvc.stopForegroundKeepAlive(); } catch {}
       try { BackupSvc.cancelExactBackupAlarm(); } catch {}
     };
@@ -16126,6 +16166,31 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
         appListenerHandle = App.addListener("resume", resumeRefresh);
       }).catch(() => {});
     }
+
+    // 🆕 (২ আগস্ট ২০২৬) রুট-কজ ফিক্স — উপরের visibilitychange/focus/resume
+    // catch-up যথেষ্ট না, কারণ Android WebView screen-lock/background অবস্থায়
+    // নিজে থেকেই এই effect-এর setInterval suspend/throttle করে দেয় (ঠিক
+    // যে-সমস্যাটা মূল অ্যাপের ব্যাকআপ-আপলোডেও ছিল, দেখুন App.jsx-এর
+    // scheduleExactBackupAlarm useEffect-এর কমেন্ট)। এতদিন Viewer Mode-এর এই
+    // ডাউনলোড-সাইড refresh() কখনো সেই native AlarmManager/WorkManager
+    // ইনফ্রার সাথে যুক্ত ছিল না — তাই screen লক থাকলে বা app শুধু background-এ
+    // (সোয়াইপ না করেও) থাকলে auto-refresh থেমে যেত, শুধু ম্যানুয়াল বাটনেই
+    // কাজ করত। এখন window.__sbmViewerRefreshTick রেজিস্টার করা হয় —
+    // BackupAlarmReceiver.java ও BackupWorker.java দুটোই evaluateJavascript()
+    // দিয়ে এটাকেও কল করে (মূল শপ tick-এর পাশাপাশি, একই native infra শেয়ার
+    // করে)। ইচ্ছাকৃতভাবে মূল App()-এর `loaded`-গেটেড effect-এর ওপর নির্ভর না
+    // করে এখানেই সরাসরি schedule করা হয়েছে — Viewer ডিভাইসে কোনো shop config
+    // লোড নাও হতে পারে, তাই স্বাধীনভাবে কাজ করাই নিরাপদ (ViewerDashboardScreen-
+    // এর নিজের ডিজাইন-নীতি: কোনো global shop state ছোঁয় না)।
+    window.__sbmViewerRefreshTick = () => refresh();
+    if (typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.()) {
+      const BackupSvc = window.Capacitor?.Plugins?.BackupService;
+      if (BackupSvc) {
+        try { BackupSvc.scheduleExactBackupAlarm(); } catch {}
+        try { BackupSvc.schedulePeriodicSafetyNetWorker(); } catch {}
+      }
+    }
+
     refresh();
     return () => {
       clearInterval(id);
@@ -16133,8 +16198,14 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", resumeRefresh);
       if (appListenerHandle) { try { appListenerHandle.remove(); } catch {} }
+      // 🔴 আগের alarm cancel করা হয় না (শপ App-এর effect-এর মতোই idempotent
+      // re-schedule নির্ভর ডিজাইন) — শুধু tick hook সরানো হয়, যাতে এই স্ক্রিন
+      // (যেমন Reconfigure-এ যাওয়ার সময়) সাময়িক unmount হলেও নেটিভ অ্যালার্ম
+      // চেইন বন্ধ হয়ে না যায়; ফিরে এলে useEffect আবার hook রেজিস্টার করবে।
+      if (window.__sbmViewerRefreshTick) delete window.__sbmViewerRefreshTick;
     };
   }, [refresh]);
+
 
   useEffect(() => {
     const id = setInterval(() => forceTick(t => t + 1), 30 * 1000);
