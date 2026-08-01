@@ -12506,8 +12506,33 @@ function SmartBusinessMgmt() {
   const lastSnapshotBackupRef = useRef(lastSnapshotBackup);
   useEffect(() => { lastSnapshotBackupRef.current = lastSnapshotBackup; }, [lastSnapshotBackup]);
 
+  // 🔴 ফিক্স (১ আগস্ট ২০২৬ — OFFLINE_MODE-এ অটো-ব্যাকআপ সম্পূর্ণ বন্ধ ছিল):
+  // এই গেট আগে `!firebaseEnabled || !firebaseConfig` চেক করত — Firebase-era
+  // কোডের অবশিষ্টাংশ, যখন Drive/local backup আসলে Firebase Auth token-এর
+  // ওপর নির্ভর করত। এখন GDrive module সম্পূর্ণ স্বয়ংসম্পূর্ণ (নিজস্ব OAuth2 +
+  // refresh endpoint, localStorage-এ token, Firebase Auth লাগেই না) এবং
+  // Local backup-এর তো কখনোই Firebase লাগার কথা না। যেহেতু OFFLINE_MODE এখন
+  // স্থায়ীভাবে true (firebaseEnabled সবসময় false থাকে), আগের গেট পুরো
+  // tick()/setInterval-কে কখনোই সেটআপ হতে দিত না — Local + Drive দুই
+  // অটো-ব্যাকআপই নীরবে সম্পূর্ণ নিষ্ক্রিয় ছিল। এখন শুধু `loaded` চেক হয়;
+  // Drive token না থাকলে runDriveBackup নিজেই ভেতরে silent skip করে
+  // (নিচে দেখুন), local backup সবসময় স্বাধীনভাবে চলবে।
   useEffect(() => {
-    if (!loaded || !firebaseEnabled || !firebaseConfig) return;
+    if (!loaded) return;
+    // 🔴 ফিক্স (১ আগস্ট ২০২৬ — Drive ব্যাকআপ ইন্টারভাল ৩০→২০ মিনিট): হেডারের
+    // এক-ক্লিক বাটনের অটো-cadence ২০ মিনিটে চাওয়া হয়েছে। পুরনো ইনস্টলে
+    // hg_gd_interval আগের ডিফল্ট "30" হিসেবে explicit-ly সেভ থাকতে পারে (কখনো
+    // ইউজার নিজে বেছে নেননি), তাই শুধু fallback বদলালে effect হতো না — এই
+    // এক-বারের migration old "30" থাকলে "20"-এ নিয়ে যায়; ইউজার নিজে অন্য কোনো
+    // ইন্টারভাল (60/120/240) বেছে থাকলে সেটা অক্ষত থাকে।
+    try {
+      if (!localStorage.getItem("hg_gd_interval_migrated_20m")) {
+        if (localStorage.getItem("hg_gd_interval") === "30" || !localStorage.getItem("hg_gd_interval")) {
+          localStorage.setItem("hg_gd_interval", "20");
+        }
+        localStorage.setItem("hg_gd_interval_migrated_20m", "1");
+      }
+    } catch {}
     const isStaffDevice = currentUser?.role === "staff";
 
     const runLocalBackup = async () => {
@@ -12573,7 +12598,7 @@ function SmartBusinessMgmt() {
       try {
         if (localStorage.getItem("sbm_gd_auto") === "0") return; // ইউজার নিজে বন্ধ করেছে
         if (!force) {
-          const intervalMin = parseInt(localStorage.getItem("hg_gd_interval") || "30", 10) || 30;
+          const intervalMin = parseInt(localStorage.getItem("hg_gd_interval") || "20", 10) || 20;
           const last = lastDriveBackupRef.current ? new Date(lastDriveBackupRef.current).getTime() : 0;
           if (Date.now() - last < intervalMin * 60 * 1000) return; // এখনো ইন্টারভাল শেষ হয়নি
         }
@@ -12773,7 +12798,7 @@ function SmartBusinessMgmt() {
       window.removeEventListener("focus", tick);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded, firebaseEnabled, firebaseConfig, currentUser?.role]);
+  }, [loaded, currentUser?.role]);
 
   // ── 🆕 ব্যাকআপ-রিলায়েবিলিটি: native Foreground keep-alive + battery-exemption প্রম্পট ──
   // রুট-কজ (দেখুন transcript, ১ আগস্ট): MIUI-এর "Pause app activity if unused"
@@ -12824,7 +12849,7 @@ function SmartBusinessMgmt() {
   // ৩ দিন পর ম্যানুয়ালি স্ক্রিনশট চেক করতে না হয়।
   const driveBackupOverdueHrs = useMemo(() => {
     if (!lastDriveBackup) return null; // কখনো ব্যাকআপ হয়ইনি — আলাদাভাবে হ্যান্ডল হয় (backupNeeded/gdriveBanner)
-    const intervalMin = parseInt(localStorage.getItem("hg_gd_interval") || "30", 10) || 30;
+    const intervalMin = parseInt(localStorage.getItem("hg_gd_interval") || "20", 10) || 20;
     const thresholdMs = Math.max(intervalMin * 3, 120) * 60 * 1000;
     const elapsedMs = Date.now() - new Date(lastDriveBackup).getTime();
     if (elapsedMs < thresholdMs) return null;
@@ -14325,6 +14350,24 @@ function SmartBusinessMgmt() {
             >
               {gdQuickBackupState === "running" ? "⏳" : gdQuickBackupState === "success" ? "✅" : gdQuickBackupState === "error" ? "⚠️" : "☁️"}
             </button>
+          )}
+
+          {/* 🆕 (১ আগস্ট ২০২৬) বাটনের ঠিক নিচে সর্বশেষ Drive ব্যাকআপের সময় — রঙিন,
+              অটো-ব্যাকআপ (প্রতি ২০ মিনিটে, নিঃশব্দে) হোক বা ম্যানুয়াল ক্লিক, দুটোই
+              lastDriveBackup আপডেট করে বলে এখানে সবসময় সর্বশেষ সময়ই দেখা যাবে। */}
+          {tab === "dashboard" && !showDetail && (
+            <div style={{
+              position: "absolute", top: "calc(50px + env(safe-area-inset-top, 0px))", right: 14,
+              fontSize: 10, fontWeight: 800, whiteSpace: "nowrap",
+              background: "linear-gradient(90deg, #22d3ee, #a78bfa, #f472b6)",
+              WebkitBackgroundClip: "text", backgroundClip: "text",
+              WebkitTextFillColor: "transparent", color: "transparent",
+              filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.25))",
+            }}>
+              {lastDriveBackup
+                ? new Date(lastDriveBackup).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Dhaka" })
+                : "ব্যাকআপ নেই"}
+            </div>
           )}
 
           {tab === "dashboard" && !showDetail ? (
@@ -34242,7 +34285,7 @@ function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken, 
   // আগে বন্ধ করে থাকলে (key === "0") সেটা আগের মতোই বন্ধ থাকবে — বিদ্যমান
   // ইউজারের সেটিং জোর করে বদলায় না।
   const [autoEnabled, setAutoEnabled] = useState(() => localStorage.getItem("sbm_gd_auto") !== "0");
-  const [autoInterval, setAutoInterval] = useState(() => parseInt(localStorage.getItem("hg_gd_interval") || "30"));
+  const [autoInterval, setAutoInterval] = useState(() => parseInt(localStorage.getItem("hg_gd_interval") || "20"));
   const [confirmRestore, setConfirmRestore] = useState(false);
   // 🔴 ফিক্স (staircase ব্যাক): এই ২য়-ধাপ কনফার্মেশনটা back-stack-এ
   // রেজিস্টার্ড ছিল না — ব্যাক চাপলে সরাসরি bypass হয়ে যেত।
@@ -34827,7 +34870,7 @@ function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken, 
                       ব্যবধান নির্বাচন করুন
                     </div>
                     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      {[30, 60, 120, 240].map(m => (
+                      {[20, 30, 60, 120, 240].map(m => (
                         <button
                           key={m}
                           onClick={() => {
