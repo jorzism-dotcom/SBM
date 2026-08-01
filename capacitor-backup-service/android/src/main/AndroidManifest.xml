@@ -15,9 +15,18 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application>
+        <!-- 🆕 (২ আগস্ট ২০২৬) stopWithTask="false" স্পষ্টভাবে লেখা হলো — AOSP-এর
+             ডিফল্টও আসলে false (task swipe করলেও service বেঁচে থাকার কথা), কিন্তু
+             এটা explicit না রেখে ভবিষ্যতে কোনো Android/লাইব্রেরি আপডেটে ডিফল্ট
+             বদলে গেলে চুপচাপ আচরণ পাল্টে যাওয়ার ঝুঁকি এড়াতে সরাসরি লেখা হলো।
+             সততার সাথে উল্লেখ: এটা শুধু stock/AOSP আচরণ নিশ্চিত করে — অনেক
+             চাইনিজ OEM স্কিন (MIUI/ColorOS/FuntouchOS ইত্যাদি) এই flag উপেক্ষা
+             করে নিজস্ব agressive process-killer চালায়, সেক্ষেত্রে ইউজারকে
+             OEM-নির্দিষ্ট Autostart/battery সেটিং নিজে চালু করতে হবে। -->
         <service
             android:name="com.protik.sbm.backupservice.BackupForegroundService"
             android:foregroundServiceType="dataSync"
+            android:stopWithTask="false"
             android:exported="false" />
 
         <receiver
