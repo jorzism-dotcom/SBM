@@ -21359,11 +21359,11 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:16, marginBottom:2 }}>{title}</div>
           <div style={{ color:"#64748b", fontSize:12, marginBottom:10 }}>{sortedRows.length}টি ব্যাচ · {suppliersInvolved}টি সাপ্লায়ার</div>
 
-          {/* মাসিক মেয়াদোত্তীর্ণ হিসাব — শুধু এডমিন */}
+          {/* দৈনিক ও মাসিক মেয়াদোত্তীর্ণ হিসাব — শুধু এডমিন */}
           {currentUser?.role !== "staff" && (
-            <button onClick={() => setInvModal(`expired-monthly:${todayEn().slice(0,7)}`)}
+            <button onClick={() => setInvModal(`expired-monthly:month:${todayEn().slice(0,7)}`)}
               style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"center", gap:7, background:"linear-gradient(135deg,#7c2d12,#dc2626)", border:"none", borderRadius:12, padding:"11px", color:"#fff", fontWeight:800, fontSize:12.5, cursor:"pointer", fontFamily:"inherit", marginBottom:12, boxShadow:"0 4px 14px rgba(220,38,38,0.3)" }}>
-              📊 মাসিক মেয়াদোত্তীর্ণ হিসাব দেখুন
+              📊 দৈনিক ও মাসিক মেয়াদোত্তীর্ণ হিসাব দেখুন
             </button>
           )}
 
@@ -21756,11 +21756,11 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           );
         })()}
 
-        {/* মাসিক মেয়াদোত্তীর্ণ হিসাব — শুধু এডমিন */}
+        {/* দৈনিক ও মাসিক মেয়াদোত্তীর্ণ হিসাব — শুধু এডমিন */}
         {baseInvKey === 'expired' && currentUser?.role !== "staff" && (
-          <button onClick={() => setInvModal(`expired-monthly:${todayEn().slice(0,7)}`)}
+          <button onClick={() => setInvModal(`expired-monthly:month:${todayEn().slice(0,7)}`)}
             style={{ width:"100%", display:"flex", alignItems:"center", justifyContent:"center", gap:7, background:"linear-gradient(135deg,#7c2d12,#dc2626)", border:"none", borderRadius:12, padding:"11px", color:"#fff", fontWeight:800, fontSize:12.5, cursor:"pointer", fontFamily:"inherit", marginBottom:12, boxShadow:"0 4px 14px rgba(220,38,38,0.3)" }}>
-            📊 মাসিক মেয়াদোত্তীর্ণ হিসাব দেখুন
+            📊 দৈনিক ও মাসিক মেয়াদোত্তীর্ণ হিসাব দেখুন
           </button>
         )}
 
@@ -21827,20 +21827,40 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
 
     const MONTH_NAMES_BN_EN = ["জানুয়ারি","ফেব্রুয়ারি","মার্চ","এপ্রিল","মে","জুন","জুলাই","আগস্ট","সেপ্টেম্বর","অক্টোবর","নভেম্বর","ডিসেম্বর"];
     const monthLabel = (mk) => { const [y,m] = (mk||"").split("-"); return m ? `${MONTH_NAMES_BN_EN[parseInt(m,10)-1]} ${y}` : mk; };
+    const dayLabel = (dk) => dk || "";
 
     const byMonth = {};
+    const byDay = {};
     removalRows.forEach(r => {
       const mk = r.monthKey || (r.dateKey ? r.dateKey.slice(0,7) : "");
-      if (!mk) return;
-      if (!byMonth[mk]) byMonth[mk] = { key: mk, qty:0, value:0, rows:[] };
-      byMonth[mk].qty   += (r.qty || 0);
-      byMonth[mk].value += (r.value || 0);
-      byMonth[mk].rows.push(r);
+      if (mk) {
+        if (!byMonth[mk]) byMonth[mk] = { key: mk, qty:0, value:0, rows:[] };
+        byMonth[mk].qty   += (r.qty || 0);
+        byMonth[mk].value += (r.value || 0);
+        byMonth[mk].rows.push(r);
+      }
+      const dk = r.dateKey || "";
+      if (dk) {
+        if (!byDay[dk]) byDay[dk] = { key: dk, qty:0, value:0, rows:[] };
+        byDay[dk].qty   += (r.qty || 0);
+        byDay[dk].value += (r.value || 0);
+        byDay[dk].rows.push(r);
+      }
     });
     const months = Object.values(byMonth).sort((a,b) => b.key.localeCompare(a.key));
 
     const currentMonthKey = todayEn().slice(0,7);
-    const selMonthKey = (invModal.includes(":") ? invModal.split(":")[1] : null) || currentMonthKey;
+    const currentDayKey = todayEn();
+
+    // 🆕 invModal ফরম্যাট: "expired-monthly:month:YYYY-MM" | "expired-monthly:day:YYYY-MM-DD"
+    // (পুরনো ফরম্যাট "expired-monthly:YYYY-MM"-ও ব্যাকওয়ার্ড-কম্প্যাটিবিলিটির জন্য মাস মোড হিসেবে ধরা হয়)
+    const invParts = invModal.includes(":") ? invModal.split(":") : [];
+    let expViewMode = "month", expNavRaw = null;
+    if (invParts[1] === "month" || invParts[1] === "day") { expViewMode = invParts[1]; expNavRaw = invParts[2] || null; }
+    else if (invParts[1]) { expViewMode = "month"; expNavRaw = invParts[1]; }
+
+    const selMonthKey = expViewMode === "month" ? (expNavRaw || currentMonthKey) : currentMonthKey;
+    const selDayKey   = expViewMode === "day"   ? (expNavRaw || currentDayKey)   : currentDayKey;
 
     // মাস কী ("YYYY-MM") এক মাস আগে/পরে সরানোর হেল্পার
     const shiftMonthKey = (mk, delta) => {
@@ -21848,36 +21868,73 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       const d = new Date(y, (mo - 1) + delta, 1);
       return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
     };
+    // দিন কী ("YYYY-MM-DD") এক দিন আগে/পরে সরানোর হেল্পার
+    const shiftDayKey = (dk, delta) => { const d = new Date(dk); d.setDate(d.getDate() + delta); return _dateKeyOf(d); };
     // মাস পিকারের ড্রপডাউনে দেখানোর জন্য — যেসব মাসে ডেটা আছে + বর্তমান মাস (নাহলে দেখা যাবে না)
     const pickerMonthKeys = Array.from(new Set([currentMonthKey, ...months.map(x=>x.key), selMonthKey])).sort((a,b)=>b.localeCompare(a));
 
-    const m = byMonth[selMonthKey] || { key: selMonthKey, qty:0, value:0, rows:[] };
-    const sortedRows = [...m.rows].sort((a,b) => (b.dateKey||"").localeCompare(a.dateKey||"") || (b.at||"").localeCompare(a.at||""));
+    const bucket = expViewMode === "day"
+      ? (byDay[selDayKey] || { key: selDayKey, qty:0, value:0, rows:[] })
+      : (byMonth[selMonthKey] || { key: selMonthKey, qty:0, value:0, rows:[] });
+    const periodLabel = expViewMode === "day" ? dayLabel(selDayKey) : monthLabel(selMonthKey);
+    const emptyMsg = expViewMode === "day" ? "এই দিনে কোনো মেয়াদোত্তীর্ণ পণ্য সরানো হয়নি" : "এই মাসে কোনো মেয়াদোত্তীর্ণ পণ্য সরানো হয়নি";
+    const sortedRows = [...bucket.rows].sort((a,b) => (b.dateKey||"").localeCompare(a.dateKey||"") || (b.at||"").localeCompare(a.at||""));
     const pdfRows = sortedRows.map((r,i) => `<tr><td class="serial">${i+1}</td><td>${r.productName}${r.batchNo ? ` (${r.batchNo})` : ""}</td><td>${r.company||r.supplier||"অজ্ঞাত"}</td><td class="num">${r.qty}${r.unit||""}</td><td class="num">৳${fmt(r.value||0)}</td><td class="num">${r.expiryDate ? fmtExpiryMonth(r.expiryDate) : "-"}</td><td class="num">${r.dateKey}</td></tr>`).join("");
-    const pdfHtml = buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্য</th><th>সাপ্লায়ার</th><th class="num">পরিমাণ</th><th class="num">মূল্য</th><th class="num">মেয়াদ</th><th class="num">সরানো হয়েছে</th></tr></thead><tbody>${pdfRows}</tbody></table></div>`, shopName, `মেয়াদোত্তীর্ণ পণ্যের হিসাব — ${monthLabel(selMonthKey)}`);
+    const pdfHtml = buildPdfHtml(`<div class="section"><table><thead><tr><th class="serial">#</th><th>পণ্য</th><th>সাপ্লায়ার</th><th class="num">পরিমাণ</th><th class="num">মূল্য</th><th class="num">মেয়াদ</th><th class="num">সরানো হয়েছে</th></tr></thead><tbody>${pdfRows}</tbody></table><tfoot><tr><td colspan="4" style="text-align:right;font-weight:800;">মোট</td><td class="num" style="font-weight:800;">৳${fmt(bucket.value)}</td><td></td><td></td></tr></tfoot></div>`, shopName, `মেয়াদোত্তীর্ণ পণ্যের হিসাব — ${periodLabel}`);
     return (
       <div style={{ ...S.page, padding:"0 14px 16px" }}>
         <button style={S.textBtn} onClick={() => setInvModal('expired')}>← ড্যাশবোর্ডে ফিরুন</button>
-        <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:16, marginBottom:2 }}>মেয়াদোত্তীর্ণ পণ্যের মাসিক হিসাব</div>
+        <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:16, marginBottom:2 }}>মেয়াদোত্তীর্ণ পণ্যের দৈনিক ও মাসিক হিসাব</div>
 
-        {/* ── মাস পিকার ── */}
-        <div style={{ display:"flex", alignItems:"center", gap:8, margin:"10px 0 12px" }}>
-          <button onClick={() => setInvModal(`expired-monthly:${shiftMonthKey(selMonthKey, -1)}`)}
-            style={{ width:34, height:34, flexShrink:0, background:"#071a0f", border:"1px solid #ef444440", borderRadius:10, color:"#f87171", fontSize:16, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-            ‹
-          </button>
-          <select value={selMonthKey} onChange={(e) => setInvModal(`expired-monthly:${e.target.value}`)}
-            style={{ flex:1, background:"#071a0f", border:"1px solid #ef444440", borderRadius:10, color:"#e2e8f0", fontWeight:800, fontSize:13.5, padding:"8px 10px", fontFamily:"inherit", textAlignLast:"center" }}>
-            {pickerMonthKeys.map(mk => <option key={mk} value={mk}>{monthLabel(mk)}</option>)}
-          </select>
-          <button onClick={() => setInvModal(`expired-monthly:${shiftMonthKey(selMonthKey, 1)}`)}
-            style={{ width:34, height:34, flexShrink:0, background:"#071a0f", border:"1px solid #ef444440", borderRadius:10, color:"#f87171", fontSize:16, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
-            ›
-          </button>
+        {/* ── দিন/মাস মোড টগল ── */}
+        <div style={{ display:"flex", justifyContent:"center", gap:6, margin:"10px 0 8px" }}>
+          {[["day","দিন"],["month","মাস"]].map(([k,l]) => (
+            <button key={k} onClick={() => setInvModal(k === "day" ? `expired-monthly:day:${currentDayKey}` : `expired-monthly:month:${currentMonthKey}`)}
+              style={{ padding:"5px 18px", borderRadius:16, border:`1.5px solid ${expViewMode===k?"#f87171":"#ef444440"}`,
+                background: expViewMode===k?"#f8717122":"transparent",
+                color: expViewMode===k?"#f87171":"#94a3b8",
+                fontSize:12, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
+              {l}
+            </button>
+          ))}
         </div>
 
+        {/* ── দিন/মাস পিকার ── */}
+        {expViewMode === "month" ? (
+          <div style={{ display:"flex", alignItems:"center", gap:8, margin:"0 0 12px" }}>
+            <button onClick={() => setInvModal(`expired-monthly:month:${shiftMonthKey(selMonthKey, -1)}`)}
+              style={{ width:34, height:34, flexShrink:0, background:"#071a0f", border:"1px solid #ef444440", borderRadius:10, color:"#f87171", fontSize:16, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+              ‹
+            </button>
+            <select value={selMonthKey} onChange={(e) => setInvModal(`expired-monthly:month:${e.target.value}`)}
+              style={{ flex:1, background:"#071a0f", border:"1px solid #ef444440", borderRadius:10, color:"#e2e8f0", fontWeight:800, fontSize:13.5, padding:"8px 10px", fontFamily:"inherit", textAlignLast:"center" }}>
+              {pickerMonthKeys.map(mk => <option key={mk} value={mk}>{monthLabel(mk)}</option>)}
+            </select>
+            <button onClick={() => setInvModal(`expired-monthly:month:${shiftMonthKey(selMonthKey, 1)}`)}
+              style={{ width:34, height:34, flexShrink:0, background:"#071a0f", border:"1px solid #ef444440", borderRadius:10, color:"#f87171", fontSize:16, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+              ›
+            </button>
+          </div>
+        ) : (
+          <div style={{ display:"flex", alignItems:"center", gap:8, margin:"0 0 12px" }}>
+            <button onClick={() => setInvModal(`expired-monthly:day:${shiftDayKey(selDayKey, -1)}`)}
+              style={{ width:34, height:34, flexShrink:0, background:"#071a0f", border:"1px solid #ef444440", borderRadius:10, color:"#f87171", fontSize:16, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+              ‹
+            </button>
+            <div style={{ position:"relative", flex:1, textAlign:"center", background:"#071a0f", border:"1px solid #ef444440", borderRadius:10, padding:"8px 10px" }}>
+              <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:13.5 }}>📅 {dayLabel(selDayKey)}</div>
+              <input type="date" value={selDayKey} onChange={(e) => { if (!e.target.value) return; setInvModal(`expired-monthly:day:${e.target.value}`); }}
+                style={{ position:"absolute", inset:0, opacity:0, width:"100%", height:"100%", cursor:"pointer", border:"none" }} />
+            </div>
+            <button onClick={() => setInvModal(`expired-monthly:day:${shiftDayKey(selDayKey, 1)}`)}
+              style={{ width:34, height:34, flexShrink:0, background:"#071a0f", border:"1px solid #ef444440", borderRadius:10, color:"#f87171", fontSize:16, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>
+              ›
+            </button>
+          </div>
+        )}
+
         {loadingFull && <div style={{ color:"#64748b", textAlign:"center", marginTop:20, fontSize:13 }}>সম্পূর্ণ ইতিহাস লোড হচ্ছে…</div>}
-        <div style={{ color:"#64748b", fontSize:12, marginBottom:12 }}>{m.qty}টি পণ্য · মোট মূল্য ৳{fmt(m.value)}</div>
+        <div style={{ color:"#64748b", fontSize:12, marginBottom:12 }}>{bucket.qty}টি পণ্য · মোট মূল্য ৳{fmt(bucket.value)}</div>
         {sortedRows.length > 0 && (
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:14 }}>
             <button onClick={() => sharePdfWhatsApp(pdfHtml, "মেয়াদোত্তীর্ণ পণ্যের হিসাব")}
@@ -21890,7 +21947,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             </button>
           </div>
         )}
-        {sortedRows.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>এই মাসে কোনো মেয়াদোত্তীর্ণ পণ্য সরানো হয়নি</div>}
+        {sortedRows.length === 0 && <div style={{ color:"#64748b", textAlign:"center", marginTop:40, fontSize:14 }}>{emptyMsg}</div>}
         {sortedRows.length > 0 && (
           <div style={{ background:"#fff", borderRadius:14, overflow:"hidden", boxShadow:"0 1px 4px rgba(0,0,0,0.08)", height:"calc(100dvh - 380px)" }}>
             <TableVirtuoso
@@ -21928,6 +21985,13 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                 </>
               )}
             />
+          </div>
+        )}
+        {/* 🆕 নিচে সরানো পণ্যগুলোর মোট দাম */}
+        {sortedRows.length > 0 && (
+          <div style={{ marginTop:10, background:"linear-gradient(135deg,#7c2d12,#991b1b)", borderRadius:12, padding:"12px 16px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+            <span style={{ color:"#fecaca", fontWeight:700, fontSize:13 }}>মোট (সরানো পণ্য)</span>
+            <span style={{ color:"#fff", fontWeight:900, fontSize:17 }}>৳{fmt(bucket.value)}</span>
           </div>
         )}
       </div>
