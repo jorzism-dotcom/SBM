@@ -3,6 +3,7 @@ package com.protik.sbm.backupservice;
 import android.app.AlarmManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Build;
 import android.os.PowerManager;
@@ -16,6 +17,11 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import java.lang.ref.WeakReference;
+import java.util.concurrent.TimeUnit;
+
+import androidx.work.ExistingPeriodicWorkPolicy;
+import androidx.work.PeriodicWorkRequest;
+import androidx.work.WorkManager;
 
 // 🔴 এই প্লাগইনটা backup আপলোড নিজেই করে না — কয়েকটা জিনিসে সাহায্য করে যাতে
 // App.jsx-এর বিদ্যমান JS setInterval-ভিত্তিক ব্যাকআপ টাইমার MIUI/Android
@@ -112,10 +118,13 @@ public class BackupServicePlugin extends Plugin {
         }
     }
 
-    // ── 🆕 নেটিভ ২০-মিনিট ব্যাকআপ অ্যালার্ম (WorkManager-এর বদলে AlarmManager
-    // ব্যবহার করা হয়েছে — কারণ WorkManager-এর PeriodicWorkRequest-এর সর্বনিম্ন
-    // ইন্টারভাল ১৫ মিনিট এবং Doze mode-এ সেটাও ব্যাচ/ডিলে হতে পারে;
-    // setExactAndAllowWhileIdle Doze-কেও বাইপাস করে ঠিক ২০ মিনিটে ফায়ার করে) ──
+    // ── 🆕 নেটিভ ২০-মিনিট ব্যাকআপ অ্যালার্ম — মূল/প্রাইমারি cadence, AlarmManager
+    // দিয়ে (setExactAndAllowWhileIdle Doze-কেও বাইপাস করে ঠিক ২০ মিনিটে ফায়ার
+    // করে)। ২ আগস্ট ২০২৬ থেকে এর পাশে WorkManager-ভিত্তিক আরেকটা independent
+    // সেফটি-নেট লেয়ার যোগ হয়েছে (নিচে schedulePeriodicSafetyNetWorker দেখুন) —
+    // exact-alarm permission ছাড়াই কাজ করে, তাই AlarmManager path ব্যর্থ হলেও
+    // ১৫ মিনিট cadence-এ (Doze-batched, তাই সময় অনিশ্চিত) ব্যাকআপ ট্রিগার হতে
+    // পারে। দুটো layer-ই evaluateJavascript()-নির্ভর একই JS tick() কল করে। ──
     @PluginMethod
     public void scheduleExactBackupAlarm(PluginCall call) {
         try {
@@ -172,5 +181,53 @@ public class BackupServicePlugin extends Plugin {
         } catch (Exception e) {
             call.reject("could not request exact alarm permission: " + e.getMessage());
         }
+    }
+
+    // ── 🆕 (২ আগস্ট ২০২৬) তৃতীয় লেয়ার — WorkManager সেফটি-নেট (দেখুন
+    // BackupWorker.java-র কমেন্টে বিস্তারিত রুট-কজ)। AlarmManager exact-alarm
+    // permission-নির্ভর; WorkManager independent, permission ছাড়াই কাজ করে
+    // এবং reboot-এর পরও নিজে থেকে টিকে থাকে। enqueueUniquePeriodicWork +
+    // KEEP policy দিয়ে বারবার কল করলেও ডুপ্লিকেট schedule হয় না (idempotent),
+    // তাই App.jsx-এর boot effect-এ নিশ্চিন্তে বারবার কল করা যায়।
+    static final String WORK_NAME = "sbm_backup_safety_net";
+
+    @PluginMethod
+    public void schedulePeriodicSafetyNetWorker(PluginCall call) {
+        try {
+            Context ctx = getContext();
+            PeriodicWorkRequest request = new PeriodicWorkRequest.Builder(
+                BackupWorker.class, 15, TimeUnit.MINUTES
+            ).build();
+            WorkManager.getInstance(ctx).enqueueUniquePeriodicWork(
+                WORK_NAME, ExistingPeriodicWorkPolicy.KEEP, request
+            );
+            JSObject ret = new JSObject();
+            ret.put("scheduled", true);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("could not schedule safety-net worker: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void cancelPeriodicSafetyNetWorker(PluginCall call) {
+        try {
+            WorkManager.getInstance(getContext()).cancelUniqueWork(WORK_NAME);
+            JSObject ret = new JSObject();
+            ret.put("cancelled", true);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("could not cancel safety-net worker: " + e.getMessage());
+        }
+    }
+
+    // App.jsx boot-এ এটা চেক করে দরকার হলে ইউজারকে সতর্ক করতে পারে —
+    // "মিসড" মানে WorkManager চললেও ঐ মুহূর্তে process/WebView জীবিত ছিল না।
+    @PluginMethod
+    public void getMissedSafetyNetCount(PluginCall call) {
+        SharedPreferences prefs = getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        JSObject ret = new JSObject();
+        ret.put("missed", prefs.getInt(BackupWorker.MISSED_KEY, 0));
+        call.resolve(ret);
     }
 }

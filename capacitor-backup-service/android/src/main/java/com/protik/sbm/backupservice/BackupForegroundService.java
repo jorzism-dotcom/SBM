@@ -22,10 +22,16 @@ import android.os.IBinder;
 // setInterval স্বাভাবিকভাবেই চলতে থাকতে পারে।
 //
 // সীমাবদ্ধতা (সততার সাথে উল্লেখ): ইউজার যদি Recent Apps থেকে অ্যাপ সম্পূর্ণ
-// swipe করে সরিয়ে দেন (task সম্পূর্ণ kill), তখন এই Service-সহ পুরো প্রসেসই
-// শেষ হয়ে যায় — এটা ঠিক করতে ইউজারকে Recent Apps কার্ডে 🔒 lock করে রাখতে
-// বলা হয়েছে (আগের সেশনে)। এটা প্রধানত "অ্যাপ ব্যাকগ্রাউন্ডে আছে কিন্তু
-// task থেকে সরানো হয়নি" অবস্থায় MIUI-এর প্রি-এম্পটিভ hibernation ঠেকায়।
+// swipe করে সরিয়ে দেন, stock Android-এ এই foreground service (২ আগস্ট ২০২৬
+// থেকে explicit android:stopWithTask="false"-সহ) স্বাভাবিকভাবেই বেঁচে থাকার
+// কথা। কিন্তু অনেক চাইনিজ OEM স্কিন (MIUI/ColorOS/FuntouchOS/HiOS ইত্যাদি —
+// বাংলাদেশে কমন) এই স্ট্যান্ডার্ড আচরণ উপেক্ষা করে নিজস্ব agressive
+// process-killer চালায়, সেক্ষেত্রে ইউজারকে ফোনের OEM-নির্দিষ্ট Autostart/
+// battery no-restriction সেটিং নিজে চালু করতে হবে (Recent Apps কার্ডে 🔒
+// থাকলে সেটাও একটা অপশন, MIUI-তে)। onTaskRemoved() override (নিচে) task
+// swipe হওয়ার মুহূর্তে AlarmManager/WorkManager আবার re-arm করার একটা
+// defensive চেষ্টা করে, কিন্তু প্রসেস সম্পূর্ণ মরে যাওয়ার পর headless ভাবে
+// backup upload করার কোনো উপায় এখনো এই ডিজাইনে নেই।
 public class BackupForegroundService extends Service {
 
     private static final String CHANNEL_ID = "sbm_backup_keepalive";
@@ -77,5 +83,32 @@ public class BackupForegroundService extends Service {
     @Override
     public IBinder onBind(Intent intent) {
         return null;
+    }
+
+    // 🆕 (২ আগস্ট ২০২৬) defensive re-arm — task swipe হওয়ার মুহূর্তে OS এই
+    // callback দেয় (process পুরোপুরি মরে যাওয়ার ঠিক আগে, এখনো কয়েক মুহূর্তের
+    // জন্য কোড চালানো যায়)। এখানে backup upload নিজে চালানো সম্ভব না (WebView
+    // ইতিমধ্যে/শীঘ্রই অকেজো হয়ে যাচ্ছে) — কিন্তু AlarmManager ও WorkManager
+    // দুটোকেই আবার schedule করার চেষ্টা করা হয়, যাতে OEM-এর aggressive
+    // process-killer AlarmManager/WorkManager-এর নিজস্ব entry-ও মুছে দিলে
+    // (কিছু OEM-এ এটা হয়) সেটা অন্তত এই মুহূর্তে রিকভার হয়। stock Android-এ
+    // এই দুটো সিস্টেম process kill-এর পরও নিজে থেকেই বেঁচে থাকে, তাই এই কলটা
+    // বেশিরভাগ ফোনে no-op/redundant — কিন্তু aggressive OEM-এর ক্ষেত্রে এটা
+    // একটা সস্তা, ঝুঁকিহীন অতিরিক্ত সুরক্ষা।
+    // সততার সাথে উল্লেখ: এটা headless backup চালানোর সমাধান না — process
+    // সম্পূর্ণ মরে যাওয়ার আগে backup upload করা এখনো সম্ভব না। এটা শুধু
+    // পরবর্তী alarm/worker চেইন যেন ভেঙে না যায় সেটা নিশ্চিত করে।
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        super.onTaskRemoved(rootIntent);
+        try { BackupAlarmReceiver.scheduleNext(getApplicationContext(), 60 * 1000L); } catch (Exception ignored) {}
+        try {
+            androidx.work.PeriodicWorkRequest request = new androidx.work.PeriodicWorkRequest.Builder(
+                BackupWorker.class, 15, java.util.concurrent.TimeUnit.MINUTES
+            ).build();
+            androidx.work.WorkManager.getInstance(getApplicationContext()).enqueueUniquePeriodicWork(
+                BackupServicePlugin.WORK_NAME, androidx.work.ExistingPeriodicWorkPolicy.KEEP, request
+            );
+        } catch (Exception ignored) {}
     }
 }

@@ -53,8 +53,15 @@ public class BackupAlarmReceiver extends BroadcastReceiver {
 
         new Handler(Looper.getMainLooper()).post(() -> {
             try {
+                // 🆕 (২ আগস্ট ২০২৬) শপ tick-এর পাশাপাশি Viewer Mode-এর
+                // refresh() hook-ও কল করা হয় (দুটোর একটাই সাধারণত define
+                // থাকবে, ডিভাইসের মোড অনুযায়ী — window.X চেক না পেলে চুপচাপ
+                // স্কিপ হয়, কোনো এরর হয় না)
                 webView.evaluateJavascript(
-                    "(function(){try{if(window.__sbmNativeBackupTick)window.__sbmNativeBackupTick();}catch(e){}})();",
+                    "(function(){" +
+                    "try{if(window.__sbmNativeBackupTick)window.__sbmNativeBackupTick();}catch(e){}" +
+                    "try{if(window.__sbmViewerRefreshTick)window.__sbmViewerRefreshTick();}catch(e){}" +
+                    "})();",
                     null
                 );
             } catch (Exception ignored) {}
