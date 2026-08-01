@@ -1,11 +1,13 @@
 package com.protik.sbm.backupservice;
 
+import android.app.AlarmManager;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
 import android.os.PowerManager;
 import android.provider.Settings;
+import android.webkit.WebView;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -13,12 +15,38 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
-// 🔴 এই প্লাগইনটা backup আপলোড নিজেই করে না — শুধু দুইটা জিনিসে সাহায্য করে
-// যাতে App.jsx-এর বিদ্যমান JS setInterval-ভিত্তিক ব্যাকআপ টাইমার MIUI/Android
-// কর্তৃক প্রসেস-কিলের কারণে থেমে না যায় (দেখুন BackupForegroundService.java-এর
-// কমেন্ট এবং App.jsx-এ এই প্লাগইনের ব্যবহার)।
+import java.lang.ref.WeakReference;
+
+// 🔴 এই প্লাগইনটা backup আপলোড নিজেই করে না — কয়েকটা জিনিসে সাহায্য করে যাতে
+// App.jsx-এর বিদ্যমান JS setInterval-ভিত্তিক ব্যাকআপ টাইমার MIUI/Android
+// কর্তৃক প্রসেস-কিলের কারণে থেমে না যায়, এবং (২ আগস্ট ২০২৬ সংযোজন — দেখুন
+// BackupAlarmReceiver.java) app background/screen-lock অবস্থাতেও WebView-এর
+// নিজস্ব JS-timer throttling এড়িয়ে ঠিক ২০ মিনিট cadence বজায় রাখে।
 @CapacitorPlugin(name = "BackupService")
 public class BackupServicePlugin extends Plugin {
+
+    // BackupAlarmReceiver ও App.jsx দুই জায়গা থেকেই ব্যবহৃত হওয়ায় এখানে shared constant
+    static final String PREFS = "sbm_backup_alarm";
+    static final String KEY_ACTIVE = "active";
+    static final long INTERVAL_MS = 20 * 60 * 1000L; // ২০ মিনিট
+
+    // 🔴 BackupAlarmReceiver থেকে সরাসরি evaluateJavascript() কল করার জন্য Capacitor
+    // Bridge-এর WebView রেফারেন্স static ভাবে ধরে রাখা হয় (WeakReference — মেমরি-লিক
+    // এড়াতে, এবং Activity destroy হলে স্বাভাবিকভাবেই null হয়ে যায়)। এই ইনস্ট্যান্স
+    // জীবিত মানে app প্রসেস kill হয়নি (background/screen-lock-এ থাকলেও শুধু OS
+    // WebView-এর JS timer suspend/throttle করে রেখেছে) — native side থেকে
+    // evaluateJavascript() ডাকা হলে সেই throttling এড়িয়ে জোর করে স্ক্রিপ্ট রান হয়
+    // (দেখুন https://developer.chrome.com/blog/background_tabs — page-initiated
+    // timer-ই শুধু throttle হয়, host app কর্তৃক ইনজেক্টেড script না)।
+    static WeakReference<WebView> sWebViewRef;
+
+    @Override
+    public void load() {
+        super.load();
+        try {
+            sWebViewRef = new WeakReference<>((WebView) getBridge().getWebView());
+        } catch (Exception ignored) {}
+    }
 
     @PluginMethod
     public void isIgnoringBatteryOptimizations(PluginCall call) {
@@ -81,6 +109,68 @@ public class BackupServicePlugin extends Plugin {
             call.resolve(ret);
         } catch (Exception e) {
             call.reject("could not stop foreground service: " + e.getMessage());
+        }
+    }
+
+    // ── 🆕 নেটিভ ২০-মিনিট ব্যাকআপ অ্যালার্ম (WorkManager-এর বদলে AlarmManager
+    // ব্যবহার করা হয়েছে — কারণ WorkManager-এর PeriodicWorkRequest-এর সর্বনিম্ন
+    // ইন্টারভাল ১৫ মিনিট এবং Doze mode-এ সেটাও ব্যাচ/ডিলে হতে পারে;
+    // setExactAndAllowWhileIdle Doze-কেও বাইপাস করে ঠিক ২০ মিনিটে ফায়ার করে) ──
+    @PluginMethod
+    public void scheduleExactBackupAlarm(PluginCall call) {
+        try {
+            Context ctx = getContext();
+            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_ACTIVE, true).apply();
+            BackupAlarmReceiver.scheduleNext(ctx, INTERVAL_MS);
+            JSObject ret = new JSObject();
+            ret.put("scheduled", true);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("could not schedule alarm: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void cancelExactBackupAlarm(PluginCall call) {
+        try {
+            Context ctx = getContext();
+            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_ACTIVE, false).apply();
+            BackupAlarmReceiver.cancel(ctx);
+            JSObject ret = new JSObject();
+            ret.put("cancelled", true);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("could not cancel alarm: " + e.getMessage());
+        }
+    }
+
+    // Android 12+ (S)-এ exact alarm একটা special permission — ইউজারের Settings-এ
+    // গিয়ে অনুমতি দিতে হয় (অন্য runtime permission-এর মতো ডায়ালগ আসে না)।
+    @PluginMethod
+    public void canScheduleExactAlarms(PluginCall call) {
+        boolean can = true;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            AlarmManager am = (AlarmManager) getContext().getSystemService(Context.ALARM_SERVICE);
+            can = am != null && am.canScheduleExactAlarms();
+        }
+        JSObject ret = new JSObject();
+        ret.put("can", can);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void requestScheduleExactAlarmPermission(PluginCall call) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                Intent intent = new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
+                intent.setData(Uri.parse("package:" + getContext().getPackageName()));
+                getActivity().startActivity(intent);
+            }
+            JSObject ret = new JSObject();
+            ret.put("requested", true);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("could not request exact alarm permission: " + e.getMessage());
         }
     }
 }
