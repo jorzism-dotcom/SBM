@@ -4,12 +4,33 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- 🆕 ঠিক ২০-মিনিট cadence-এর জন্য (Doze-বাইপাস exact alarm)। ইচ্ছাকৃতভাবে
+         USE_EXACT_ALARM যোগ করা হয়নি — Play Store সেটা শুধু alarm-clock/calendar
+         ক্যাটাগরির অ্যাপের জন্য অনুমোদন করে, SBM-এর মতো data-sync ব্যবহারে সেটা
+         নিয়ে review-তে আটকে যাওয়ার ঝুঁকি আছে। SCHEDULE_EXACT_ALARM (ইউজার
+         Settings থেকে গ্রান্ট করেন, Play Console-এ ডিক্লেয়ার-ফর্ম পূরণ করতে হয়)
+         নিরাপদ পথ। -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application>
         <service
             android:name="com.protik.sbm.backupservice.BackupForegroundService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />
+
+        <receiver
+            android:name="com.protik.sbm.backupservice.BackupAlarmReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name="com.protik.sbm.backupservice.BootCompletedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>
