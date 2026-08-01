@@ -12746,6 +12746,12 @@ function SmartBusinessMgmt() {
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", tick);
 
+    // 🆕 (২ আগস্ট ২০২৬) নেটিভ ২০-মিনিট অ্যালার্ম (BackupAlarmReceiver.java) app
+    // background/screen-lock অবস্থাতেও evaluateJavascript() দিয়ে সরাসরি এই
+    // ফাংশনটা জোর করে কল করে — WebView-এর নিজস্ব JS-timer throttling এড়িয়ে।
+    // window-এ এক্সপোজ না করলে native side-এর কোনো রেফারেন্স থাকবে না।
+    window.__sbmNativeBackupTick = tick;
+
     // 🆕 ফিক্স (staff-শেয়ার্ড token সবসময় fresh রাখা): আগে token-refresh
     // Drive backup cycle-এর সাথেই বাঁধা ছিল (৪৫ মিনিটে) — কিন্তু এখন Drive
     // backup-এর প্রকৃত cadence ইউজারের সেটিং (হতে পারে ৪ ঘণ্টাও) অনুযায়ী
@@ -12796,50 +12802,72 @@ function SmartBusinessMgmt() {
       if (autoReconnectTimer) clearInterval(autoReconnectTimer);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", tick);
+      if (window.__sbmNativeBackupTick === tick) delete window.__sbmNativeBackupTick;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, currentUser?.role]);
 
-  // ── 🆕 ব্যাকআপ-রিলায়েবিলিটি: native Foreground keep-alive + battery-exemption প্রম্পট ──
+  // ── 🆕 ব্যাকআপ-রিলায়েবিলিটি: native Foreground keep-alive + battery-exemption +
+  //      exact-alarm ২০-মিনিট cadence প্রম্পট ──
   // রুট-কজ (দেখুন transcript, ১ আগস্ট): MIUI-এর "Pause app activity if unused"
   // অ্যাপ কয়েকদিন না খুললে JS প্রসেস (এবং তার ভেতরের ৬০-সেকেন্ডের tick টাইমার)
-  // পুরোপুরি থামিয়ে দেয় — সেটিংস ম্যানুয়ালি ঠিক করলেও ভবিষ্যতে অন্য
-  // OEM/Android ভার্সনে আবার একই সমস্যা ফিরে আসতে পারে। এই effect দুটো native
-  // (capacitor-backup-service প্লাগইন) সাহায্য চায়:
-  //   ১) startForegroundKeepAlive() — একটা লো-প্রায়োরিটি স্থায়ী নোটিফিকেশন সহ
-  //      Foreground Service চালু করে, যাতে অ্যাপ ব্যাকগ্রাউন্ডে থাকা অবস্থায়
-  //      OS/MIUI সহজে প্রসেস kill না করে — বিদ্যমান JS setInterval tick তখন
-  //      স্বাভাবিকভাবেই চলতে থাকে (backup লজিক duplicate করার দরকার নেই)।
-  //   ২) requestIgnoreBatteryOptimizations() — "Ignore battery optimizations"
-  //      পারমিশনের নেটিভ প্রম্পট সরাসরি অ্যাপ থেকেই দেখায়, ইউজারকে সেটিংসে
-  //      গিয়ে খুঁজতে হয় না।
-  // 🔴 সততার সাথে উল্লেখ: এটা backup upload নিজেই native (WorkManager) করে
-  // চালায় না — কারণ backup লজিক (hash/diff/Drive upload) এখনো JS-এই থাকে;
-  // পুরোপুরি native করতে হলে সেই লজিক Kotlin-এ ডুপ্লিকেট করতে হতো, যেটা দুই
-  // জায়গায় লজিক maintain করার নতুন ঝুঁকি তৈরি করত। এই কম্বো (Foreground
-  // keep-alive + battery exemption + নিচের delay-banner) রুট-কজটাই সরাসরি
-  // ঠিক করে, ঝুঁকি ছাড়া।
+  // পুরোপুরি থামিয়ে দেয়; আবার প্রসেস বেঁচে থাকলেও শুধু স্ক্রিন লক/background
+  // অবস্থায় WebView নিজে থেকেই page-এর JS timer suspend/throttle করে দেয় (২
+  // আগস্টের স্ক্রিনশট বিশ্লেষণে ধরা পড়া দ্বিতীয় সমস্যা — cadence ২০ মিনিটের
+  // বদলে ৪০-৪৫ মিনিট হয়ে যাচ্ছিল)। এই effect তিনটে native সাহায্য নেয়
+  // (capacitor-backup-service প্লাগইন):
+  //   ১) startForegroundKeepAlive() — প্রসেস kill থেকে বাঁচায় (আগের মতোই)।
+  //   ২) requestIgnoreBatteryOptimizations() — battery exemption প্রম্পট (আগের মতোই)।
+  //   ৩) 🆕 scheduleExactBackupAlarm() — AlarmManager.setExactAndAllowWhileIdle
+  //      দিয়ে ঠিক ২০ মিনিটে (Doze-বাইপাস) ফায়ার করে, evaluateJavascript() দিয়ে
+  //      window.__sbmNativeBackupTick() (উপরের tick()) সরাসরি কল করে — WebView-এর
+  //      নিজস্ব timer-throttling এড়িয়ে। Android 12+-এ SCHEDULE_EXACT_ALARM
+  //      অনুমতি ইউজারকে Settings থেকে একবার দিতে হয় (৩ দিনে একবার প্রম্পট)।
+  // 🔴 সততার সাথে উল্লেখ: এটাও পুরোপুরি backup upload logic (hash/diff/Drive
+  // upload) native-এ ডুপ্লিকেট করে না — সেটা এখনো JS-এই থাকে এবং evaluateJavascript
+  // দিয়ে কল হয়, তাই দুই জায়গায় লজিক maintain করার ঝুঁকি নেই। শুধু এতটুকুই নতুন:
+  // app স্বাভাবিক foreground state-এ না থাকলেও কে/কখন সেই JS চালাবে সেটা এখন
+  // native alarm ঠিক করে দেয়, JS-এর নিজের suspend হয়ে যাওয়া timer না।
   useEffect(() => {
     if (!loaded || typeof window === "undefined" || !window.Capacitor?.isNativePlatform?.()) return;
     const BackupSvc = window.Capacitor?.Plugins?.BackupService;
     if (!BackupSvc) return; // পুরনো APK (প্লাগইন ছাড়া বিল্ড হওয়া) — নীরবে স্কিপ
 
     try { BackupSvc.startForegroundKeepAlive(); } catch {}
+    try { BackupSvc.scheduleExactBackupAlarm(); } catch {}
 
-    // battery exemption — প্রতি বুটে জিজ্ঞাসা না করে, সর্বোচ্চ ৩ দিনে একবার
     (async () => {
       try {
+        // battery exemption — প্রতি বুটে জিজ্ঞাসা না করে, সর্বোচ্চ ৩ দিনে একবার
         const res = await BackupSvc.isIgnoringBatteryOptimizations();
-        if (res?.ignoring) return;
-        const lastAsked = parseInt(localStorage.getItem("sbm_battery_exempt_asked_at") || "0", 10) || 0;
-        if (Date.now() - lastAsked < 3 * 24 * 60 * 60 * 1000) return;
-        localStorage.setItem("sbm_battery_exempt_asked_at", String(Date.now()));
-        showToast("🔋 ব্যাকআপ যেন বন্ধ না হয়ে যায় — ব্যাটারি অপ্টিমাইজেশন থেকে বাদ দিতে ট্যাপ করুন", "#f59e0b");
-        try { await BackupSvc.requestIgnoreBatteryOptimizations(); } catch {}
+        if (!res?.ignoring) {
+          const lastAsked = parseInt(localStorage.getItem("sbm_battery_exempt_asked_at") || "0", 10) || 0;
+          if (Date.now() - lastAsked >= 3 * 24 * 60 * 60 * 1000) {
+            localStorage.setItem("sbm_battery_exempt_asked_at", String(Date.now()));
+            showToast("🔋 ব্যাকআপ যেন বন্ধ না হয়ে যায় — ব্যাটারি অপ্টিমাইজেশন থেকে বাদ দিতে ট্যাপ করুন", "#f59e0b");
+            try { await BackupSvc.requestIgnoreBatteryOptimizations(); } catch {}
+          }
+        }
+      } catch {}
+      try {
+        // 🆕 exact-alarm অনুমতি — Android 12+ (S) হলেই প্রযোজ্য, নিচেরটা নিজেই
+        // পুরনো Android-এ can:true রিটার্ন করে (কিছুই করার দরকার নেই)।
+        const res = await BackupSvc.canScheduleExactAlarms();
+        if (!res?.can) {
+          const lastAsked = parseInt(localStorage.getItem("sbm_exact_alarm_asked_at") || "0", 10) || 0;
+          if (Date.now() - lastAsked >= 3 * 24 * 60 * 60 * 1000) {
+            localStorage.setItem("sbm_exact_alarm_asked_at", String(Date.now()));
+            showToast("⏰ ঠিক সময়ে ব্যাকআপের জন্য Alarms & reminders অনুমতি দিন", "#f59e0b");
+            try { await BackupSvc.requestScheduleExactAlarmPermission(); } catch {}
+          }
+        }
       } catch {}
     })();
 
-    return () => { try { BackupSvc.stopForegroundKeepAlive(); } catch {} };
+    return () => {
+      try { BackupSvc.stopForegroundKeepAlive(); } catch {}
+      try { BackupSvc.cancelExactBackupAlarm(); } catch {}
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
 
