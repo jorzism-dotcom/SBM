@@ -42,4 +42,7 @@ dependencies {
     implementation fileTree(include: ['*.jar'], dir: 'libs')
     implementation "androidx.appcompat:appcompat:1.6.1"
     implementation project(':capacitor-android')
+    // 🆕 WorkManager সেফটি-নেট লেয়ার (AlarmManager-এর পাশাপাশি, exact-alarm
+    // permission ছাড়াই কাজ করে, reboot-এর পরও নিজে থেকে টিকে থাকে)
+    implementation "androidx.work:work-runtime:2.9.0"
 }
