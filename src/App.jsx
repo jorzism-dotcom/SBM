@@ -12552,8 +12552,9 @@ function SmartBusinessMgmt() {
     } catch {}
     const isStaffDevice = currentUser?.role === "staff";
 
-    const runLocalBackup = async () => {
+    const runLocalBackup = async (src = "?") => {
       try {
+        SyncLog.add("diag", `[localFile] শুরু (ট্রিগার: ${src})`);
         const data = await _latestBuildBackupData.current(); // সবসময় সর্বশেষ buildBackupData
         // #৯/#১৬ — retention/WORM প্রতি cycle-এ চেক হয় (নিজেরাই দিনে/মাসে
         // একবার idempotent সেভ করে) — delta-skip-এর সাথে সম্পর্কহীন, কারণ
@@ -12576,7 +12577,10 @@ function SmartBusinessMgmt() {
         // #৪ ডেল্টা সিঙ্ক — local file destination-এর checkpoint hash আগেরটার
         // সাথে মিললে এবং তারিখও না বদলালে পুরো ফাইল আবার লেখার দরকার নেই।
         const newHashes = data._meta?.contentHash || buildContentHashes(data);
-        if (!dateChanged && await DeltaSync.shouldSkip("autoLocalFile", newHashes)) return;
+        if (!dateChanged && await DeltaSync.shouldSkip("autoLocalFile", newHashes)) {
+          SyncLog.add("diag", `[localFile] স্কিপ — ডেটা অপরিবর্তিত (হ্যাশ একই), তারিখও বদলায়নি`);
+          return;
+        }
 
         await withRetry(() => FS.saveBackup(data, `sbm-auto-${dateStr}.json`), { retries: 2 }); // #৫
         // 🆕 প্রতিবার নতুন sbm-auto ফাইল লেখা হলেই সাথে সাথে পুরনোগুলো মুছে ফেলা —
@@ -12596,6 +12600,7 @@ function SmartBusinessMgmt() {
         try { await SnapshotDB.save({ ...data, _savedAt: ts }); } catch {}
 
         if (Math.random() < 0.1) FieldChangeLog.prune(); // #১৫ — একই ফ্রিকোয়েন্সিতে চেঞ্জ-লগও সীমার মধ্যে রাখা
+        SyncLog.add("diag", `[localFile] ✅ সফল — sbm-auto-${dateStr}.json লেখা হলো, ${ts}`);
       } catch (e) {
         // 🔴 ডিবাগ ফিক্স: আগে এই ব্লকে এরর সম্পূর্ণ silent-এ গিলে ফেলা হতো —
         // FS.saveBackup() ব্যর্থ হলেও কোথাও কোনো চিহ্ন থাকত না, ফাইল
@@ -12611,13 +12616,15 @@ function SmartBusinessMgmt() {
     // আপলোড করে — GoogleDriveSection-এর নিজস্ব silentBackup timer সরিয়ে
     // ফেলা হয়েছে। তাই এখানেই ইউজারের বেছে নেওয়া ইন্টারভাল (hg_gd_interval,
     // মিনিটে) ও অন/অফ টগল (sbm_gd_auto) চেক হয়।
-    const runDriveBackup = async ({ force = false } = {}) => {
+    const runDriveBackup = async ({ force = false, src = "?" } = {}) => {
       try {
-        if (localStorage.getItem("sbm_gd_auto") === "0") return; // ইউজার নিজে বন্ধ করেছে
+        SyncLog.add("diag", `[drive] শুরু (ট্রিগার: ${src}${force ? ", force" : ""})`);
+        if (localStorage.getItem("sbm_gd_auto") === "0") { SyncLog.add("diag", "[drive] স্কিপ — sbm_gd_auto=0 (ইউজার টগল বন্ধ)"); return; }
         if (!force) {
           const intervalMin = parseInt(localStorage.getItem("hg_gd_interval") || "20", 10) || 20;
           const last = lastDriveBackupRef.current ? new Date(lastDriveBackupRef.current).getTime() : 0;
-          if (Date.now() - last < intervalMin * 60 * 1000) return; // এখনো ইন্টারভাল শেষ হয়নি
+          const remainMin = Math.round((intervalMin * 60 * 1000 - (Date.now() - last)) / 60000);
+          if (Date.now() - last < intervalMin * 60 * 1000) { SyncLog.add("diag", `[drive] স্কিপ — ইন্টারভাল (${intervalMin}মি) এখনো শেষ হয়নি, বাকি ~${remainMin}মি`); return; }
         }
         let token = null;
         if (!isStaffDevice) {
@@ -12653,6 +12660,7 @@ function SmartBusinessMgmt() {
               try { SyncLog.add("error", "Google Drive silent token refresh পরপর " + fails + " বার ব্যর্থ — পুনরায় সংযোগ দরকার"); } catch {}
             }
           }
+          SyncLog.add("diag", `[drive] স্কিপ — token নেই (${isStaffDevice ? "staff, admin থেকে token আসেনি/পুরনো" : "admin, silent refresh ব্যর্থ"})`);
           return; // token নেই/expired — এই cycle skip, পরের cycle-এ আবার চেষ্টা
         }
         const data = await _latestBuildBackupData.current(); // 🔴 ফিক্স: সবসময় সর্বশেষ ডেটা (দেখুন উপরের stale-closure কমেন্ট)
@@ -12660,7 +12668,7 @@ function SmartBusinessMgmt() {
         // silentBackup timer-এর সাথেও শেয়ার করা (একই Drive ফাইল, তাই দুটো
         // আলাদা টাইমার একই অপরিবর্তিত ডেটা দুইবার আপলোড করবে না)।
         const newHashes = data._meta?.contentHash || buildContentHashes(data);
-        if (await DeltaSync.shouldSkip("drive", newHashes)) return;
+        if (await DeltaSync.shouldSkip("drive", newHashes)) { SyncLog.add("diag", "[drive] স্কিপ — ডেটা অপরিবর্তিত (হ্যাশ একই)"); return; }
         await withRetry(() => GDrive.uploadBackup(token, { ...data, _autoBackup: true, _savedAt: new Date().toISOString() }), { retries: 2 }); // #৫
         await DeltaSync.markSynced("drive", newHashes);
         // 🔴 ফিক্স (মূল সমস্যা — "অটো ব্যাকআপ হচ্ছে না মনে হয়"): এই safety-net
@@ -12678,6 +12686,7 @@ function SmartBusinessMgmt() {
         // দেখানো যায়, কার্ডের ভেতরে ঢোকা ছাড়াই।
         setLastDriveBackup(ts2);
         await save(SK.lastDriveBackup, ts2);
+        SyncLog.add("diag", `[drive] ✅ সফল — Drive-এ আপলোড হলো, ${ts2}`);
       } catch (e) {
         if (!isStaffDevice) {
           const fails = (parseInt(localStorage.getItem("sbm_gd_auto_fail_count") || "0", 10) || 0) + 1;
@@ -12693,34 +12702,37 @@ function SmartBusinessMgmt() {
     // অন/অফ টগল (sbm_local_auto) নিজে চেক করে। "realtime" মানে প্রতি tick-এই
     // (নিচে ৬০ সেকেন্ড) কনটেন্ট বদলেছে কিনা চেক হবে — DeltaSync নিজেই বৃথা
     // রি-রাইট আটকে দেয়।
-    const runSnapshotBackup = async ({ force = false } = {}) => {
+    const runSnapshotBackup = async ({ force = false, src = "?" } = {}) => {
       try {
-        if (localStorage.getItem("sbm_local_auto") === "0") return;
+        SyncLog.add("diag", `[snapshot] শুরু (ট্রিগার: ${src}${force ? ", force" : ""})`);
+        if (localStorage.getItem("sbm_local_auto") === "0") { SyncLog.add("diag", "[snapshot] স্কিপ — sbm_local_auto=0 (ইউজার টগল বন্ধ)"); return; }
         const schedule = localStorage.getItem("sbm_local_schedule") || "daily";
         if (!force && schedule !== "realtime") {
           const intervals = { hourly: 3600000, daily: 86400000 };
           const ms = intervals[schedule] || 86400000;
           const last = lastSnapshotBackupRef.current ? new Date(lastSnapshotBackupRef.current).getTime() : 0;
-          if (Date.now() - last < ms) return; // এখনো সময় হয়নি
+          const remainMin = Math.round((ms - (Date.now() - last)) / 60000);
+          if (Date.now() - last < ms) { SyncLog.add("diag", `[snapshot] স্কিপ — schedule=${schedule}, বাকি ~${remainMin}মি`); return; } // এখনো সময় হয়নি
         }
         const data = await _latestBuildBackupData.current();
         const picked = pickBackupFields(data);
         const newHashes = buildContentHashes(picked);
-        if (await DeltaSync.shouldSkip("snapshot", newHashes)) return; // ডেটা না বদলালে বৃথা রি-রাইট না
+        if (await DeltaSync.shouldSkip("snapshot", newHashes)) { SyncLog.add("diag", "[snapshot] স্কিপ — ডেটা অপরিবর্তিত (হ্যাশ একই)"); return; } // ডেটা না বদলালে বৃথা রি-রাইট না
         await SnapshotDB.save({ ...picked, _meta: data._meta, _savedAt: new Date().toISOString() });
         await DeltaSync.markSynced("snapshot", newHashes);
         const ts = new Date().toISOString();
         setLastSnapshotBackup(ts);
         await save(SK.lastSnapshotBackup, ts);
+        SyncLog.add("diag", `[snapshot] ✅ সফল — IndexedDB স্ন্যাপশট নেওয়া হলো, ${ts}`);
       } catch (e) {
         try { SyncLog.add("error", "Auto snapshot ব্যর্থ: " + (e?.message || String(e))); } catch {}
       }
     };
 
-    const cycle = () => {
-      runLocalBackup();
-      runDriveBackup();
-      runSnapshotBackup();
+    const cycle = (src = "?") => {
+      runLocalBackup(src);
+      runDriveBackup({ src });
+      runSnapshotBackup({ src });
     };
 
     // 🆕 ফোল্ডার-মিসিং সেলফ-হিল চেক — আগে অন্তত একবার ব্যাকআপ ফোল্ডারে ফাইল
@@ -12737,7 +12749,7 @@ function SmartBusinessMgmt() {
           localStorage.setItem(SEEN_KEY, "1");
         } else if (localStorage.getItem(SEEN_KEY) === "1") {
           try { showToast("⚠️ ব্যাকআপ ফোল্ডার খুঁজে পাওয়া যায়নি — নতুন ব্যাকআপ নেওয়া হচ্ছে", "#f59e0b"); } catch {}
-          cycle();
+          cycle("folder-self-heal");
         }
       }).catch(() => {});
     }
@@ -12750,24 +12762,42 @@ function SmartBusinessMgmt() {
     // ভেতরে চেক করে তাদের নিজস্ব ইন্টারভাল পার হয়েছে কিনা, তাই প্রতি tick-এ
     // ডাকা হলেও বেশিরভাগ সময় সাথে সাথেই skip হয়ে যায় — ব্যাটারি/API rate-limit
     // এর কোনো বাড়তি ক্ষতি নেই, কিন্তু ইউজারের সেটিং সবসময় সঠিকভাবে মানা হয়।
-    const tick = () => { runLocalBackup(); runDriveBackup(); runSnapshotBackup(); };
-    const tickTimer = setInterval(tick, 60 * 1000);
-    const firstRun = setTimeout(tick, 30000); // অ্যাপ ওপেন হওয়ার ৩০ সেকেন্ড পর প্রথমবার
+    // 🧪 অস্থায়ী ডায়াগনস্টিকস (২ আগস্ট ২০২৬) — প্রতিটা tick কোন উৎস থেকে এলো
+    // (60s interval / visibilitychange / focus / native alarm / worker) এবং
+    // আগের tick থেকে গ্যাপ কত সেকেন্ড ছিল (৬০-এর চেয়ে অনেক বেশি হলে বোঝা যাবে
+    // WebView-এর JS timer throttle/suspend হয়েছিল) — SyncLog-এ "diag" টাইপে
+    // লেখা হয়, Settings → ডায়াগনস্টিকস স্ক্রিন থেকে দেখা যাবে। রুট কজ নিশ্চিত
+    // হওয়ার পর এই ব্লকটা (এবং নিচের সব SyncLog.add("diag"...) কলগুলো) সরিয়ে
+    // ফেলা যাবে — এটা স্থায়ী ফিচার না, শুধু ডিবাগিং-এর জন্য।
+    let _lastTickAt = Date.now();
+    const tick = (src = "interval") => {
+      const now = Date.now();
+      const gapSec = Math.round((now - _lastTickAt) / 1000);
+      _lastTickAt = now;
+      SyncLog.add("diag", `[tick] উৎস=${src}, visibility=${typeof document !== "undefined" ? document.visibilityState : "?"}, আগের tick থেকে গ্যাপ=${gapSec}সে`);
+      runLocalBackup(src);
+      runDriveBackup({ src });
+      runSnapshotBackup({ src });
+    };
+    const tickTimer = setInterval(() => tick("interval-60s"), 60 * 1000);
+    const firstRun = setTimeout(() => tick("boot-30s"), 30000); // অ্যাপ ওপেন হওয়ার ৩০ সেকেন্ড পর প্রথমবার
 
     // 🔴 Event-driven trigger — Android Doze/App Standby-তে background setInterval
     // suspend হয়ে যেতে পারে, তাই শুধু interval-এর উপর ভরসা না করে অ্যাপ
     // foreground-এ ফিরলেই (visibilitychange/resume) একটা tick চালানো হয় —
     // runDriveBackup/runSnapshotBackup নিজেরাই ইন্টারভাল-গেট করে বলে বাড়তি
     // ১৫-মিনিট গার্ডের আর দরকার নেই, স্প্যামের ঝুঁকি নেই।
-    const onVisible = () => { if (document.visibilityState === "visible") tick(); };
+    const onVisible = () => { if (document.visibilityState === "visible") tick("visibilitychange"); };
     document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("focus", tick);
+    const onFocus = () => tick("focus");
+    window.addEventListener("focus", onFocus);
 
     // 🆕 (২ আগস্ট ২০২৬) নেটিভ ২০-মিনিট অ্যালার্ম (BackupAlarmReceiver.java) app
     // background/screen-lock অবস্থাতেও evaluateJavascript() দিয়ে সরাসরি এই
     // ফাংশনটা জোর করে কল করে — WebView-এর নিজস্ব JS-timer throttling এড়িয়ে।
     // window-এ এক্সপোজ না করলে native side-এর কোনো রেফারেন্স থাকবে না।
-    window.__sbmNativeBackupTick = tick;
+    const nativeTickFn = () => tick("native-alarm-or-worker");
+    window.__sbmNativeBackupTick = nativeTickFn;
 
     // 🆕 ফিক্স (staff-শেয়ার্ড token সবসময় fresh রাখা): আগে token-refresh
     // Drive backup cycle-এর সাথেই বাঁধা ছিল (৪৫ মিনিটে) — কিন্তু এখন Drive
@@ -12818,8 +12848,8 @@ function SmartBusinessMgmt() {
       if (tokenOnlyTimer) clearInterval(tokenOnlyTimer);
       if (autoReconnectTimer) clearInterval(autoReconnectTimer);
       document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("focus", tick);
-      if (window.__sbmNativeBackupTick === tick) delete window.__sbmNativeBackupTick;
+      window.removeEventListener("focus", onFocus);
+      if (window.__sbmNativeBackupTick === nativeTickFn) delete window.__sbmNativeBackupTick;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, currentUser?.role]);
@@ -12848,10 +12878,17 @@ function SmartBusinessMgmt() {
   useEffect(() => {
     if (!loaded || typeof window === "undefined" || !window.Capacitor?.isNativePlatform?.()) return;
     const BackupSvc = window.Capacitor?.Plugins?.BackupService;
-    if (!BackupSvc) return; // পুরনো APK (প্লাগইন ছাড়া বিল্ড হওয়া) — নীরবে স্কিপ
+    if (!BackupSvc) {
+      // 🧪 অস্থায়ী ডায়াগনস্টিকস: এটাই সবচেয়ে গুরুত্বপূর্ণ সিগন্যাল — এই লগ
+      // এলে বোঝা যাবে ইনস্টল করা APK-তে native BackupService প্লাগইনই নেই
+      // (পুরনো বিল্ড, বা cap sync/gradle-এ প্লাগইন যুক্ত হয়নি)।
+      try { SyncLog.add("diag", "[native] ⚠️ window.Capacitor.Plugins.BackupService পাওয়া যায়নি — পুরনো/ভুল বিল্ড, নেটিভ অ্যালার্ম/ওয়ার্কার একদমই সেটআপ হয়নি"); } catch {}
+      return; // পুরনো APK (প্লাগইন ছাড়া বিল্ড হওয়া) — নীরবে স্কিপ
+    }
+    try { SyncLog.add("diag", "[native] BackupService প্লাগইন পাওয়া গেছে, নেটিভ লেয়ার সেটআপ শুরু হচ্ছে"); } catch {}
 
-    try { BackupSvc.startForegroundKeepAlive(); } catch {}
-    try { BackupSvc.scheduleExactBackupAlarm(); } catch {}
+    try { BackupSvc.startForegroundKeepAlive(); SyncLog.add("diag", "[native] startForegroundKeepAlive() কল হলো"); } catch (e) { SyncLog.add("diag", "[native] startForegroundKeepAlive() ব্যর্থ: " + (e?.message || e)); }
+    try { BackupSvc.scheduleExactBackupAlarm(); SyncLog.add("diag", "[native] scheduleExactBackupAlarm() কল হলো"); } catch (e) { SyncLog.add("diag", "[native] scheduleExactBackupAlarm() ব্যর্থ: " + (e?.message || e)); }
 
     // 🆕 (২ আগস্ট ২০২৬) তৃতীয় লেয়ার — WorkManager সেফটি-নেট, AlarmManager-এর
     // পাশাপাশি স্বাধীনভাবে চলে (exact-alarm permission ছাড়াই কাজ করে, reboot-
@@ -12860,10 +12897,11 @@ function SmartBusinessMgmt() {
     // boot-এ কল করা হয়। পাশাপাশি "মিসড" কাউন্ট চেক করে — যদি WorkManager অনেকবার
     // চললেও WebView জীবিত না পায় (প্রসেস বারবার kill হচ্ছে), ইউজারকে একটা
     // নরম সতর্কতা দেখানো হয় যাতে তিনি ব্যাটারি সেটিংস চেক করতে পারেন।
-    try { BackupSvc.schedulePeriodicSafetyNetWorker(); } catch {}
+    try { BackupSvc.schedulePeriodicSafetyNetWorker(); SyncLog.add("diag", "[native] schedulePeriodicSafetyNetWorker() কল হলো (১৫মি WorkManager)"); } catch (e) { SyncLog.add("diag", "[native] schedulePeriodicSafetyNetWorker() ব্যর্থ: " + (e?.message || e)); }
     (async () => {
       try {
         const res = await BackupSvc.getMissedSafetyNetCount();
+        SyncLog.add("diag", `[native] WorkManager missed count = ${res?.missed || 0} (এটা বাড়লে বোঝা যায় WorkManager চললেও app process/WebView জীবিত পাওয়া যাচ্ছে না — সম্ভবত recent-apps থেকে swipe-kill হচ্ছে)`);
         if ((res?.missed || 0) >= 5) {
           showToast("🔋 ব্যাকআপ বারবার মিস হচ্ছে — ব্যাটারি অপ্টিমাইজেশন থেকে অ্যাপ বাদ দিন", "#f59e0b");
         }
@@ -12905,6 +12943,7 @@ function SmartBusinessMgmt() {
       try {
         // battery exemption — প্রতি বুটে জিজ্ঞাসা না করে, সর্বোচ্চ ৩ দিনে একবার
         const res = await BackupSvc.isIgnoringBatteryOptimizations();
+        SyncLog.add("diag", `[native] Battery optimization exempt (ignoring) = ${!!res?.ignoring}`);
         if (!res?.ignoring) {
           const lastAsked = parseInt(localStorage.getItem("sbm_battery_exempt_asked_at") || "0", 10) || 0;
           if (Date.now() - lastAsked >= 3 * 24 * 60 * 60 * 1000) {
@@ -12923,6 +12962,7 @@ function SmartBusinessMgmt() {
         // উপরের কমেন্ট) — আলাদা IIFE হওয়ায় উপরেরটা Settings-এ নেভিগেট করলেও
         // এটা independently চলে।
         const res = await BackupSvc.canScheduleExactAlarms();
+        SyncLog.add("diag", `[native] canScheduleExactAlarms = ${!!res?.can} (false হলে AlarmManager inexact fallback ব্যবহার হচ্ছে, timing অনিশ্চিত)`);
         if (!res?.can) {
           const lastAsked = parseInt(localStorage.getItem("sbm_exact_alarm_asked_at") || "0", 10) || 0;
           if (Date.now() - lastAsked >= 3 * 24 * 60 * 60 * 1000) {
@@ -16130,8 +16170,9 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
   const [, forceTick] = useState(0); // "X মিনিট আগে" প্রতি মিনিটে রিফ্রেশ করার জন্য
   const cooldownRef = useRef(0);
 
-  const refresh = useCallback(async ({ interactive = false } = {}) => {
+  const refresh = useCallback(async ({ interactive = false, src = "?" } = {}) => {
     const now = Date.now();
+    try { SyncLog.add("diag", `[viewerRefresh] শুরু (ট্রিগার: ${src}, interactive=${interactive}, visibility=${typeof document !== "undefined" ? document.visibilityState : "?"})`); } catch {}
     // 🔴 ফিক্স (২৮ জুলাই ২০২৬ — "রিফ্রেশ বাটন কাজ করছে না"): আগে এই ৬০-সেকেন্ড
     // কুলডাউন ম্যানুয়াল বাটন-ক্লিকেও (interactive: true) সমানভাবে প্রযোজ্য ছিল,
     // আর ব্লক হলে কোনো toast/error/loading state কিছুই দেখাত না — চুপচাপ কিছুই
@@ -16145,6 +16186,7 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
         const waitSec = Math.ceil((minGap - (now - cooldownRef.current)) / 1000);
         try { showToast(`একটু আগেই রিফ্রেশ করা হয়েছে — ${waitSec} সেকেন্ড পর আবার চেষ্টা করুন`, "#f59e0b"); } catch {}
       }
+      try { SyncLog.add("diag", `[viewerRefresh] স্কিপ — কুলডাউন এখনো শেষ হয়নি`); } catch {}
       return;
     }
     cooldownRef.current = now;
@@ -16161,10 +16203,12 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
       localStorage.setItem(VK.cache, JSON.stringify(fresh));
       localStorage.setItem(VK.lastSync, ts);
       if (interactive) { try { showToast("✅ রিফ্রেশ সম্পন্ন — সর্বশেষ ডেটা লোড হয়েছে", "#22c55e"); } catch {} }
+      try { SyncLog.add("diag", `[viewerRefresh] ✅ সফল — নতুন ডেটা লোড হলো, ${ts}`); } catch {}
     } catch (e) {
       const msg = e?.message === "TOKEN_EXPIRED" ? "সেশনের মেয়াদ শেষ — রিফ্রেশ বাটনে চাপুন" : (e?.message || "রিফ্রেশ ব্যর্থ হয়েছে");
       setErr(msg);
       if (interactive) { try { showToast(`⚠️ ${msg}`, "#ef4444"); } catch {} }
+      try { SyncLog.add("diag", `[viewerRefresh] ❌ ব্যর্থ: ${msg}`); } catch {}
     } finally {
       setSyncing(false);
     }
@@ -16172,8 +16216,9 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
 
   useEffect(() => {
     const minutes = parseInt(localStorage.getItem(VK.interval) || "15");
-    const id = setInterval(() => refresh(), minutes * 60 * 1000);
-    const onOnline = () => refresh();
+    try { SyncLog.add("diag", `[viewerRefresh] ইন্টারভাল টাইমার সেটআপ হলো — প্রতি ${minutes} মিনিট`); } catch {}
+    const id = setInterval(() => refresh({ src: `interval-${minutes}m` }), minutes * 60 * 1000);
+    const onOnline = () => refresh({ src: "online-event" });
     window.addEventListener("online", onOnline);
     // 🔴 ফিক্স (২৮ জুলাই ২০২৬ — ভিউয়ার মোডে ঘণ্টার পর ঘণ্টা স্টেল ডেটা): মূল
     // অ্যাপের অটো-ব্যাকাপ আপলোড পাইপলাইনে আগেই visibilitychange/focus
@@ -16183,19 +16228,20 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
     // আনত না, "X ঘণ্টা আগে" স্টেল থেকে যেত। এখন ফোরগ্রাউন্ডে ফিরলে (এবং শেষ
     // সিঙ্কের পর যথেষ্ট সময় পার হলে) রিফ্রেশ চালানো হয়।
     let lastAttemptAt = Date.now();
-    const resumeRefresh = () => {
+    const resumeRefresh = (src = "resume") => {
       const now = Date.now();
-      if (now - lastAttemptAt < 60 * 1000) return; // spam এড়াতে
+      if (now - lastAttemptAt < 60 * 1000) { try { SyncLog.add("diag", `[viewerRefresh] resumeRefresh(${src}) স্কিপ — স্প্যাম-গার্ড (৬০সে এর মধ্যে আগেরটা)`); } catch {} return; } // spam এড়াতে
       lastAttemptAt = now;
-      refresh();
+      refresh({ src });
     };
-    const onVisible = () => { if (document.visibilityState === "visible") resumeRefresh(); };
+    const onVisible = () => { if (document.visibilityState === "visible") resumeRefresh("visibilitychange"); };
     document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("focus", resumeRefresh);
+    const onFocus = () => resumeRefresh("focus");
+    window.addEventListener("focus", onFocus);
     let appListenerHandle = null;
     if (typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.()) {
       import("@capacitor/app").then(({ App }) => {
-        appListenerHandle = App.addListener("resume", resumeRefresh);
+        appListenerHandle = App.addListener("resume", () => resumeRefresh("native-app-resume"));
       }).catch(() => {});
     }
 
@@ -16214,21 +16260,23 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
     // করে এখানেই সরাসরি schedule করা হয়েছে — Viewer ডিভাইসে কোনো shop config
     // লোড নাও হতে পারে, তাই স্বাধীনভাবে কাজ করাই নিরাপদ (ViewerDashboardScreen-
     // এর নিজের ডিজাইন-নীতি: কোনো global shop state ছোঁয় না)।
-    window.__sbmViewerRefreshTick = () => refresh();
+    window.__sbmViewerRefreshTick = () => refresh({ src: "native-alarm-or-worker" });
     if (typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.()) {
       const BackupSvc = window.Capacitor?.Plugins?.BackupService;
-      if (BackupSvc) {
-        try { BackupSvc.scheduleExactBackupAlarm(); } catch {}
-        try { BackupSvc.schedulePeriodicSafetyNetWorker(); } catch {}
+      if (!BackupSvc) {
+        try { SyncLog.add("diag", "[viewerRefresh][native] ⚠️ BackupService প্লাগইন পাওয়া যায়নি — এই Viewer ডিভাইসের APK-ও পুরনো/ভুল বিল্ড হতে পারে"); } catch {}
+      } else {
+        try { BackupSvc.scheduleExactBackupAlarm(); SyncLog.add("diag", "[viewerRefresh][native] scheduleExactBackupAlarm() কল হলো"); } catch (e) { try { SyncLog.add("diag", "[viewerRefresh][native] scheduleExactBackupAlarm() ব্যর্থ: " + (e?.message || e)); } catch {} }
+        try { BackupSvc.schedulePeriodicSafetyNetWorker(); SyncLog.add("diag", "[viewerRefresh][native] schedulePeriodicSafetyNetWorker() কল হলো"); } catch (e) { try { SyncLog.add("diag", "[viewerRefresh][native] schedulePeriodicSafetyNetWorker() ব্যর্থ: " + (e?.message || e)); } catch {} }
       }
     }
 
-    refresh();
+    refresh({ src: "mount" });
     return () => {
       clearInterval(id);
       window.removeEventListener("online", onOnline);
       document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("focus", resumeRefresh);
+      window.removeEventListener("focus", onFocus);
       if (appListenerHandle) { try { appListenerHandle.remove(); } catch {} }
       // 🔴 আগের alarm cancel করা হয় না (শপ App-এর effect-এর মতোই idempotent
       // re-schedule নির্ভর ডিজাইন) — শুধু tick hook সরানো হয়, যাতে এই স্ক্রিন
@@ -32269,10 +32317,172 @@ function AppVersionCard({ T, S }) {
   );
 }
 
+// 🧪 অস্থায়ী ডায়াগনস্টিকস প্যানেল (২ আগস্ট ২০২৬) — শুধু ব্যাকআপ/ভিউয়ার-রিফ্রেশ
+// টাইমলি অটো না হওয়ার রুট-কজ ধরার জন্য অস্থায়ীভাবে যোগ করা। রুট কজ কনফার্ম
+// হয়ে যাওয়ার পর এই কম্পোনেন্ট + Settings_-এর ভেতরের এন্ট্রি-পয়েন্টটা সরিয়ে
+// ফেলা নিরাপদ — এটা কোনো ডেটা/ব্যাকআপ লজিক স্পর্শ করে না, শুধু read-only
+// পর্যবেক্ষণ করে।
+function BackupDiagnosticsCard({ T, S, expanded, onToggle }) {
+  const [logs, setLogs] = useState(() => SyncLog.getAll());
+  const [live, setLive] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [copyMsg, setCopyMsg] = useState("");
+
+  useEffect(() => {
+    const unsub = SyncLog.subscribe(setLogs);
+    return unsub;
+  }, []);
+
+  const runLiveChecks = async () => {
+    setRefreshing(true);
+    try {
+      const isNative = typeof window !== "undefined" && !!window.Capacitor?.isNativePlatform?.();
+      const BackupSvc = isNative ? window.Capacitor?.Plugins?.BackupService : null;
+      const out = {
+        isNative,
+        pluginFound: !!BackupSvc,
+        battery: null, exactAlarm: null, missed: null,
+        lastDriveBackup: null, lastLocalBackup: null, lastSnapshotBackup: null,
+        sbm_gd_auto: localStorage.getItem("sbm_gd_auto"),
+        sbm_local_auto: localStorage.getItem("sbm_local_auto"),
+        sbm_local_schedule: localStorage.getItem("sbm_local_schedule"),
+        hg_gd_interval: localStorage.getItem("hg_gd_interval"),
+        viewer_interval: localStorage.getItem(VK.interval),
+        sbm_gd_needs_reconnect: localStorage.getItem("sbm_gd_needs_reconnect"),
+        sbm_gd_auto_fail_count: localStorage.getItem("sbm_gd_auto_fail_count"),
+      };
+      if (BackupSvc) {
+        try { out.battery = (await BackupSvc.isIgnoringBatteryOptimizations())?.ignoring; } catch {}
+        try { out.exactAlarm = (await BackupSvc.canScheduleExactAlarms())?.can; } catch {}
+        try { out.missed = (await BackupSvc.getMissedSafetyNetCount())?.missed; } catch {}
+      }
+      try { out.lastDriveBackup = await load(SK.lastDriveBackup); } catch {}
+      try { out.lastLocalBackup = await load(SK.lastLocalBackup); } catch {}
+      try { out.lastSnapshotBackup = await load(SK.lastSnapshotBackup); } catch {}
+      setLive(out);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => { if (expanded && !live) runLiveChecks(); }, [expanded]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const diagLogs = logs.filter(l => l.type === "diag" || l.type === "error").slice(0, 60);
+
+  const buildReport = () => {
+    const lines = [];
+    lines.push("=== SBM ব্যাকআপ/রিফ্রেশ ডায়াগনস্টিকস রিপোর্ট ===");
+    lines.push("সময়: " + new Date().toLocaleString("bn-BD"));
+    if (live) {
+      lines.push("");
+      lines.push("[লাইভ অবস্থা]");
+      lines.push(`নেটিভ প্ল্যাটফর্ম: ${live.isNative}`);
+      lines.push(`BackupService প্লাগইন পাওয়া গেছে: ${live.pluginFound}`);
+      lines.push(`Battery optimization exempt: ${live.battery}`);
+      lines.push(`Exact alarm permission: ${live.exactAlarm}`);
+      lines.push(`WorkManager missed count: ${live.missed}`);
+      lines.push(`sbm_gd_auto: ${live.sbm_gd_auto}`);
+      lines.push(`sbm_local_auto: ${live.sbm_local_auto}`);
+      lines.push(`sbm_local_schedule: ${live.sbm_local_schedule}`);
+      lines.push(`hg_gd_interval: ${live.hg_gd_interval}`);
+      lines.push(`viewer_interval: ${live.viewer_interval}`);
+      lines.push(`sbm_gd_needs_reconnect: ${live.sbm_gd_needs_reconnect}`);
+      lines.push(`sbm_gd_auto_fail_count: ${live.sbm_gd_auto_fail_count}`);
+      lines.push(`lastDriveBackup: ${live.lastDriveBackup}`);
+      lines.push(`lastLocalBackup: ${live.lastLocalBackup}`);
+      lines.push(`lastSnapshotBackup: ${live.lastSnapshotBackup}`);
+    }
+    lines.push("");
+    lines.push(`[সর্বশেষ ${diagLogs.length}টা লগ, নতুন→পুরনো]`);
+    diagLogs.forEach(l => {
+      lines.push(`${l.at}  [${l.type}]  ${l.msg}`);
+    });
+    return lines.join("\n");
+  };
+
+  const copyReport = async () => {
+    const text = buildReport();
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyMsg("✅ কপি হয়েছে");
+    } catch {
+      setCopyMsg("❌ কপি ব্যর্থ — নিচের টেক্সট ম্যানুয়ালি সিলেক্ট করুন");
+    }
+    setTimeout(() => setCopyMsg(""), 3000);
+  };
+
+  return (
+    <div className="qc-gradient-card" style={{ ...S.card, marginTop: 14, border: "1.5px solid #f59e0b55" }}>
+      <div onClick={onToggle} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", userSelect: "none" }}>
+        <div>
+          <div style={{ color: T.text, fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}>
+            🧪 ব্যাকআপ/রিফ্রেশ ডায়াগনস্টিকস (অস্থায়ী)
+          </div>
+          <div style={{ color: T.sub, fontSize: 11.5, marginTop: 4 }}>
+            কেন auto-backup/auto-refresh টাইমলি হচ্ছে না তা ধরার জন্য
+          </div>
+        </div>
+        <div style={{ color: T.sub, fontSize: 18, transform: expanded ? "rotate(180deg)" : "none" }}>▾</div>
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop: 14 }}>
+          <button onClick={runLiveChecks} disabled={refreshing} style={{
+            width: "100%", padding: "10px 0", borderRadius: 10, border: "1.5px solid #f59e0b",
+            background: "rgba(245,158,11,0.12)", color: "#f59e0b", fontWeight: 700, fontSize: 12.5,
+            cursor: refreshing ? "default" : "pointer", marginBottom: 12,
+          }}>{refreshing ? "চেক করা হচ্ছে..." : "🔄 লাইভ অবস্থা রিফ্রেশ করুন"}</button>
+
+          {live && (
+            <div style={{ background: T.bg, borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 11.5, lineHeight: 1.9, color: T.text }}>
+              <div>নেটিভ প্ল্যাটফর্ম: <b style={{ color: live.isNative ? "#22c55e" : "#f59e0b" }}>{String(live.isNative)}</b></div>
+              <div>BackupService প্লাগইন: <b style={{ color: live.pluginFound ? "#22c55e" : "#ef4444" }}>{live.isNative ? String(live.pluginFound) : "N/A (web)"}</b></div>
+              {live.isNative && live.pluginFound && (<>
+                <div>Battery optimization exempt: <b style={{ color: live.battery ? "#22c55e" : "#ef4444" }}>{String(live.battery)}</b></div>
+                <div>Exact alarm permission: <b style={{ color: live.exactAlarm ? "#22c55e" : "#ef4444" }}>{String(live.exactAlarm)}</b></div>
+                <div>WorkManager missed count: <b style={{ color: (live.missed || 0) > 0 ? "#ef4444" : "#22c55e" }}>{String(live.missed)}</b></div>
+              </>)}
+              <div style={{ marginTop: 6, borderTop: `1px solid ${T.border}`, paddingTop: 6 }}>sbm_gd_auto: <b>{live.sbm_gd_auto ?? "(null=on)"}</b></div>
+              <div>sbm_local_auto: <b>{live.sbm_local_auto ?? "(null=on)"}</b></div>
+              <div>sbm_local_schedule: <b>{live.sbm_local_schedule ?? "daily"}</b></div>
+              <div>hg_gd_interval: <b>{live.hg_gd_interval ?? "20"}মি</b></div>
+              <div>viewer interval: <b>{live.viewer_interval ?? "15"}মি</b></div>
+              <div>sbm_gd_needs_reconnect: <b style={{ color: live.sbm_gd_needs_reconnect ? "#ef4444" : "inherit" }}>{live.sbm_gd_needs_reconnect ?? "না"}</b></div>
+              <div style={{ marginTop: 6, borderTop: `1px solid ${T.border}`, paddingTop: 6 }}>lastDriveBackup: <b>{live.lastDriveBackup ? new Date(live.lastDriveBackup).toLocaleString("bn-BD") : "—"}</b></div>
+              <div>lastLocalBackup: <b>{live.lastLocalBackup ? new Date(live.lastLocalBackup).toLocaleString("bn-BD") : "—"}</b></div>
+              <div>lastSnapshotBackup: <b>{live.lastSnapshotBackup ? new Date(live.lastSnapshotBackup).toLocaleString("bn-BD") : "—"}</b></div>
+            </div>
+          )}
+
+          <div style={{ color: T.sub, fontSize: 11.5, fontWeight: 700, marginBottom: 6 }}>সাম্প্রতিক লগ ({diagLogs.length}টা, নতুন→পুরনো)</div>
+          <div style={{ maxHeight: 260, overflowY: "auto", background: T.bg, borderRadius: 10, padding: 8 }}>
+            {diagLogs.length === 0 && (
+              <div style={{ color: T.sub, fontSize: 11.5, padding: 8, textAlign: "center" }}>এখনো কোনো লগ নেই — অ্যাপ কিছুক্ষণ খোলা রাখুন (৩০সে/৬০সে পর প্রথম tick হবে), তারপর এখানে ফিরে আসুন।</div>
+            )}
+            {diagLogs.map(l => (
+              <div key={l.id} style={{ fontSize: 10.5, padding: "5px 4px", borderBottom: `1px solid ${T.border}`, color: l.type === "error" ? "#ef4444" : T.text, fontFamily: "monospace" }}>
+                <span style={{ color: T.sub }}>{new Date(l.at).toLocaleTimeString("bn-BD")}</span> {l.msg}
+              </div>
+            ))}
+          </div>
+
+          <button onClick={copyReport} style={{
+            width: "100%", padding: "10px 0", borderRadius: 10, border: "none",
+            background: "linear-gradient(135deg,#0284c7,#38bdf8)", color: "#fff", fontWeight: 700, fontSize: 12.5,
+            cursor: "pointer", marginTop: 12,
+          }}>📋 পুরো রিপোর্ট কপি করুন (আমাকে পাঠানোর জন্য)</button>
+          {copyMsg && <div style={{ textAlign: "center", fontSize: 11.5, color: T.sub, marginTop: 6 }}>{copyMsg}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Settings_({ T, S, shopName,
  setShopName, businessType = "pharmacy", setBusinessType, businessTypeLocked = false, setBusinessTypeLocked, enabledBusinessTypes = [], users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, lastDriveBackup, lastSnapshotBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, setGoogleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [] }) {
   const [editName,    setEditName]    = useState(false);
   const [nameInput,   setNameInput]   = useState(shopName);
+  const [showDiagExpanded, setShowDiagExpanded] = useState(false); // 🧪 অস্থায়ী ডায়াগনস্টিকস প্যানেল
   const [showRecoveryExpanded, setShowRecoveryExpanded] = useState(false);
   const [showGateway, setShowGateway] = useState(false);
   const [showKey, setShowKey] = useState(false);             // 🔴 ফিক্স: আগে Claude AI কার্ডের IIFE-এর ভেতরে declare করা ছিল
@@ -32646,6 +32856,7 @@ function Settings_({ T, S, shopName,
   useBackHandler(showFontPicker,   () => { setShowFontPicker(false);  return true; });
   useBackHandler(showSmsSection,   () => { setShowSmsSection(false);  return true; });
   useBackHandler(showBinExpanded,  () => { setShowBinExpanded(false); return true; });
+  useBackHandler(showDiagExpanded, () => { setShowDiagExpanded(false); return true; });
   useBackHandler(showPinChange && pinStep > 1, () => { setPinStep(s => Math.max(1, s - 1)); return true; });
   useBackHandler(showPinChange && pinStep === 1 && !pinForgotMode, () => { setShowPinChange(false); return true; });
   useBackHandler(showAdminPinChange && adminPinMode !== adminPinEntryMode, () => { setAdminPinMode(adminPinEntryMode); setAdminPinErr(""); return true; });
@@ -33761,6 +33972,9 @@ onChange={()=>{}} />
           </div>
         );
       })()}
+
+      {/* 🧪 অস্থায়ী ব্যাকআপ/রিফ্রেশ ডায়াগনস্টিকস — রুট-কজ কনফার্ম হলে সরিয়ে ফেলা যাবে */}
+      <BackupDiagnosticsCard T={T} S={S} expanded={showDiagExpanded} onToggle={() => setShowDiagExpanded(v => !v)} />
 
       {/* ⑧ Recycle Bin */}
       {(() => {
