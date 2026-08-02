@@ -3505,6 +3505,16 @@ const DRIVE_BACKUP_INTERVAL_MIN = 5;
 // খুলে বসে থাকলেও ম্যানুয়াল বাটনের দরকার না পড়ে। শুধু visible অবস্থায়ই
 // ফায়ার হয়, তাই background-suspend সমস্যার ঝুঁকি নেই।
 const VIEWER_FOREGROUND_REFRESH_MIN = 2;
+// 🔴 ফিক্স (২ আগস্ট ২০২৬ — "৫ মিনিট পার হলেও ব্যাকআপ হচ্ছে না"): শপ অ্যাপে
+// ব্যাকআপ ট্রিগার হতো শুধু data-change আর foreground-ফেরায় — কোনো periodic
+// safety-net ছিল না (ভুলবশত ভিউয়ার মোডে রাখা হলেও শপ অ্যাপ থেকে বাদ পড়ে
+// গিয়েছিল)। ফলে: একটা এন্ট্রি হলো, ঠিক তখনই ইন্টারভাল-গেট (৫মি) এখনো শেষ হয়নি
+// বলে স্কিপ হলো, আর এরপর কোনো নতুন এন্ট্রি/অ্যাপ-সুইচ না হলে সেই মিস হওয়া
+// ব্যাকআপ কখনোই আর ট্রিগার হতো না, ৫ মিনিট পার হয়ে গেলেও না। এই ধ্রুবকটা
+// ভিউয়ারের VIEWER_FOREGROUND_REFRESH_MIN-এর ঠিক একই প্যাটার্নে — অ্যাপ খোলা/
+// visible থাকলে প্রতি এই কয় মিনিটে একটা tick() চলে, যাতে ইন্টারভাল পার হওয়ার
+// সাথে সাথেই (পরের কোনো ইভেন্টের অপেক্ষা ছাড়াই) ব্যাকআপ ধরা পড়ে।
+const SHOP_FOREGROUND_SAFETY_MIN = 3;
 const GDRIVE_REFRESH_ENDPOINT = "https://sbm-admin-mocha.vercel.app/api/refresh-token";
 
 // ─── Viewer Mode (২৭ জুলাই ২০২৬, আইটেম G) — device-লেভেল, প্লেইন localStorage ───
@@ -12787,6 +12797,18 @@ function SmartBusinessMgmt() {
     const onFocus = () => tick("focus");
     window.addEventListener("focus", onFocus);
 
+    // ১.৫) ফোরগ্রাউন্ড-সেফটি-নেট — অ্যাপ খোলা রেখে (মিনিমাইজ/লক না করে,
+    // অ্যাপ-সুইচ না করে) বসে থাকলেও প্রতি SHOP_FOREGROUND_SAFETY_MIN মিনিটে
+    // একটা tick চলবে, ঠিক ভিউয়ার মোডের foreground-periodic টাইমারের মতোই।
+    // এটা ছাড়া: কোনো এন্ট্রি ইন্টারভাল-গেট বন্ধ থাকা অবস্থায় স্কিপ হলে, আর
+    // এরপর কোনো নতুন এন্ট্রি/অ্যাপ-সুইচ না ঘটলে — ইন্টারভাল পার হয়ে গেলেও
+    // ব্যাকআপ আর কখনো নিজে থেকে ট্রিগার হতো না। শুধু document visible
+    // থাকলেই ফায়ার করে (hidden হলে স্কিপ) — কোনো background timer/alarm না,
+    // তাই আগের suspend-অনির্ভরযোগ্যতার সমস্যায় ফেরত যাওয়ার ঝুঁকি নেই।
+    const safetyTimer = setInterval(() => {
+      if (document.visibilityState === "visible") tick("foreground-safety");
+    }, SHOP_FOREGROUND_SAFETY_MIN * 60 * 1000);
+
     // ২) ইভেন্ট-ড্রিভেন — ইনভয়েস/কাস্টমার/পণ্য/ক্যাশ ইত্যাদি যেকোনো ব্যাকআপ-
     // যোগ্য ডেটা বদলালেই (zustand-এর কেন্দ্রীয় store subscribe করে, প্রতিটা
     // সেভ-ফাংশনে আলাদা করে হুক বসানোর দরকার নেই — কোনো mutation পয়েন্ট মিস
@@ -12852,6 +12874,7 @@ function SmartBusinessMgmt() {
       unsubDirty();
       if (tokenOnlyTimer) clearInterval(tokenOnlyTimer);
       if (autoReconnectTimer) clearInterval(autoReconnectTimer);
+      clearInterval(safetyTimer);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onFocus);
     };
@@ -16266,6 +16289,30 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
                 {shopName}
               </span>
               <MemoLiveDateTime themeColor={T.headingColor} accentColor={T.accent} compact />
+              {/* 🆕 ফিক্স (২ আগস্ট ২০২৬ — "রিফ্রেশ হচ্ছে না মনে হয়"): এতদিন সিঙ্ক
+                  স্ট্যাটাস/এরর শুধু "অন্যান্য" ড্রয়ার খুললেই দেখা যেত — মূল
+                  স্ক্রিনে কোনো ইঙ্গিতই ছিল না রিফ্রেশ আসলে হচ্ছে/ব্যর্থ হচ্ছে
+                  কিনা, তাই স্থির ডেটা দেখে মনে হতো "রিফ্রেশ হচ্ছে না"। এখন
+                  হেডারেই সবসময় দেখা যাবে। */}
+              <button
+                onClick={() => refresh({ interactive: true })}
+                disabled={syncing}
+                style={{
+                  display: "flex", alignItems: "center", gap: 5, marginTop: 2,
+                  background: "transparent", border: "none", padding: "2px 6px",
+                  cursor: syncing ? "default" : "pointer", fontFamily: "inherit",
+                }}
+              >
+                <span style={{
+                  width: 6, height: 6, borderRadius: "50%",
+                  background: syncing ? "#f59e0b" : (err ? "#ef4444" : "#22c55e"),
+                  display: "inline-block", flexShrink: 0,
+                  opacity: syncing ? 0.6 : 1,
+                }} />
+                <span style={{ fontSize: 10, fontWeight: 700, color: err ? "#f87171" : `${T.headingColor}90` }}>
+                  {syncing ? "রিফ্রেশ হচ্ছে..." : err ? `⚠️ ${err}` : `সিঙ্ক: ${agoText}`}
+                </span>
+              </button>
             </div>
           ) : (
             <div style={{ fontWeight: 900, fontSize: 17, letterSpacing: 0.6, color: T.headingColor, textShadow: `0 0 10px ${T.headingColor}66`, lineHeight: 1.2 }}>
