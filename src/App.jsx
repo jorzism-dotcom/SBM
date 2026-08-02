@@ -3497,6 +3497,14 @@ const DEV_MASTER_HASH = "d640f2be304872c2aaba9fbf2a113f8333911366ac2e9857bffac8d
 // SBM Backup project — Google OAuth Web Client ID (Drive auto-backup)
 // ⚠️ নতুন Client ID — authorization_code flow + refresh_token সাপোর্ট করে
 const GOOGLE_WEB_CLIENT_ID = "359825185312-u3g22v54j5if5ghq4984fnn03c90rf5o.apps.googleusercontent.com";
+// 🔴 ফিক্স (২ আগস্ট ২০২৬): Drive অটো-ব্যাকআপ ইন্টারভাল আগে ইউজার-নির্বাচনযোগ্য
+// ছিল (Settings-এ পিল বাটন), এখন সরিয়ে ফেলে একটাই স্থির মান — ৫ মিনিট।
+const DRIVE_BACKUP_INTERVAL_MIN = 5;
+// 🆕 Viewer Mode: অ্যাপ খোলা/foreground অবস্থায় থাকলে (স্ক্রিন অফ/ব্যাকগ্রাউন্ড না
+// হলে) প্রতি এই কয় মিনিটে একটা নিরাপদ safety-net রিফ্রেশ চলবে — যাতে অ্যাপ
+// খুলে বসে থাকলেও ম্যানুয়াল বাটনের দরকার না পড়ে। শুধু visible অবস্থায়ই
+// ফায়ার হয়, তাই background-suspend সমস্যার ঝুঁকি নেই।
+const VIEWER_FOREGROUND_REFRESH_MIN = 2;
 const GDRIVE_REFRESH_ENDPOINT = "https://sbm-admin-mocha.vercel.app/api/refresh-token";
 
 // ─── Viewer Mode (২৭ জুলাই ২০২৬, আইটেম G) — device-লেভেল, প্লেইন localStorage ───
@@ -12536,20 +12544,10 @@ function SmartBusinessMgmt() {
     // অতিরিক্ত গার্ড হিসেবে চেক করা হয়, যাতে backup timer/tick কখনোই আংশিক
     // ডেটা নিয়ে শুরু না হয়।
     if (!loaded || !settingsLoaded) return;
-    // 🔴 ফিক্স (১ আগস্ট ২০২৬ — Drive ব্যাকআপ ইন্টারভাল ৩০→২০ মিনিট): হেডারের
-    // এক-ক্লিক বাটনের অটো-cadence ২০ মিনিটে চাওয়া হয়েছে। পুরনো ইনস্টলে
-    // hg_gd_interval আগের ডিফল্ট "30" হিসেবে explicit-ly সেভ থাকতে পারে (কখনো
-    // ইউজার নিজে বেছে নেননি), তাই শুধু fallback বদলালে effect হতো না — এই
-    // এক-বারের migration old "30" থাকলে "20"-এ নিয়ে যায়; ইউজার নিজে অন্য কোনো
-    // ইন্টারভাল (60/120/240) বেছে থাকলে সেটা অক্ষত থাকে।
-    try {
-      if (!localStorage.getItem("hg_gd_interval_migrated_20m")) {
-        if (localStorage.getItem("hg_gd_interval") === "30" || !localStorage.getItem("hg_gd_interval")) {
-          localStorage.setItem("hg_gd_interval", "20");
-        }
-        localStorage.setItem("hg_gd_interval_migrated_20m", "1");
-      }
-    } catch {}
+    // 🔴 ফিক্স (২ আগস্ট ২০২৬ — Drive ব্যাকআপ ইন্টারভাল স্থির ৫ মিনিট): আগে এটা
+    // ইউজার-নির্বাচনযোগ্য ছিল (20/30/60/120/240 মিনিট পিল)। এখন আর কোনো
+    // চয়েস নেই — সবসময় ৫ মিনিট ফিক্সড। নিচের DRIVE_BACKUP_INTERVAL_MIN
+    // ধ্রুবকই একমাত্র জায়গা।
     const isStaffDevice = currentUser?.role === "staff";
 
     const runLocalBackup = async (src = "?") => {
@@ -12614,14 +12612,14 @@ function SmartBusinessMgmt() {
 
     // 🆕 ফিক্স: এখন এই ফাংশনটাই একমাত্র জায়গা যেটা Google Drive-এ প্রকৃত
     // আপলোড করে — GoogleDriveSection-এর নিজস্ব silentBackup timer সরিয়ে
-    // ফেলা হয়েছে। তাই এখানেই ইউজারের বেছে নেওয়া ইন্টারভাল (hg_gd_interval,
-    // মিনিটে) ও অন/অফ টগল (sbm_gd_auto) চেক হয়।
+    // ফেলা হয়েছে। তাই এখানেই স্থির ইন্টারভাল (DRIVE_BACKUP_INTERVAL_MIN,
+    // ৫ মিনিট) ও অন/অফ টগল (sbm_gd_auto) চেক হয়।
     const runDriveBackup = async ({ force = false, src = "?" } = {}) => {
       try {
         SyncLog.add("diag", `[drive] শুরু (ট্রিগার: ${src}${force ? ", force" : ""})`);
         if (localStorage.getItem("sbm_gd_auto") === "0") { SyncLog.add("diag", "[drive] স্কিপ — sbm_gd_auto=0 (ইউজার টগল বন্ধ)"); return; }
         if (!force) {
-          const intervalMin = parseInt(localStorage.getItem("hg_gd_interval") || "20", 10) || 20;
+          const intervalMin = DRIVE_BACKUP_INTERVAL_MIN;
           const last = lastDriveBackupRef.current ? new Date(lastDriveBackupRef.current).getTime() : 0;
           const remainMin = Math.round((intervalMin * 60 * 1000 - (Date.now() - last)) / 60000);
           if (Date.now() - last < intervalMin * 60 * 1000) { SyncLog.add("diag", `[drive] স্কিপ — ইন্টারভাল (${intervalMin}মি) এখনো শেষ হয়নি, বাকি ~${remainMin}মি`); return; }
@@ -12754,23 +12752,22 @@ function SmartBusinessMgmt() {
       }).catch(() => {});
     }
 
-    // 🆕 ফিক্স (একটাই সোর্স-অফ-ট্রুথ): আগে এখানে দুটো আলাদা টাইমার ছিল —
-    // একটা ৪৫ মিনিট/৫ মিনিটে (cycle, Drive+local file একসাথে), আরেকটা ৬০
-    // সেকেন্ডে (শুধু local file) — কিন্তু কোনোটাই ইউজারের Settings-এ বেছে
-    // নেওয়া ইন্টারভাল (30m/1h/2h/4h বা hourly/daily) মানত না। এখন একটাই
-    // "tick" প্রতি ৬০ সেকেন্ডে চলে; runDriveBackup/runSnapshotBackup নিজেরাই
-    // ভেতরে চেক করে তাদের নিজস্ব ইন্টারভাল পার হয়েছে কিনা, তাই প্রতি tick-এ
-    // ডাকা হলেও বেশিরভাগ সময় সাথে সাথেই skip হয়ে যায় — ব্যাটারি/API rate-limit
-    // এর কোনো বাড়তি ক্ষতি নেই, কিন্তু ইউজারের সেটিং সবসময় সঠিকভাবে মানা হয়।
-    // 🧪 অস্থায়ী ডায়াগনস্টিকস (২ আগস্ট ২০২৬) — প্রতিটা tick কোন উৎস থেকে এলো
-    // (60s interval / visibilitychange / focus / native alarm / worker) এবং
-    // আগের tick থেকে গ্যাপ কত সেকেন্ড ছিল (৬০-এর চেয়ে অনেক বেশি হলে বোঝা যাবে
-    // WebView-এর JS timer throttle/suspend হয়েছিল) — SyncLog-এ "diag" টাইপে
-    // লেখা হয়, Settings → ডায়াগনস্টিকস স্ক্রিন থেকে দেখা যাবে। রুট কজ নিশ্চিত
-    // হওয়ার পর এই ব্লকটা (এবং নিচের সব SyncLog.add("diag"...) কলগুলো) সরিয়ে
-    // ফেলা যাবে — এটা স্থায়ী ফিচার না, শুধু ডিবাগিং-এর জন্য।
+    // 🆕 ফিক্স (২ আগস্ট ২০২৬ — ব্যাকগ্রাউন্ড টাইমার/নেটিভ অ্যালার্ম সম্পূর্ণ বাদ):
+    // আগে এখানে ৬০-সেকেন্ড setInterval + নেটিভ AlarmManager/WorkManager
+    // (২০-মিনিট cadence) দিয়ে ব্যাকআপ ট্রিগার হতো — কিন্তু WebView background/
+    // screen-lock অবস্থায় নিজে থেকেই JS timer suspend/throttle করে, আর নেটিভ
+    // অ্যালার্মের জন্য exact-alarm/battery-exemption permission লাগত (যেটা
+    // অনেক ডিভাইসে গ্রান্ট করা হয় না) — দুটোই অনির্ভরযোগ্য প্রমাণিত হয়েছে
+    // (দেখুন ডায়াগনস্টিক লগ ইতিহাস)। সিদ্ধান্ত: ব্যাকগ্রাউন্ড টাইমার সম্পূর্ণ
+    // বাদ, দুই ধরনের ফোরগ্রাউন্ড ট্রিগারে সরাসরি নির্ভর করা হচ্ছে —
+    //   ১) ডেটা বদলানোর সাথে সাথে (event-driven — নিচে zustand subscribe)
+    //   ২) app ওপেন/ফোরগ্রাউন্ডে ফেরা (mount/visibilitychange/focus — নিচে)
+    // এই দুটোই কেবল তখনই ফায়ার হয় যখন WebView সত্যিই জীবিত ও active —
+    // তাই timer-suspend/permission সমস্যার কোনো সুযোগই নেই।
+    // 🧪 অস্থায়ী ডায়াগনস্টিকস বজায় রাখা হলো — প্রতিটা tick কোন উৎস থেকে এলো
+    // এবং আগের tick থেকে গ্যাপ কত সেকেন্ড ছিল, SyncLog-এ "diag" টাইপে লেখা হয়।
     let _lastTickAt = Date.now();
-    const tick = (src = "interval") => {
+    const tick = (src = "?") => {
       const now = Date.now();
       const gapSec = Math.round((now - _lastTickAt) / 1000);
       _lastTickAt = now;
@@ -12779,25 +12776,32 @@ function SmartBusinessMgmt() {
       runDriveBackup({ src });
       runSnapshotBackup({ src });
     };
-    const tickTimer = setInterval(() => tick("interval-60s"), 60 * 1000);
     const firstRun = setTimeout(() => tick("boot-30s"), 30000); // অ্যাপ ওপেন হওয়ার ৩০ সেকেন্ড পর প্রথমবার
 
-    // 🔴 Event-driven trigger — Android Doze/App Standby-তে background setInterval
-    // suspend হয়ে যেতে পারে, তাই শুধু interval-এর উপর ভরসা না করে অ্যাপ
-    // foreground-এ ফিরলেই (visibilitychange/resume) একটা tick চালানো হয় —
-    // runDriveBackup/runSnapshotBackup নিজেরাই ইন্টারভাল-গেট করে বলে বাড়তি
-    // ১৫-মিনিট গার্ডের আর দরকার নেই, স্প্যামের ঝুঁকি নেই।
+    // ১) ফোরগ্রাউন্ড-ফেরা ক্যাচ-আপ — অ্যাপ ওপেন/foreground-এ ফিরলেই একটা tick।
+    // runDriveBackup/runLocalBackup/runSnapshotBackup নিজেরাই ভেতরে ইন্টারভাল/
+    // হ্যাশ-গেট করে, তাই বারবার ডাকা হলেও ডেটা না বদলালে/সময় না হলে নিজে থেকেই
+    // skip হয়ে যায় — স্প্যামের ঝুঁকি নেই।
     const onVisible = () => { if (document.visibilityState === "visible") tick("visibilitychange"); };
     document.addEventListener("visibilitychange", onVisible);
     const onFocus = () => tick("focus");
     window.addEventListener("focus", onFocus);
 
-    // 🆕 (২ আগস্ট ২০২৬) নেটিভ ২০-মিনিট অ্যালার্ম (BackupAlarmReceiver.java) app
-    // background/screen-lock অবস্থাতেও evaluateJavascript() দিয়ে সরাসরি এই
-    // ফাংশনটা জোর করে কল করে — WebView-এর নিজস্ব JS-timer throttling এড়িয়ে।
-    // window-এ এক্সপোজ না করলে native side-এর কোনো রেফারেন্স থাকবে না।
-    const nativeTickFn = () => tick("native-alarm-or-worker");
-    window.__sbmNativeBackupTick = nativeTickFn;
+    // ২) ইভেন্ট-ড্রিভেন — ইনভয়েস/কাস্টমার/পণ্য/ক্যাশ ইত্যাদি যেকোনো ব্যাকআপ-
+    // যোগ্য ডেটা বদলালেই (zustand-এর কেন্দ্রীয় store subscribe করে, প্রতিটা
+    // সেভ-ফাংশনে আলাদা করে হুক বসানোর দরকার নেই — কোনো mutation পয়েন্ট মিস
+    // হওয়ার সুযোগ নেই) কয়েক সেকেন্ড debounce দিয়ে ব্যাকআপ ট্রিগার হয়। এই
+    // মুহূর্তে অ্যাপ নিশ্চিতভাবেই foreground-এ (ইউজার তখনই ডেটা সেভ করলো),
+    // তাই আলাদা কোনো ব্যাকগ্রাউন্ড প্রসেসের দরকার নেই।
+    let _dirtyDebounceTimer = null;
+    const unsubDirty = useAppStore.subscribe(
+      (state) => BACKUP_FIELDS.map((f) => state[f]),
+      () => {
+        if (_dirtyDebounceTimer) clearTimeout(_dirtyDebounceTimer);
+        _dirtyDebounceTimer = setTimeout(() => { _dirtyDebounceTimer = null; tick("data-change"); }, 8000);
+      },
+      { equalityFn: (a, b) => a.length === b.length && a.every((v, i) => v === b[i]) }
+    );
 
     // 🆕 ফিক্স (staff-শেয়ার্ড token সবসময় fresh রাখা): আগে token-refresh
     // Drive backup cycle-এর সাথেই বাঁধা ছিল (৪৫ মিনিটে) — কিন্তু এখন Drive
@@ -12843,145 +12847,17 @@ function SmartBusinessMgmt() {
     }
 
     return () => {
-      clearInterval(tickTimer);
       clearTimeout(firstRun);
+      if (_dirtyDebounceTimer) clearTimeout(_dirtyDebounceTimer);
+      unsubDirty();
       if (tokenOnlyTimer) clearInterval(tokenOnlyTimer);
       if (autoReconnectTimer) clearInterval(autoReconnectTimer);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onFocus);
-      if (window.__sbmNativeBackupTick === nativeTickFn) delete window.__sbmNativeBackupTick;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, currentUser?.role]);
 
-  // ── 🆕 ব্যাকআপ-রিলায়েবিলিটি: native Foreground keep-alive + battery-exemption +
-  //      exact-alarm ২০-মিনিট cadence প্রম্পট ──
-  // রুট-কজ (দেখুন transcript, ১ আগস্ট): MIUI-এর "Pause app activity if unused"
-  // অ্যাপ কয়েকদিন না খুললে JS প্রসেস (এবং তার ভেতরের ৬০-সেকেন্ডের tick টাইমার)
-  // পুরোপুরি থামিয়ে দেয়; আবার প্রসেস বেঁচে থাকলেও শুধু স্ক্রিন লক/background
-  // অবস্থায় WebView নিজে থেকেই page-এর JS timer suspend/throttle করে দেয় (২
-  // আগস্টের স্ক্রিনশট বিশ্লেষণে ধরা পড়া দ্বিতীয় সমস্যা — cadence ২০ মিনিটের
-  // বদলে ৪০-৪৫ মিনিট হয়ে যাচ্ছিল)। এই effect তিনটে native সাহায্য নেয়
-  // (capacitor-backup-service প্লাগইন):
-  //   ১) startForegroundKeepAlive() — প্রসেস kill থেকে বাঁচায় (আগের মতোই)।
-  //   ২) requestIgnoreBatteryOptimizations() — battery exemption প্রম্পট (আগের মতোই)।
-  //   ৩) 🆕 scheduleExactBackupAlarm() — AlarmManager.setExactAndAllowWhileIdle
-  //      দিয়ে ঠিক ২০ মিনিটে (Doze-বাইপাস) ফায়ার করে, evaluateJavascript() দিয়ে
-  //      window.__sbmNativeBackupTick() (উপরের tick()) সরাসরি কল করে — WebView-এর
-  //      নিজস্ব timer-throttling এড়িয়ে। Android 12+-এ SCHEDULE_EXACT_ALARM
-  //      অনুমতি ইউজারকে Settings থেকে একবার দিতে হয় (৩ দিনে একবার প্রম্পট)।
-  // 🔴 সততার সাথে উল্লেখ: এটাও পুরোপুরি backup upload logic (hash/diff/Drive
-  // upload) native-এ ডুপ্লিকেট করে না — সেটা এখনো JS-এই থাকে এবং evaluateJavascript
-  // দিয়ে কল হয়, তাই দুই জায়গায় লজিক maintain করার ঝুঁকি নেই। শুধু এতটুকুই নতুন:
-  // app স্বাভাবিক foreground state-এ না থাকলেও কে/কখন সেই JS চালাবে সেটা এখন
-  // native alarm ঠিক করে দেয়, JS-এর নিজের suspend হয়ে যাওয়া timer না।
-  useEffect(() => {
-    if (!loaded || typeof window === "undefined" || !window.Capacitor?.isNativePlatform?.()) return;
-    const BackupSvc = window.Capacitor?.Plugins?.BackupService;
-    if (!BackupSvc) {
-      // 🧪 অস্থায়ী ডায়াগনস্টিকস: এটাই সবচেয়ে গুরুত্বপূর্ণ সিগন্যাল — এই লগ
-      // এলে বোঝা যাবে ইনস্টল করা APK-তে native BackupService প্লাগইনই নেই
-      // (পুরনো বিল্ড, বা cap sync/gradle-এ প্লাগইন যুক্ত হয়নি)।
-      try { SyncLog.add("diag", "[native] ⚠️ window.Capacitor.Plugins.BackupService পাওয়া যায়নি — পুরনো/ভুল বিল্ড, নেটিভ অ্যালার্ম/ওয়ার্কার একদমই সেটআপ হয়নি"); } catch {}
-      return; // পুরনো APK (প্লাগইন ছাড়া বিল্ড হওয়া) — নীরবে স্কিপ
-    }
-    try { SyncLog.add("diag", "[native] BackupService প্লাগইন পাওয়া গেছে, নেটিভ লেয়ার সেটআপ শুরু হচ্ছে"); } catch {}
-
-    try { BackupSvc.startForegroundKeepAlive(); SyncLog.add("diag", "[native] startForegroundKeepAlive() কল হলো"); } catch (e) { SyncLog.add("diag", "[native] startForegroundKeepAlive() ব্যর্থ: " + (e?.message || e)); }
-    try { BackupSvc.scheduleExactBackupAlarm(); SyncLog.add("diag", "[native] scheduleExactBackupAlarm() কল হলো"); } catch (e) { SyncLog.add("diag", "[native] scheduleExactBackupAlarm() ব্যর্থ: " + (e?.message || e)); }
-
-    // 🆕 (২ আগস্ট ২০২৬) তৃতীয় লেয়ার — WorkManager সেফটি-নেট, AlarmManager-এর
-    // পাশাপাশি স্বাধীনভাবে চলে (exact-alarm permission ছাড়াই কাজ করে, reboot-
-    // এর পরও নিজে থেকে টিকে থাকে)। enqueueUniquePeriodicWork + KEEP policy-র
-    // কারণে বারবার কল করলেও ডুপ্লিকেট schedule হয় না, তাই নিশ্চিন্তে প্রতি
-    // boot-এ কল করা হয়। পাশাপাশি "মিসড" কাউন্ট চেক করে — যদি WorkManager অনেকবার
-    // চললেও WebView জীবিত না পায় (প্রসেস বারবার kill হচ্ছে), ইউজারকে একটা
-    // নরম সতর্কতা দেখানো হয় যাতে তিনি ব্যাটারি সেটিংস চেক করতে পারেন।
-    try { BackupSvc.schedulePeriodicSafetyNetWorker(); SyncLog.add("diag", "[native] schedulePeriodicSafetyNetWorker() কল হলো (১৫মি WorkManager)"); } catch (e) { SyncLog.add("diag", "[native] schedulePeriodicSafetyNetWorker() ব্যর্থ: " + (e?.message || e)); }
-    (async () => {
-      try {
-        const res = await BackupSvc.getMissedSafetyNetCount();
-        SyncLog.add("diag", `[native] WorkManager missed count = ${res?.missed || 0} (এটা বাড়লে বোঝা যায় WorkManager চললেও app process/WebView জীবিত পাওয়া যাচ্ছে না — সম্ভবত recent-apps থেকে swipe-kill হচ্ছে)`);
-        if ((res?.missed || 0) >= 5) {
-          showToast("🔋 ব্যাকআপ বারবার মিস হচ্ছে — ব্যাটারি অপ্টিমাইজেশন থেকে অ্যাপ বাদ দিন", "#f59e0b");
-        }
-      } catch {}
-    })();
-
-    // 🔴 ফিক্স (২ আগস্ট ২০২৬): আগে scheduleExactBackupAlarm() শুধু app বুট
-    // হওয়ার মুহূর্তে (এই effect-এর প্রথম রান, [loaded] বদলালে) একবারই কল
-    // হতো। রিয়েল-ওয়ার্ল্ড সিকোয়েন্স: app বুট → exact-alarm permission তখনো
-    // OFF → native কোড SecurityException ধরে inexact fallback (AlarmManager.set())
-    // ব্যবহার করে (ইচ্ছাকৃত সেফটি-নেট) → ইউজার পরে Settings থেকে ফিরে
-    // permission ON করলেন — কিন্তু app-এর কোনো কোড ছিল না যেটা তখন আবার
-    // scheduleExactBackupAlarm() কল করে সেই আগের inexact অ্যালার্মটাকে exact-এ
-    // upgrade করত, তাই সিস্টেম সেই অনির্দিষ্ট-সময়ের inexact অ্যালার্মের
-    // অপেক্ষাতেই বসে থাকত। এখন app যতবারই foreground-এ ফেরে (Settings screen
-    // থেকে ফিরে আসাসহ — visibilitychange/focus), scheduleExactBackupAlarm()
-    // আবার কল হয়। এটা native পাশে idempotent (scheduleNext শুধু আগের পেন্ডিং
-    // অ্যালার্ম replace করে, বাড়তি ব্যাকআপ ট্রিগার করে না), তাই permission
-    // granted অবস্থায় ফিরলেই সাথে সাথে exact অ্যালার্মে upgrade হয়ে যায়।
-    const rescheduleExactAlarm = () => {
-      if (document.visibilityState === "visible") {
-        try { BackupSvc.scheduleExactBackupAlarm(); } catch {}
-      }
-    };
-    document.addEventListener("visibilitychange", rescheduleExactAlarm);
-    window.addEventListener("focus", rescheduleExactAlarm);
-
-    // 🔴 ফিক্স (১ আগস্ট ২০২৬ — "ব্যাটারি নোটিফিকেশন আসছে, exact-alarm-এরটা
-    // আসছে না"): আগে এই দুটো permission request একটাই async চেইনে পরপর
-    // (sequential await) চাওয়া হতো। প্রথমটা (battery exemption) ফায়ার হওয়া
-    // মাত্র Android app থেকে বের করে সরাসরি Settings স্ক্রিনে নিয়ে যায় — app
-    // background-এ চলে যাওয়ায় WebView-এর এই চলমান JS execution (এই একই async
-    // ফাংশন) সেখানেই থেমে যেত, ফলে দ্বিতীয় ধাপ (exact-alarm request) কখনো
-    // চলার সুযোগই পেত না, পুরো বুট-সাইকেলের জন্য হারিয়ে যেত। এখন দুটোকে
-    // সম্পূর্ণ স্বাধীন/সমান্তরাল IIFE-তে ভাগ করা হলো, একটা আরেকটার completion-এর
-    // অপেক্ষায় নেই — প্রথমটা Settings-এ নিয়ে গেলেও, দ্বিতীয়টার request ততক্ষণে
-    // ইতিমধ্যে ফায়ার হয়ে গেছে।
-    (async () => {
-      try {
-        // battery exemption — প্রতি বুটে জিজ্ঞাসা না করে, সর্বোচ্চ ৩ দিনে একবার
-        const res = await BackupSvc.isIgnoringBatteryOptimizations();
-        SyncLog.add("diag", `[native] Battery optimization exempt (ignoring) = ${!!res?.ignoring}`);
-        if (!res?.ignoring) {
-          const lastAsked = parseInt(localStorage.getItem("sbm_battery_exempt_asked_at") || "0", 10) || 0;
-          if (Date.now() - lastAsked >= 3 * 24 * 60 * 60 * 1000) {
-            localStorage.setItem("sbm_battery_exempt_asked_at", String(Date.now()));
-            showToast("🔋 ব্যাকআপ যেন বন্ধ না হয়ে যায় — ব্যাটারি অপ্টিমাইজেশন থেকে বাদ দিতে ট্যাপ করুন", "#f59e0b");
-            try { await BackupSvc.requestIgnoreBatteryOptimizations(); } catch {}
-          }
-        }
-      } catch {}
-    })();
-    (async () => {
-      try {
-        // 🆕 exact-alarm অনুমতি — Android 12+ (S) হলেই প্রযোজ্য, নিচেরটা নিজেই
-        // পুরনো Android-এ can:true রিটার্ন করে (কিছুই করার দরকার নেই)।
-        // ইচ্ছাকৃতভাবে উপরের battery-request IIFE-এর সাথে একই চেইনে নেই (দেখুন
-        // উপরের কমেন্ট) — আলাদা IIFE হওয়ায় উপরেরটা Settings-এ নেভিগেট করলেও
-        // এটা independently চলে।
-        const res = await BackupSvc.canScheduleExactAlarms();
-        SyncLog.add("diag", `[native] canScheduleExactAlarms = ${!!res?.can} (false হলে AlarmManager inexact fallback ব্যবহার হচ্ছে, timing অনিশ্চিত)`);
-        if (!res?.can) {
-          const lastAsked = parseInt(localStorage.getItem("sbm_exact_alarm_asked_at") || "0", 10) || 0;
-          if (Date.now() - lastAsked >= 3 * 24 * 60 * 60 * 1000) {
-            localStorage.setItem("sbm_exact_alarm_asked_at", String(Date.now()));
-            showToast("⏰ ঠিক সময়ে ব্যাকআপের জন্য Alarms & reminders অনুমতি দিন", "#f59e0b");
-            try { await BackupSvc.requestScheduleExactAlarmPermission(); } catch {}
-          }
-        }
-      } catch {}
-    })();
-
-    return () => {
-      document.removeEventListener("visibilitychange", rescheduleExactAlarm);
-      window.removeEventListener("focus", rescheduleExactAlarm);
-      try { BackupSvc.stopForegroundKeepAlive(); } catch {}
-      try { BackupSvc.cancelExactBackupAlarm(); } catch {}
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded, settingsLoaded]);
 
   // ── 🆕 ব্যাকআপ-দেরি ওয়ার্নিং — Drive ব্যাকআপ নিজের ঠিক করা ইন্টারভালের চেয়ে
   // অনেক বেশি দেরি হয়ে গেলে (কমপক্ষে ২ ঘণ্টা, বা ইউজারের ইন্টারভালের ৩ গুণ —
@@ -12989,7 +12865,7 @@ function SmartBusinessMgmt() {
   // ৩ দিন পর ম্যানুয়ালি স্ক্রিনশট চেক করতে না হয়।
   const driveBackupOverdueHrs = useMemo(() => {
     if (!lastDriveBackup) return null; // কখনো ব্যাকআপ হয়ইনি — আলাদাভাবে হ্যান্ডল হয় (backupNeeded/gdriveBanner)
-    const intervalMin = parseInt(localStorage.getItem("hg_gd_interval") || "20", 10) || 20;
+    const intervalMin = DRIVE_BACKUP_INTERVAL_MIN;
     const thresholdMs = Math.max(intervalMin * 3, 120) * 60 * 1000;
     const elapsedMs = Date.now() - new Date(lastDriveBackup).getTime();
     if (elapsedMs < thresholdMs) return null;
@@ -14839,7 +14715,7 @@ function SmartBusinessMgmt() {
               purchaseOrders={purchaseOrders} setPurchaseOrders={setPurchaseOrders}
               stockMovements={stockMovements} setStockMovements={setStockMovements}
               lastAutoBackup={lastAutoBackup} lastLocalBackup={lastLocalBackup}
-              lastDriveBackup={lastDriveBackup} lastSnapshotBackup={lastSnapshotBackup}
+              lastDriveBackup={lastDriveBackup} setLastDriveBackup={setLastDriveBackup} lastSnapshotBackup={lastSnapshotBackup}
               driveStatus={driveStatus} performDriveBackup={performDriveBackup}
               backupNeeded={backupNeeded}
               backupFailStreak={backupFailStreak} lastBackupError={lastBackupError}
@@ -15974,7 +15850,6 @@ function ViewerSetupScreen({ onDone, onExit }) {
     { key: "veterinary", label: "ভেটেরিনারি", icon: "🐄" },
     { key: "semen", label: "সিমেন বিজনেস", icon: "🧬" },
   ];
-  const INTERVALS = [10, 15, 30, 60];
 
   const [connected, setConnected] = useState(() => !!localStorage.getItem("sbm_gd_token") && !GDrive.isTokenExpired());
   const [connecting, setConnecting] = useState(false);
@@ -15982,7 +15857,6 @@ function ViewerSetupScreen({ onDone, onExit }) {
     const saved = localStorage.getItem(VK.prefix);
     return saved !== null ? saved : "";
   });
-  const [interval_, setInterval_] = useState(() => parseInt(localStorage.getItem(VK.interval) || "15"));
   const [testing, setTesting] = useState(false);
   const [err, setErr] = useState("");
 
@@ -16005,7 +15879,6 @@ function ViewerSetupScreen({ onDone, onExit }) {
       if (!token) throw new Error("Google Drive সংযোগ পাওয়া যায়নি — আবার Connect করুন");
       const { data, modifiedTime } = await GDrive.downloadBackupFor(token, prefix || null);
       localStorage.setItem(VK.prefix, prefix);
-      localStorage.setItem(VK.interval, String(interval_));
       localStorage.setItem(VK.cache, JSON.stringify(data));
       localStorage.setItem(VK.lastSync, modifiedTime || new Date().toISOString());
       onDone();
@@ -16059,20 +15932,6 @@ function ViewerSetupScreen({ onDone, onExit }) {
               background: prefix === p.key ? "rgba(56,189,248,0.15)" : "rgba(255,255,255,0.03)",
               color: "#fff", fontSize: 12.5, fontWeight: 600,
             }}>{p.icon} {p.label}</button>
-          ))}
-        </div>
-      </div>
-
-      <div style={{ width: "100%", maxWidth: 320, marginBottom: 22, opacity: connected ? 1 : 0.4, pointerEvents: connected ? "auto" : "none" }}>
-        <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 12, fontWeight: 700, marginBottom: 8 }}>৩. কত মিনিট পরপর চেক করবে</div>
-        <div style={{ display: "flex", gap: 8 }}>
-          {INTERVALS.map(m => (
-            <button key={m} onClick={() => setInterval_(m)} style={{
-              flex: 1, padding: "9px 0", borderRadius: 10, cursor: "pointer", fontFamily: "inherit",
-              border: interval_ === m ? "1.5px solid #38bdf8" : "1.5px solid rgba(255,255,255,0.15)",
-              background: interval_ === m ? "rgba(56,189,248,0.15)" : "rgba(255,255,255,0.03)",
-              color: "#fff", fontSize: 12.5, fontWeight: 600,
-            }}>{m} মিনিট</button>
           ))}
         </div>
       </div>
@@ -16215,18 +16074,15 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
   }, [prefix]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    const minutes = parseInt(localStorage.getItem(VK.interval) || "15");
-    try { SyncLog.add("diag", `[viewerRefresh] ইন্টারভাল টাইমার সেটআপ হলো — প্রতি ${minutes} মিনিট`); } catch {}
-    const id = setInterval(() => refresh({ src: `interval-${minutes}m` }), minutes * 60 * 1000);
+    // 🆕 ফিক্স (২ আগস্ট ২০২৬ — ব্যাকগ্রাউন্ড টাইমার/নেটিভ অ্যালার্ম বাদ): আগে
+    // এখানে একটা ইন্টারভাল-টাইমার (VK.interval, 10/15/30/60মি) + নেটিভ
+    // AlarmManager/WorkManager ছিল — কিন্তু WebView background/screen-lock
+    // অবস্থায় নিজে থেকেই JS timer suspend/throttle করে, তাই অনির্ভরযোগ্য।
+    // এখন শুধু foreground-এ ঘটা ইভেন্টেই (app খোলা, ফোরগ্রাউন্ডে ফেরা, নেট
+    // ফিরে আসা) রিফ্রেশ চালানো হয় — এগুলো কেবল তখনই ফায়ার হয় যখন WebView
+    // সত্যিই জীবিত ও active, তাই timer-suspend সমস্যার সুযোগই নেই।
     const onOnline = () => refresh({ src: "online-event" });
     window.addEventListener("online", onOnline);
-    // 🔴 ফিক্স (২৮ জুলাই ২০২৬ — ভিউয়ার মোডে ঘণ্টার পর ঘণ্টা স্টেল ডেটা): মূল
-    // অ্যাপের অটো-ব্যাকাপ আপলোড পাইপলাইনে আগেই visibilitychange/focus
-    // resume-trigger আছে (Android Doze/App Standby-তে setInterval suspend
-    // হয়ে যাওয়ার জন্য), কিন্তু ভিউয়ার মোডের এই ডাউনলোড-সাইড refresh()-এ সেটা
-    // ছিল না — তাই অ্যাপ ব্যাকগ্রাউন্ডে গিয়ে অনেক পরে ফিরে এলেও নতুন ডেটা
-    // আনত না, "X ঘণ্টা আগে" স্টেল থেকে যেত। এখন ফোরগ্রাউন্ডে ফিরলে (এবং শেষ
-    // সিঙ্কের পর যথেষ্ট সময় পার হলে) রিফ্রেশ চালানো হয়।
     let lastAttemptAt = Date.now();
     const resumeRefresh = (src = "resume") => {
       const now = Date.now();
@@ -16245,45 +16101,26 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
       }).catch(() => {});
     }
 
-    // 🆕 (২ আগস্ট ২০২৬) রুট-কজ ফিক্স — উপরের visibilitychange/focus/resume
-    // catch-up যথেষ্ট না, কারণ Android WebView screen-lock/background অবস্থায়
-    // নিজে থেকেই এই effect-এর setInterval suspend/throttle করে দেয় (ঠিক
-    // যে-সমস্যাটা মূল অ্যাপের ব্যাকআপ-আপলোডেও ছিল, দেখুন App.jsx-এর
-    // scheduleExactBackupAlarm useEffect-এর কমেন্ট)। এতদিন Viewer Mode-এর এই
-    // ডাউনলোড-সাইড refresh() কখনো সেই native AlarmManager/WorkManager
-    // ইনফ্রার সাথে যুক্ত ছিল না — তাই screen লক থাকলে বা app শুধু background-এ
-    // (সোয়াইপ না করেও) থাকলে auto-refresh থেমে যেত, শুধু ম্যানুয়াল বাটনেই
-    // কাজ করত। এখন window.__sbmViewerRefreshTick রেজিস্টার করা হয় —
-    // BackupAlarmReceiver.java ও BackupWorker.java দুটোই evaluateJavascript()
-    // দিয়ে এটাকেও কল করে (মূল শপ tick-এর পাশাপাশি, একই native infra শেয়ার
-    // করে)। ইচ্ছাকৃতভাবে মূল App()-এর `loaded`-গেটেড effect-এর ওপর নির্ভর না
-    // করে এখানেই সরাসরি schedule করা হয়েছে — Viewer ডিভাইসে কোনো shop config
-    // লোড নাও হতে পারে, তাই স্বাধীনভাবে কাজ করাই নিরাপদ (ViewerDashboardScreen-
-    // এর নিজের ডিজাইন-নীতি: কোনো global shop state ছোঁয় না)।
-    window.__sbmViewerRefreshTick = () => refresh({ src: "native-alarm-or-worker" });
-    if (typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.()) {
-      const BackupSvc = window.Capacitor?.Plugins?.BackupService;
-      if (!BackupSvc) {
-        try { SyncLog.add("diag", "[viewerRefresh][native] ⚠️ BackupService প্লাগইন পাওয়া যায়নি — এই Viewer ডিভাইসের APK-ও পুরনো/ভুল বিল্ড হতে পারে"); } catch {}
-      } else {
-        try { BackupSvc.scheduleExactBackupAlarm(); SyncLog.add("diag", "[viewerRefresh][native] scheduleExactBackupAlarm() কল হলো"); } catch (e) { try { SyncLog.add("diag", "[viewerRefresh][native] scheduleExactBackupAlarm() ব্যর্থ: " + (e?.message || e)); } catch {} }
-        try { BackupSvc.schedulePeriodicSafetyNetWorker(); SyncLog.add("diag", "[viewerRefresh][native] schedulePeriodicSafetyNetWorker() কল হলো"); } catch (e) { try { SyncLog.add("diag", "[viewerRefresh][native] schedulePeriodicSafetyNetWorker() ব্যর্থ: " + (e?.message || e)); } catch {} }
-      }
-    }
-
     refresh({ src: "mount" });
     return () => {
-      clearInterval(id);
       window.removeEventListener("online", onOnline);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onFocus);
       if (appListenerHandle) { try { appListenerHandle.remove(); } catch {} }
-      // 🔴 আগের alarm cancel করা হয় না (শপ App-এর effect-এর মতোই idempotent
-      // re-schedule নির্ভর ডিজাইন) — শুধু tick hook সরানো হয়, যাতে এই স্ক্রিন
-      // (যেমন Reconfigure-এ যাওয়ার সময়) সাময়িক unmount হলেও নেটিভ অ্যালার্ম
-      // চেইন বন্ধ হয়ে না যায়; ফিরে এলে useEffect আবার hook রেজিস্টার করবে।
-      if (window.__sbmViewerRefreshTick) delete window.__sbmViewerRefreshTick;
     };
+  }, [refresh]);
+
+  // 🆕 ফিক্স (২ আগস্ট ২০২৬ — অ্যাপ খোলা রেখে বসে থাকলেও অটো-রিফ্রেশ): আগে
+  // শুধু foreground-এ *ফেরার* মুহূর্তে রিফ্রেশ হতো, কিন্তু অ্যাপ খোলা রেখে
+  // (মিনিমাইজ/লক না করে) দীর্ঘক্ষণ বসে থাকলে নতুন কোনো ট্রিগারই আসত না।
+  // এই টাইমারটা শুধু document visible থাকা অবস্থায়ই ফায়ার করে — hidden
+  // থাকলে স্কিপ করে, কোনো background timer/alarm না, তাই আগের suspend
+  // সমস্যায় ফেরত যাওয়ার ঝুঁকি নেই।
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible") refresh({ src: "foreground-periodic" });
+    }, VIEWER_FOREGROUND_REFRESH_MIN * 60 * 1000);
+    return () => clearInterval(id);
   }, [refresh]);
 
 
@@ -32346,8 +32183,8 @@ function BackupDiagnosticsCard({ T, S, expanded, onToggle }) {
         sbm_gd_auto: localStorage.getItem("sbm_gd_auto"),
         sbm_local_auto: localStorage.getItem("sbm_local_auto"),
         sbm_local_schedule: localStorage.getItem("sbm_local_schedule"),
-        hg_gd_interval: localStorage.getItem("hg_gd_interval"),
-        viewer_interval: localStorage.getItem(VK.interval),
+        hg_gd_interval_fixed: DRIVE_BACKUP_INTERVAL_MIN,
+        viewer_interval_fixed: VIEWER_FOREGROUND_REFRESH_MIN,
         sbm_gd_needs_reconnect: localStorage.getItem("sbm_gd_needs_reconnect"),
         sbm_gd_auto_fail_count: localStorage.getItem("sbm_gd_auto_fail_count"),
       };
@@ -32384,8 +32221,8 @@ function BackupDiagnosticsCard({ T, S, expanded, onToggle }) {
       lines.push(`sbm_gd_auto: ${live.sbm_gd_auto}`);
       lines.push(`sbm_local_auto: ${live.sbm_local_auto}`);
       lines.push(`sbm_local_schedule: ${live.sbm_local_schedule}`);
-      lines.push(`hg_gd_interval: ${live.hg_gd_interval}`);
-      lines.push(`viewer_interval: ${live.viewer_interval}`);
+      lines.push(`hg_gd_interval: ${live.hg_gd_interval_fixed}মি (fixed)`);
+      lines.push(`viewer_interval: ${live.viewer_interval_fixed}মি (fixed, foreground-only)`);
       lines.push(`sbm_gd_needs_reconnect: ${live.sbm_gd_needs_reconnect}`);
       lines.push(`sbm_gd_auto_fail_count: ${live.sbm_gd_auto_fail_count}`);
       lines.push(`lastDriveBackup: ${live.lastDriveBackup}`);
@@ -32445,8 +32282,8 @@ function BackupDiagnosticsCard({ T, S, expanded, onToggle }) {
               <div style={{ marginTop: 6, borderTop: `1px solid ${T.border}`, paddingTop: 6 }}>sbm_gd_auto: <b>{live.sbm_gd_auto ?? "(null=on)"}</b></div>
               <div>sbm_local_auto: <b>{live.sbm_local_auto ?? "(null=on)"}</b></div>
               <div>sbm_local_schedule: <b>{live.sbm_local_schedule ?? "daily"}</b></div>
-              <div>hg_gd_interval: <b>{live.hg_gd_interval ?? "20"}মি</b></div>
-              <div>viewer interval: <b>{live.viewer_interval ?? "15"}মি</b></div>
+              <div>hg_gd_interval: <b>{live.hg_gd_interval_fixed}মি (fixed)</b></div>
+              <div>viewer interval: <b>{live.viewer_interval_fixed}মি (fixed)</b></div>
               <div>sbm_gd_needs_reconnect: <b style={{ color: live.sbm_gd_needs_reconnect ? "#ef4444" : "inherit" }}>{live.sbm_gd_needs_reconnect ?? "না"}</b></div>
               <div style={{ marginTop: 6, borderTop: `1px solid ${T.border}`, paddingTop: 6 }}>lastDriveBackup: <b>{live.lastDriveBackup ? new Date(live.lastDriveBackup).toLocaleString("bn-BD") : "—"}</b></div>
               <div>lastLocalBackup: <b>{live.lastLocalBackup ? new Date(live.lastLocalBackup).toLocaleString("bn-BD") : "—"}</b></div>
@@ -32479,7 +32316,7 @@ function BackupDiagnosticsCard({ T, S, expanded, onToggle }) {
 }
 
 function Settings_({ T, S, shopName,
- setShopName, businessType = "pharmacy", setBusinessType, businessTypeLocked = false, setBusinessTypeLocked, enabledBusinessTypes = [], users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, lastDriveBackup, lastSnapshotBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, setGoogleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [] }) {
+ setShopName, businessType = "pharmacy", setBusinessType, businessTypeLocked = false, setBusinessTypeLocked, enabledBusinessTypes = [], users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, lastDriveBackup, setLastDriveBackup, lastSnapshotBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, setGoogleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [] }) {
   const [editName,    setEditName]    = useState(false);
   const [nameInput,   setNameInput]   = useState(shopName);
   const [showDiagExpanded, setShowDiagExpanded] = useState(false); // 🧪 অস্থায়ী ডায়াগনস্টিকস প্যানেল
@@ -33806,6 +33643,7 @@ function Settings_({ T, S, shopName,
             showToast={showToast} T={T} S={S}
             googleDriveToken={googleDriveToken}
             currentBusinessType={businessType} currentEnabledTypes={enabledBusinessTypes}
+            lastDriveBackup={lastDriveBackup} setLastDriveBackup={setLastDriveBackup}
           />
           <button style={{ ...S.cancelBtn, width:"100%", marginTop:10, color:"#4285F4", border:"1px solid #4285F433" }}
             onClick={() => { setShowGdExpanded(false); setGdUnlocked(false); }}>
@@ -34616,7 +34454,7 @@ function PinResetSettings({ T, S, devContact, setDevContact, masterResetHash, se
 // Firebase Google Sign-in → access token → Drive API
 // কাস্টমার নিজের Firebase config দেয় → তার Google account দিয়ে login করে
 // → নিজের Drive-এ backup যায় — সম্পূর্ণ private
-function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken, currentBusinessType, currentEnabledTypes }) {
+function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken, currentBusinessType, currentEnabledTypes, lastDriveBackup, setLastDriveBackup }) {
   const [clientId, setClientId] = useState(() => localStorage.getItem("sbm_gd_client_id") || "");
   const [connected, setConnected] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -34630,7 +34468,9 @@ function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken, 
   // আগে বন্ধ করে থাকলে (key === "0") সেটা আগের মতোই বন্ধ থাকবে — বিদ্যমান
   // ইউজারের সেটিং জোর করে বদলায় না।
   const [autoEnabled, setAutoEnabled] = useState(() => localStorage.getItem("sbm_gd_auto") !== "0");
-  const [autoInterval, setAutoInterval] = useState(() => parseInt(localStorage.getItem("hg_gd_interval") || "20"));
+  // 🔴 ফিক্স (২ আগস্ট ২০২৬): আগে এখানে autoInterval state ছিল, ইউজার
+  // পিল বাটনে ইন্টারভাল বেছে নিতে পারতেন। এখন সেই চয়েস সরিয়ে ফেলা হয়েছে —
+  // সবসময় DRIVE_BACKUP_INTERVAL_MIN (৫ মিনিট) স্থির।
   const [confirmRestore, setConfirmRestore] = useState(false);
   // 🔴 ফিক্স (staircase ব্যাক): এই ২য়-ধাপ কনফার্মেশনটা back-stack-এ
   // রেজিস্টার্ড ছিল না — ব্যাক চাপলে সরাসরি bypass হয়ে যেত।
@@ -34699,10 +34539,10 @@ function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken, 
   // যেত, ফলে ব্যাকগ্রাউন্ডে প্রকৃত cadence অনেক বেশি হয়ে যেত (App-level
   // ৪৫-মিনিটের safety-net cycle-এ নেমে আসত)। এখন App.jsx-এর গ্লোবাল
   // background cycle (useAppLogic-এর ভেতরে, runDriveBackup) নিজেই প্রতি ৬০
-  // সেকেন্ডে চেক করে autoInterval (localStorage: hg_gd_interval) পার হয়েছে
+  // সেকেন্ডে চেক করে DRIVE_BACKUP_INTERVAL_MIN (স্থির ৫ মিনিট) পার হয়েছে
   // কিনা — Settings স্ক্রিন খোলা/বন্ধ যাই থাকুক না কেন। তাই এখানে আর আলাদা
-  // timer রাখার দরকার নেই; নিচের autoInterval/autoEnabled state শুধু UI পিল
-  // সিলেকশন ও localStorage-এ সেটিং সেভ করার জন্যই ব্যবহৃত হয়।
+  // timer রাখার দরকার নেই; নিচের autoEnabled state শুধু on/off টগল ও
+  // localStorage-এ সেটিং সেভ করার জন্যই ব্যবহৃত হয়।
 
   const silentBackup = useCallback(async () => {
     try {
@@ -34728,6 +34568,7 @@ function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken, 
       const now = new Date().toISOString();
       localStorage.setItem("sbm_gd_last_sync", now);
       setLastSync(now);
+      if (setLastDriveBackup) { setLastDriveBackup(now); await save(SK.lastDriveBackup, now); } // 🆕 কেন্দ্রীয় state + persistence — header/collapsed card disconnect ফিক্স
       await DeltaSync.markSynced("drive", newHashes);
     } catch {}
   }, [getUsableToken]); // 🔴 ফিক্স: data আর সরাসরি dependency না — ref (_latestData) থেকে পড়া হয়
@@ -34774,6 +34615,7 @@ function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken, 
       const now = new Date().toISOString();
       localStorage.setItem("sbm_gd_last_sync", now);
       setLastSync(now);
+      if (setLastDriveBackup) { setLastDriveBackup(now); await save(SK.lastDriveBackup, now); } // 🆕 কেন্দ্রীয় state + persistence — header/collapsed card disconnect ফিক্স
       setStatus("success"); setStatusMsg("ব্যাকআপ সম্পন্ন হয়েছে ✓");
       showToast("☁️ Google Drive-এ ব্যাকআপ সংরক্ষিত!");
       try { setBackupInfo(await GDrive.getBackupInfo(token)); } catch {}
@@ -34903,7 +34745,7 @@ function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken, 
               </div>
               <div style={{ fontSize: 11, marginTop: 2 }}>
                 {connected ? (
-                  <BRS_BackupTimestamp iso={lastSync} label="শেষ ব্যাকআপ" color={GD_BLUE} />
+                  <BRS_BackupTimestamp iso={lastDriveBackup || lastSync} label="শেষ ব্যাকআপ" color={GD_BLUE} />
                 ) : (
                   <span style={{ color: "#475569" }}>ক্লাউড ব্যাকআপ — সংযুক্ত নয়</span>
                 )}
@@ -34938,7 +34780,7 @@ function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken, 
           <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
             <BRS_InfoChip icon="✓" text="সংযুক্ত" color={GD_BLUE} />
             {autoEnabled && (
-              <BRS_InfoChip icon="⚡" text={`Auto — প্রতি ${autoInterval} মিনিটে`} color="#22c55e" />
+              <BRS_InfoChip icon="⚡" text={`Auto — প্রতি ${DRIVE_BACKUP_INTERVAL_MIN} মিনিটে`} color="#22c55e" />
             )}
             {backupInfo?.modifiedTime && (
               <BRS_InfoChip
@@ -35172,14 +35014,14 @@ function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken, 
                 background: "#0a1628", border: `1px solid ${GD_BLUE}22`,
                 borderRadius: 14, padding: "14px",
               }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: autoEnabled ? 12 : 0 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                   <div>
                     <div style={{ color: "#e2e8f0", fontWeight: 800, fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
                       ⚡ অটো-ব্যাকআপ
                       {autoEnabled && <BRS_StatusDot active color={GD_BLUE} />}
                     </div>
                     <div style={{ color: "#475569", fontSize: 11, marginTop: 2 }}>
-                      {autoEnabled ? `প্রতি ${autoInterval} মিনিটে স্বয়ংক্রিয়ভাবে সংরক্ষণ` : "সক্রিয় করুন"}
+                      {autoEnabled ? `প্রতি ${DRIVE_BACKUP_INTERVAL_MIN} মিনিটে স্বয়ংক্রিয়ভাবে সংরক্ষণ` : "সক্রিয় করুন"}
                     </div>
                   </div>
                   {/* Toggle switch */}
@@ -35208,35 +35050,6 @@ function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken, 
                     }} />
                   </div>
                 </div>
-
-                {autoEnabled && (
-                  <div style={{ animation: "hg-slide-in 0.2s ease" }}>
-                    <div style={{ color: "#64748b", fontSize: 11, marginBottom: 8, fontWeight: 700 }}>
-                      ব্যবধান নির্বাচন করুন
-                    </div>
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      {[20, 30, 60, 120, 240].map(m => (
-                        <button
-                          key={m}
-                          onClick={() => {
-                            setAutoInterval(m);
-                            localStorage.setItem("hg_gd_interval", m.toString());
-                          }}
-                          style={{
-                            padding: "5px 12px", borderRadius: 8, fontFamily: "inherit",
-                            fontWeight: 800, fontSize: 12, cursor: "pointer",
-                            border: `1px solid ${autoInterval === m ? GD_BLUE + "88" : "#1e3a5f"}`,
-                            background: autoInterval === m ? `${GD_BLUE}22` : "#0d1f3c",
-                            color: autoInterval === m ? GD_BLUE : "#475569",
-                            transition: "all 0.15s",
-                          }}
-                        >
-                          {m < 60 ? `${m}m` : `${m / 60}h`}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
               </div>
 
               {/* Disconnect */}
