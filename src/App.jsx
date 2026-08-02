@@ -32,7 +32,7 @@ import {
   BACKUP_FIELDS, BACKUP_FIELD_LABELS_BN,
   pickBackupFields, computeRestoreGuardMs, diffBackupFields,
   hashString, hashRecord, hashCollection, buildContentHashes,
-  diffChangedFields, effectiveTs, mergeCollection,
+  diffChangedFields, effectiveTs, mergeCollection, hasAnyBackupRecords,
 } from "./sync.js";
 // 🔴 ফিক্স (Firestore read-quota — ২৫ জুলাই ২০২৬): "ফুল চেকাপ চালান" বাটন
 // (runSyncDiagnostics) stockMovements/txns/cashLogs/users-এর সম্পূর্ণ
@@ -3722,7 +3722,7 @@ function beginRestoreGuard(ms = 5000) {
 // applyRestoredData) এটাই ব্যবহার করে, প্রতিটাতে আলাদা করে ১৮ লাইন if-চেইন নেই।
 // এটাই সব restore পাথের একক চোকপয়েন্ট, তাই beginRestoreGuard() এখানেই বসানো —
 // আলাদা করে প্রতিটা restore ফাংশনে বসাতে হয়নি।
-function applyBackupFields(d, setters) {
+async function applyBackupFields(d, setters) {
   if (!d || !setters) return;
   // 🆕 ফিক্স: আগে fixed ৫ সেকেন্ড গার্ড থাকত — অনেক রেকর্ডের বড় ব্যাকআপে Firestore
   // push শেষ হতে ৫ সেকেন্ডের বেশি সময় লাগলে গার্ড উঠে যাওয়ার পর বাকি রেকর্ড push
@@ -3736,6 +3736,45 @@ function applyBackupFields(d, setters) {
       setters[setterName]?.(d[f]);
     }
   });
+  // 🆕 (২ আগস্ট ২০২৬) সাবস্ক্রিপশন/লাইসেন্স রিস্টোর — মূল বাগ: useLicenseSubscription
+  // (দেখুন উপরের LICENSE_* কমেন্ট) সম্পূর্ণ ডিভাইস-লোকাল (IndexedDB/localStorage),
+  // BACKUP_FIELDS রেজিস্ট্রির বাইরে — তাই অ্যাপ আনইনস্টল/ফোন পরিবর্তন হলে বৈধভাবে
+  // সক্রিয় সাবস্ক্রিপশনও হারিয়ে যেত, Drive/local ব্যাকআপে ডেটা থাকলেও ফেরানোর
+  // কোনো উপায় ছিল না। এখন BACKUP_FIELDS-এর বাইরেই আলাদাভাবে _license হ্যান্ডেল
+  // করা হলো — এটাই সব restore পাথের একক চোকপয়েন্ট, তাই এখানেই যথেষ্ট।
+  if (d._license) {
+    try {
+      // মেয়াদ (unlockedUntil) সবসময় max(বর্তমান, ব্যাকআপ) — পুরনো ব্যাকআপ রিস্টোর
+      // করলে যেন চালু মেয়াদ কখনো ছোট/বাতিল না হয়ে যায়।
+      const curUntilRaw = await load(LICENSE_UNTIL_KEY);
+      const curUntilMs = curUntilRaw ? new Date(curUntilRaw).getTime() : 0;
+      const backupUntilMs = d._license.unlockedUntil ? new Date(d._license.unlockedUntil).getTime() : 0;
+      if (backupUntilMs > curUntilMs) {
+        await save(LICENSE_UNTIL_KEY, d._license.unlockedUntil);
+      }
+      // deviceId শুধু তখনই বসে যখন এই ডিভাইসে এখনো কোনো লাইসেন্স-আইডি নেই —
+      // বিদ্যমান ডিভাইসের নিজস্ব আইডি কখনো ব্যাকআপের আইডি দিয়ে ওভাররাইট হবে না
+      // (নাহলে অন্য ডিভাইসের ব্যাকআপ ভুলবশত এই ডিভাইসের আইডেন্টিটি বদলে দিতে পারত)।
+      const curDeviceId = await load(LICENSE_DEVICE_ID_KEY);
+      if (!curDeviceId && d._license.deviceId) {
+        await save(LICENSE_DEVICE_ID_KEY, d._license.deviceId);
+      }
+      // history মার্জ — বর্তমান + ব্যাকআপ দুটোই একসাথে, ডুপ্লিকেট বাদ দিয়ে নতুন-আগে
+      // সাজিয়ে সর্বোচ্চ ২৪টা (activateCode()-এর একই cap-এর সাথে সামঞ্জস্যপূর্ণ)।
+      if (Array.isArray(d._license.history) && d._license.history.length) {
+        const curHistRaw = await load(LICENSE_HISTORY_KEY);
+        const curHist = Array.isArray(curHistRaw) ? curHistRaw : [];
+        const seen = new Set();
+        const merged = [...curHist, ...d._license.history].filter(h => {
+          const key = `${h?.activatedAt}|${h?.validUntil}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        }).sort((a, b) => new Date(b.activatedAt) - new Date(a.activatedAt)).slice(0, 24);
+        await save(LICENSE_HISTORY_KEY, merged);
+      }
+    } catch {}
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -4234,6 +4273,11 @@ const RetentionDB = {
     const ok = await ArchiveDB._put("dated_snapshots", {
       dateKey,
       ...pickBackupFields(payload),
+      // 🆕 (২ আগস্ট ২০২৬) pickBackupFields BACKUP_FIELDS-এর বাইরে সবকিছু বাদ দেয়,
+      // তাই businessType ট্যাগ (_meta) আর সাবস্ক্রিপশন (_license) আলাদা করে ধরে
+      // রাখতে হবে — BackupArchivePanel থেকে এই আর্কাইভ রিস্টোরও একটা বৈধ পাথ।
+      _meta: payload?._meta,
+      _license: payload?._license,
       _savedAt: new Date().toISOString(),
     });
     if (ok) await this.pruneRetention();
@@ -4295,6 +4339,9 @@ const WormArchive = {
     const ok = await ArchiveDB._put("worm_archive", {
       monthKey,
       ...pickBackupFields(payload),
+      // 🆕 (২ আগস্ট ২০২৬) দেখুন RetentionDB.saveIfNewDay-এর একই কমেন্ট।
+      _meta: payload?._meta,
+      _license: payload?._license,
       _archivedAt: new Date().toISOString(),
       _immutable: true,
     });
@@ -12118,8 +12165,16 @@ function SmartBusinessMgmt() {
         businessType,
         enabledBusinessTypes,
       },
+      // 🆕 (২ আগস্ট ২০২৬) সাবস্ক্রিপশন/লাইসেন্স ব্যাকআপ — দেখুন applyBackupFields-এর
+      // কমেন্ট। ইচ্ছাকৃতভাবে BACKUP_FIELDS রেজিস্ট্রির বাইরে (এটা ব্যবসার ডেটা না,
+      // ডিভাইস-এনটাইটেলমেন্ট), তাই আলাদা top-level ফিল্ড হিসেবে যোগ করা হলো।
+      _license: {
+        deviceId: license.deviceId,
+        unlockedUntil: license.unlockedUntil ? license.unlockedUntil.toISOString() : null,
+        history: license.history,
+      },
     };
-  }, [customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, firebaseEnabled, businessType, enabledBusinessTypes]);
+  }, [customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, firebaseEnabled, businessType, enabledBusinessTypes, license.deviceId, license.unlockedUntil, license.history]);
 
   // ── GoogleDriveSection/LocalStorageSection (ম্যানুয়াল Settings প্যানেল)-এ
   // `data`/`setters` prop হিসেবে যা যায় — আগে এই দুই জায়গাতেই আলাদা করে ১৮টা
@@ -12134,8 +12189,15 @@ function SmartBusinessMgmt() {
     // যাতে GoogleDriveSection/LocalStorageSection-এর ম্যানুয়াল ব্যাকআপ ফাইলেও
     // validateBackup() মিসম্যাচ ধরতে পারে।
     out._meta = { businessType, enabledBusinessTypes };
+    // 🆕 (২ আগস্ট ২০২৬) দেখুন buildBackupData-এর _license কমেন্ট — GoogleDriveSection/
+    // LocalStorageSection-এর ম্যানুয়াল ব্যাকআপ ফাইলেও একই কারণে দরকার।
+    out._license = {
+      deviceId: license.deviceId,
+      unlockedUntil: license.unlockedUntil ? license.unlockedUntil.toISOString() : null,
+      history: license.history,
+    };
     return out;
-  }, [customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, businessType, enabledBusinessTypes]);
+  }, [customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, businessType, enabledBusinessTypes, license.deviceId, license.unlockedUntil, license.history]);
   const manualBackupSetters = useMemo(() => {
     const setterMap = { customers: setCustomers, products: setProducts, invoices: setInvoices, txns: setTxns, smsLog: setSmsLog, paymentInvoices: setPaymentInvoices, purchaseOrders: setPurchaseOrders, stockMovements: setStockMovements, users: setUsers, cashLogs: setCashLogs, suppliers: setSuppliers, expenses: setExpenses, returns: setReturns, auditLogs: setAuditLogs, quotations: setQuotations, supplierPayments: setSupplierPayments, deletedProducts: setDeletedProducts, deletedCustomers: setDeletedCustomers };
     const out = {};
@@ -12564,6 +12626,13 @@ function SmartBusinessMgmt() {
       try {
         SyncLog.add("diag", `[localFile] শুরু (ট্রিগার: ${src})`);
         const data = await _latestBuildBackupData.current(); // সবসময় সর্বশেষ buildBackupData
+        // 🆕 (২ আগস্ট ২০২৬) খালি-ব্যাকআপ গার্ড — দেখুন hasAnyBackupRecords কমেন্ট (sync.js)।
+        // boot/প্রথম Firestore-sync এখনো শেষ না হলে state সাময়িক খালি থাকতে পারে —
+        // তখন অটো-সাইকেল চলে গেলে আসল ব্যাকআপ ফাইলের জায়গায় খালি ডেটা লেখা হয়ে যেত।
+        if (!hasAnyBackupRecords(data)) {
+          SyncLog.add("diag", "[localFile] স্কিপ — বর্তমান ডেটা খালি মনে হচ্ছে (বুট/প্রথম সিঙ্ক এখনো শেষ হয়নি?), আসল ব্যাকআপ ওভাররাইট এড়াতে স্কিপ করা হলো");
+          return;
+        }
         // #৯/#১৬ — retention/WORM প্রতি cycle-এ চেক হয় (নিজেরাই দিনে/মাসে
         // একবার idempotent সেভ করে) — delta-skip-এর সাথে সম্পর্কহীন, কারণ
         // এগুলো নির্দিষ্ট ক্যালেন্ডার তারিখ/মাসের প্রতিনিধিত্বমূলক অবস্থা
@@ -12672,6 +12741,11 @@ function SmartBusinessMgmt() {
           return; // token নেই/expired — এই cycle skip, পরের cycle-এ আবার চেষ্টা
         }
         const data = await _latestBuildBackupData.current(); // 🔴 ফিক্স: সবসময় সর্বশেষ ডেটা (দেখুন উপরের stale-closure কমেন্ট)
+        // 🆕 (২ আগস্ট ২০২৬) খালি-ব্যাকআপ গার্ড — দেখুন runLocalBackup-এর একই কমেন্ট।
+        if (!hasAnyBackupRecords(data)) {
+          SyncLog.add("diag", "[drive] স্কিপ — বর্তমান ডেটা খালি মনে হচ্ছে (বুট/প্রথম সিঙ্ক এখনো শেষ হয়নি?), Drive-এর আসল ব্যাকআপ ওভাররাইট এড়াতে স্কিপ করা হলো");
+          return;
+        }
         // #৪ ডেল্টা সিঙ্ক — "drive" checkpoint GoogleDriveSection-এর নিজস্ব
         // silentBackup timer-এর সাথেও শেয়ার করা (একই Drive ফাইল, তাই দুটো
         // আলাদা টাইমার একই অপরিবর্তিত ডেটা দুইবার আপলোড করবে না)।
@@ -12723,10 +12797,17 @@ function SmartBusinessMgmt() {
           if (Date.now() - last < ms) { SyncLog.add("diag", `[snapshot] স্কিপ — schedule=${schedule}, বাকি ~${remainMin}মি`); return; } // এখনো সময় হয়নি
         }
         const data = await _latestBuildBackupData.current();
+        // 🆕 (২ আগস্ট ২০২৬) খালি-ব্যাকআপ গার্ড — দেখুন runLocalBackup-এর একই কমেন্ট।
+        // এই স্ন্যাপশটই "স্ন্যাপশট রিস্টোর" বাটনের সরাসরি উৎস (SnapshotDB.loadLatest,
+        // rotating slot) — তাই এখানে খালি ডেটা লেখা মানেই পরবর্তী রিস্টোর খালি আসা।
+        if (!hasAnyBackupRecords(data)) {
+          SyncLog.add("diag", "[snapshot] স্কিপ — বর্তমান ডেটা খালি মনে হচ্ছে (বুট/প্রথম সিঙ্ক এখনো শেষ হয়নি?), আসল স্ন্যাপশট ওভাররাইট এড়াতে স্কিপ করা হলো");
+          return;
+        }
         const picked = pickBackupFields(data);
         const newHashes = buildContentHashes(picked);
         if (await DeltaSync.shouldSkip("snapshot", newHashes)) { SyncLog.add("diag", "[snapshot] স্কিপ — ডেটা অপরিবর্তিত (হ্যাশ একই)"); return; } // ডেটা না বদলালে বৃথা রি-রাইট না
-        await SnapshotDB.save({ ...picked, _meta: data._meta, _savedAt: new Date().toISOString() });
+        await SnapshotDB.save({ ...picked, _meta: data._meta, _license: data._license, _savedAt: new Date().toISOString() });
         await DeltaSync.markSynced("snapshot", newHashes);
         const ts = new Date().toISOString();
         setLastSnapshotBackup(ts);
@@ -34690,9 +34771,16 @@ function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken, 
         setStatus("error"); setStatusMsg("পুনরায় Google লগইন করুন");
         setSyncing(false); return;
       }
+      // 🆕 (২ আগস্ট ২০২৬) ম্যানুয়াল ক্লিক ইচ্ছাকৃতভাবে ব্লক করা হয়নি (স্পষ্ট
+      // ইউজার-অ্যাকশন), কিন্তু বর্তমান ডেটা খালি হলে সতর্ক করা হচ্ছে — নাহলে
+      // দোকানদার বুঝতেই পারবেন না যে এই ব্যাকআপটাই আসল ব্যাকআপ ওভাররাইট করে দিলো।
+      if (!hasAnyBackupRecords(data)) {
+        showToast("⚠️ বর্তমানে কোনো ডেটা লোড হয়নি — এখন ব্যাকআপ নিলে আগের আসল ব্যাকআপ খালি ডেটা দিয়ে ওভাররাইট হয়ে যেতে পারে। একটু পরে আবার চেষ্টা করুন।", "#f59e0b");
+      }
       await GDrive.uploadBackup(token, {
         ...pickBackupFields(data),
         _meta: data._meta, // 🆕 businessType ট্যাগ সংরক্ষণ (RestoreGuard, pickBackupFields এটা বাদ দেয়)
+        _license: data._license, // 🆕 (২ আগস্ট ২০২৬) সাবস্ক্রিপশন — pickBackupFields এটাও বাদ দেয়
         _savedAt: new Date().toISOString(), _version: "5.0",
       });
       const now = new Date().toISOString();
@@ -35223,7 +35311,14 @@ function LocalStorageSection({ data, setters, showToast, T, S, currentBusinessTy
   // পুরো ব্যাকআপ প্রসেস — interval ও change-triggered (realtime) দুই মোডেই শেয়ার করা হয়
   const doSave = useCallback(async () => {
     const d = _latestData.current; // always use latest data
-    const picked = pickBackupFields(d);
+    // 🆕 (২ আগস্ট ২০২৬) খালি-ব্যাকআপ গার্ড — দেখুন App.jsx-এর runLocalBackup-এর একই
+    // কমেন্ট। এই ফাংশনও একই rotating SnapshotDB slot-এ লেখে যেটা "স্ন্যাপশট রিস্টোর"
+    // বাটন পড়ে — টগল চালু হওয়ার সাথে সাথে বা "রিয়েলটাইম" মোডে মাউন্ট হওয়ামাত্র এটা
+    // চলে, যে মুহূর্তে boot/প্রথম সিঙ্ক এখনো শেষ না হলে data সাময়িক খালি থাকতে পারে।
+    if (!hasAnyBackupRecords(d)) return;
+    // 🆕 (২ আগস্ট ২০২৬) pickBackupFields BACKUP_FIELDS-এর বাইরে সবকিছু বাদ দেয় —
+    // _meta (businessType ট্যাগ) আর _license (সাবস্ক্রিপশন) এখানেও আলাদা করে রাখা হলো।
+    const picked = { ...pickBackupFields(d), _meta: d._meta, _license: d._license };
     // #৯/#১৬ — Firebase বন্ধ থাকা দোকানেও (main App-এর অটো cycle firebaseEnabled
     // ছাড়া চলে না) এই টাইমারই একমাত্র নিয়মিত auto-backup, তাই retention/WORM
     // এখানেও হুক করা হলো — নিজেরাই দিনে/মাসে একবার idempotent সেভ করে।
@@ -35278,7 +35373,11 @@ function LocalStorageSection({ data, setters, showToast, T, S, currentBusinessTy
 
   const handleSaveSnapshot = async () => {
     setSaving(true);
-    const result = await LocalBackup.save({ ...pickBackupFields(data), _meta: data._meta });
+    // 🆕 (২ আগস্ট ২০২৬) দেখুন handleBackup-এর একই কমেন্ট।
+    if (!hasAnyBackupRecords(data)) {
+      showToast("⚠️ বর্তমানে কোনো ডেটা লোড হয়নি — এই স্ন্যাপশট আগের আসল স্ন্যাপশট ওভাররাইট করে দিতে পারে। একটু পরে আবার চেষ্টা করুন।", "#f59e0b");
+    }
+    const result = await LocalBackup.save({ ...pickBackupFields(data), _meta: data._meta, _license: data._license });
     if (result.ok) {
       const now = new Date().toISOString();
       setLastSync(now);
@@ -35314,6 +35413,7 @@ function LocalStorageSection({ data, setters, showToast, T, S, currentBusinessTy
     const backupData = {
       ...pickBackupFields(data),
       _meta: data._meta, // 🆕 businessType ট্যাগ সংরক্ষণ (RestoreGuard)
+      _license: data._license, // 🆕 (২ আগস্ট ২০২৬) সাবস্ক্রিপশন — pickBackupFields এটাও বাদ দেয়
       _exportedAt: new Date().toISOString(), _version: "5.0",
     };
     if (encryptEnabled) {

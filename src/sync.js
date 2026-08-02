@@ -41,6 +41,21 @@ export function pickBackupFields(data) {
   return out;
 }
 
+// ── (২ আগস্ট ২০২৬) খালি-ব্যাকআপ গার্ড ────────────────────────────────────────
+// মূল বাগ: অটো ব্যাকআপ সাইকেল (Drive/local file/IndexedDB snapshot) React
+// state থেকেই payload বানায় — আর boot/প্রথম Firestore-sync এখনো শেষ না হলে
+// (বিশেষত `loaded`/`settingsLoaded` লোকাল-বুট গার্ড true হয়ে গেলেও Firestore
+// listener-এর প্রথম ডেটা তখনো না আসলে) customers/products ইত্যাদি সাময়িকভাবে
+// খালি অ্যারে থাকে। এই মুহূর্তে অটো-সাইকেল চলে গেলে আসল ব্যাকআপের জায়গায় একটা
+// সম্পূর্ণ খালি স্ন্যাপশট লেখা/আপলোড হয়ে যায় (single-slot/rotating-slot ওভাররাইট),
+// আর পরে "রিস্টোর" করলে সেই খালি ব্যাকআপ থেকেই রিস্টোর হয় — RestoreSelfTest.evaluate()
+// একই সিগন্যাল (totalRecords === 0) ব্যবহার করে শুধু *ধরে* (health card-এ লাল ব্যাজ),
+// কিন্তু লেখা *আটকায়* না। এই হেল্পার সেই একই চেক — write-করার আগেই কল করে অটো-সাইকেল
+// স্কিপ করানোর জন্য (ম্যানুয়াল বাটন ইচ্ছাকৃতভাবে ব্লক করা হয়নি — ইউজারের স্পষ্ট ক্লিক)।
+export function hasAnyBackupRecords(payload) {
+  return BACKUP_FIELDS.some(f => Array.isArray(payload?.[f]) && payload[f].length > 0);
+}
+
 // ── রিস্টোর-গার্ড টাইমআউট (রেকর্ড-সংখ্যা অনুযায়ী adaptive, ৫s–৩০s) ──────────
 export function computeRestoreGuardMs(payload) {
   const totalRecords = BACKUP_FIELDS.reduce(
