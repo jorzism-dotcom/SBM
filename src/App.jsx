@@ -12615,6 +12615,24 @@ function SmartBusinessMgmt() {
     // প্যাটার্ন রিপোর্ট হয়েছে। এখন `settingsLoaded` (wave-2 শেষ হলে true)-ও
     // অতিরিক্ত গার্ড হিসেবে চেক করা হয়, যাতে backup timer/tick কখনোই আংশিক
     // ডেটা নিয়ে শুরু না হয়।
+    // 🔴🔴 ফিক্স (২ আগস্ট ২০২৬ — রিয়েল-ডিভাইস লগ দিয়ে ধরা পড়েছে, দেখুন
+    // BUGFIX_LOG): উপরের `settingsLoaded` গার্ড যোগ করার সময় dependency
+    // array-তে `settingsLoaded` যোগ করা হয়নি (নিচে দেখুন — আগে শুধু
+    // `[loaded, currentUser?.role]` ছিল)। ফলাফল: `loaded` true হওয়ার
+    // মুহূর্তেই effect প্রথমবার রান হয়, কিন্তু তখন প্রায়ই `settingsLoaded`
+    // এখনো false থাকে (wave-2 তখনো async IndexedDB read করছে) — তাই এই
+    // গার্ডে আটকে `return` হয়ে যায়, কোনো cleanup/timer/listener সেটআপ
+    // ছাড়াই। পরে `settingsLoaded` true হয়, কিন্তু dependency-তে না থাকায়
+    // effect আর কখনো রি-রান হয় না — পুরো tick()/৩-মিনিট সেফটি-টাইমার/
+    // visibilitychange/focus/capacitor-resume মেকানিজম পুরো সেশনে একবারও
+    // চালু হয় না (ফোরগ্রাউন্ড বা ব্যাকগ্রাউন্ড কোনোটাই না — যা ঠিক রিপোর্ট
+    // হওয়া উপসর্গ)। রেস কন্ডিশন হওয়ায় ফোনের গতি/IndexedDB read-এর সময়ের
+    // ওপর নির্ভর করে মাঝে মাঝে "কাজ করে" মাঝে মাঝে করে না। ম্যানুয়াল
+    // এক-ক্লিক Drive ব্যাকআপ বাটন (runOneClickDriveBackup) এই effect-এর
+    // বাইরে, তাই সেটা প্রভাবিত হয়নি — এই কারণেই lastDriveBackup আপডেট
+    // হয়েছিল কিন্তু কোনো SyncLog এন্ট্রি ছাড়া। ফিক্স: `settingsLoaded`
+    // এখন dependency array-তেও আছে, তাই wave-2 শেষ হলে effect ঠিকভাবে
+    // রি-রান হয়ে পুরো মেকানিজম চালু করে।
     if (!loaded || !settingsLoaded) return;
     // 🔴 ফিক্স (২ আগস্ট ২০২৬ — Drive ব্যাকআপ ইন্টারভাল স্থির ৫ মিনিট): আগে এটা
     // ইউজার-নির্বাচনযোগ্য ছিল (20/30/60/120/240 মিনিট পিল)। এখন আর কোনো
@@ -12987,7 +13005,7 @@ function SmartBusinessMgmt() {
       if (capResumeHandle) { try { capResumeHandle.remove(); } catch {} }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded, currentUser?.role]);
+  }, [loaded, settingsLoaded, currentUser?.role]);
 
 
   // ── 🆕 ব্যাকআপ-দেরি ওয়ার্নিং — Drive ব্যাকআপ নিজের ঠিক করা ইন্টারভালের চেয়ে
