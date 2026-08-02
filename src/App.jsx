@@ -33480,7 +33480,16 @@ function Settings_({ T, S, shopName,
         {/* ── CARD 3: Local Storage ── */}
         {(() => {
           const COLOR = "#22c55e";
-          const ldEnabled = localStorage.getItem("sbm_local_auto") === "1";
+          // 🔴 ফিক্স (২ আগস্ট ২০২৬ — "Local Storage কার্ডে IDLE দেখাচ্ছে কেন"):
+          // আগে এই ব্যাজ শুধু sbm_local_auto === "1" হলেই AUTO দেখাত। কিন্তু
+          // আসল ব্যাকআপ লজিকে (runSnapshotBackup, নিচে ১২৭১৬ লাইনে দেখুন) ও
+          // ডায়াগনস্টিকসে (৩২৩৩০ লাইনে "sbm_local_auto: null=on" নোট আছে)
+          // ডিফল্ট (key অনুপস্থিত) সবসময় ON ধরা হয় — শুধু explicit "0" থাকলেই
+          // OFF। ফলে key কখনো সরাসরি "1" না লেখা হলে (যেমন ডিফল্ট অবস্থাতেই),
+          // real snapshot ঠিকই নিচ্ছে (log/timestamp প্রমাণ করে) কিন্তু এই
+          // কার্ডের ব্যাজ ভুলভাবে IDLE দেখাত — Google Drive কার্ডের
+          // autoEnabled (!== "0") প্যাটার্নের সাথে এখন সামঞ্জস্যপূর্ণ করা হলো।
+          const ldEnabled = localStorage.getItem("sbm_local_auto") !== "0";
           return (
             <div className="integ-card" style={{
               background: ldEnabled
