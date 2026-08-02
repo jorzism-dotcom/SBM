@@ -12792,10 +12792,35 @@ function SmartBusinessMgmt() {
     // runDriveBackup/runLocalBackup/runSnapshotBackup নিজেরাই ভেতরে ইন্টারভাল/
     // হ্যাশ-গেট করে, তাই বারবার ডাকা হলেও ডেটা না বদলালে/সময় না হলে নিজে থেকেই
     // skip হয়ে যায় — স্প্যামের ঝুঁকি নেই।
-    const onVisible = () => { if (document.visibilityState === "visible") tick("visibilitychange"); };
+    const onVisible = () => {
+      // 🆕 hidden হওয়ার মুহূর্তটাও লগ করা হচ্ছে (শুধু visible হলে tick না) —
+      // যাতে পরের বার একই সমস্যা হলে ঠিক কখন WebView suspend শুরু হয়েছিল
+      // আর কখন ফিরেছিল সরাসরি লগ থেকেই বোঝা যায়, tick-গ্যাপ অনুমান করতে না হয়।
+      SyncLog.add("diag", `[visibility] ${document.visibilityState}`);
+      if (document.visibilityState === "visible") tick("visibilitychange");
+    };
     document.addEventListener("visibilitychange", onVisible);
     const onFocus = () => tick("focus");
     window.addEventListener("focus", onFocus);
+
+    // 🔴 ফিক্স (২ আগস্ট ২০২৬ — স্ক্রিন সংক্ষিপ্ত off/idle হওয়ার পর ব্যাকআপ পুরোপুরি
+    // থেমে যাওয়া): ডায়াগনস্টিক লগে দেখা গেছে ৩-মিনিট সেফটি-টাইমার একবার ~৫ মিনিট
+    // দেরি করে fire করার পর পুরো mechanism (timer + visibilitychange + data-change
+    // subscribe) সম্পূর্ণ থেমে যায় — ২৬ মিনিটে একটাও tick/drive লগ নেই, অথচ এর
+    // মধ্যে নতুন ইনভয়েসও তৈরি হয়েছে। কারণ: Android WebView স্ক্রিন-off/idle হলে
+    // JS timer সাসপেন্ড করে, আর ফেরার সময় শুধু DOM visibilitychange-এর ওপর ভরসা
+    // করা হচ্ছিল — যেটা WebView suspend থেকে resume হওয়ার সময় সবসময় fire করে না।
+    // Capacitor-এর native "resume" ইভেন্ট (App plugin) বেশি নির্ভরযোগ্য — এটা
+    // এখন আলাদাভাবেও tick ট্রিগার করবে, DOM ইভেন্ট মিস হলেও কভার হবে।
+    let capResumeHandle = null;
+    let capResumeCancelled = false;
+    const onCapResume = () => tick("capacitor-resume");
+    if (typeof window !== "undefined" && window.Capacitor?.isNativePlatform?.()) {
+      import("@capacitor/app").then(({ App }) => {
+        if (capResumeCancelled) return;
+        App.addListener("resume", onCapResume).then((handle) => { capResumeHandle = handle; });
+      }).catch(() => {});
+    }
 
     // ১.৫) ফোরগ্রাউন্ড-সেফটি-নেট — অ্যাপ খোলা রেখে (মিনিমাইজ/লক না করে,
     // অ্যাপ-সুইচ না করে) বসে থাকলেও প্রতি SHOP_FOREGROUND_SAFETY_MIN মিনিটে
@@ -12877,6 +12902,8 @@ function SmartBusinessMgmt() {
       clearInterval(safetyTimer);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onFocus);
+      capResumeCancelled = true;
+      if (capResumeHandle) { try { capResumeHandle.remove(); } catch {} }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, currentUser?.role]);
