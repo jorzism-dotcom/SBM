@@ -14731,7 +14731,7 @@ function SmartBusinessMgmt() {
         )}
         {tab === "invoice" && (
           <ErrorBoundary T={T}>
-            <MemoSmartInvoiceBuilder key={invoiceKey} T={T} S={S}
+            <MemoSmartInvoiceBuilder key={invoiceKey} T={T} S={S} isDark={isDark}
               customers={customers} products={products}
               setCustomers={setCustomers} setInvoices={setInvoices} setProducts={setProducts}
               sendSMS={sendSMS} showToast={showToast} addTxn={addTxn} shopName={shopName}
@@ -17223,7 +17223,40 @@ function invoiceReducer(state, action) {
   }
 }
 
-function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoices, setProducts, sendSMS, showToast, addTxn, shopName, btConnected, btDevice, onConnectBluetooth, createPaymentInvoice, preselectedCustomer, preselectedType, setTab, onDone, purchaseOrders = [], currentUser, businessType = "pharmacy", license = { isLocked: false } }) {
+// 🎨 ইনভয়েস মডিউল স্কিন — লাইট মোডে থিম ০৫ (বোল্ড প্রাইস ট্যাগ, ব্রুটালিস্ট) ও
+// ডার্ক মোডে থিম ১০ (ফিউচারিস্টিক HUD, নিয়ন গ্লো) — শুধু ইনভয়েস তৈরির ৪টি পেইজে
+// (Customer/Products/Payment/Receipt) প্রযোজ্য, বাকি অ্যাপের থিম-সিস্টেম অপরিবর্তিত।
+function getInvoiceSkin(isDark) {
+  return isDark ? {
+    id: "t10",
+    cardBg: "#080c14", cardBg2: "#0c1220", cardBorder: "1px solid #17324a",
+    text: "#dff2ff", sub: "#5c7a92",
+    accent: "#00d4ff", accentSoft: "#08202b", accentText: "#00d4ff",
+    priceBg: "linear-gradient(135deg,#00d4ff26,#00d4ff0a)",
+    priceBorder: "1px solid #00d4ff99", priceText: "#00d4ff",
+    priceShadow: "0 0 10px #00d4ff55", priceTextShadow: "0 0 8px #00d4ff88",
+    glowShadow: "0 0 14px rgba(0,212,255,.55)",
+    cornerAccent: "#ff6a00",
+    clip: "polygon(0 10px,10px 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%)",
+    clipSm: "polygon(0 6px,6px 0,100% 0,100% calc(100% - 6px),calc(100% - 6px) 100%,0 100%)",
+    radius: 0,
+  } : {
+    id: "t5",
+    cardBg: "#fffefb", cardBg2: "#fff8f0", cardBorder: "2px solid #17171a",
+    text: "#17171a", sub: "#6b6a63",
+    accent: "#ff5a36", accentSoft: "#ffe4da", accentText: "#17171a",
+    priceBg: "#ff5a36",
+    priceBorder: "1px solid #17171a", priceText: "#fff",
+    priceShadow: "3px 3px 0 #17171a", priceTextShadow: "none",
+    glowShadow: "none",
+    cornerAccent: "#17171a",
+    clip: "none", clipSm: "none",
+    radius: 10,
+  };
+}
+
+function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCustomers, setInvoices, setProducts, sendSMS, showToast, addTxn, shopName, btConnected, btDevice, onConnectBluetooth, createPaymentInvoice, preselectedCustomer, preselectedType, setTab, onDone, purchaseOrders = [], currentUser, businessType = "pharmacy", license = { isLocked: false } }) {
+  const IS = useMemo(() => getInvoiceSkin(isDark), [isDark]);
   // 🆕 ধাপ ৪: semen business-এ ইনভয়েস স্টেপ ২ প্রোডাক্ট কার্ডে ক্রয়মূল্য হাইড
   // (registry hiddenFields.invoiceCard: "purchasePrice")
   const hideCostPrice = (BUSINESS_TYPE_REGISTRY[businessType]?.hiddenFields?.invoiceCard || []).includes("purchasePrice");
@@ -18238,19 +18271,21 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
         <div key={s.n} style={{ display: "flex", alignItems: "center", flex: 1 }}>
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flex: "0 0 auto" }}>
             <div style={{
-              width: 32, height: 32, borderRadius: "50%",
-              background: step > s.n ? T.stepDone : step === s.n ? T.stepActive : T.stepInactive,
-              color: step >= s.n ? "#fff" : T.sub,
+              width: 32, height: 32, borderRadius: IS.id === "t5" ? "50%" : 6,
+              background: step > s.n ? IS.accent : step === s.n ? IS.accent : IS.cardBg2,
+              border: step >= s.n ? IS.priceBorder : IS.cardBorder,
+              color: step >= s.n ? IS.priceText : IS.sub,
               display: "flex", alignItems: "center", justifyContent: "center",
-              fontWeight: 800, fontSize: 13, transition: "all 0.3s",
-              boxShadow: step === s.n ? "0 0 0 4px " + T.stepActive + "33" : "none"
+              fontWeight: 900, fontSize: 13, transition: "all 0.3s",
+              boxShadow: step === s.n ? (IS.id === "t5" ? "3px 3px 0 #17171a" : IS.glowShadow) : "none",
+              textShadow: step >= s.n ? IS.priceTextShadow : "none",
             }}>
               {step > s.n ? "✓" : s.n}
             </div>
-            <div style={{ fontSize: 10, color: step >= s.n ? T.accent : T.sub, marginTop: 4, fontWeight: 600, textAlign: "center" }}>{s.label}</div>
+            <div style={{ fontSize: 10, color: step >= s.n ? IS.accent : IS.sub, marginTop: 4, fontWeight: 700, textAlign: "center" }}>{s.label}</div>
           </div>
           {i < arr.length - 1 && (
-            <div style={{ flex: 1, height: 2, background: step > s.n ? T.stepDone : T.stepInactive, margin: "0 4px", marginBottom: 16, transition: "all 0.3s" }} />
+            <div style={{ flex: 1, height: 2, background: step > s.n ? IS.accent : IS.cardBorder.split(" ").pop(), margin: "0 4px", marginBottom: 16, transition: "all 0.3s" }} />
           )}
         </div>
       ))}
@@ -18259,7 +18294,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
   );
 
   return (
-    <div style={{ ...S.page, flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0, boxSizing: "border-box" }}>
+    <div style={{ ...S.page, background: isDark ? "radial-gradient(circle at 50% 0%, #10182a, #04060c 70%)" : "#fbf9f5", flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0, boxSizing: "border-box" }}>
       <div ref={el => { if (el) { setStepBarHeight(el.offsetHeight); } }} style={{ position: "relative" }}>
         <StepBar />
         {step === 3 && (
@@ -18329,41 +18364,48 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
       {step === 1 && (
         <div style={{ animation: "slideUp 0.25s ease", overflow: "hidden", display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
           {/* Walk-in / Guest quick button */}
-          <div style={{ marginBottom:10, background:"linear-gradient(135deg,#1e1b4b22,#4338ca11)", border:"1px solid #6366f133", borderRadius:14, padding:"10px 14px" }}>
-            <div style={{ color:"#818cf8", fontWeight:800, fontSize:12, marginBottom:8, display:"flex", alignItems:"center", gap:6 }}>
+          <div style={{ marginBottom:10, background:IS.cardBg, border:IS.cardBorder, borderRadius: IS.id === "t5" ? 14 : 0, clipPath: IS.clipSm, padding:"10px 14px" }}>
+            <div style={{ color:IS.accent, fontWeight:800, fontSize:12, marginBottom:8, display:"flex", alignItems:"center", gap:6 }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
               দ্রুত বিক্রয় — কাস্টমার এন্ট্রি ছাড়া
             </div>
             <button
-              style={{ width:"100%", background:"linear-gradient(135deg,#4338ca,#6366f1)", color:"#fff", border:"none", borderRadius:10, padding:"11px 14px", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:8, boxShadow:"0 3px 12px #6366f133" }}
+              style={{
+                width:"100%", background: IS.id === "t5" ? IS.priceBg : `linear-gradient(135deg, ${IS.accent}, #0090b3)`,
+                color: IS.priceText, border: IS.priceBorder, borderRadius: IS.id === "t5" ? 10 : 8,
+                padding:"11px 14px", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:"inherit",
+                display:"flex", alignItems:"center", justifyContent:"center", gap:8,
+                boxShadow: IS.priceShadow, textShadow: IS.priceTextShadow, clipPath: IS.clip,
+              }}
               onClick={() => { setSelCust({ id:"__walkin__", name:"Walk-in Customer", mobile:"", balance:0, serial:"👤" }); setPayType("cash"); setStep(2); }}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
               Walk-in / অতিথি কাস্টমার
             </button>
-            <div style={{ color:"#6366f1", fontSize:11, marginTop:6, textAlign:"center" }}>বাকি ছাড়া নগদ বিক্রয় — কোনো এন্ট্রি লাগবে না</div>
+            <div style={{ color:IS.sub, fontSize:11, marginTop:6, textAlign:"center" }}>বাকি ছাড়া নগদ বিক্রয় — কোনো এন্ট্রি লাগবে না</div>
           </div>
 
           {/* ── কাস্টমার নির্বাচন করুন Header Card ── */}
           <div style={{
-            borderRadius: 14,
-            border: "1.5px solid #f9731644",
-            background: "linear-gradient(135deg,#f9731618,#ea580c0d)",
+            borderRadius: IS.id === "t5" ? 14 : 0,
+            border: IS.cardBorder,
+            background: IS.cardBg,
+            clipPath: IS.clipSm,
             padding: "12px 16px",
             display: "flex", alignItems: "center", gap: 10,
             marginBottom: 8,
-            boxShadow: "0 4px 16px #f9731618",
+            boxShadow: IS.id === "t5" ? "3px 3px 0 #17171a" : "none",
           }}>
             <div style={{
-              width: 36, height: 36, borderRadius: 12, flexShrink: 0,
-              background: "linear-gradient(135deg,#ea580c,#f97316,#fb923c)",
+              width: 36, height: 36, borderRadius: IS.id === "t5" ? 12 : 4, flexShrink: 0,
+              background: IS.id === "t5" ? IS.priceBg : `linear-gradient(135deg, ${IS.accent}, #0090b3)`,
               display: "flex", alignItems: "center", justifyContent: "center",
-              boxShadow: "0 3px 10px #f9731655",
+              boxShadow: IS.priceShadow, border: IS.priceBorder,
             }}>
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={IS.priceText} strokeWidth="2.2" strokeLinecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ color: "#fb923c", fontWeight: 900, fontSize: 15, letterSpacing: 0.3 }}>কাস্টমার নির্বাচন করুন</div>
-              <div style={{ color: "#f9731688", fontSize: 11 }}>{customers.length}জন নিবন্ধিত</div>
+              <div style={{ color: IS.text, fontWeight: 900, fontSize: 15, letterSpacing: 0.3 }}>কাস্টমার নির্বাচন করুন</div>
+              <div style={{ color: IS.sub, fontSize: 11 }}>{customers.length}জন নিবন্ধিত</div>
             </div>
             {/* নির্বাচিত badge + selected customer name card — invisible until customer is selected */}
             <div style={{
@@ -18375,18 +18417,18 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
               <div style={{
                 background: "#22c55e22", border: "1px solid #22c55e55",
                 borderRadius: 20, padding: "4px 10px",
-                color: "#22c55e", fontWeight: 800, fontSize: 11,
+                color: IS.accent, fontWeight: 800, fontSize: 11,
                 display: "flex", alignItems: "center", gap: 4,
               }}>
-                <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#22c55e", boxShadow: "0 0 6px #22c55e" }} />
+                <div style={{ width: 6, height: 6, borderRadius: "50%", background: IS.accent, boxShadow: `0 0 6px ${IS.accent}` }} />
                 নির্বাচিত
               </div>
               <div style={{
-                background: "linear-gradient(135deg,#22c55e,#16a34a)",
-                border: "1.5px solid #22c55e88",
-                borderRadius: 20, padding: "5px 12px",
-                color: "#fff", fontWeight: 900, fontSize: 12,
-                boxShadow: "0 0 10px #22c55e66, 0 2px 8px #22c55e44",
+                background: IS.id === "t5" ? IS.priceBg : `linear-gradient(135deg, ${IS.accent}, #0090b3)`,
+                border: IS.priceBorder,
+                borderRadius: IS.id === "t5" ? 20 : 4, padding: "5px 12px",
+                color: IS.priceText, fontWeight: 900, fontSize: 12,
+                boxShadow: IS.priceShadow, textShadow: IS.priceTextShadow,
                 maxWidth: "calc(100vw - 280px)",
                 overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                 letterSpacing: 0.2,
@@ -18406,20 +18448,17 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
             </div>
           </div>
 
-          {/* Search — প্রিমিয়াম গ্লাস শেল, থিম-নির্বিশেষে স্পষ্ট */}
+          {/* Search — ইনভয়েস স্কিন অনুযায়ী */}
           <div style={{
             display: "flex", alignItems: "center", gap: 9,
-            background: T.bg === "#f8fafc"
-              ? "linear-gradient(135deg,#f9731617,#ffffffdd 65%)"
-              : "linear-gradient(135deg,#f9731624,#00000038 65%)",
-            border: "1.5px solid #f9731677",
-            borderRadius: 16, padding: "10px 13px",
-            boxShadow: "0 2px 12px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.06)",
-            backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)",
+            background: IS.cardBg,
+            border: IS.cardBorder,
+            borderRadius: IS.id === "t5" ? 16 : 0, clipPath: IS.clipSm, padding: "10px 13px",
+            boxShadow: IS.id === "t5" ? "3px 3px 0 #17171a" : "none",
             marginBottom: 8,
           }}>
-            <div style={{ width:26, height:26, borderRadius:9, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background:"linear-gradient(135deg,#f9731655,#f9731622)", border:"1px solid #f9731666" }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f97316" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <div style={{ width:26, height:26, borderRadius: IS.id === "t5" ? 9 : 4, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background: IS.accentSoft, border: `1px solid ${IS.accent}66` }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={IS.accent} strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             </div>
             <input
               className="sbm-search-input"
@@ -18459,7 +18498,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
               setCustSearch(v);
               const el = window._sbmCustSearchEl;
               if (el) el.value = v;
-            }} color="#f97316" />
+            }} color={IS.accent} />
           </div>
 
           {/* Scrollable Customer List Box — keyboard উঠলে list উপরে scroll করা যায় */}
@@ -18467,14 +18506,12 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
             overflowY: "auto",
             flex: 1,
             minHeight: 150,
-            borderRadius: 14,
-            border: T.bg === "#f8fafc" ? "1.5px solid #f9731655" : "1.5px solid #f9731633",
-            background: T.bg === "#f8fafc"
-              ? "linear-gradient(160deg,#fff7ed 0%,#ffedd5 60%,#fffbf7 100%)"
-              : "linear-gradient(160deg,#1c0e0066 0%,#2a120066 50%,#0d0d0d44 100%)",
+            borderRadius: IS.id === "t5" ? 14 : 0,
+            border: IS.cardBorder,
+            background: IS.cardBg2,
             padding: "6px 8px 16px 8px",
             marginBottom: 4,
-            boxShadow: T.bg === "#f8fafc" ? "inset 0 2px 8px rgba(249,115,22,0.06)" : "none",
+            boxShadow: "none",
             WebkitOverflowScrolling: "touch",
             touchAction: "pan-y",
             overscrollBehavior: "contain",
@@ -18484,50 +18521,42 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                 onClick={() => { setSelCust(prev => (prev?.id === c.id ? null : c)); setCustSearch(""); }}
                 style={{
                   display: "flex", alignItems: "center", gap: 12,
-                  padding: "12px 14px", borderRadius: 14, cursor: "pointer",
+                  padding: "12px 14px", borderRadius: IS.id === "t5" ? 14 : 0, cursor: "pointer",
                   marginBottom: 5,
-                  background: selCust?.id === c.id
-                    ? "linear-gradient(135deg,#f9731622,#ea580c0f)"
-                    : T.bg === "#f8fafc" ? "rgba(255,255,255,0.75)" : "linear-gradient(135deg,#ffffff06,#ffffff02)",
-                  border: selCust?.id === c.id
-                    ? "1.5px solid #f9731666"
-                    : T.bg === "#f8fafc" ? "1.5px solid #f9731622" : "1.5px solid transparent",
+                  background: selCust?.id === c.id ? IS.accentSoft : IS.cardBg,
+                  border: selCust?.id === c.id ? `1.5px solid ${IS.accent}` : IS.cardBorder,
                   transition: "all 0.15s",
-                  boxShadow: selCust?.id === c.id
-                    ? "0 2px 12px #f9731620"
-                    : T.bg === "#f8fafc" ? "0 1px 4px rgba(249,115,22,0.08)" : "none",
+                  boxShadow: selCust?.id === c.id && IS.id === "t5" ? "3px 3px 0 #17171a" : "none",
                 }}>
                 {/* Avatar */}
                 <div style={{
-                  width: 42, height: 42, borderRadius: 12, flexShrink: 0,
-                  background: selCust?.id === c.id
-                    ? "linear-gradient(135deg,#ea580c,#f97316)"
-                    : T.bg === "#f8fafc" ? "linear-gradient(135deg,#fed7aa,#fdba74)" : "linear-gradient(135deg,#1e293b,#334155)",
+                  width: 42, height: 42, borderRadius: IS.id === "t5" ? 12 : 4, flexShrink: 0,
+                  background: selCust?.id === c.id ? (IS.id === "t5" ? IS.priceBg : `linear-gradient(135deg, ${IS.accent}, #0090b3)`) : IS.cardBg2,
                   display: "flex", alignItems: "center", justifyContent: "center",
                   fontWeight: 900, fontSize: 13,
-                  color: selCust?.id === c.id ? "#fff" : T.bg === "#f8fafc" ? "#ea580c" : "#94a3b8",
-                  border: `1px solid ${selCust?.id === c.id ? "#f9731644" : T.bg === "#f8fafc" ? "#f9731633" : "#ffffff11"}`,
+                  color: selCust?.id === c.id ? IS.priceText : IS.sub,
+                  border: selCust?.id === c.id ? IS.priceBorder : IS.cardBorder,
                 }}>{c.serial}</div>
                 {/* Info */}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{
-                    color: selCust?.id === c.id ? "#fb923c" : T.text,
+                    color: selCust?.id === c.id ? IS.accent : IS.text,
                     fontWeight: 700, fontSize: 14,
                     overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                   }}>{c.name}</div>
-                  <div style={{ color: T.sub, fontSize: 11, marginTop: 2 }}>{c.mobile}</div>
+                  <div style={{ color: IS.sub, fontSize: 11, marginTop: 2 }}>{c.mobile}</div>
                 </div>
                 {/* Balance badge */}
                 <div style={{ flexShrink: 0 }}>
                   {c.balance > 0
                     ? <div style={{
-                        background: "#ef444418", border: "1px solid #ef444433",
-                        color: "#ef4444", borderRadius: 10, padding: "4px 10px",
-                        fontSize: 11, fontWeight: 800,
+                        background: IS.priceBg, border: IS.priceBorder,
+                        color: IS.priceText, borderRadius: IS.id === "t5" ? 10 : 4, padding: "4px 10px",
+                        fontSize: 11, fontWeight: 800, boxShadow: IS.priceShadow, textShadow: IS.priceTextShadow,
                       }}>বাকি ৳{fmt(c.balance)}</div>
                     : <div style={{
-                        background: "#22c55e12", border: "1px solid #22c55e33",
-                        color: "#22c55e", borderRadius: 10, padding: "4px 10px",
+                        background: IS.accentSoft, border: `1px solid ${IS.accent}55`,
+                        color: IS.accent, borderRadius: IS.id === "t5" ? 10 : 4, padding: "4px 10px",
                         fontSize: 11, fontWeight: 700,
                       }}>✓ পরিষ্কার</div>
                   }
@@ -18537,7 +18566,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
             {filteredCustomers.length === 0 && (
               <div style={{
                 textAlign: "center", padding: "24px 16px",
-                color: "#475569", fontSize: 13,
+                color: IS.sub, fontSize: 13,
               }}>
                 <div style={{ fontSize: 28, marginBottom: 8 }}>🔍</div>
                 কোনো কাস্টমার পাওয়া যায়নি
@@ -18613,13 +18642,14 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                   cartCardRef.current._ro.disconnect();
                 }
               }} style={{
-                background: "linear-gradient(135deg,#1a0e00f0,#3d2200f0,#1a0e00f0)",
-                borderBottom: "1.5px solid #f59e0b88",
-                borderLeft: "1.5px solid #f59e0b44",
-                borderRight: "1.5px solid #f59e0b44",
-                borderRadius: "0 0 14px 14px",
+                background: IS.cardBg,
+                borderBottom: IS.cardBorder,
+                borderLeft: IS.cardBorder,
+                borderRight: IS.cardBorder,
+                borderRadius: IS.id === "t5" ? "0 0 14px 14px" : 0,
+                clipPath: IS.id === "t10" ? "polygon(0 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%)" : "none",
                 padding: "6px 10px 8px",
-                boxShadow: "0 4px 20px #f59e0b33, inset 0 1px 0 #f59e0b22",
+                boxShadow: IS.id === "t5" ? "3px 3px 0 #17171a" : "0 4px 20px #00d4ff22, inset 0 1px 0 #00d4ff22",
                 backdropFilter: "blur(16px)",
                 WebkitBackdropFilter: "blur(16px)",
                 pointerEvents: "auto",
@@ -18627,12 +18657,16 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                 {/* Header row */}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#f59e0b", boxShadow: "0 0 6px #f59e0b" }} />
-                    <span style={{ color: "#fde68a", fontWeight: 900, fontSize: 13, letterSpacing: 0.3 }}>🛒 কার্ট</span>
-                    <span style={{ background: "#f59e0b22", border: "1px solid #f59e0b44", borderRadius: 8, padding: "1px 7px", color: "#fbbf24", fontWeight: 800, fontSize: 11 }}>{items.length}টি</span>
+                    <div style={{ width: 6, height: 6, borderRadius: "50%", background: IS.accent, boxShadow: `0 0 6px ${IS.accent}` }} />
+                    <span style={{ color: IS.text, fontWeight: 900, fontSize: 13, letterSpacing: 0.3 }}>🛒 কার্ট</span>
+                    <span style={{ background: IS.accentSoft, border: `1px solid ${IS.accent}55`, borderRadius: 8, padding: "1px 7px", color: IS.accentText, fontWeight: 800, fontSize: 11 }}>{items.length}টি</span>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <div style={{ color: "#fbbf24", fontWeight: 900, fontSize: 17, letterSpacing: -0.5, textShadow: "0 0 12px #f59e0b88" }}>৳{fmt(total)}</div>
+                    <div style={{
+                      color: IS.priceText, fontWeight: 900, fontSize: 17, letterSpacing: -0.5,
+                      background: IS.priceBg, border: IS.priceBorder, boxShadow: IS.priceShadow, textShadow: IS.priceTextShadow,
+                      padding: "2px 9px", clipPath: IS.clipSm, borderRadius: IS.id === "t5" ? "6px 6px 6px 2px" : 4,
+                    }}>৳{fmt(total)}</div>
                   </div>
                 </div>
                 {/* Double column cart items — scrollable */}
@@ -18671,26 +18705,28 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
           <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 3, marginBottom: 5, flexShrink: 0 }}>
             {categories.map(cat => (
               <button key={cat}
-                style={{ background: catFilter === cat ? T.accent : T.card, color: catFilter === cat ? "#fff" : T.sub, border: catFilter === cat ? "none" : `1px solid ${T.border}`, borderRadius: 20, padding: "4px 12px", fontSize: 11, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0, fontFamily: "inherit" }}
+                style={{
+                  background: catFilter === cat ? IS.accent : IS.cardBg, color: catFilter === cat ? IS.priceText : IS.sub,
+                  border: catFilter === cat ? IS.priceBorder : IS.cardBorder, borderRadius: IS.id === "t5" ? 20 : 4,
+                  padding: "4px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0, fontFamily: "inherit",
+                  boxShadow: catFilter === cat ? IS.priceShadow : "none",
+                }}
                 onClick={() => setCatFilter(cat)}>{cat}</button>
             ))}
           </div>
 
-          {/* Product search — প্রিমিয়াম গ্লাস শেল, থিম-নির্বিশেষে স্পষ্ট */}
+          {/* Product search — ইনভয়েস স্কিন অনুযায়ী */}
           <div style={{
             display: "flex", alignItems: "center", gap: 9, flexShrink: 0,
-            background: T.bg === "#f8fafc"
-              ? "linear-gradient(135deg,#22c55e17,#ffffffdd 65%)"
-              : "linear-gradient(135deg,#22c55e26,#00000040 65%)",
-            border: "1.5px solid #22c55e77",
-            borderRadius: 14,
+            background: IS.cardBg,
+            border: IS.cardBorder,
+            borderRadius: IS.id === "t5" ? 14 : 0, clipPath: IS.clipSm,
             padding: "8px 12px",
             marginBottom: 5,
-            boxShadow: "0 2px 12px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.06)",
-            backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)",
+            boxShadow: IS.id === "t5" ? "3px 3px 0 #17171a" : "none",
           }}>
-            <div style={{ width:24, height:24, borderRadius:8, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background:"linear-gradient(135deg,#22c55e55,#22c55e22)", border:"1px solid #22c55e66" }}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <div style={{ width:24, height:24, borderRadius: IS.id === "t5" ? 8 : 4, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background: IS.accentSoft, border: `1px solid ${IS.accent}66` }}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={IS.accent} strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             </div>
             <input className="sbm-search-input" style={{ flex: 1, background: "none", border: "none", outline: "none", color: T.text, fontSize: 13, fontFamily: "inherit", padding: 0 }}
               placeholder={`পণ্য খুঁজুন... (${products.length}টি)`}
@@ -18737,14 +18773,14 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                     position: "relative",
                     background: isSelected
                       ? `linear-gradient(155deg, ${glowColor}2b 0%, ${glowColor}12 100%)`
-                      : T.card,
-                    border: `1.5px solid ${isSelected ? glowColor : isUnavailable ? "#ef444455" : (p.demandType === "uncommon" ? "#a78bfa55" : "#22c55e3d")}`,
-                    borderRadius: 14,
+                      : IS.cardBg,
+                    border: `1.5px solid ${isSelected ? glowColor : isUnavailable ? "#ef444455" : (p.demandType === "uncommon" ? "#a78bfa55" : IS.cardBorder.split(" ").pop())}`,
+                    borderRadius: IS.id === "t5" ? 14 : 0,
                     padding: "10px 10px",
                     display: "flex", flexDirection: "column", gap: 3,
                     boxShadow: isSelected
                       ? `0 0 0 1px ${glowColor}55, 0 0 16px ${glowColor}66, 0 3px 10px rgba(0,0,0,0.18)`
-                      : `0 1px 6px rgba(0,0,0,0.10)`,
+                      : (IS.id === "t5" ? "2px 2px 0 #17171a22" : "none"),
                     transition: "all 0.2s cubic-bezier(.2,.8,.2,1)",
                     cursor: isUnavailable ? "not-allowed" : "default",
                     userSelect: "none",
@@ -18835,7 +18871,13 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                     )}
                     <div style={{ textAlign: "center", borderLeft: hideCostPrice ? "none" : `1px solid ${T.border}`, borderRight: `1px solid ${T.border}` }}>
                       <div style={{ color: T.sub, fontSize: 8, fontWeight: 600, opacity: 0.75 }}>বিক্রয়</div>
-                      <div style={{ color: T.accent, fontWeight: 800, fontSize: 10.5 }}>৳{fmt(p.price)}</div>
+                      <div style={{
+                        display: "inline-block", marginTop: 1,
+                        background: IS.priceBg, color: IS.priceText,
+                        border: IS.priceBorder, boxShadow: IS.priceShadow, textShadow: IS.priceTextShadow,
+                        clipPath: IS.clipSm, borderRadius: IS.id === "t5" ? "6px 6px 6px 2px" : 4,
+                        fontWeight: 900, fontSize: 10.5, padding: "1px 6px",
+                      }}>৳{fmt(p.price)}</div>
                     </div>
                     <div style={{ textAlign: "center" }}>
                       <div style={{ color: T.sub, fontSize: 8, fontWeight: 600, opacity: 0.75 }}>স্টক</div>
@@ -18918,11 +18960,13 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                       onClick={(e) => e.stopPropagation()}
                       onChange={(e) => setQty(p.id, e.target.value)}
                       style={{
-                        flex: 1.1, textAlign: "center", color: isSelected ? T.accent : T.text, fontWeight: 900, fontSize: 17,
-                        borderRadius: 11, background: isSelected ? `linear-gradient(155deg, ${T.accent}26, ${T.accent}0f)` : "transparent",
-                        padding: "4px 0", border: isSelected ? `1px solid ${T.accent}66` : "1px solid transparent",
+                        flex: 1.1, textAlign: "center", fontWeight: 900, fontSize: isSelected ? 20 : 17,
+                        borderRadius: IS.id === "t5" ? 8 : 11, background: isSelected ? IS.priceBg : "transparent",
+                        padding: "4px 0", border: isSelected ? IS.priceBorder : "1px solid transparent",
                         outline: "none", fontFamily: "inherit", WebkitAppearance: "none", MozAppearance: "textfield",
-                        boxShadow: isSelected ? `0 2px 8px ${T.accent}33, inset 0 1px 0 #ffffff22` : "none",
+                        boxShadow: isSelected ? IS.priceShadow : "none", textShadow: isSelected ? IS.priceTextShadow : "none",
+                        clipPath: isSelected ? IS.clipSm : "none",
+                        color: isSelected ? IS.priceText : T.text,
                       }} />
                     <button
                       onClick={(e) => { e.stopPropagation(); changeQty(p, 1); }}
@@ -18981,12 +19025,20 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto", paddingBottom: 8 }}>
 
             {/* Order summary */}
-            <div className="qc-gradient-card" style={{ ...S.card, marginBottom: 10 }}>
+            <div className="qc-gradient-card" style={{
+                ...S.card, marginBottom: 10,
+                background: IS.cardBg, border: IS.cardBorder, borderRadius: IS.id === "t5" ? (S.card?.borderRadius ?? 14) : 0,
+                boxShadow: IS.id === "t5" ? "3px 3px 0 #17171a" : "none",
+              }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
-                <div style={{ color: T.text, fontWeight: 800, fontSize: 14 }}>{isSelfUse ? "🏠 নিজের ব্যবহার (Personal Use)" : selCust?.name}</div>
-                <div style={{ color: T.accent, fontWeight: 900, fontSize: 16 }}>৳{fmt(total)}</div>
+                <div style={{ color: IS.text, fontWeight: 800, fontSize: 14 }}>{isSelfUse ? "🏠 নিজের ব্যবহার (Personal Use)" : selCust?.name}</div>
+                <div style={{
+                  color: IS.priceText, fontWeight: 900, fontSize: 15,
+                  background: IS.priceBg, border: IS.priceBorder, boxShadow: IS.priceShadow, textShadow: IS.priceTextShadow,
+                  padding: "2px 9px", clipPath: IS.clipSm, borderRadius: IS.id === "t5" ? "6px 6px 6px 2px" : 4,
+                }}>৳{fmt(total)}</div>
               </div>
-              <div style={{ color: T.sub, fontSize: 11, marginBottom: 8 }}>{items.filter(i=>i.qty>0).length}টি পণ্য · {items.filter(i=>i.qty>0).reduce((a,b)=>a+b.qty,0)}টি আইটেম · মোট মূল্য</div>
+              <div style={{ color: IS.sub, fontSize: 11, marginBottom: 8 }}>{items.filter(i=>i.qty>0).length}টি পণ্য · {items.filter(i=>i.qty>0).reduce((a,b)=>a+b.qty,0)}টি আইটেম · মোট মূল্য</div>
               {(() => {
                 const cartItems = items.filter(i => i.qty > 0);
                 const COLLAPSE_LIMIT = 4;
@@ -19109,8 +19161,18 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                     <span>অতিরিক্ত চার্জ</span><span>+ ৳{fmt(extraAmt)}</span>
                   </div>
                   )}
-                  <div style={{ display:"flex", justifyContent:"space-between", fontSize:13, fontWeight:800, color: T.text, paddingTop: 4 }}>
-                    <span>নেট মোট</span><span>৳{fmt(total)}</span>
+                  <div style={{
+                    display:"flex", justifyContent:"space-between", alignItems: "center", marginTop: 8,
+                    background: IS.cardBg2, border: IS.cardBorder, borderRadius: IS.id === "t5" ? 10 : 0,
+                    clipPath: IS.id === "t10" ? IS.clipSm : "none",
+                    padding: "8px 12px", position: "relative",
+                  }}>
+                    {IS.id === "t10" && <>
+                      <span style={{ position:"absolute", width:12, height:12, top:-2, left:-2, borderTop:`2px solid ${IS.cornerAccent}`, borderLeft:`2px solid ${IS.cornerAccent}` }} />
+                      <span style={{ position:"absolute", width:12, height:12, bottom:-2, right:-2, borderBottom:`2px solid ${IS.cornerAccent}`, borderRight:`2px solid ${IS.cornerAccent}` }} />
+                    </>}
+                    <span style={{ fontSize:12.5, fontWeight:700, color: IS.sub }}>নেট মোট</span>
+                    <span style={{ fontSize:22, fontWeight:900, color: IS.priceText === "#fff" ? IS.accent : IS.priceText, textShadow: IS.glowShadow }}>৳{fmt(total)}</span>
                   </div>
                 </>
               )}
@@ -19183,7 +19245,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                       { key:"partial", label:"আংশিক বাকি", color:"#f59e0b" },
                     ].map(opt => (
                       <button key={opt.key}
-                        style={{ flex:1, padding:"12px 4px", borderRadius:12, border:`2px solid ${walkInPayType===opt.key ? opt.color : T.border}`, background: walkInPayType===opt.key ? opt.color+"22" : T.card, color: walkInPayType===opt.key ? opt.color : T.sub, fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"center", gap:5 }}
+                        style={{ flex:1, padding:"12px 4px", borderRadius: IS.id === "t5" ? 12 : 0, clipPath: walkInPayType===opt.key ? IS.clipSm : "none", border:`2px solid ${walkInPayType===opt.key ? opt.color : IS.cardBorder.split(" ").pop()}`, background: walkInPayType===opt.key ? opt.color+"22" : IS.cardBg, color: walkInPayType===opt.key ? opt.color : IS.sub, fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"center", gap:5 }}
                         onClick={() => { setWalkInPayType(opt.key); setWalkInPartialAmt(""); setWalkInName(""); setWalkInMobile(""); setWalkInAddress(""); setWalkInDueDate(""); setWalkInCustMode("new"); setWalkInExistingId(""); setWalkInCustSearch(""); }}>
                         <div style={{ width:10, height:10, borderRadius:"50%", background:opt.color, boxShadow: walkInPayType===opt.key ? `0 0 8px ${opt.color}` : "none" }} />
                         {opt.label}
@@ -19223,7 +19285,7 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
                   { key:"partial", label:"আংশিক", color:"#f59e0b" },
                 ].map(opt => (
                   <button key={opt.key}
-                    style={{ flex:1, padding:"12px 4px", borderRadius:12, border:`2px solid ${payType===opt.key ? opt.color : T.border}`, background: payType===opt.key ? opt.color+"22" : T.card, color: payType===opt.key ? opt.color : T.sub, fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"center", gap:5 }}
+                    style={{ flex:1, padding:"12px 4px", borderRadius: IS.id === "t5" ? 12 : 0, clipPath: payType===opt.key ? IS.clipSm : "none", border:`2px solid ${payType===opt.key ? opt.color : IS.cardBorder.split(" ").pop()}`, background: payType===opt.key ? opt.color+"22" : IS.cardBg, color: payType===opt.key ? opt.color : IS.sub, fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"center", gap:5 }}
                     onClick={() => setPayType(opt.key)}>
                     <div style={{ width:10, height:10, borderRadius:"50%", background: opt.color, boxShadow: payType===opt.key ? `0 0 8px ${opt.color}` : "none" }} />
                     {opt.label}
@@ -19246,11 +19308,19 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
 
             {/* Summary row — নতুন: মোট খরচ / পরিশোধ পদ্ধতি / পূর্বের বাকি / বর্তমান বাকি */}
             {!isSelfUse && (
-            <div className="qc-gradient-card" style={{ ...S.card, marginBottom: 10 }}>
+            <div className="qc-gradient-card" style={{
+                ...S.card, marginBottom: 10,
+                background: IS.cardBg, border: IS.cardBorder, borderRadius: IS.id === "t5" ? (S.card?.borderRadius ?? 14) : 0,
+                boxShadow: IS.id === "t5" ? "3px 3px 0 #17171a" : "none",
+              }}>
               {/* মোট খরচ */}
-              <div style={{ display:"flex", justifyContent:"space-between", fontSize:13, color: T.sub, marginBottom:6 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems: "center", fontSize:13, color: IS.sub, marginBottom:6 }}>
                 <span>মোট খরচ</span>
-                <span style={{ color: T.text, fontWeight:800 }}>৳{fmt(total)}</span>
+                <span style={{
+                  color: IS.priceText, fontWeight:900, fontSize: 15,
+                  background: IS.priceBg, border: IS.priceBorder, boxShadow: IS.priceShadow, textShadow: IS.priceTextShadow,
+                  padding: "1px 8px", clipPath: IS.clipSm, borderRadius: IS.id === "t5" ? "6px 6px 6px 2px" : 4,
+                }}>৳{fmt(total)}</span>
               </div>
               {/* পরিশোধ পদ্ধতি */}
               <div style={{ display:"flex", justifyContent:"space-between", fontSize:13, color: T.sub, marginBottom: (prevBalance > 0 || displayBakiAmt > 0) ? 6 : 0 }}>
@@ -19308,7 +19378,12 @@ function SmartInvoiceBuilder({ T, S, customers, products, setCustomers, setInvoi
           <div style={{ flexShrink:0, paddingTop:8, paddingBottom:"calc(env(safe-area-inset-bottom, 0px) + 70px)", borderTop:`1px solid ${T.border}`, background:T.bg, position:"sticky", bottom:0, zIndex:100 }}>
             <div style={{ display:"flex", gap:10 }}>
               <button style={{ ...S.cancelBtn, flex:1 }} onClick={() => setStep(2)}>← পণ্য</button>
-              <button style={{ ...S.saveBtn, flex:2, padding:14, fontSize:15, opacity:(creating || license.isLocked)?0.6:1 }}
+              <button style={{
+                  ...S.saveBtn, flex:2, padding:14, fontSize:15, opacity:(creating || license.isLocked)?0.6:1,
+                  background: IS.id === "t5" ? IS.priceBg : `linear-gradient(135deg, ${IS.accent}, #0090b3)`,
+                  color: IS.priceText, border: IS.priceBorder, boxShadow: IS.priceShadow, textShadow: IS.priceTextShadow,
+                  clipPath: IS.clip, borderRadius: IS.id === "t5" ? 12 : 8,
+                }}
                 disabled={creating || license.isLocked || (!isSelfUse && payType==="partial" && !partialAmt) || (!isSelfUse && selCust?.id==="__walkin__" && walkInPayType==="partial" && !walkInPartialAmt) || (!isSelfUse && selCust?.id==="__walkin__" && (walkInPayType==="partial" || walkInPayType==="baki") && !walkInName.trim())}
                 onClick={createInvoice}>
                 {creating ? "তৈরি হচ্ছে..." : license.isLocked ? "🔒 সাবস্ক্রিপশন মেয়াদ শেষ" : <span style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>ইনভয়েস তৈরি করুন →</span>}
@@ -25456,6 +25531,7 @@ function TransactionModal({ T, S, customer, setCustomers, sendSMS, showToast, ad
 
 // ── Invoice Receipt ────────────────────────────────────────────────────────────
 function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
+  const IS = useMemo(() => getInvoiceSkin(relativeLuminance(T.bg) <= 0.42), [T.bg]);
   // 🔴 ফিক্স (২৪ জুলাই ২০২৬ — আংশিক বাতিলের পুরো ডিটেইলস ইনভয়েস কপিতে না থাকা):
   // কোনো ইনভয়েস থেকে আগে আংশিক পণ্য ফেরত (processReturn) নেওয়া হয়ে থাকলে, এবং
   // পরে সেই একই ইনভয়েস পুরোপুরি voidInvoice() দিয়ে বাতিল হলে — আগে এই কপিতে শুধু
@@ -25508,14 +25584,18 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
   };
   return (
     <div>
-      <div style={{ background: T.card, borderRadius: 16, padding: 20, marginBottom: 10 }}>
+      <div style={{
+          background: IS.cardBg, border: IS.cardBorder, borderRadius: IS.id === "t5" ? 16 : 0,
+          clipPath: IS.clip, padding: 20, marginBottom: 10,
+          boxShadow: IS.id === "t5" ? "4px 4px 0 #17171a" : `0 4px 20px ${IS.accent}22`,
+        }}>
         <div style={{ textAlign: "center", marginBottom: 16 }}>
           <div style={{ fontSize: 28 }}>🛒</div>
-          <div style={{ color: T.text, fontWeight: 800, fontSize: 18, marginTop: 4 }}>{inv.shopName || "SBM"}</div>
-          <div style={{ color: T.sub, fontSize: 11, marginTop: 2 }}>
+          <div style={{ color: IS.text, fontWeight: 900, fontSize: 18, marginTop: 4, textShadow: IS.glowShadow }}>{inv.shopName || "SBM"}</div>
+          <div style={{ color: IS.sub, fontSize: 11, marginTop: 2 }}>
             {isBuyer ? "ক্রেতার কপি" : "বিক্রেতার কপি"} · {dispInvNo(inv)}
           </div>
-          <div style={{ color: T.sub, fontSize: 11 }}>{inv.date}</div>
+          <div style={{ color: IS.sub, fontSize: 11 }}>{inv.date}</div>
           {inv.status === "voided" && (
             <div style={{ marginTop: 8, display: "inline-flex", flexDirection: "column", gap: 5, alignItems: "center" }}>
               <div style={{ display: "inline-block", background: "#ef444422", border: "1px solid #ef444455", borderRadius: 8, padding: "4px 10px" }}>
@@ -25533,13 +25613,13 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
           )}
         </div>
         <div style={S.dashed} />
-        <div style={{ fontSize: 12, color: T.sub, display: "flex", flexDirection: "column", gap: 3, marginBottom: 10 }}>
-          <div><b style={{ color: T.text }}>কাস্টমার:</b> {inv.customerName}</div>
-          <div><b style={{ color: T.text }}>মোবাইল:</b> {inv.customerMobile}</div>
-          {customer?.address && <div><b style={{ color: T.text }}>ঠিকানা:</b> {customer.address}</div>}
+        <div style={{ fontSize: 12, color: IS.sub, display: "flex", flexDirection: "column", gap: 3, marginBottom: 10 }}>
+          <div><b style={{ color: IS.text }}>কাস্টমার:</b> {inv.customerName}</div>
+          <div><b style={{ color: IS.text }}>মোবাইল:</b> {inv.customerMobile}</div>
+          {customer?.address && <div><b style={{ color: IS.text }}>ঠিকানা:</b> {customer.address}</div>}
         </div>
         <div style={S.dashed} />
-        <div style={{ display: "flex", justifyContent: "space-between", padding: "0 2px 4px", color: T.sub, fontSize: 10.5, fontWeight: 700 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", padding: "0 2px 4px", color: IS.sub, fontSize: 10.5, fontWeight: 700 }}>
           <span>#  পণ্য</span><span>পরিমাণ · দাম · ছাড় · মোট</span>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -25616,8 +25696,17 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
             )}
           </>
         )}
-        <div style={{ display: "flex", justifyContent: "space-between", color: T.text, fontWeight: 800, fontSize: 16, marginBottom: 4 }}>
-          <span>মোট খরচ</span><span>৳{fmt(inv.total)}</span>
+        <div style={{
+            display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6,
+            background: IS.cardBg2, border: IS.cardBorder, borderRadius: IS.id === "t5" ? 10 : 0,
+            clipPath: IS.id === "t10" ? IS.clipSm : "none", padding: "8px 12px", position: "relative",
+          }}>
+          {IS.id === "t10" && <>
+            <span style={{ position:"absolute", width:12, height:12, top:-2, left:-2, borderTop:`2px solid ${IS.cornerAccent}`, borderLeft:`2px solid ${IS.cornerAccent}` }} />
+            <span style={{ position:"absolute", width:12, height:12, bottom:-2, right:-2, borderBottom:`2px solid ${IS.cornerAccent}`, borderRight:`2px solid ${IS.cornerAccent}` }} />
+          </>}
+          <span style={{ fontWeight: 700, fontSize: 12.5, color: IS.sub }}>মোট খরচ</span>
+          <span style={{ fontWeight: 900, fontSize: 20, color: IS.accent, textShadow: IS.glowShadow }}>৳{fmt(inv.total)}</span>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: T.sub, fontSize: 12, marginBottom: inv.payType === "partial" ? 2 : 4 }}>
           <span>পরিশোধ পদ্ধতি</span>
