@@ -43,6 +43,12 @@ import {
 // পড়তে পারে), শুধু বাটন+প্যানেল UI থেকে সাময়িকভাবে hide করা হয়েছে এই flag
 // দিয়ে — অ্যাডমিন ও স্টাফ দুই জায়গাতেই একই flag প্রযোজ্য।
 const SHOW_FULL_CHECKUP_BUTTON = false;
+// 🔴 ৪ আগস্ট ২০২৬: ইউজার-রিকোয়েস্টে ড্যাশবোর্ড হেডার থেকে "Google Drive ব্যাকআপ
+// দেরি" ওয়ার্নিং ব্যানারটা hide করা হয়েছে এই flag দিয়ে (কোড/লজিক অক্ষত, পরে
+// দরকার হলে true করে দিলে ফিরে আসবে)। আগে সরাসরি `false &&` লেখা হয়েছিল, কিন্তু
+// ESLint-এর no-constant-binary-expression রুল literal false-কে error ধরে
+// (build ভেঙে যাচ্ছিল) — তাই named const দিয়ে বদলানো হলো।
+const SHOW_BACKUP_OVERDUE_BANNER = false;
 // 🔴 অফলাইন-বিল্ড ফ্ল্যাগ (২৬ জুলাই ২০২৬): এই একটা লাইন-ফ্ল্যাগ true করলে —
 // (১) SubscriptionGate সম্পূর্ণ স্কিপ হয়ে সরাসরি অ্যাপ খোলে (কোনো নেটওয়ার্ক কল
 // ছাড়াই), (২) Settings-এ Firebase Setup, SMS Gateway সেটিংস, "১ ক্লিকে বাকি
@@ -14588,7 +14594,7 @@ function SmartBusinessMgmt() {
 
         {/* 🆕 ব্যাকআপ-দেরি ওয়ার্নিং ব্যানার — Drive ব্যাকআপ প্রত্যাশার চেয়ে অনেক দেরি হলে */}
         {/* 🔴 ৪ আগস্ট ২০২৬: ইউজার-রিকোয়েস্টে ড্যাশবোর্ড হেডার থেকে এই নোটিফিকেশন বন্ধ করা হলো (কোড/লজিক অক্ষত, শুধু render বন্ধ) */}
-        {false && tab === "dashboard" && !showDetail && driveBackupOverdueHrs != null && (
+        {SHOW_BACKUP_OVERDUE_BANNER && tab === "dashboard" && !showDetail && driveBackupOverdueHrs != null && (
           <div style={{
             width: "100%", boxSizing: "border-box", padding: "6px 16px 10px",
             display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
