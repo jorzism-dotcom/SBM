@@ -8634,20 +8634,25 @@ const MemoLoginScreen      = React.memo(LoginScreen);
 // 📊 KPI স্ট্যাটস হুক — AI ড্যাশবোর্ড ও "দৈনিক সারসংক্ষেপ" পেজ উভয় জায়গায় ব্যবহৃত।
 // একই হিসাব একই জায়গা থেকে আসে বলে দুই পেজের সংখ্যা সবসময় একে অপরের সাথে মিলবে।
 // ══════════════════════════════════════════════════════════════════════════
-function useKpiStats({ customers, invoices, products, txns, expenses = [], cashLogs = [], purchaseOrders = [], stockMovements = [], returns = [] }) {
+function useKpiStats({ customers, invoices, products, txns, expenses = [], cashLogs = [], purchaseOrders = [], stockMovements = [], returns = [], refDayKey, refMonthKey }) {
   return React.useMemo(() => {
     const fmt = n => { if (!n && n !== 0) return "০"; return fmtMoney(n); };
     const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
 
     const now = new Date();
-    const todayKey = _dateKeyOf(now);
-
-    const { y: _bdY, m: _bdM, day: _bdD } = _bdParts(now);
-    const monthStartKey = `${_bdY}-${String(_bdM + 1).padStart(2, "0")}-01`;
+    // 🆕 নেভিগেটর দিয়ে বেছে নেওয়া দিন/মাস থাকলে সেটাই "আজ"/"এই মাস" ধরা হবে,
+    // নাহলে ডিফল্ট আসল আজকের দিন/মাস (আগের আচরণ অপরিবর্তিত)।
+    const todayKey = refDayKey || _dateKeyOf(now);
+    const monthStartKey = refMonthKey ? `${refMonthKey}-01` : `${todayKey.slice(0, 7)}-01`;
+    const [_bdY, _bdM1] = monthStartKey.slice(0, 7).split("-").map(Number);
+    const _bdM = _bdM1 - 1; // 0-ইনডেক্স, MONTH_NAMES_EN-এর সাথে মেলাতে
     const _prevBdY = _bdM === 0 ? _bdY - 1 : _bdY, _prevBdM = _bdM === 0 ? 11 : _bdM - 1;
     const prevMonthStartKey = `${_prevBdY}-${String(_prevBdM + 1).padStart(2, "0")}-01`;
     const currentMonthNameEn = MONTH_NAMES_EN[_bdM];
-    const daysElapsedInMonth = _bdD;
+    const currentActualMonthKey = _monthKeyOf(now);
+    const daysElapsedInMonth = (monthStartKey.slice(0, 7) === currentActualMonthKey)
+      ? _bdParts(now).day
+      : new Date(_bdY, _bdM1, 0).getDate(); // অতীত মাস হলে সেই মাসের মোট দিন
 
     const invAll = (invoices || []).filter(i => !i.isSelfUse && i.status !== "voided");
     const selfUseInvs = (invoices || []).filter(i => i.isSelfUse);
@@ -8754,7 +8759,7 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
       return s;
     }, 0);
 
-    const todayKeyEn = todayEn();
+    const todayKeyEn = todayKey; // নেভিগেটরে বাছাই করা দিনের সাথে সামঞ্জস্যপূর্ণ (txns/cashLogs ফিল্টারেও একই দিন ব্যবহৃত হবে)
     const _voidedIds = new Set((invoices || []).filter(i => i.status === "voided").map(i => i.id));
     const todayBakiIncurred = txnAll.filter(t => t.dateKey === todayKeyEn && t.type === "baki" && t.invoiceId && !_voidedIds.has(t.invoiceId)).reduce((s, t) => s + (t.amount || 0), 0);
     const todayJoma = txnAll.filter(t => t.dateKey === todayKeyEn && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((s, t) => s + (t.amount || 0), 0);
@@ -8799,7 +8804,7 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
       monthPurchaseCost, todayExpense, monthExpense, monthSale, monthProfit, monthMargin,
       stockValue, lowStockItems, monthExpiredValue, monthExpiredCount,
     };
-  }, [customers, invoices, products, txns, expenses, cashLogs, purchaseOrders, stockMovements, returns]);
+  }, [customers, invoices, products, txns, expenses, cashLogs, purchaseOrders, stockMovements, returns, refDayKey, refMonthKey]);
 }
 
 // ── ২০টি KPI কার্ডের গ্রিড — AI ড্যাশবোর্ড ও "দৈনিক সারসংক্ষেপ" উভয় জায়গায় হুবহু একই ──
@@ -19135,7 +19140,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                               </div>
 
                               {/* কলাম ২: qty × price পিল — qty-এর নিজস্ব হালকা ব্যাকগ্রাউন্ড ব্যাজ (কালো/বোল্ড, বেশি ভিজিবল), × ৳দাম অংশে আলাদা ব্যাকগ্রাউন্ড নেই। নিচে ডিসকাউন্ট — একই কলামে, ফিক্সড-উইথ, প্রতি আইটেমে একই জায়গায় (গ্রিড-বেসড) */}
-                              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4 }}>
+                              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", justifyContent: "center", gap: 4 }}>
                                 <button type="button" onClick={() => setExpandedQtyPid(isExpanded ? null : item.productId)}
                                   style={{
                                     display: "flex", alignItems: "center", gap: 5,
@@ -31087,7 +31092,10 @@ function DailySummaryModule({ T, S, currentUser, shopName, showToast, customers 
     });
   };
 
-  const kpiStats = useKpiStats({ customers, invoices, products, txns, expenses, cashLogs, purchaseOrders, stockMovements, returns });
+  // 🆕 ব্যবসার সারসংক্ষেপ সেকশনে দিন/মাস নেভিগেটর — 💸 খরচ ব্যবস্থাপনা পেজের
+  // নেভিগেটরের হুবহু একই প্যাটার্ন (শেয়ার্ড UnifiedDayMonthNav কম্পোনেন্ট)।
+  const kpiNav = useUnifiedDayMonthNav();
+  const kpiStats = useKpiStats({ customers, invoices, products, txns, expenses, cashLogs, purchaseOrders, stockMovements, returns, refDayKey: kpiNav.dateKey, refMonthKey: kpiNav.monthKey });
 
   if (currentUser?.role === "staff") {
     return (
@@ -31137,7 +31145,12 @@ function DailySummaryModule({ T, S, currentUser, shopName, showToast, customers 
           )}
           <span style={{ position:"absolute", right: 4, top: "50%", transform:"translateY(-50%)", color: T.sub, fontSize: 13 }}>{showKpiSection ? "▲" : "▼"}</span>
         </div>
-        {showKpiSection && <KpiCardsGrid T={T} stats={kpiStats} compact={kpiCompact} />}
+        {showKpiSection && (
+          <>
+            <UnifiedDayMonthNav hook={kpiNav} accentColor="#3b82f6" T={T} />
+            <KpiCardsGrid T={T} stats={kpiStats} compact={kpiCompact} />
+          </>
+        )}
       </div>
 
       <div className="qc-gradient-card" style={{ ...S.card }}>
