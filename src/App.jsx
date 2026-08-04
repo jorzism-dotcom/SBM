@@ -18687,11 +18687,16 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                     }}>
                       <DosageBadge dosageForm={item.dosageForm} style={{ marginRight: 3 }} />{item.name}
                     </div>
+                    {/* 🆕 পেমেন্ট পেজের qty×price পিলের মতো — qty হলুদ ব্যাজে, × ৳দাম আলাদা রঙিন ক্যাপসুলে */}
                     <span style={{
-                      background: IS.priceBg, color: IS.priceText, border: IS.priceBorder,
-                      borderRadius: 6, padding: "2px 7px", fontSize: 11, fontWeight: 900,
-                      boxShadow: "1.5px 1.5px 0 #17171a", flexShrink: 0, whiteSpace: "nowrap",
-                    }}>{item.qty}×৳{fmt(item.price)}</span>
+                      display: "flex", alignItems: "center", gap: 4, flexShrink: 0, whiteSpace: "nowrap",
+                      background: IS.accent, border: "1.5px solid #17171a",
+                      borderRadius: 6, padding: "2px 7px",
+                      boxShadow: "1.5px 1.5px 0 #17171a",
+                    }}>
+                      <span style={{ fontSize: 11, fontWeight: 900, color: "#17171a", background: "#fde047", borderRadius: 4, padding: "0.5px 5px" }}>{item.qty}</span>
+                      <span style={{ fontSize: 10.5, fontWeight: 700, color: "#fff" }}>× ৳{fmt(item.price)}</span>
+                    </span>
                     <button style={{ background: "#ef444422", color: "#ef4444", border: "1px solid #ef444455", borderRadius: 5, width: 18, height: 18, cursor: "pointer", flexShrink: 0, fontSize: 8.5, fontWeight: 900, display:"flex", alignItems:"center", justifyContent:"center" }}
                       onClick={() => setItems(prev => prev.filter(i => i.productId !== item.productId))}>✕</button>
                   </div>
@@ -18817,24 +18822,22 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                         : <div style={{ position: "absolute", top: 7, right: 7, background:"linear-gradient(155deg, #22c55e48, #22c55e22)", border: "1px solid #22c55e55", color:"#22c55e", fontSize: 8, fontWeight: 800, borderRadius: 6, padding: "2px 6px", zIndex: 2, boxShadow: "0 1px 4px rgba(34,197,94,0.3)" }}>কমন</div>
                   )}
 
-                  {/* পণ্যের নাম — ডোজ+নাম কালারফুল পিল */}
+                  {/* পণ্যের নাম — ডোজ(Tab./Cap.)+নাম সবসময় একটি পিলের ভিতরে, সকল বিজনেসে (ডোজ না থাকলেও নিরপেক্ষ রঙের পিল) — লেখা গাড়ো/বোল্ড, সব থিমে স্পষ্ট */}
                   {(() => {
-                    const ta = medTypeAbbr(p.dosageForm);
-                    return ta ? (
+                    const ta = medTypeAbbr(p.dosageForm) || { abbr: null, color: "#0f172a" };
+                    return (
                       <div style={{
                         display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-                        borderRadius: 999, padding: "4px 12px 4px 5px",
-                        background: `linear-gradient(155deg, ${ta.color}26, ${ta.color}0f)`,
-                        border: `1px solid ${ta.color}55`,
+                        borderRadius: 999, padding: ta.abbr ? "4px 12px 4px 5px" : "4px 12px",
+                        background: `linear-gradient(155deg, ${ta.color}33, ${ta.color}18)`,
+                        border: `1.5px solid ${ta.color}88`,
                         margin: `1px ${isSelected ? "28px" : "auto"} 0 auto`,
                         maxWidth: "100%",
                       }}>
-                        <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 900, borderRadius: 999, padding: "3px 8px", background: ta.color, color: "#fff", letterSpacing: 0.3 }}>{ta.abbr}</span>
-                        <span style={{ color: T.text, fontWeight: 900, fontSize: 25.5, letterSpacing: 0.1, lineHeight: 1.15, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", textAlign: "left" }}>{p.name}</span>
-                      </div>
-                    ) : (
-                      <div style={{ color: T.text, fontWeight: 900, fontSize: 25.5, letterSpacing: 0.1, lineHeight: 1.18, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", paddingRight: isSelected ? 28 : 0, textAlign: "center", marginTop: 1 }}>
-                        {p.name}
+                        {ta.abbr && (
+                          <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 900, borderRadius: 999, padding: "3px 8px", background: ta.color, color: "#fff", letterSpacing: 0.3 }}>{ta.abbr}</span>
+                        )}
+                        <span style={{ color: "#17171a", fontWeight: 900, fontSize: 25.5, letterSpacing: 0.1, lineHeight: 1.15, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", textAlign: ta.abbr ? "left" : "center" }}>{p.name}</span>
                       </div>
                     );
                   })()}
@@ -18874,22 +18877,23 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                   ) : (() => {
                     const showTP = businessType === "veterinary" && p.spPrice > 0;
                     const colCount = (showTP ? 1 : 0) + (hideCostPrice ? 0 : 1) + 2; // TP + ক্রয় + বিক্রয় + স্টক
+                    // 🆕 সব লেবেল ও ডিজিট আরো গাড়ো/বোল্ড + ব্যাকগ্রাউন্ড-পিল (বিক্রয়ের মতো) — যাতে সব থিমে (ডার্ক/লাইট) স্পষ্ট দেখা যায়, রঙের উপর নির্ভর না করে
                     return (
                   <div style={{ display: "grid", gridTemplateColumns: `repeat(${colCount}, 1fr)`, gap: 2, marginTop: 1 }}>
                     {showTP && (
                     <div style={{ textAlign: "center", borderRight: `1px solid ${T.border}` }}>
-                      <div style={{ color: T.sub, fontSize: 8, fontWeight: 600, opacity: 0.75 }}>TP</div>
-                      <div style={{ color: "#a78bfa", fontWeight: 800, fontSize: 10.5 }}>৳{fmt(p.spPrice || 0)}</div>
+                      <div style={{ color: T.text, fontSize: 8, fontWeight: 800, opacity: 0.95 }}>TP</div>
+                      <div style={{ display: "inline-block", marginTop: 1, background: "#a78bfa22", color: "#7c3aed", border: "1.5px solid #a78bfa", borderRadius: 4, fontWeight: 900, fontSize: 10.5, padding: "1px 6px" }}>৳{fmt(p.spPrice || 0)}</div>
                     </div>
                     )}
                     {!hideCostPrice && (
                     <div style={{ textAlign: "center" }}>
-                      <div style={{ color: T.sub, fontSize: 8, fontWeight: 600, opacity: 0.75 }}>ক্রয়</div>
-                      <div style={{ color: "#f59e0b", fontWeight: 800, fontSize: 10.5 }}>৳{fmt(p.costPrice || 0)}</div>
+                      <div style={{ color: T.text, fontSize: 8, fontWeight: 800, opacity: 0.95 }}>ক্রয়</div>
+                      <div style={{ display: "inline-block", marginTop: 1, background: "#f59e0b22", color: "#b45309", border: "1.5px solid #f59e0b", borderRadius: 4, fontWeight: 900, fontSize: 10.5, padding: "1px 6px" }}>৳{fmt(p.costPrice || 0)}</div>
                     </div>
                     )}
                     <div style={{ textAlign: "center", borderLeft: hideCostPrice ? "none" : `1px solid ${T.border}`, borderRight: `1px solid ${T.border}` }}>
-                      <div style={{ color: T.sub, fontSize: 8, fontWeight: 600, opacity: 0.75 }}>বিক্রয়</div>
+                      <div style={{ color: T.text, fontSize: 8, fontWeight: 800, opacity: 0.95 }}>বিক্রয়</div>
                       <div style={{
                         display: "inline-block", marginTop: 1,
                         background: IS.priceBg, color: IS.priceText,
@@ -18899,8 +18903,13 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                       }}>৳{fmt(p.price)}</div>
                     </div>
                     <div style={{ textAlign: "center" }}>
-                      <div style={{ color: T.sub, fontSize: 8, fontWeight: 600, opacity: 0.75 }}>স্টক</div>
-                      <div style={{ color: isLowStock ? "#ef4444" : liveStock === 0 ? "#ef4444" : T.text, fontWeight: 800, fontSize: 10.5 }}>
+                      <div style={{ color: T.text, fontSize: 8, fontWeight: 800, opacity: 0.95 }}>স্টক</div>
+                      <div style={{
+                        display: "inline-block", marginTop: 1, borderRadius: 4, fontWeight: 900, fontSize: 10.5, padding: "1px 6px",
+                        background: (isLowStock || liveStock === 0) ? "#ef444422" : "#22c55e22",
+                        color: (isLowStock || liveStock === 0) ? "#dc2626" : "#15803d",
+                        border: `1.5px solid ${(isLowStock || liveStock === 0) ? "#ef4444" : "#22c55e"}`,
+                      }}>
                         {liveStock !== null ? liveStock : "—"}
                       </div>
                     </div>
@@ -19140,7 +19149,8 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                               </div>
 
                               {/* কলাম ২: qty × price পিল — qty-এর নিজস্ব হালকা ব্যাকগ্রাউন্ড ব্যাজ (কালো/বোল্ড, বেশি ভিজিবল), × ৳দাম অংশে আলাদা ব্যাকগ্রাউন্ড নেই। নিচে ডিসকাউন্ট — একই কলামে, ফিক্সড-উইথ, প্রতি আইটেমে একই জায়গায় (গ্রিড-বেসড) */}
-                              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", justifyContent: "center", gap: 4 }}>
+                              {/* 🆕 কলামের ভেতরে ০.৫০ ইঞ্চি (৪৮px) বামে সরানো হয়েছে (marginRight দিয়ে, flex-end অ্যালাইনমেন্ট বজায় রেখে) */}
+                              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", justifyContent: "center", gap: 4, marginRight: 48 }}>
                                 <button type="button" onClick={() => setExpandedQtyPid(isExpanded ? null : item.productId)}
                                   style={{
                                     display: "flex", alignItems: "center", gap: 5,
