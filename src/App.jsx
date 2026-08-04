@@ -17650,7 +17650,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
   const resetAll = () => {
     setStep(1); setSelCust(null); setCustSearch(""); setItems([]);
     setCatFilter("সব"); setProdSearch(""); setPayType("baki");
-    setPartialAmt(""); setNote(""); setDiscount(""); setDiscountPct(0); setExtraCharge(""); setPrintInv(null); setPrintMode(null); setShowAllSummaryItems(false); setSelfUseOn(false);
+    setPartialAmt(""); setNote(""); setDiscount(""); setDiscountPct(0); setExtraCharge(""); setPrintInv(null); setPrintMode(null); setSelfUseOn(false);
     setWalkInPayType("cash"); setWalkInPartialAmt(""); setWalkInName(""); setWalkInMobile(""); setWalkInAddress(""); setWalkInDueDate("");
     setWalkInCustMode("new"); setWalkInExistingId(""); setWalkInCustSearch("");
     onDone?.();
