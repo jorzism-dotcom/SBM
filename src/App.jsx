@@ -17278,7 +17278,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
   const [discountPct, setDiscountPct] = useState(0); // % ডিসকাউন্ট (স্ট্যাকেবল)
   const [extraCharge, setExtraCharge] = useState(""); // অতিরিক্ত চার্জ (৳)
   const [creating,   setCreating]   = useState(false);
-  const [qtyPopupPid, setQtyPopupPid] = useState(null); // 🆕 পেমেন্ট পেজে qty/price পিলে ক্লিক করলে +/- পপআপ
+  const [expandedQtyPid, setExpandedQtyPid] = useState(null); // 🆕 পেমেন্ট পেজে qty/price পিলে ক্লিক করলে সেই কার্ডের উপরে ইনলাইন +/- এক্সপ্যান্ড
   const [printInv,   setPrintInv]   = useState(null);
   const [printMode,  setPrintMode]  = useState(null);
   const [smsSending, setSmsSending] = useState(false);
@@ -18657,44 +18657,32 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                     }}>৳{fmt(total)}</div>
                   </div>
                 </div>
-                {/* Double column cart items — scrollable */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "5px 6px", maxHeight: 150, overflowY: "auto", overflowX: "hidden" }}>
+                {/* Double column cart items — scrollable — 🆕 নাম + qty×price একই লাইনে, সিরিয়ালসহ, প্রতি-আইটেম টোটাল বাদ (কম্প্যাক্ট, ৪টির বদলে ৮টি স্ক্রল ছাড়া দেখা যায়) */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "5px 6px", maxHeight: 170, overflowY: "auto", overflowX: "hidden" }}>
                 {items.map((item, _i) => {
-                  const cSub = item.price * item.qty;
-                  const cDisc = Math.min(Math.max(parseFloat(item.itemDiscount) || 0, 0), cSub);
-                  const cNet = cSub - cDisc;
                   return (
                   <div key={item.productId} style={{
-                    display: "flex", flexDirection: "column", gap: 4, minWidth: 0,
+                    display: "flex", alignItems: "center", gap: 4, minWidth: 0,
                     background: "#ffffff", border: `1.5px solid ${IS.accent}66`, borderLeft: `3px solid ${IS.accent}`,
-                    borderRadius: 8, padding: "5px 6px 6px",
+                    borderRadius: 8, padding: "4px 5px",
                     boxShadow: "0 1px 4px rgba(0,0,0,0.10)",
                   }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                      <div style={{
-                        flex: 1, minWidth: 0,
-                        background: IS.accentSoft, color: "#7a2200", fontWeight: 800, fontSize: 11.5,
-                        borderRadius: 6, padding: "2px 6px", border: `1px solid ${IS.accent}55`,
-                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                      }}>
-                        <DosageBadge dosageForm={item.dosageForm} style={{ marginRight: 3 }} />{item.name}
-                        {item.unit ? <span style={{ fontSize: 9, marginLeft: 2, opacity: 0.75 }}>/{item.unit}</span> : null}
-                      </div>
-                      <button style={{ background: "#ef444422", color: "#ef4444", border: "1px solid #ef444455", borderRadius: 5, width: 19, height: 19, cursor: "pointer", flexShrink: 0, fontSize: 9, fontWeight: 900, display:"flex", alignItems:"center", justifyContent:"center" }}
-                        onClick={() => setItems(prev => prev.filter(i => i.productId !== item.productId))}>✕</button>
+                    <span style={{ flexShrink: 0, color: IS.accent, fontWeight: 900, fontSize: 10 }}>{_i + 1}.</span>
+                    <div style={{
+                      flex: 1, minWidth: 0,
+                      background: IS.accentSoft, color: "#7a2200", fontWeight: 800, fontSize: 10.5,
+                      borderRadius: 6, padding: "2px 6px", border: `1px solid ${IS.accent}55`,
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    }}>
+                      <DosageBadge dosageForm={item.dosageForm} style={{ marginRight: 3 }} />{item.name}
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
-                      <span style={{
-                        background: IS.priceBg, color: IS.priceText, border: IS.priceBorder,
-                        borderRadius: 6, padding: "2px 8px", fontSize: 12, fontWeight: 900,
-                        boxShadow: "1.5px 1.5px 0 #17171a", flexShrink: 0, whiteSpace: "nowrap",
-                      }}>{item.qty} × ৳{fmt(item.price)}</span>
-                      <span style={{
-                        background: cDisc > 0 ? "#16a34a" : "#f3f2ee", color: cDisc > 0 ? "#fff" : "#17171a",
-                        border: cDisc > 0 ? "1px solid #14532d" : "1px solid #17171a33",
-                        borderRadius: 6, padding: "2px 8px", fontSize: 11.5, fontWeight: 900, flexShrink: 0, whiteSpace: "nowrap",
-                      }}>৳{fmt(cNet)}{cDisc > 0 ? " 🏷️" : ""}</span>
-                    </div>
+                    <span style={{
+                      background: IS.priceBg, color: IS.priceText, border: IS.priceBorder,
+                      borderRadius: 6, padding: "2px 7px", fontSize: 11, fontWeight: 900,
+                      boxShadow: "1.5px 1.5px 0 #17171a", flexShrink: 0, whiteSpace: "nowrap",
+                    }}>{item.qty}×৳{fmt(item.price)}</span>
+                    <button style={{ background: "#ef444422", color: "#ef4444", border: "1px solid #ef444455", borderRadius: 5, width: 18, height: 18, cursor: "pointer", flexShrink: 0, fontSize: 8.5, fontWeight: 900, display:"flex", alignItems:"center", justifyContent:"center" }}
+                      onClick={() => setItems(prev => prev.filter(i => i.productId !== item.productId))}>✕</button>
                   </div>
                   );
                 })}
@@ -19074,21 +19062,54 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                         const pctDisplay = lineSubtotal > 0 ? Math.round((lineDisc / lineSubtotal) * 10000) / 100 : 0;
                         const _palette = ["#22c55e", "#38bdf8", "#a78bfa", "#f59e0b", "#ec4899", "#fb7185", "#06b6d4"];
                         const accent = _palette[_idx % _palette.length];
+                        const isExpanded = expandedQtyPid === item.productId;
                         return (
-                          <div key={item.productId} style={{
-                            display: "flex", flexDirection: "column", gap: 8,
-                            padding: "10px 10px 10px 12px",
-                            borderRadius: IS.id === "t5" ? 12 : 0,
-                            background: IS.cardBg,
-                            border: `1.5px solid ${accent}55`,
-                            borderLeft: `4px solid ${accent}`,
-                            boxShadow: IS.id === "t5" ? "2px 2px 0 #17171a22" : `0 1px 6px ${accent}14`,
-                          }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-                              <div style={{ minWidth: 0, flex: 1 }}>
-                                <div style={{ color: IS.text, fontSize: 13, fontWeight: 800, marginBottom: 6 }}><DosageBadge dosageForm={item.dosageForm} />{item.name}</div>
+                          <React.Fragment key={item.productId}>
+                            {/* 🆕 qty পিলে ক্লিক করলে এই পন্যের কার্ডের উপরে ইনলাইন +/- (আগে ফুলস্ক্রিন পপআপ ছিল) */}
+                            {isExpanded && (
+                              <div style={{
+                                display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
+                                background: IS.cardBg, border: `1.5px solid ${accent}`,
+                                borderRadius: IS.id === "t5" ? 12 : 0,
+                                padding: "7px 10px", boxShadow: `0 1px 6px ${accent}33`,
+                              }}>
+                                <button type="button"
+                                  onClick={() => setQty(item.productId, Math.max(0, item.qty - 1))}
+                                  style={{ width: 36, height: 36, borderRadius: 10, background: "#ef4444", color: "#fff", border: "1.5px solid #17171a", fontSize: 19, fontWeight: 900, cursor: "pointer", fontFamily: "inherit", boxShadow: "2px 2px 0 #17171a" }}>−</button>
+                                <div style={{
+                                  minWidth: 52, textAlign: "center", fontSize: 19, fontWeight: 900,
+                                  color: IS.priceText, background: IS.priceBg, border: IS.priceBorder,
+                                  borderRadius: 10, padding: "5px 8px",
+                                }}>{item.qty}</div>
+                                <button type="button"
+                                  onClick={() => {
+                                    const prod = products.find(p => p.id === item.productId);
+                                    const maxStock = prod ? getSellableStock(prod) : Infinity;
+                                    setQty(item.productId, maxStock !== Infinity ? Math.min(maxStock, item.qty + 1) : item.qty + 1);
+                                  }}
+                                  style={{ width: 36, height: 36, borderRadius: 10, background: "#16a34a", color: "#fff", border: "1.5px solid #17171a", fontSize: 19, fontWeight: 900, cursor: "pointer", fontFamily: "inherit", boxShadow: "2px 2px 0 #17171a" }}>+</button>
+                                <button type="button" onClick={() => setExpandedQtyPid(null)}
+                                  style={{ marginLeft: 4, background: "none", border: "none", color: IS.sub, fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>✓ বন্ধ</button>
+                              </div>
+                            )}
+
+                            <div style={{
+                              display: "flex", flexDirection: "column", alignItems: "center", gap: 5,
+                              padding: "7px 10px",
+                              borderRadius: IS.id === "t5" ? 12 : 0,
+                              background: IS.cardBg,
+                              border: `1.5px solid ${accent}55`,
+                              borderLeft: `4px solid ${accent}`,
+                              boxShadow: IS.id === "t5" ? "2px 2px 0 #17171a22" : `0 1px 6px ${accent}14`,
+                            }}>
+                              {/* রো ১: সিরিয়াল+নাম, তার নিচে ব্যাচ+মেয়াদ — মিডিল-এলাইন্ড */}
+                              <div style={{ textAlign: "center" }}>
+                                <div style={{ color: IS.text, fontSize: 12.5, fontWeight: 800 }}>
+                                  <span style={{ color: accent, marginRight: 3 }}>{_idx + 1}.</span>
+                                  <DosageBadge dosageForm={item.dosageForm} />{item.name}
+                                </div>
                                 {batchLabel && (
-                                  <div style={{ fontSize: 9.5, color: IS.sub, marginBottom: 4, display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                                  <div style={{ fontSize: 9, color: IS.sub, marginTop: 2, display: "flex", alignItems: "center", justifyContent: "center", gap: 4, flexWrap: "wrap" }}>
                                     <span>ব্যাচ: {batchLabel}</span>
                                     {batch?.expiryDate && (
                                       <span style={{ color: batch.daysLeft < 0 ? "#ef4444" : batch.expWarn ? "#f59e0b" : IS.sub, fontWeight: 700 }}>
@@ -19098,58 +19119,60 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                                   </div>
                                 )}
                               </div>
-                              <div style={{ textAlign: "right", flexShrink: 0 }}>
+
+                              {/* রো ২: qty × price পিল, তার নিচে এই পণ্যে ছাড় — মিডিল-এলাইন্ড, ইডিট আইকন নেই */}
+                              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                                <button type="button" onClick={() => setExpandedQtyPid(isExpanded ? null : item.productId)}
+                                  style={{
+                                    display: "flex", alignItems: "baseline", gap: 3,
+                                    background: accent, color: "#fff", border: "1.5px solid #17171a",
+                                    borderRadius: IS.id === "t5" ? 10 : 6, padding: "4px 12px",
+                                    fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                                    boxShadow: "2px 2px 0 #17171a",
+                                  }}>
+                                  <span style={{ fontSize: 16.5, fontWeight: 900, color: "#fde68a" }}>{item.qty}</span>
+                                  <span>× ৳{fmt(item.price)}</span>
+                                </button>
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }} onClick={e => e.stopPropagation()}>
+                                  <span style={{ color: "#16a34a", fontSize: 10, fontWeight: 800 }}>ছাড়:</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleItemDiscMode(item.productId)}
+                                    style={{ background: "#16a34a", border: "1.5px solid #17171a", borderRadius: 7, padding: "2px 8px", fontSize: 10.5, fontWeight: 900, color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>
+                                    {mode === "pct" ? "%" : "৳"}
+                                  </button>
+                                  {mode === "pct" ? (
+                                    <input
+                                      type="number" inputMode="decimal" placeholder="0"
+                                      value={item.itemDiscount ? pctDisplay : ""}
+                                      onChange={e => setItemDiscountPct(item.productId, e.target.value, lineSubtotal)}
+                                      style={{ width: 54, background: "#f0fdf4", border: "1.5px solid #16a34a", borderRadius: 7, padding: "3px 5px", fontSize: 11.5, fontWeight: 800, color: "#15803d", fontFamily: "inherit", textAlign: "center" }} />
+                                  ) : (
+                                    <input
+                                      type="number" inputMode="numeric" placeholder="0"
+                                      value={item.itemDiscount || ""}
+                                      onChange={e => setItemDiscount(item.productId, e.target.value)}
+                                      style={{ width: 54, background: "#f0fdf4", border: "1.5px solid #16a34a", borderRadius: 7, padding: "3px 5px", fontSize: 11.5, fontWeight: 800, color: "#15803d", fontFamily: "inherit", textAlign: "center" }} />
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* রো ৩: মূল্য — বড়, বোল্ড, কালার ব্যাকগ্রাউন্ড, মিডিল-এলাইন্ড */}
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, flexWrap: "wrap" }}>
                                 {lineDisc > 0 ? (
                                   <>
-                                    <div style={{ color: IS.sub, fontSize: 10.5, textDecoration: "line-through" }}>৳{fmt(lineSubtotal)}</div>
-                                    <div style={{ color: "#fff", fontSize: 10.5, fontWeight: 900, background: "#16a34a", borderRadius: 6, padding: "1px 7px", marginTop: 2, display: "inline-block", whiteSpace: "nowrap" }}>
+                                    <span style={{ color: IS.sub, fontSize: 10, textDecoration: "line-through" }}>৳{fmt(lineSubtotal)}</span>
+                                    <span style={{ color: "#fff", fontSize: 10, fontWeight: 900, background: "#16a34a", borderRadius: 6, padding: "1px 6px" }}>
                                       − ৳{fmt(lineDisc)}{mode === "pct" && pctDisplay > 0 ? ` (${pctDisplay}%)` : ""}
-                                    </div>
-                                    <div style={{ color: accent, fontSize: 17, fontWeight: 900, marginTop: 2 }}>৳{fmt(lineNet)}</div>
+                                    </span>
+                                    <span style={{ color: accent, background: `${accent}22`, border: `1.5px solid ${accent}`, borderRadius: 8, padding: "3px 12px", fontSize: 17, fontWeight: 900 }}>৳{fmt(lineNet)}</span>
                                   </>
                                 ) : (
-                                  <div style={{ color: accent, fontSize: 17, fontWeight: 900 }}>৳{fmt(lineSubtotal)}</div>
+                                  <span style={{ color: accent, background: `${accent}22`, border: `1.5px solid ${accent}`, borderRadius: 8, padding: "3px 12px", fontSize: 17, fontWeight: 900 }}>৳{fmt(lineSubtotal)}</span>
                                 )}
                               </div>
                             </div>
-
-                            {/* qty × price পিল — বড়, বোল্ড, কালারফুল, মিডিল-এলাইন্ড, ক্লিক করলে +/- পপআপ */}
-                            <button type="button" onClick={() => setQtyPopupPid(item.productId)}
-                              style={{
-                                alignSelf: "center", display: "flex", alignItems: "center", gap: 6,
-                                background: accent, color: "#fff", border: "1.5px solid #17171a",
-                                borderRadius: IS.id === "t5" ? 12 : 6, padding: "7px 16px",
-                                fontSize: 15, fontWeight: 900, cursor: "pointer", fontFamily: "inherit",
-                                boxShadow: "2px 2px 0 #17171a",
-                              }}>
-                              × {item.qty} @৳{fmt(item.price)}
-                              <span style={{ fontSize: 11, opacity: 0.85 }}>✏️</span>
-                            </button>
-
-                            {/* এই পণ্যে ছাড় — বড়, কালারফুল, মিডিল-এলাইন্ড, qty পিলের নিচে */}
-                            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }} onClick={e => e.stopPropagation()}>
-                              <span style={{ color: "#16a34a", fontSize: 11.5, fontWeight: 800 }}>এই পণ্যে ছাড়:</span>
-                              <button
-                                type="button"
-                                onClick={() => toggleItemDiscMode(item.productId)}
-                                style={{ background: "#16a34a", border: "1.5px solid #17171a", borderRadius: 8, padding: "3px 10px", fontSize: 12, fontWeight: 900, color: "#fff", cursor: "pointer", fontFamily: "inherit", boxShadow: "1.5px 1.5px 0 #17171a" }}>
-                                {mode === "pct" ? "%" : "৳"}
-                              </button>
-                              {mode === "pct" ? (
-                                <input
-                                  type="number" inputMode="decimal" placeholder="0"
-                                  value={item.itemDiscount ? pctDisplay : ""}
-                                  onChange={e => setItemDiscountPct(item.productId, e.target.value, lineSubtotal)}
-                                  style={{ width: 64, background: "#f0fdf4", border: "1.5px solid #16a34a", borderRadius: 8, padding: "4px 6px", fontSize: 13, fontWeight: 800, color: "#15803d", fontFamily: "inherit", textAlign: "center" }} />
-                              ) : (
-                                <input
-                                  type="number" inputMode="numeric" placeholder="0"
-                                  value={item.itemDiscount || ""}
-                                  onChange={e => setItemDiscount(item.productId, e.target.value)}
-                                  style={{ width: 64, background: "#f0fdf4", border: "1.5px solid #16a34a", borderRadius: 8, padding: "4px 6px", fontSize: 13, fontWeight: 800, color: "#15803d", fontFamily: "inherit", textAlign: "center" }} />
-                              )}
-                            </div>
-                          </div>
+                          </React.Fragment>
                         );
                       })}
                     </div>
@@ -19204,41 +19227,6 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 </>
               )}
             </div>
-
-            {/* 🆕 qty পিলে ক্লিক করলে +/- পপআপ */}
-            {qtyPopupPid && (() => {
-              const pItem = items.find(i => i.productId === qtyPopupPid);
-              if (!pItem) { setQtyPopupPid(null); return null; }
-              const prod = products.find(p => p.id === qtyPopupPid);
-              const maxStock = prod ? getSellableStock(prod) : Infinity;
-              return (
-                <div style={S.overlay} onClick={() => setQtyPopupPid(null)}>
-                  <div style={{ ...S.modalCard, maxWidth: 320 }} onClick={e => e.stopPropagation()}>
-                    <div style={{ textAlign: "center", marginBottom: 14 }}>
-                      <div style={{ color: IS.text, fontWeight: 900, fontSize: 15 }}><DosageBadge dosageForm={pItem.dosageForm} />{pItem.name}</div>
-                      <div style={{ color: IS.sub, fontSize: 12, marginTop: 2 }}>একক দাম: ৳{fmt(pItem.price)}</div>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 14, marginBottom: 14 }}>
-                      <button type="button"
-                        onClick={() => setQty(qtyPopupPid, Math.max(0, pItem.qty - 1))}
-                        style={{ width: 48, height: 48, borderRadius: 12, background: "#ef4444", color: "#fff", border: "1.5px solid #17171a", fontSize: 24, fontWeight: 900, cursor: "pointer", boxShadow: "2px 2px 0 #17171a" }}>−</button>
-                      <div style={{
-                        minWidth: 80, textAlign: "center", fontSize: 28, fontWeight: 900,
-                        color: IS.priceText, background: IS.priceBg, border: IS.priceBorder,
-                        borderRadius: 12, padding: "8px 14px", boxShadow: IS.priceShadow,
-                      }}>{pItem.qty}</div>
-                      <button type="button"
-                        onClick={() => setQty(qtyPopupPid, maxStock !== Infinity ? Math.min(maxStock, pItem.qty + 1) : pItem.qty + 1)}
-                        style={{ width: 48, height: 48, borderRadius: 12, background: "#16a34a", color: "#fff", border: "1.5px solid #17171a", fontSize: 24, fontWeight: 900, cursor: "pointer", boxShadow: "2px 2px 0 #17171a" }}>+</button>
-                    </div>
-                    <div style={{ textAlign: "center", color: IS.accent, fontWeight: 900, fontSize: 18, marginBottom: 14 }}>
-                      মোট: ৳{fmt(pItem.qty * pItem.price)}
-                    </div>
-                    <button style={{ ...S.saveBtn, width: "100%" }} onClick={() => setQtyPopupPid(null)}>✓ সম্পন্ন</button>
-                  </div>
-                </div>
-              );
-            })()}
 
             {isSelfUse && (
               <div style={{ marginBottom:10, background:"linear-gradient(135deg,#7c2d1222,#ea580c11)", border:"1px solid #f9731633", borderRadius:14, padding:"10px 14px", color:"#f97316", fontSize:12, fontWeight:700, textAlign:"center" }}>
