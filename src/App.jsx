@@ -17284,7 +17284,6 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
   const [smsSending, setSmsSending] = useState(false);
   const [cartCardHeight, setCartCardHeight] = useState(0);
   const [stepBarHeight, setStepBarHeight] = useState(58);
-  const [showAllSummaryItems, setShowAllSummaryItems] = useState(false); // Step3 সামারিতে ৪+ আইটেম থাকলে কোলাপস/এক্সপ্যান্ড
   const cartCardRef = useRef(null);
   const stepBarRef = useRef(null);
   const printRef = useRef(null);
@@ -19045,13 +19044,11 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
               <div style={{ color: IS.sub, fontSize: 11, marginBottom: 8 }}>{items.filter(i=>i.qty>0).length}টি পণ্য · {items.filter(i=>i.qty>0).reduce((a,b)=>a+b.qty,0)}টি আইটেম · মোট মূল্য</div>
               {(() => {
                 const cartItems = items.filter(i => i.qty > 0);
-                const COLLAPSE_LIMIT = 4;
-                const isCollapsed = !showAllSummaryItems && cartItems.length > COLLAPSE_LIMIT;
-                const visibleItems = isCollapsed ? cartItems.slice(0, COLLAPSE_LIMIT) : cartItems;
-                const hiddenCount = cartItems.length - visibleItems.length;
+                // 🆕 কোলাপস/লিমিট সম্পূর্ণ বাদ — যত পণ্য থাকুক সব সবসময় দেখাবে, কোনো ভিতরের স্ক্রলও নেই
+                const visibleItems = cartItems;
                 return (
                   <>
-                    <div style={{ maxHeight: showAllSummaryItems ? 260 : "none", overflowY: showAllSummaryItems ? "auto" : "visible", display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                       {visibleItems.map((item, _idx) => {
                         const batch = productBatchMap[item.productId];
                         const batchLabel = batch?.batch ? String(batch.batch).replace(/^ব্যাচ-/i, "") : "";
@@ -19095,7 +19092,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
 
                             <div style={{
                               display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8,
-                              padding: "7px 10px",
+                              padding: "7px 72px 7px 10px",
                               borderRadius: IS.id === "t5" ? 12 : 0,
                               background: IS.cardBg,
                               border: `1.5px solid ${accent}55`,
@@ -19120,21 +19117,21 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                                 )}
                               </div>
 
-                              {/* কলাম ২: qty × price পিল, তার নিচে এই পণ্যে ছাড় — মাঝখানে, মিডিল-এলাইন্ড, ইডিট আইকন নেই */}
+                              {/* কলাম ২: qty × price পিল — qty-এর নিজস্ব হালকা ব্যাকগ্রাউন্ড ব্যাজ (কালো/বোল্ড, বেশি ভিজিবল), × ৳দাম অংশে আলাদা ব্যাকগ্রাউন্ড নেই। নিচে ডিসকাউন্ট — মাঝখানে, মিডিল-এলাইন্ড, ইডিট আইকন নেই */}
                               <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
                                 <button type="button" onClick={() => setExpandedQtyPid(isExpanded ? null : item.productId)}
                                   style={{
-                                    display: "flex", alignItems: "baseline", gap: 3,
+                                    display: "flex", alignItems: "center", gap: 5,
                                     background: accent, color: "#fff", border: "1.5px solid #17171a",
                                     borderRadius: IS.id === "t5" ? 10 : 6, padding: "4px 10px",
                                     fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
                                     boxShadow: "2px 2px 0 #17171a", whiteSpace: "nowrap",
                                   }}>
-                                  <span style={{ fontSize: 15.5, fontWeight: 900, color: "#fde68a" }}>{item.qty}</span>
-                                  <span>× ৳{fmt(item.price)}</span>
+                                  <span style={{ fontSize: 15.5, fontWeight: 900, color: "#17171a", background: "#fde047", borderRadius: 5, padding: "1px 7px" }}>{item.qty}</span>
+                                  <span style={{ color: "#fff" }}>× ৳{fmt(item.price)}</span>
                                 </button>
                                 <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }} onClick={e => e.stopPropagation()}>
-                                  <span style={{ color: "#16a34a", fontSize: 9.5, fontWeight: 800 }}>ছাড়:</span>
+                                  <span style={{ color: "#16a34a", fontSize: 9.5, fontWeight: 800 }}>ডিসকাউন্ট:</span>
                                   <button
                                     type="button"
                                     onClick={() => toggleItemDiscMode(item.productId)}
@@ -19174,18 +19171,6 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                         );
                       })}
                     </div>
-                    {hiddenCount > 0 && (
-                      <button onClick={() => setShowAllSummaryItems(true)}
-                        style={{ width: "100%", background: "none", border: "none", color: T.accent, fontSize: 11, fontWeight: 700, padding: "4px 0", cursor: "pointer", fontFamily: "inherit", textAlign: "center" }}>
-                        ▾ আরও {hiddenCount}টি দেখুন
-                      </button>
-                    )}
-                    {showAllSummaryItems && cartItems.length > COLLAPSE_LIMIT && (
-                      <button onClick={() => setShowAllSummaryItems(false)}
-                        style={{ width: "100%", background: "none", border: "none", color: T.accent, fontSize: 11, fontWeight: 700, padding: "4px 0", cursor: "pointer", fontFamily: "inherit", textAlign: "center" }}>
-                        ▴ সংক্ষিপ্ত করুন
-                      </button>
-                    )}
                   </>
                 );
               })()}
