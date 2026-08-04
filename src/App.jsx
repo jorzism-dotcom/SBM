@@ -19094,7 +19094,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                             )}
 
                             <div style={{
-                              display: "flex", flexDirection: "column", alignItems: "center", gap: 5,
+                              display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8,
                               padding: "7px 10px",
                               borderRadius: IS.id === "t5" ? 12 : 0,
                               background: IS.cardBg,
@@ -19102,14 +19102,14 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                               borderLeft: `4px solid ${accent}`,
                               boxShadow: IS.id === "t5" ? "2px 2px 0 #17171a22" : `0 1px 6px ${accent}14`,
                             }}>
-                              {/* রো ১: সিরিয়াল+নাম, তার নিচে ব্যাচ+মেয়াদ — মিডিল-এলাইন্ড */}
-                              <div style={{ textAlign: "center" }}>
-                                <div style={{ color: IS.text, fontSize: 12.5, fontWeight: 800 }}>
+                              {/* কলাম ১: সিরিয়াল+নাম, তার নিচে ব্যাচ+মেয়াদ — বাম পাশে, মিডিল-এলাইন্ড */}
+                              <div style={{ flex: 1.3, minWidth: 0, textAlign: "left" }}>
+                                <div style={{ color: IS.text, fontSize: 12.5, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
                                   <span style={{ color: accent, marginRight: 3 }}>{_idx + 1}.</span>
                                   <DosageBadge dosageForm={item.dosageForm} />{item.name}
                                 </div>
                                 {batchLabel && (
-                                  <div style={{ fontSize: 9, color: IS.sub, marginTop: 2, display: "flex", alignItems: "center", justifyContent: "center", gap: 4, flexWrap: "wrap" }}>
+                                  <div style={{ fontSize: 9, color: IS.sub, marginTop: 2, display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 4, flexWrap: "wrap" }}>
                                     <span>ব্যাচ: {batchLabel}</span>
                                     {batch?.expiryDate && (
                                       <span style={{ color: batch.daysLeft < 0 ? "#ef4444" : batch.expWarn ? "#f59e0b" : IS.sub, fontWeight: 700 }}>
@@ -19120,25 +19120,25 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                                 )}
                               </div>
 
-                              {/* রো ২: qty × price পিল, তার নিচে এই পণ্যে ছাড় — মিডিল-এলাইন্ড, ইডিট আইকন নেই */}
-                              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                              {/* কলাম ২: qty × price পিল, তার নিচে এই পণ্যে ছাড় — মাঝখানে, মিডিল-এলাইন্ড, ইডিট আইকন নেই */}
+                              <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
                                 <button type="button" onClick={() => setExpandedQtyPid(isExpanded ? null : item.productId)}
                                   style={{
                                     display: "flex", alignItems: "baseline", gap: 3,
                                     background: accent, color: "#fff", border: "1.5px solid #17171a",
-                                    borderRadius: IS.id === "t5" ? 10 : 6, padding: "4px 12px",
-                                    fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-                                    boxShadow: "2px 2px 0 #17171a",
+                                    borderRadius: IS.id === "t5" ? 10 : 6, padding: "4px 10px",
+                                    fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                                    boxShadow: "2px 2px 0 #17171a", whiteSpace: "nowrap",
                                   }}>
-                                  <span style={{ fontSize: 16.5, fontWeight: 900, color: "#fde68a" }}>{item.qty}</span>
+                                  <span style={{ fontSize: 15.5, fontWeight: 900, color: "#fde68a" }}>{item.qty}</span>
                                   <span>× ৳{fmt(item.price)}</span>
                                 </button>
-                                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }} onClick={e => e.stopPropagation()}>
-                                  <span style={{ color: "#16a34a", fontSize: 10, fontWeight: 800 }}>ছাড়:</span>
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }} onClick={e => e.stopPropagation()}>
+                                  <span style={{ color: "#16a34a", fontSize: 9.5, fontWeight: 800 }}>ছাড়:</span>
                                   <button
                                     type="button"
                                     onClick={() => toggleItemDiscMode(item.productId)}
-                                    style={{ background: "#16a34a", border: "1.5px solid #17171a", borderRadius: 7, padding: "2px 8px", fontSize: 10.5, fontWeight: 900, color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>
+                                    style={{ background: "#16a34a", border: "1.5px solid #17171a", borderRadius: 7, padding: "2px 7px", fontSize: 10, fontWeight: 900, color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>
                                     {mode === "pct" ? "%" : "৳"}
                                   </button>
                                   {mode === "pct" ? (
@@ -19146,30 +19146,28 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                                       type="number" inputMode="decimal" placeholder="0"
                                       value={item.itemDiscount ? pctDisplay : ""}
                                       onChange={e => setItemDiscountPct(item.productId, e.target.value, lineSubtotal)}
-                                      style={{ width: 54, background: "#f0fdf4", border: "1.5px solid #16a34a", borderRadius: 7, padding: "3px 5px", fontSize: 11.5, fontWeight: 800, color: "#15803d", fontFamily: "inherit", textAlign: "center" }} />
+                                      style={{ width: 46, background: "#f0fdf4", border: "1.5px solid #16a34a", borderRadius: 7, padding: "2px 4px", fontSize: 10.5, fontWeight: 800, color: "#15803d", fontFamily: "inherit", textAlign: "center" }} />
                                   ) : (
                                     <input
                                       type="number" inputMode="numeric" placeholder="0"
                                       value={item.itemDiscount || ""}
                                       onChange={e => setItemDiscount(item.productId, e.target.value)}
-                                      style={{ width: 54, background: "#f0fdf4", border: "1.5px solid #16a34a", borderRadius: 7, padding: "3px 5px", fontSize: 11.5, fontWeight: 800, color: "#15803d", fontFamily: "inherit", textAlign: "center" }} />
+                                      style={{ width: 46, background: "#f0fdf4", border: "1.5px solid #16a34a", borderRadius: 7, padding: "2px 4px", fontSize: 10.5, fontWeight: 800, color: "#15803d", fontFamily: "inherit", textAlign: "center" }} />
                                   )}
                                 </div>
                               </div>
 
-                              {/* রো ৩: মূল্য — বড়, বোল্ড, কালার ব্যাকগ্রাউন্ড, মিডিল-এলাইন্ড */}
-                              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, flexWrap: "wrap" }}>
-                                {lineDisc > 0 ? (
+                              {/* কলাম ৩: মূল্য — ডান পাশে, বড়, বোল্ড, কালার ব্যাকগ্রাউন্ড, মিডিল-এলাইন্ড */}
+                              <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "flex-end", justifyContent: "center", gap: 3 }}>
+                                {lineDisc > 0 && (
                                   <>
-                                    <span style={{ color: IS.sub, fontSize: 10, textDecoration: "line-through" }}>৳{fmt(lineSubtotal)}</span>
-                                    <span style={{ color: "#fff", fontSize: 10, fontWeight: 900, background: "#16a34a", borderRadius: 6, padding: "1px 6px" }}>
+                                    <span style={{ color: IS.sub, fontSize: 9.5, textDecoration: "line-through" }}>৳{fmt(lineSubtotal)}</span>
+                                    <span style={{ color: "#fff", fontSize: 9.5, fontWeight: 900, background: "#16a34a", borderRadius: 6, padding: "1px 6px", whiteSpace: "nowrap" }}>
                                       − ৳{fmt(lineDisc)}{mode === "pct" && pctDisplay > 0 ? ` (${pctDisplay}%)` : ""}
                                     </span>
-                                    <span style={{ color: accent, background: `${accent}22`, border: `1.5px solid ${accent}`, borderRadius: 8, padding: "3px 12px", fontSize: 17, fontWeight: 900 }}>৳{fmt(lineNet)}</span>
                                   </>
-                                ) : (
-                                  <span style={{ color: accent, background: `${accent}22`, border: `1.5px solid ${accent}`, borderRadius: 8, padding: "3px 12px", fontSize: 17, fontWeight: 900 }}>৳{fmt(lineSubtotal)}</span>
                                 )}
+                                <span style={{ color: accent, background: `${accent}22`, border: `1.5px solid ${accent}`, borderRadius: 8, padding: "3px 10px", fontSize: 16, fontWeight: 900, whiteSpace: "nowrap" }}>৳{fmt(lineDisc > 0 ? lineNet : lineSubtotal)}</span>
                               </div>
                             </div>
                           </React.Fragment>
