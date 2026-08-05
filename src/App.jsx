@@ -17675,7 +17675,6 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     setWalkInPayType("cash"); setWalkInPartialAmt(""); setWalkInName(""); setWalkInMobile(""); setWalkInAddress(""); setWalkInDueDate("");
     setWalkInCustMode("new"); setWalkInExistingId(""); setWalkInCustSearch("");
     onDone?.();
-    setTab?.("dashboard");
   };
 
   // 🆕 ফিক্স (২০ জুলাই ২০২৬ — "একধাপ করেই পিছাবে" ফিডব্যাক): এই wizard-এর
@@ -17685,7 +17684,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
   // করা হচ্ছে — সাফল্য-স্ক্রিন (printInv, সবচেয়ে ভেতরের লেয়ার) আগে বন্ধ হবে,
   // তারপর স্টেপ ৩→২→১ একধাপ করে, স্টেপ ১-এ থাকলে তবেই বাইরের (dashboard/exit)
   // লজিক চলবে।
-  useBackHandler(!!printInv, () => { resetAll(); return true; });
+  useBackHandler(!!printInv, () => { resetAll(); setTab?.("dashboard"); return true; });
   useBackHandler(!printInv && step > 1, () => { setStep(s => Math.max(1, s - 1)); return true; });
 
   // 🎤 Voice Invoice: পুরো ইনভয়েস ভয়েস দিয়ে তৈরি করুন
@@ -18998,7 +18997,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 style={{
                   ...S.cancelBtn, flex: 1,
                   background:"linear-gradient(135deg,#1e40af,#3b82f6)",
-                  border:"none", borderRadius:12, display:"flex", alignItems:"center", justifyContent:"center", gap:6,
+                  border:"none", borderRadius:12, boxShadow:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6,
                 }}
                 onClick={() => setStep(1)}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
@@ -19008,13 +19007,12 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 style={{
                   ...S.saveBtn, flex: 2, padding: 14, fontSize: 15,
                   background: IS.priceBg, color: IS.priceText, border: IS.priceBorder,
-                  boxShadow: IS.priceShadow, borderRadius: 12,
+                  boxShadow: "none", borderRadius: 12,
                 }}
                 disabled={items.filter(i=>i.qty>0).length === 0}
                 onClick={() => { if(items.filter(i=>i.qty>0).length === 0) return; setStep(3); }}>
-                <span style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8, flexWrap:"wrap" }}>
-                  পরবর্তী → পেমেন্ট ({items.filter(i=>i.qty>0).length}টি)
-                  <span style={{ background:"rgba(255,255,255,0.25)", borderRadius:8, padding:"2px 10px", fontWeight:900 }}>৳{fmt(total)}</span>
+                <span style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:6, flexWrap:"wrap", fontSize: 13.5 }}>
+                  পরবর্তী → পেমেন্ট ({items.filter(i=>i.qty>0).length}টি) → মোট খরচ (৳{fmt(total)})
                 </span>
               </button>
             </div>
@@ -19213,7 +19211,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                     )}
                     {/* 🆕 (৫ আগস্ট ২০২৬) সবসময় দেখা যাবে — ডিসকাউন্ট/এক্সট্রা না থাকলে "সর্বমোট", থাকলে "নেট মোট"; কমলা ব্যাকগ্রাউন্ড। আগের টপ-রাইট প্রাইস পিল সরানো হয়েছে (ডুপ্লিকেট এড়াতে) */}
                     <div style={{
-                      display:"flex", justifyContent:"space-between", alignItems: "center", marginTop: hasDiscount ? 8 : 4,
+                      display:"flex", justifyContent:"space-between", alignItems: "center", marginTop: hasDiscount ? 14 : 10,
                       background: "linear-gradient(155deg, #f9731638, #f9731618)", border: "1.5px solid #f97316aa",
                       borderRadius: IS.id === "t5" ? 10 : 0,
                       clipPath: IS.id === "t10" ? IS.clipSm : "none",
@@ -19224,7 +19222,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                         <span style={{ position:"absolute", width:12, height:12, bottom:-2, right:-2, borderBottom:`2px solid ${IS.cornerAccent}`, borderRight:`2px solid ${IS.cornerAccent}` }} />
                       </>}
                       <span style={{ fontSize:12.5, fontWeight:700, color: "#c2410c" }}>{hasDiscount ? "নেট মোট" : "সর্বমোট"}</span>
-                      <span style={{ fontSize:22, fontWeight:900, color: "#c2410c", textShadow: IS.glowShadow }}>৳{fmt(total)}</span>
+                      <span style={{ fontSize:18, fontWeight:900, color: "#fff", background: "#f97316", border: "1.5px solid #17171a", borderRadius: 999, padding: "3px 14px" }}>৳{fmt(total)}</span>
                     </div>
                   </>
                 );
@@ -19377,9 +19375,13 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 }}>৳{fmt(total)}</span>
               </div>
               {/* পরিশোধ পদ্ধতি */}
-              <div style={{ display:"flex", justifyContent:"space-between", fontSize:13, color: T.sub, marginBottom: (prevBalance > 0 || displayBakiAmt > 0) ? 6 : 0 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, color: T.sub, marginBottom: (prevBalance > 0 || displayBakiAmt > 0) ? 8 : 0 }}>
                 <span>পরিশোধ পদ্ধতি</span>
-                <span style={{ color: (selCust?.id==="__walkin__"||payType==="cash")?"#22c55e":payType==="baki"?"#ef4444":"#f59e0b", fontWeight:800 }}>
+                <span style={{
+                  color: "#fff", fontWeight:800, fontSize: 12.5,
+                  background: (selCust?.id==="__walkin__"||payType==="cash")?"#16a34a":payType==="baki"?"#dc2626":"#ea580c",
+                  border: "1.5px solid #17171a", borderRadius: 999, padding: "3px 12px",
+                }}>
                   {selCust?.id === "__walkin__"
                     ? walkInPayType === "baki" ? `বাকি ৳${fmt(total)}`
                       : walkInPayType === "partial" ? `আংশিক — নগদ ৳${fmt(parseFloat(walkInPartialAmt)||0)}`
@@ -19391,9 +19393,9 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
               </div>
               {/* পূর্বের বাকি — registered customer অথবা walk-in ফ্লো-তে বেছে নেওয়া পুরোনো কাস্টমার */}
               {((selCust && selCust.id !== "__walkin__" && selCust.id !== "__selfuse__") || walkInExistingCust) && prevBalance > 0 && (
-                <div style={{ display:"flex", justifyContent:"space-between", fontSize:13, color: T.sub, marginBottom:6 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, color: T.sub, marginBottom:8 }}>
                   <span>পূর্বের বাকি</span>
-                  <span style={{ color:"#f59e0b", fontWeight:800 }}>৳{fmt(prevBalance)}</span>
+                  <span style={{ color:"#fff", fontWeight:800, fontSize: 12.5, background:"#a855f7", border: "1.5px solid #17171a", borderRadius: 999, padding: "3px 12px" }}>৳{fmt(prevBalance)}</span>
                 </div>
               )}
               {/* Overpayment info */}
@@ -19405,9 +19407,9 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
               )}
               {/* বর্তমান বাকি (মোট = পূর্বের বাকি + এই ইনভয়েসের বাকি) */}
               {((selCust && selCust.id !== "__walkin__" && selCust.id !== "__selfuse__") || walkInExistingCust) && (prevBalance > 0 || displayBakiAmt > 0) && (
-                <div style={{ display:"flex", justifyContent:"space-between", fontSize:13, borderTop:`1px solid ${T.border}`, paddingTop:6, marginTop:2 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, borderTop:`1px solid ${T.border}`, paddingTop:8, marginTop:2 }}>
                   <span style={{ color: T.sub }}>মোট বাকি</span>
-                  <span style={{ color: displayNewBalance > 0 ? "#ef4444" : "#22c55e", fontWeight:900 }}>৳{fmt(Math.max(0, displayNewBalance))}</span>
+                  <span style={{ color: "#fff", fontWeight:900, fontSize: 13.5, background: displayNewBalance > 0 ? "#dc2626" : "#16a34a", border: "1.5px solid #17171a", borderRadius: 999, padding: "3px 12px" }}>৳{fmt(Math.max(0, displayNewBalance))}</span>
                 </div>
               )}
             </div>
@@ -19435,7 +19437,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 style={{
                   ...S.cancelBtn, flex:1,
                   background:"linear-gradient(135deg,#1e40af,#3b82f6)",
-                  border:"none", borderRadius:12, display:"flex", alignItems:"center", justifyContent:"center", gap:6,
+                  border:"none", borderRadius:12, boxShadow:"none", display:"flex", alignItems:"center", justifyContent:"center", gap:6,
                 }}
                 onClick={() => setStep(2)}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
@@ -19443,9 +19445,8 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
               </button>
               <button style={{
                   ...S.saveBtn, flex:2, padding:14, fontSize:15, opacity:(creating || license.isLocked)?0.6:1,
-                  background: IS.id === "t5" ? IS.priceBg : `linear-gradient(135deg, ${IS.accent}, #0090b3)`,
-                  color: IS.priceText, border: IS.priceBorder, boxShadow: IS.priceShadow, textShadow: IS.priceTextShadow,
-                  clipPath: IS.clip, borderRadius: IS.id === "t5" ? 12 : 8,
+                  background: IS.priceBg, color: IS.priceText, border: IS.priceBorder, textShadow: IS.priceTextShadow,
+                  boxShadow: "none", borderRadius: 12,
                 }}
                 disabled={creating || license.isLocked || (!isSelfUse && payType==="partial" && !partialAmt) || (!isSelfUse && selCust?.id==="__walkin__" && walkInPayType==="partial" && !walkInPartialAmt) || (!isSelfUse && selCust?.id==="__walkin__" && (walkInPayType==="partial" || walkInPayType==="baki") && !walkInName.trim())}
                 onClick={createInvoice}>
@@ -25823,7 +25824,10 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
             <span style={{ position:"absolute", width:12, height:12, bottom:-2, right:-2, borderBottom:`2px solid ${IS.cornerAccent}`, borderRight:`2px solid ${IS.cornerAccent}` }} />
           </>}
           <span style={{ fontWeight: 700, fontSize: 12.5, color: IS.sub }}>মোট খরচ</span>
-          <span style={{ fontWeight: 900, fontSize: 20, color: IS.accent, textShadow: IS.glowShadow }}>৳{fmt(inv.total)}</span>
+          <span style={{
+            fontWeight: 900, fontSize: 17, color: "#fff", background: IS.accent,
+            border: "1.5px solid #17171a", borderRadius: 999, padding: "3px 14px",
+          }}>৳{fmt(inv.total)}</span>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: IS.text, fontSize: 13, fontWeight: 700, marginBottom: inv.payType === "partial" ? 3 : 5 }}>
           <span>পরিশোধ পদ্ধতি</span>
@@ -25844,8 +25848,9 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
               <span>পূর্বের বাকি</span><span>৳{fmt(inv.prevBalance || 0)}</span>
             </div>
             <div style={{ borderTop: `1px dashed ${T.border}`, marginTop: 8, marginBottom: 8 }} />
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "#fff", fontSize: 16, fontWeight: 900, padding: "9px 12px", background: "#dc2626", borderRadius: IS.id === "t5" ? 10 : 0, border: "1.5px solid #17171a", boxShadow: "none" }}>
-              <span>বর্তমান বাকি</span><span>৳{fmt((inv.prevBalance || 0) + (inv.bakiAmount || 0) - (inv.overpayAmount || 0))}</span>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "#fff", fontSize: 15, fontWeight: 900, padding: "9px 12px", background: "#dc2626", borderRadius: IS.id === "t5" ? 10 : 0, border: "1.5px solid #17171a", boxShadow: "none" }}>
+              <span>বর্তমান বাকি</span>
+              <span style={{ background: "#fff", color: "#dc2626", borderRadius: 999, padding: "3px 14px", fontSize: 17 }}>৳{fmt((inv.prevBalance || 0) + (inv.bakiAmount || 0) - (inv.overpayAmount || 0))}</span>
             </div>
           </>
         )}
