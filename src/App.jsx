@@ -15035,7 +15035,16 @@ function SmartBusinessMgmt() {
                 ...S.navBtn,
                 color: isActive ? "#fff" : `${T.headingColor}80`,
               }}
-              onClick={() => { setShowMoreMenu(false); setDetailCId(null); setInvModal(null); setDashModal(null); setCashModal(null); setTab(n.id); }}>
+              onClick={() => {
+                setShowMoreMenu(false); setDetailCId(null); setInvModal(null); setDashModal(null); setCashModal(null);
+                // 🆕 "নতুন ইনভয়েস" ট্যাবে ক্লিক করলে সবসময় সরাসরি স্টেপ ১ (কাস্টমার সিলেকশন) থেকে শুরু হবে —
+                // আগে থেকে খোলা থাকা ইনভয়েস (স্টেপ ২/৩-এ আটকে থাকা কার্ট/কাস্টমার) থাকলেও তা রিসেট হয়ে যাবে,
+                // invoiceKey বাড়িয়ে SmartInvoiceBuilder রিমাউন্ট করানো হচ্ছে (ঠিক business-switch ফিক্সের মতোই)।
+                if (n.id === "invoice") {
+                  setPreselectedCust(null); setPreselectedType(null); setInvoiceKey(k => k + 1);
+                }
+                setTab(n.id);
+              }}>
               {isActive && <span style={{ position:"absolute", inset:0, background:`${T.accent}55`, border:`1px solid ${T.accent}88`, borderRadius:14, animation:"bounceIn 0.25s cubic-bezier(0.4,0,0.2,1)" }} />}
               <span style={{ position: "relative", zIndex: 1, transition: "transform 0.2s", transform: isActive ? "scale(1.15)" : "scale(1)" }}>
                 <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={isActive ? 2.5 : 1.8} strokeLinecap="round" strokeLinejoin="round">
@@ -17246,7 +17255,7 @@ function getInvoiceSkin(_isDark) {
     accent: "#ff5a36", accentSoft: "#ffe4da", accentText: "#17171a",
     priceBg: "#ff5a36",
     priceBorder: "1px solid #17171a", priceText: "#fff",
-    priceShadow: "3px 3px 0 #17171a", priceTextShadow: "none",
+    priceShadow: "none", priceTextShadow: "none",
     glowShadow: "none",
     cornerAccent: "#17171a",
     clip: "none", clipSm: "none",
@@ -18194,60 +18203,6 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
         {/* ── Single invoice ── */}
         <InvoiceReceipt T={T} S={S} inv={printInv} customer={c} type="buyer" />
 
-        {(c?.mobile || printInv.customerMobile) && (
-          <button
-            onClick={() => {
-              // 🔴 ফিক্স: আগে এখানে wa.me টেক্সট-লিংক দিয়ে শুধু সারমর্ম টেক্সট পাঠানো হতো
-              // (ইনভয়েস PDF যেত না)। এখন InvoiceReceipt.handleShare-এর মতোই আসল
-              // ইনভয়েস PDF বানিয়ে sharePdfWhatsApp দিয়ে পাঠানো হয় — Print/PDF বাটনের
-              // মতোই একই কোয়ালিটির PDF শেয়ার হয়।
-              const inv = printInv;
-              const shopNameLocal = inv.shopName || shopName || "SBM";
-              const itemRows = (inv.items||[]).map((item,i) => {
-                const _g = item.qty*item.price, _d = Math.min(Math.max(parseFloat(item.itemDiscount)||0,0), _g);
-                return `<tr><td class="serial">${i+1}</td><td>${item.name}</td><td class="num">${item.qty}</td><td class="num">৳${fmtMoney(item.price)}</td><td class="amount" style="color:#3b82f6;">৳${fmtMoney(_g-_d)}</td></tr>`;
-              }).join("");
-              const content = `
-                <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
-                  <div style="flex:1;background:#0369a115;border-radius:10px;padding:10px 14px;">
-                    <div style="color:#666;font-size:11px;">কাস্টমার</div>
-                    <div style="font-weight:800;font-size:15px;">${inv.customerName}</div>
-                    <div style="color:#666;font-size:11px;">${inv.customerMobile||""}</div>
-                  </div>
-                  <div style="flex:1;background:#0369a115;border-radius:10px;padding:10px 14px;">
-                    <div style="color:#666;font-size:11px;">ইনভয়েস</div>
-                    <div style="font-weight:800;">#${dispInvNo(inv)}</div>
-                    <div style="color:#666;font-size:11px;">${inv.date||""}</div>
-                  </div>
-                </div>
-                <table><thead><tr><th class="serial">#</th><th>পণ্য</th><th class="num">পরিমাণ</th><th class="num">দাম</th><th class="num">মোট</th></tr></thead><tbody>${itemRows}</tbody></table>
-                <div style="margin-top:14px;background:#0369a115;border-radius:10px;padding:12px 16px;">
-                  ${((inv.itemDiscount||0) > 0 || (inv.discount||0) > 0) ? `<div class="info-row"><span class="info-label">সর্বমোট:</span><span class="info-val">৳${fmtMoney(inv.subtotal||inv.total||0)}</span></div>` : ""}
-                  ${(inv.itemDiscount||0) > 0 ? `<div class="info-row"><span class="info-label" style="color:#22c55e;">পণ্যভিত্তিক ডিসকাউন্ট:</span><span class="info-val" style="color:#22c55e;">– ৳${fmtMoney(inv.itemDiscount||0)}</span></div>` : ""}
-                  ${(inv.discount||0) > 0 ? `<div class="info-row"><span class="info-label" style="color:#22c55e;">ডিসকাউন্ট:</span><span class="info-val" style="color:#22c55e;">– ৳${fmtMoney(inv.discount||0)}</span></div>` : ""}
-                  ${(inv.extraCharge||0) > 0 ? `<div class="info-row"><span class="info-label" style="color:#f59e0b;">অতিরিক্ত চার্জ:</span><span class="info-val" style="color:#f59e0b;">+ ৳${fmtMoney(inv.extraCharge||0)}</span></div>` : ""}
-                  <div class="info-row"><span class="info-label">মোট খরচ:</span><span class="info-val" style="font-size:18px;font-weight:800;">৳${fmtMoney(inv.total||0)}</span></div>
-                  <div class="info-row"><span class="info-label">পরিশোধ পদ্ধতি:</span><span class="info-val">${inv.payType==="baki"?"বাকি":inv.payType==="partial"?"আংশিক":"নগদ"}</span></div>
-                  ${inv.payType==="partial"?`
-                    <div class="info-row"><span class="info-label">নগদ পেয়েছি:</span><span class="info-val" style="color:#22c55e;">৳${fmtMoney(inv.paidAmount||0)}</span></div>
-                    <div class="info-row"><span class="info-label">এই বাকি:</span><span class="info-val" style="color:#ef4444;">৳${fmtMoney(inv.bakiAmount||0)}</span></div>
-                  `:""}
-                  ${(inv.payType !== "cash" || (inv.prevBalance||0) > 0) ? `
-                  <div class="info-row" style="border-top:1px dashed #ccc;padding-top:8px;margin-top:8px;"><span class="info-label" style="color:#f59e0b;font-weight:700;">পূর্বের বাকি:</span><span class="info-val" style="color:#f59e0b;font-weight:700;">৳${fmtMoney(inv.prevBalance||0)}</span></div>
-                  <div class="info-row"><span class="info-label" style="color:#ef4444;font-weight:800;">বর্তমান বাকি:</span><span class="info-val" style="color:#ef4444;font-size:16px;font-weight:800;">৳${fmtMoney((inv.prevBalance||0)+(inv.bakiAmount||0)-(inv.overpayAmount||0))}</span></div>
-                  ` : ""}
-                </div>`;
-              const html = buildPdfHtml(content, shopNameLocal, "ক্রেতার ইনভয়েস");
-              sharePdfWhatsApp(html, `ইনভয়েস_${dispInvNo(inv)}`);
-            }}
-            style={{ ...S.saveBtn, width: "100%", marginTop: 10, marginBottom: 4,
-              background: "linear-gradient(135deg,#22c55e,#16a34a)",
-              display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="#fff"><path d="M17.6 6.32A8.86 8.86 0 0 0 12.05 4a8.94 8.94 0 0 0-7.93 13.13L3 21l3.95-1.04a8.93 8.93 0 0 0 4.95 1.5h.01a8.92 8.92 0 0 0 8.92-8.91 8.85 8.85 0 0 0-2.63-6.23zm-5.55 13.7h-.01a7.4 7.4 0 0 1-3.78-1.03l-.27-.16-2.81.74.75-2.74-.18-.28a7.43 7.43 0 0 1 6.31-11.4 7.36 7.36 0 0 1 5.24 2.17 7.34 7.34 0 0 1 2.18 5.25 7.43 7.43 0 0 1-7.43 7.45zm4.08-5.56c-.22-.11-1.32-.65-1.53-.73-.2-.07-.36-.11-.51.11-.15.22-.58.73-.71.88-.13.15-.26.16-.49.05-.22-.11-.95-.35-1.81-1.12a6.8 6.8 0 0 1-1.25-1.56c-.13-.22-.01-.34.1-.45.1-.1.22-.27.33-.4.11-.13.15-.22.22-.37.07-.15.04-.28-.02-.39-.06-.11-.51-1.23-.7-1.68-.18-.44-.37-.38-.51-.39h-.43c-.15 0-.39.06-.6.28-.2.22-.78.77-.78 1.87s.8 2.16.92 2.31c.11.15 1.58 2.42 3.84 3.39.54.23.96.37 1.28.47.54.17 1.03.15 1.42.09.43-.06 1.32-.54 1.51-1.06.19-.52.19-.96.13-1.06-.06-.09-.21-.15-.43-.26z"/></svg>
-            ইনভয়েস WhatsApp-এ পাঠান
-          </button>
-        )}
-
         {printMode && (
           <div ref={printRef} style={{ display: "none" }}>
             <InvoiceReceiptPrint inv={printInv} customer={c} type={printMode} />
@@ -18276,7 +18231,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
               color: step >= s.n ? IS.priceText : IS.sub,
               display: "flex", alignItems: "center", justifyContent: "center",
               fontWeight: 900, fontSize: 13, transition: "all 0.3s",
-              boxShadow: step === s.n ? (IS.id === "t5" ? "3px 3px 0 #17171a" : IS.glowShadow) : "none",
+              boxShadow: step === s.n ? (IS.id === "t5" ? "none" : IS.glowShadow) : "none",
               textShadow: step >= s.n ? IS.priceTextShadow : "none",
             }}>
               {step > s.n ? "✓" : s.n}
@@ -18392,7 +18347,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
             padding: "12px 16px",
             display: "flex", alignItems: "center", gap: 10,
             marginBottom: 8,
-            boxShadow: IS.id === "t5" ? "3px 3px 0 #17171a" : "none",
+            boxShadow: IS.id === "t5" ? "none" : "none",
           }}>
             <div style={{
               width: 36, height: 36, borderRadius: IS.id === "t5" ? 12 : 4, flexShrink: 0,
@@ -18453,7 +18408,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
             background: IS.cardBg,
             border: IS.cardBorder,
             borderRadius: IS.id === "t5" ? 16 : 0, clipPath: IS.clipSm, padding: "10px 13px",
-            boxShadow: IS.id === "t5" ? "3px 3px 0 #17171a" : "none",
+            boxShadow: IS.id === "t5" ? "none" : "none",
             marginBottom: 8,
           }}>
             <div style={{ width:26, height:26, borderRadius: IS.id === "t5" ? 9 : 4, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background: IS.accentSoft, border: `1px solid ${IS.accent}66` }}>
@@ -18525,7 +18480,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                   background: selCust?.id === c.id ? IS.accentSoft : IS.cardBg,
                   border: selCust?.id === c.id ? `1.5px solid ${IS.accent}` : IS.cardBorder,
                   transition: "all 0.15s",
-                  boxShadow: selCust?.id === c.id && IS.id === "t5" ? "3px 3px 0 #17171a" : "none",
+                  boxShadow: selCust?.id === c.id && IS.id === "t5" ? "none" : "none",
                 }}>
                 {/* Avatar */}
                 <div style={{
@@ -18648,7 +18603,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 borderRadius: IS.id === "t5" ? "0 0 14px 14px" : 0,
                 clipPath: IS.id === "t10" ? "polygon(0 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%)" : "none",
                 padding: "6px 10px 8px",
-                boxShadow: IS.id === "t5" ? "3px 3px 0 #17171a" : "0 4px 20px #00d4ff22, inset 0 1px 0 #00d4ff22",
+                boxShadow: IS.id === "t5" ? "none" : "0 4px 20px #00d4ff22, inset 0 1px 0 #00d4ff22",
                 backdropFilter: "blur(16px)",
                 WebkitBackdropFilter: "blur(16px)",
                 pointerEvents: "auto",
@@ -18700,7 +18655,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                       display: "flex", alignItems: "center", gap: 4, flexShrink: 0, whiteSpace: "nowrap",
                       background: _cartAccent, border: "1.5px solid #17171a",
                       borderRadius: 6, padding: "2px 7px",
-                      boxShadow: "1.5px 1.5px 0 #17171a",
+                      boxShadow: "none",
                     }}>
                       <span style={{ fontSize: 11, fontWeight: 900, color: "#17171a", background: "#fde047", borderRadius: 4, padding: "0.5px 5px" }}>{item.qty}</span>
                       <span style={{ fontSize: 10.5, fontWeight: 700, color: "#fff" }}>× ৳{fmt(item.price)}</span>
@@ -18746,7 +18701,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
             borderRadius: IS.id === "t5" ? 14 : 0, clipPath: IS.clipSm,
             padding: "8px 12px",
             marginBottom: 5,
-            boxShadow: IS.id === "t5" ? "3px 3px 0 #17171a" : "none",
+            boxShadow: IS.id === "t5" ? "none" : "none",
           }}>
             <div style={{ width:24, height:24, borderRadius: IS.id === "t5" ? 8 : 4, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background: IS.accentSoft, border: `1px solid ${IS.accent}66` }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={IS.accent} strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -18803,7 +18758,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                     display: "flex", flexDirection: "column", gap: 3,
                     boxShadow: isSelected
                       ? `0 0 0 1px ${glowColor}55, 0 0 16px ${glowColor}66, 0 3px 10px rgba(0,0,0,0.18)`
-                      : (IS.id === "t5" ? "2px 2px 0 #17171a22" : "none"),
+                      : (IS.id === "t5" ? "none" : "none"),
                     transition: "all 0.2s cubic-bezier(.2,.8,.2,1)",
                     cursor: isUnavailable ? "not-allowed" : "default",
                     userSelect: "none",
@@ -19039,7 +18994,16 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
           {/* Sticky bottom buttons — সবসময় দৃশ্যমান */}
           <div style={{ flexShrink: 0, paddingTop: 8, paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 70px)", borderTop: `1px solid ${T.border}`, background: T.bg, position: "sticky", bottom: 0, zIndex: 100 }}>
             <div style={{ display: "flex", gap: 10 }}>
-              <button style={{ ...S.cancelBtn, flex: 1 }} onClick={() => setStep(1)}>← ব্যাক করুন</button>
+              <button
+                style={{
+                  ...S.cancelBtn, flex: 1,
+                  background:"linear-gradient(135deg,#1e40af,#3b82f6)",
+                  border:"none", borderRadius:12, display:"flex", alignItems:"center", justifyContent:"center", gap:6,
+                }}
+                onClick={() => setStep(1)}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                ব্যাক করুন
+              </button>
               <button
                 style={{
                   ...S.saveBtn, flex: 2, padding: 14, fontSize: 15,
@@ -19070,7 +19034,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
             <div className="qc-gradient-card" style={{
                 ...S.card, marginBottom: 10,
                 background: IS.cardBg, border: IS.cardBorder, borderRadius: IS.id === "t5" ? (S.card?.borderRadius ?? 14) : 0,
-                boxShadow: IS.id === "t5" ? "3px 3px 0 #17171a" : "none",
+                boxShadow: IS.id === "t5" ? "none" : "none",
               }}>
               <div style={{ color: IS.text, fontWeight: 800, fontSize: 14, marginBottom: 4 }}>{isSelfUse ? "🏠 নিজের ব্যবহার (Personal Use)" : selCust?.name}</div>
               <div style={{ color: IS.sub, fontSize: 11, marginBottom: 8 }}>{items.filter(i=>i.qty>0).length}টি পণ্য · {items.filter(i=>i.qty>0).reduce((a,b)=>a+b.qty,0)}টি আইটেম</div>
@@ -19104,7 +19068,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                               }}>
                                 <button type="button"
                                   onClick={() => setQty(item.productId, Math.max(0, item.qty - 1))}
-                                  style={{ width: 36, height: 36, borderRadius: 10, background: "#ef4444", color: "#fff", border: "1.5px solid #17171a", fontSize: 19, fontWeight: 900, cursor: "pointer", fontFamily: "inherit", boxShadow: "2px 2px 0 #17171a" }}>−</button>
+                                  style={{ width: 36, height: 36, borderRadius: 10, background: "#ef4444", color: "#fff", border: "1.5px solid #17171a", fontSize: 19, fontWeight: 900, cursor: "pointer", fontFamily: "inherit", boxShadow: "none" }}>−</button>
                                 <div style={{
                                   minWidth: 52, textAlign: "center", fontSize: 19, fontWeight: 900,
                                   color: IS.priceText, background: IS.priceBg, border: IS.priceBorder,
@@ -19116,7 +19080,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                                     const maxStock = prod ? getSellableStock(prod) : Infinity;
                                     setQty(item.productId, maxStock !== Infinity ? Math.min(maxStock, item.qty + 1) : item.qty + 1);
                                   }}
-                                  style={{ width: 36, height: 36, borderRadius: 10, background: "#16a34a", color: "#fff", border: "1.5px solid #17171a", fontSize: 19, fontWeight: 900, cursor: "pointer", fontFamily: "inherit", boxShadow: "2px 2px 0 #17171a" }}>+</button>
+                                  style={{ width: 36, height: 36, borderRadius: 10, background: "#16a34a", color: "#fff", border: "1.5px solid #17171a", fontSize: 19, fontWeight: 900, cursor: "pointer", fontFamily: "inherit", boxShadow: "none" }}>+</button>
                                 <button type="button" onClick={() => setExpandedQtyPid(null)}
                                   style={{ marginLeft: 4, background: "none", border: "none", color: IS.sub, fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>✓ বন্ধ</button>
                               </div>
@@ -19129,7 +19093,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                               background: IS.cardBg,
                               border: `1.5px solid ${accent}55`,
                               borderLeft: `4px solid ${accent}`,
-                              boxShadow: IS.id === "t5" ? "2px 2px 0 #17171a22" : `0 1px 6px ${accent}14`,
+                              boxShadow: IS.id === "t5" ? "none" : `0 1px 6px ${accent}14`,
                             }}>
                               {/* কলাম ১: সিরিয়াল+নাম(পিলে), তার নিচে ব্যাচ+মেয়াদ — বাম পাশে, মিডিল-এলাইন্ড */}
                               <div style={{ minWidth: 0, textAlign: "left" }}>
@@ -19172,7 +19136,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                                     background: accent, color: "#fff", border: "1.5px solid #17171a",
                                     borderRadius: IS.id === "t5" ? 10 : 6, padding: "4px 10px",
                                     fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-                                    boxShadow: "2px 2px 0 #17171a", whiteSpace: "nowrap",
+                                    boxShadow: "none", whiteSpace: "nowrap",
                                   }}>
                                   <span style={{ fontSize: 15.5, fontWeight: 900, color: "#17171a", background: "#fde047", borderRadius: 5, padding: "1px 7px" }}>{item.qty}</span>
                                   <span style={{ color: "#fff" }}>× ৳{fmt(item.price)}</span>
@@ -19401,7 +19365,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
             <div className="qc-gradient-card" style={{
                 ...S.card, marginBottom: 10,
                 background: IS.cardBg, border: IS.cardBorder, borderRadius: IS.id === "t5" ? (S.card?.borderRadius ?? 14) : 0,
-                boxShadow: IS.id === "t5" ? "3px 3px 0 #17171a" : "none",
+                boxShadow: IS.id === "t5" ? "none" : "none",
               }}>
               {/* মোট খরচ */}
               <div style={{ display:"flex", justifyContent:"space-between", alignItems: "center", fontSize:13, color: IS.sub, marginBottom:6 }}>
@@ -19467,7 +19431,16 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
           {/* Sticky bottom buttons */}
           <div style={{ flexShrink:0, paddingTop:8, paddingBottom:"calc(env(safe-area-inset-bottom, 0px) + 70px)", borderTop:`1px solid ${T.border}`, background:T.bg, position:"sticky", bottom:0, zIndex:100 }}>
             <div style={{ display:"flex", gap:10 }}>
-              <button style={{ ...S.cancelBtn, flex:1 }} onClick={() => setStep(2)}>← পণ্য</button>
+              <button
+                style={{
+                  ...S.cancelBtn, flex:1,
+                  background:"linear-gradient(135deg,#1e40af,#3b82f6)",
+                  border:"none", borderRadius:12, display:"flex", alignItems:"center", justifyContent:"center", gap:6,
+                }}
+                onClick={() => setStep(2)}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                পণ্য
+              </button>
               <button style={{
                   ...S.saveBtn, flex:2, padding:14, fontSize:15, opacity:(creating || license.isLocked)?0.6:1,
                   background: IS.id === "t5" ? IS.priceBg : `linear-gradient(135deg, ${IS.accent}, #0090b3)`,
@@ -25710,7 +25683,7 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
       <div style={{
           background: IS.cardBg, border: IS.cardBorder, borderRadius: IS.id === "t5" ? 16 : 0,
           clipPath: IS.clip, padding: 20, marginBottom: 10,
-          boxShadow: IS.id === "t5" ? "4px 4px 0 #17171a" : `0 4px 20px ${IS.accent}22`,
+          boxShadow: IS.id === "t5" ? "none" : `0 4px 20px ${IS.accent}22`,
         }}>
         <div style={{ textAlign: "center", marginBottom: 16 }}>
           <div style={{ fontSize: 28 }}>🛒</div>
@@ -25785,7 +25758,7 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
                   <span style={{
                     background: _ac, border: "1.5px solid #17171a", color: "#fff",
                     fontSize: 12.5, fontWeight: 900, borderRadius: IS.id === "t5" ? 10 : 6,
-                    padding: "4px 10px", boxShadow: "2px 2px 0 #17171a", whiteSpace: "nowrap",
+                    padding: "4px 10px", boxShadow: "none", whiteSpace: "nowrap",
                   }}>× {item.qty} @৳{item.price}</span>
                 </div>
                 <div style={{ textAlign: "right" }}>
@@ -25871,7 +25844,7 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
               <span>পূর্বের বাকি</span><span>৳{fmt(inv.prevBalance || 0)}</span>
             </div>
             <div style={{ borderTop: `1px dashed ${T.border}`, marginTop: 8, marginBottom: 8 }} />
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "#fff", fontSize: 16, fontWeight: 900, padding: "9px 12px", background: "#dc2626", borderRadius: IS.id === "t5" ? 10 : 0, border: "1.5px solid #17171a", boxShadow: "2px 2px 0 #17171a" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "#fff", fontSize: 16, fontWeight: 900, padding: "9px 12px", background: "#dc2626", borderRadius: IS.id === "t5" ? 10 : 0, border: "1.5px solid #17171a", boxShadow: "none" }}>
               <span>বর্তমান বাকি</span><span>৳{fmt((inv.prevBalance || 0) + (inv.bakiAmount || 0) - (inv.overpayAmount || 0))}</span>
             </div>
           </>
