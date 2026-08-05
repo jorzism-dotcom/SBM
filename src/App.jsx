@@ -17255,7 +17255,7 @@ function getInvoiceSkin(_isDark) {
     accent: "#ff5a36", accentSoft: "#ffe4da", accentText: "#17171a",
     priceBg: "#ff5a36",
     priceBorder: "1px solid #17171a", priceText: "#fff",
-    priceShadow: "none", priceTextShadow: "none",
+    priceShadow: "3px 3px 0 #17171a", priceTextShadow: "none",
     glowShadow: "none",
     cornerAccent: "#17171a",
     clip: "none", clipSm: "none",
@@ -18231,7 +18231,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
               color: step >= s.n ? IS.priceText : IS.sub,
               display: "flex", alignItems: "center", justifyContent: "center",
               fontWeight: 900, fontSize: 13, transition: "all 0.3s",
-              boxShadow: step === s.n ? (IS.id === "t5" ? "none" : IS.glowShadow) : "none",
+              boxShadow: step === s.n ? (IS.id === "t5" ? "2px 2px 0 #17171a" : IS.glowShadow) : "none",
               textShadow: step >= s.n ? IS.priceTextShadow : "none",
             }}>
               {step > s.n ? "✓" : s.n}
@@ -18655,7 +18655,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                       display: "flex", alignItems: "center", gap: 4, flexShrink: 0, whiteSpace: "nowrap",
                       background: _cartAccent, border: "1.5px solid #17171a",
                       borderRadius: 6, padding: "2px 7px",
-                      boxShadow: "none",
+                      boxShadow: "1.5px 1.5px 0 #17171a",
                     }}>
                       <span style={{ fontSize: 11, fontWeight: 900, color: "#17171a", background: "#fde047", borderRadius: 4, padding: "0.5px 5px" }}>{item.qty}</span>
                       <span style={{ fontSize: 10.5, fontWeight: 700, color: "#fff" }}>× ৳{fmt(item.price)}</span>
@@ -19068,7 +19068,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                               }}>
                                 <button type="button"
                                   onClick={() => setQty(item.productId, Math.max(0, item.qty - 1))}
-                                  style={{ width: 36, height: 36, borderRadius: 10, background: "#ef4444", color: "#fff", border: "1.5px solid #17171a", fontSize: 19, fontWeight: 900, cursor: "pointer", fontFamily: "inherit", boxShadow: "none" }}>−</button>
+                                  style={{ width: 36, height: 36, borderRadius: 10, background: "#ef4444", color: "#fff", border: "1.5px solid #17171a", fontSize: 19, fontWeight: 900, cursor: "pointer", fontFamily: "inherit", boxShadow: "2px 2px 0 #17171a" }}>−</button>
                                 <div style={{
                                   minWidth: 52, textAlign: "center", fontSize: 19, fontWeight: 900,
                                   color: IS.priceText, background: IS.priceBg, border: IS.priceBorder,
@@ -19080,7 +19080,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                                     const maxStock = prod ? getSellableStock(prod) : Infinity;
                                     setQty(item.productId, maxStock !== Infinity ? Math.min(maxStock, item.qty + 1) : item.qty + 1);
                                   }}
-                                  style={{ width: 36, height: 36, borderRadius: 10, background: "#16a34a", color: "#fff", border: "1.5px solid #17171a", fontSize: 19, fontWeight: 900, cursor: "pointer", fontFamily: "inherit", boxShadow: "none" }}>+</button>
+                                  style={{ width: 36, height: 36, borderRadius: 10, background: "#16a34a", color: "#fff", border: "1.5px solid #17171a", fontSize: 19, fontWeight: 900, cursor: "pointer", fontFamily: "inherit", boxShadow: "2px 2px 0 #17171a" }}>+</button>
                                 <button type="button" onClick={() => setExpandedQtyPid(null)}
                                   style={{ marginLeft: 4, background: "none", border: "none", color: IS.sub, fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>✓ বন্ধ</button>
                               </div>
@@ -19136,7 +19136,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                                     background: accent, color: "#fff", border: "1.5px solid #17171a",
                                     borderRadius: IS.id === "t5" ? 10 : 6, padding: "4px 10px",
                                     fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-                                    boxShadow: "none", whiteSpace: "nowrap",
+                                    boxShadow: "2px 2px 0 #17171a", whiteSpace: "nowrap",
                                   }}>
                                   <span style={{ fontSize: 15.5, fontWeight: 900, color: "#17171a", background: "#fde047", borderRadius: 5, padding: "1px 7px" }}>{item.qty}</span>
                                   <span style={{ color: "#fff" }}>× ৳{fmt(item.price)}</span>
@@ -25758,7 +25758,7 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
                   <span style={{
                     background: _ac, border: "1.5px solid #17171a", color: "#fff",
                     fontSize: 12.5, fontWeight: 900, borderRadius: IS.id === "t5" ? 10 : 6,
-                    padding: "4px 10px", boxShadow: "none", whiteSpace: "nowrap",
+                    padding: "4px 10px", boxShadow: "2px 2px 0 #17171a", whiteSpace: "nowrap",
                   }}>× {item.qty} @৳{item.price}</span>
                 </div>
                 <div style={{ textAlign: "right" }}>
