@@ -18682,16 +18682,16 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                     boxShadow: "0 1px 4px rgba(0,0,0,0.10)",
                   }}>
                     <span style={{ flexShrink: 0, color: _cartAccent, fontWeight: 900, fontSize: 10 }}>{_i + 1}.</span>
-                    {/* 🆕 (৫ আগস্ট ২০২৬) পণ্যের নাম এখন গোল পিলে, সলিড ব্যাকগ্রাউন্ড কালার (qty×price পিলের সাথে মিলিয়ে) */}
+                    {/* 🆕 (৫ আগস্ট ২০২৬) পণ্যের নাম পিল — হুবহু "বিক্রয়" ট্যাগের সলিড স্টাইল (IS.priceBg/Border/Shadow) */}
                     <div style={{
                       flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 3,
-                      background: _cartAccent, color: "#fff", fontWeight: 800, fontSize: 10.5,
+                      background: IS.priceBg, color: IS.priceText, fontWeight: 800, fontSize: 10.5,
                       borderRadius: 999, padding: _ta ? "2px 8px 2px 3px" : "2px 8px",
-                      border: "1px solid #17171a55",
+                      border: IS.priceBorder,
                       overflow: "hidden",
                     }}>
                       {_ta && (
-                        <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 900, borderRadius: 999, padding: "1px 6px", background: "#fff", color: _cartAccent }}>{_ta.abbr}</span>
+                        <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 900, borderRadius: 999, padding: "1px 6px", background: _ta.color, color: "#fff" }}>{_ta.abbr}</span>
                       )}
                       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</span>
                     </div>
@@ -18830,22 +18830,22 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                         : <div style={{ position: "absolute", top: 7, right: 7, background:"linear-gradient(155deg, #22c55e48, #22c55e22)", border: "1px solid #22c55e55", color:"#22c55e", fontSize: 8, fontWeight: 800, borderRadius: 6, padding: "2px 6px", zIndex: 2, boxShadow: "0 1px 4px rgba(34,197,94,0.3)" }}>কমন</div>
                   )}
 
-                  {/* পণ্যের নাম — ডোজ(Tab./Cap.)+নাম সবসময় একটি পিলের ভিতরে, সকল বিজনেসে (ডোজ না থাকলেও নিরপেক্ষ রঙের পিল) — সলিড ব্যাকগ্রাউন্ড, সাদা টেক্সট, সব থিমে স্পষ্ট */}
+                  {/* পণ্যের নাম — ডোজ(Tab./Cap.)+নাম সবসময় একটি পিলের ভিতরে, সকল বিজনেসে (ডোজ না থাকলেও নিরপেক্ষ রঙের পিল) — সলিড ব্যাকগ্রাউন্ড, হুবহু "বিক্রয়" ট্যাগের মতো (IS.priceBg/Border/Shadow) */}
                   {(() => {
                     const ta = medTypeAbbr(p.dosageForm) || { abbr: null, color: "#0f172a" };
                     return (
                       <div style={{
                         display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
                         borderRadius: 999, padding: ta.abbr ? "4px 12px 4px 5px" : "4px 12px",
-                        background: ta.color,
-                        border: "1.5px solid #17171a55",
+                        background: IS.priceBg,
+                        border: IS.priceBorder, boxShadow: IS.priceShadow,
                         margin: `1px ${isSelected ? "28px" : "auto"} 0 auto`,
                         maxWidth: "100%",
                       }}>
                         {ta.abbr && (
-                          <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 900, borderRadius: 999, padding: "3px 8px", background: "#fff", color: ta.color, letterSpacing: 0.3 }}>{ta.abbr}</span>
+                          <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 900, borderRadius: 999, padding: "3px 8px", background: ta.color, color: "#fff", letterSpacing: 0.3 }}>{ta.abbr}</span>
                         )}
-                        <span style={{ color: "#fff", fontWeight: 900, fontSize: 25.5, letterSpacing: 0.1, lineHeight: 1.15, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", textAlign: ta.abbr ? "left" : "center" }}>{p.name}</span>
+                        <span style={{ color: IS.priceText, fontWeight: 900, fontSize: 25.5, letterSpacing: 0.1, lineHeight: 1.15, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", textAlign: ta.abbr ? "left" : "center" }}>{p.name}</span>
                       </div>
                     );
                   })()}
@@ -19141,12 +19141,12 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                                       <span style={{
                                         display: "inline-flex", alignItems: "center", gap: 5, minWidth: 0,
                                         borderRadius: 999, padding: ta ? "3px 9px 3px 4px" : "3px 9px",
-                                        background: accent, border: "1.5px solid #17171a",
+                                        background: IS.priceBg, border: IS.priceBorder, boxShadow: IS.priceShadow,
                                       }}>
                                         {ta && (
-                                          <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 900, borderRadius: 999, padding: "2px 6px", background: "#fff", color: accent }}>{ta.abbr}</span>
+                                          <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 900, borderRadius: 999, padding: "2px 6px", background: ta.color, color: "#fff" }}>{ta.abbr}</span>
                                         )}
-                                        <span style={{ color: "#fff", fontWeight: 800, fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</span>
+                                        <span style={{ color: IS.priceText, fontWeight: 800, fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</span>
                                       </span>
                                     );
                                   })()}
@@ -25770,12 +25770,12 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
                       <span style={{
                         display: "inline-flex", alignItems: "center", gap: 5, minWidth: 0,
                         borderRadius: 999, padding: ta ? "3px 9px 3px 4px" : "3px 9px",
-                        background: _ac, border: "1.5px solid #17171a",
+                        background: IS.priceBg, border: IS.priceBorder, boxShadow: IS.priceShadow,
                       }}>
                         {ta && (
-                          <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 900, borderRadius: 999, padding: "2px 6px", background: "#fff", color: _ac }}>{ta.abbr}</span>
+                          <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 900, borderRadius: 999, padding: "2px 6px", background: ta.color, color: "#fff" }}>{ta.abbr}</span>
                         )}
-                        <span style={{ color: "#fff", fontWeight: 800, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</span>
+                        <span style={{ color: IS.priceText, fontWeight: 800, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</span>
                       </span>
                     );
                   })()}
