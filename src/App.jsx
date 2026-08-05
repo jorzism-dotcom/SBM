@@ -18991,7 +18991,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
           </div>{/* end scrollable middle */}
 
           {/* Sticky bottom buttons — সবসময় দৃশ্যমান */}
-          <div style={{ flexShrink: 0, paddingTop: 8, paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 70px)", borderTop: `1px solid ${T.border}`, background: T.bg, position: "sticky", bottom: 0, zIndex: 100 }}>
+          <div style={{ flexShrink: 0, paddingTop: 8, paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 92px)", background: T.bg, position: "sticky", bottom: 0, zIndex: 300 }}>
             <div style={{ display: "flex", gap: 10 }}>
               <button
                 style={{
@@ -19189,40 +19189,44 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                   <>
                     {hasDiscount && (
                       <>
-                        <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 6, display:"flex", justifyContent:"space-between", fontSize:13.5, fontWeight:700, color: IS.text }}>
-                          <span>সর্বমোট</span><span>৳{fmt(subtotal)}</span>
+                        <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 6, display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, fontWeight:700, color: IS.text }}>
+                          <span>সর্বমোট</span>
+                          <span style={{ minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5, background:"#64748b", border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px" }}>৳{fmt(subtotal)}</span>
                         </div>
                         {itemDiscTotal > 0 && (
-                        <div style={{ display:"flex", justifyContent:"space-between", fontSize:13.5, fontWeight:800, color:"#16a34a" }}>
-                          <span>পণ্যভিত্তিক ডিসকাউন্ট</span><span>– ৳{fmt(itemDiscTotal)}</span>
+                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, fontWeight:700, color: IS.text }}>
+                          <span>পণ্যভিত্তিক ডিসকাউন্ট</span>
+                          <span style={{ minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5, background:"#16a34a", border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px" }}>– ৳{fmt(itemDiscTotal)}</span>
                         </div>
                         )}
                         {discAmt > 0 && (
-                        <div style={{ display:"flex", justifyContent:"space-between", fontSize:13.5, fontWeight:800, color:"#16a34a" }}>
-                          <span>ডিসকাউন্ট</span><span>– ৳{fmt(discAmt)}</span>
+                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, fontWeight:700, color: IS.text }}>
+                          <span>ডিসকাউন্ট</span>
+                          <span style={{ minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5, background:"#0ea5a4", border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px" }}>– ৳{fmt(discAmt)}</span>
                         </div>
                         )}
                         {extraAmt > 0 && (
-                        <div style={{ display:"flex", justifyContent:"space-between", fontSize:13.5, fontWeight:800, color:"#ea580c" }}>
-                          <span>অতিরিক্ত চার্জ</span><span>+ ৳{fmt(extraAmt)}</span>
+                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, fontWeight:700, color: IS.text }}>
+                          <span>অতিরিক্ত চার্জ</span>
+                          <span style={{ minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5, background:"#ea580c", border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px" }}>+ ৳{fmt(extraAmt)}</span>
                         </div>
                         )}
                       </>
                     )}
-                    {/* 🆕 (৫ আগস্ট ২০২৬) সবসময় দেখা যাবে — ডিসকাউন্ট/এক্সট্রা না থাকলে "সর্বমোট", থাকলে "নেট মোট"; কমলা ব্যাকগ্রাউন্ড। আগের টপ-রাইট প্রাইস পিল সরানো হয়েছে (ডুপ্লিকেট এড়াতে) */}
+                    {/* 🆕 (৫ আগস্ট ২০২৬) সবসময় দেখা যাবে — ডিসকাউন্ট/এক্সট্রা না থাকলে "সর্বমোট", থাকলে "নেট মোট"; সলিড কমলা কার্ড (বর্তমান বাকি কার্ডের স্টাইলে, ভিন্ন রঙে) */}
                     <div style={{
                       display:"flex", justifyContent:"space-between", alignItems: "center", marginTop: hasDiscount ? 14 : 10,
-                      background: "linear-gradient(155deg, #f9731638, #f9731618)", border: "1.5px solid #f97316aa",
+                      background: "#f97316", border: "1.5px solid #17171a",
                       borderRadius: IS.id === "t5" ? 10 : 0,
                       clipPath: IS.id === "t10" ? IS.clipSm : "none",
-                      padding: "8px 12px", position: "relative",
+                      padding: "9px 12px", position: "relative",
                     }}>
                       {IS.id === "t10" && <>
                         <span style={{ position:"absolute", width:12, height:12, top:-2, left:-2, borderTop:`2px solid ${IS.cornerAccent}`, borderLeft:`2px solid ${IS.cornerAccent}` }} />
                         <span style={{ position:"absolute", width:12, height:12, bottom:-2, right:-2, borderBottom:`2px solid ${IS.cornerAccent}`, borderRight:`2px solid ${IS.cornerAccent}` }} />
                       </>}
-                      <span style={{ fontSize:12.5, fontWeight:700, color: "#c2410c" }}>{hasDiscount ? "নেট মোট" : "সর্বমোট"}</span>
-                      <span style={{ fontSize:18, fontWeight:900, color: "#fff", background: "#f97316", border: "1.5px solid #17171a", borderRadius: 999, padding: "3px 14px" }}>৳{fmt(total)}</span>
+                      <span style={{ fontSize:13, fontWeight:800, color: "#fff" }}>{hasDiscount ? "নেট মোট" : "সর্বমোট"}</span>
+                      <span style={{ fontSize:17, fontWeight:900, color: "#f97316", background: "#fff", borderRadius: 999, padding: "3px 14px" }}>৳{fmt(total)}</span>
                     </div>
                   </>
                 );
@@ -19256,10 +19260,21 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                   <button style={{ background: T.accent+"22", color: T.accent, border:`1px solid ${T.accent}55`, borderRadius:14, padding:"2px 7px", fontSize:10, fontWeight:800, cursor:"pointer", fontFamily:"inherit", flexShrink:0, opacity: discountPct > 0 ? 1 : 0.3 }}
                     onClick={() => { setDiscountPct(0); setDiscount(""); }}>✕</button>
                 </div>
-                <input type="number" inputMode="decimal" placeholder="৳ পরিমাণ"
-                  value={discount}
-                  onChange={e => { setDiscountPct(0); setDiscount(e.target.value); }}
-                  style={{ ...S.input, marginBottom:0, fontSize:12, padding:"6px 8px" }} />
+                <div style={{ display:"flex", gap:5 }}>
+                  <input type="number" inputMode="decimal" placeholder="৳ পরিমাণ"
+                    value={discount}
+                    onChange={e => { setDiscountPct(0); setDiscount(e.target.value); }}
+                    style={{ ...S.input, marginBottom:0, fontSize:12, padding:"6px 8px", flex:1, minWidth:0 }} />
+                  <input type="number" inputMode="decimal" placeholder="% পার্সেন্ট" min="0" max="100" step="0.01"
+                    value={discountPct > 0 ? discountPct : ""}
+                    onChange={e => {
+                      const raw = e.target.value;
+                      const pct = raw === "" ? 0 : parseFloat(raw);
+                      setDiscountPct(Number.isFinite(pct) ? pct : 0);
+                      setDiscount(pct > 0 ? Math.round(subtotal * pct / 100) : "");
+                    }}
+                    style={{ ...S.input, marginBottom:0, fontSize:12, padding:"6px 8px", flex:1, minWidth:0 }} />
+                </div>
               </div>
               {/* Extra Charge কার্ড */}
               <div className="qc-gradient-card" style={{ ...S.card, marginBottom:0, padding:"8px 9px", borderRadius:14 }}>
@@ -19369,9 +19384,9 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
               <div style={{ display:"flex", justifyContent:"space-between", alignItems: "center", fontSize:13, color: IS.sub, marginBottom:6 }}>
                 <span>মোট খরচ</span>
                 <span style={{
-                  color: IS.priceText, fontWeight:900, fontSize: 15,
-                  background: IS.priceBg, border: IS.priceBorder, boxShadow: IS.priceShadow, textShadow: IS.priceTextShadow,
-                  padding: "1px 8px", clipPath: IS.clipSm, borderRadius: IS.id === "t5" ? "6px 6px 6px 2px" : 4,
+                  color: "#fff", fontWeight:900, fontSize: 14,
+                  background: IS.priceBg, border: "1.5px solid #17171a",
+                  borderRadius: 999, padding: "3px 14px",
                 }}>৳{fmt(total)}</span>
               </div>
               {/* পরিশোধ পদ্ধতি */}
@@ -19431,7 +19446,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
           </div>
 
           {/* Sticky bottom buttons */}
-          <div style={{ flexShrink:0, paddingTop:8, paddingBottom:"calc(env(safe-area-inset-bottom, 0px) + 70px)", borderTop:`1px solid ${T.border}`, background:T.bg, position:"sticky", bottom:0, zIndex:100 }}>
+          <div style={{ flexShrink:0, paddingTop:8, paddingBottom:"calc(env(safe-area-inset-bottom, 0px) + 92px)", background:T.bg, position:"sticky", bottom:0, zIndex:300 }}>
             <div style={{ display:"flex", gap:10 }}>
               <button
                 style={{
@@ -25794,39 +25809,43 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
         <div style={S.dashed} />
         {((inv.discount||0) > 0 || (inv.itemDiscount||0) > 0 || (inv.extraCharge||0) > 0) && (
           <>
-            <div style={{ display: "flex", justifyContent: "space-between", color: IS.text, fontSize: 13.5, fontWeight: 700, marginBottom: 3 }}>
-              <span>সর্বমোট</span><span>৳{fmt(inv.subtotal ?? (inv.total + (inv.discount||0) - (inv.extraCharge||0)))}</span>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems:"center", color: IS.text, fontSize: 13, fontWeight: 700, marginBottom: 4 }}>
+              <span>সর্বমোট</span>
+              <span style={{ minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5, background:"#64748b", border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px" }}>৳{fmt(inv.subtotal ?? (inv.total + (inv.discount||0) - (inv.extraCharge||0)))}</span>
             </div>
             {(inv.itemDiscount||0) > 0 && (
-            <div style={{ display: "flex", justifyContent: "space-between", color: "#16a34a", fontSize: 13.5, fontWeight: 800, marginBottom: 3 }}>
-              <span>পণ্যভিত্তিক ডিসকাউন্ট</span><span>– ৳{fmt(inv.itemDiscount)}</span>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems:"center", color: IS.text, fontSize: 13, fontWeight: 700, marginBottom: 4 }}>
+              <span>পণ্যভিত্তিক ডিসকাউন্ট</span>
+              <span style={{ minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5, background:"#16a34a", border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px" }}>– ৳{fmt(inv.itemDiscount)}</span>
             </div>
             )}
             {(inv.discount||0) > 0 && (
-            <div style={{ display: "flex", justifyContent: "space-between", color: "#16a34a", fontSize: 13.5, fontWeight: 800, marginBottom: 3 }}>
-              <span>ডিসকাউন্ট</span><span>– ৳{fmt(inv.discount)}</span>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems:"center", color: IS.text, fontSize: 13, fontWeight: 700, marginBottom: 4 }}>
+              <span>ডিসকাউন্ট</span>
+              <span style={{ minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5, background:"#0ea5a4", border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px" }}>– ৳{fmt(inv.discount)}</span>
             </div>
             )}
             {(inv.extraCharge||0) > 0 && (
-            <div style={{ display: "flex", justifyContent: "space-between", color: "#ea580c", fontSize: 13.5, fontWeight: 800, marginBottom: 5 }}>
-              <span>অতিরিক্ত চার্জ</span><span>+ ৳{fmt(inv.extraCharge)}</span>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems:"center", color: IS.text, fontSize: 13, fontWeight: 700, marginBottom: 6 }}>
+              <span>অতিরিক্ত চার্জ</span>
+              <span style={{ minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5, background:"#ea580c", border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px" }}>+ ৳{fmt(inv.extraCharge)}</span>
             </div>
             )}
           </>
         )}
         <div style={{
             display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6,
-            background: IS.cardBg2, border: IS.cardBorder, borderRadius: IS.id === "t5" ? 10 : 0,
-            clipPath: IS.id === "t10" ? IS.clipSm : "none", padding: "8px 12px", position: "relative",
+            background: IS.accent, border: "1.5px solid #17171a", borderRadius: IS.id === "t5" ? 10 : 0,
+            clipPath: IS.id === "t10" ? IS.clipSm : "none", padding: "9px 12px", position: "relative",
           }}>
           {IS.id === "t10" && <>
             <span style={{ position:"absolute", width:12, height:12, top:-2, left:-2, borderTop:`2px solid ${IS.cornerAccent}`, borderLeft:`2px solid ${IS.cornerAccent}` }} />
             <span style={{ position:"absolute", width:12, height:12, bottom:-2, right:-2, borderBottom:`2px solid ${IS.cornerAccent}`, borderRight:`2px solid ${IS.cornerAccent}` }} />
           </>}
-          <span style={{ fontWeight: 700, fontSize: 12.5, color: IS.sub }}>মোট খরচ</span>
+          <span style={{ fontWeight: 800, fontSize: 13, color: "#fff" }}>মোট খরচ</span>
           <span style={{
-            fontWeight: 900, fontSize: 17, color: "#fff", background: IS.accent,
-            border: "1.5px solid #17171a", borderRadius: 999, padding: "3px 14px",
+            fontWeight: 900, fontSize: 17, color: IS.accent, background: "#fff",
+            borderRadius: 999, padding: "3px 14px",
           }}>৳{fmt(inv.total)}</span>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: IS.text, fontSize: 13, fontWeight: 700, marginBottom: inv.payType === "partial" ? 3 : 5 }}>
