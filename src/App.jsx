@@ -18852,7 +18852,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                     {!hideCostPrice && (
                     <div style={{ textAlign: "center" }}>
                       <div style={{ color: T.text, fontSize: 8, fontWeight: 800, opacity: 0.95 }}>ক্রয়</div>
-                      <div style={{ display: "inline-block", marginTop: 1, background: "#f59e0b22", color: "#b45309", border: "1.5px solid #f59e0b", borderRadius: 4, fontWeight: 900, fontSize: 10.5, padding: "1px 6px" }}>৳{fmt(p.costPrice || 0)}</div>
+                      <div style={{ display: "inline-block", marginTop: 1, background: "#f59e0b22", color: "#b45309", border: "1.5px solid #f59e0b", borderRadius: 4, fontWeight: 900, fontSize: 10.5, padding: "1px 6px" }}>৳{fmt(p.lastRealCostPrice ?? p.costPrice ?? 0)}</div>
                     </div>
                     )}
                     <div style={{ textAlign: "center", borderLeft: hideCostPrice ? "none" : `1px solid ${T.border}`, borderRight: `1px solid ${T.border}` }}>
@@ -19174,13 +19174,13 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                               <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", justifyContent: "center", gap: 3 }}>
                                 {lineDisc > 0 && (
                                   <>
-                                    <span style={{ color: IS.sub, fontSize: 9.5, textDecoration: "line-through" }}>৳{fmt(lineSubtotal)}</span>
-                                    <span style={{ color: "#fff", fontSize: 9.5, fontWeight: 900, background: "#16a34a", borderRadius: 6, padding: "1px 6px", whiteSpace: "nowrap" }}>
+                                    <span style={{ color: "#fff", fontSize: 9.5, fontWeight: 900, background: "#94a3b8", borderRadius: 999, padding: "2px 9px", textDecoration: "line-through", whiteSpace: "nowrap" }}>৳{fmt(lineSubtotal)}</span>
+                                    <span style={{ color: "#fff", fontSize: 9.5, fontWeight: 900, background: "#16a34a", borderRadius: 999, padding: "2px 9px", whiteSpace: "nowrap" }}>
                                       − ৳{fmt(lineDisc)}{mode === "pct" && pctDisplay > 0 ? ` (${pctDisplay}%)` : ""}
                                     </span>
                                   </>
                                 )}
-                                <span style={{ color: accent, background: `${accent}22`, border: `1.5px solid ${accent}`, borderRadius: 8, padding: "3px 10px", fontSize: 16, fontWeight: 900, whiteSpace: "nowrap" }}>৳{fmt(lineDisc > 0 ? lineNet : lineSubtotal)}</span>
+                                <span style={{ color: "#fff", background: accent, borderRadius: 999, padding: "2px 9px", fontSize: 9.5, fontWeight: 900, whiteSpace: "nowrap" }}>৳{fmt(lineDisc > 0 ? lineNet : lineSubtotal)}</span>
                               </div>
                             </div>
                           </React.Fragment>
@@ -21899,7 +21899,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                 </div>
                 <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
                   {p.spPrice > 0 && <span style={{ color: "#a78bfa", fontSize: 10 }}>{businessType === "veterinary" ? "TP" : "SP"}: ৳{p.spPrice}</span>}
-                  <span style={{ color: "#f59e0b", fontSize: 10 }}>ক্রয়: ৳{p.costPrice||0}</span>
+                  <span style={{ color: "#f59e0b", fontSize: 10 }}>ক্রয়: ৳{p.lastRealCostPrice ?? p.costPrice ?? 0}</span>
                   <span style={{ color: "#1fd15e", fontSize: 10 }}>বিক্রয়: ৳{p.price||0}</span>
                   {(p.stock||0) === 0 && <span style={{ color: "#ef4444", fontSize: 10, fontWeight: 800 }}>🚫 স্টক আউট</span>}
                   {(p.stock||0) > 0 && (p.stock||0) <= (p.minStockAlert||5) && <span style={{ color: "#f59e0b", fontSize: 10, fontWeight: 800 }}>⚠️ কম স্টক</span>}
@@ -22082,7 +22082,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                     </div>
                     <div style={{ display:"flex", gap:10, marginTop:5 }}>
                       {p.spPrice > 0 ? <span style={{ color:"#a78bfa", fontSize:10 }}>{businessType === "veterinary" ? "TP" : "SP"}: ৳{p.spPrice}</span> : null}
-                      {p.costPrice ? <span style={{ color:"#f59e0b", fontSize:10 }}>ক্রয়: ৳{p.costPrice}</span> : null}
+                      {(p.lastRealCostPrice ?? p.costPrice) ? <span style={{ color:"#f59e0b", fontSize:10 }}>ক্রয়: ৳{p.lastRealCostPrice ?? p.costPrice}</span> : null}
                       {p.price ? <span style={{ color:"#1fd15e", fontSize:10 }}>বিক্রয়: ৳{p.price}</span> : null}
                     </div>
                   </div>
@@ -22119,7 +22119,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       const buildSupPdfHtml = () => {
         const rows = supItems.map((p,i) => {
           const expCell = p.expiryDate ? fmtExpiryMonth(p.expiryDate) : "";
-          return `<tr><td class="serial">${i+1}</td><td>${medBadgeHtmlStr(p.dosageForm)}${p.name}</td><td class="num">${p.stock||0}${p.unit||""}</td><td class="num">${p.costPrice||0}</td>${isExpiryModal ? `<td class="num">${expCell}</td>` : ""}</tr>`;
+          return `<tr><td class="serial">${i+1}</td><td>${medBadgeHtmlStr(p.dosageForm)}${p.name}</td><td class="num">${p.stock||0}${p.unit||""}</td><td class="num">${p.lastRealCostPrice ?? p.costPrice ?? 0}</td>${isExpiryModal ? `<td class="num">${expCell}</td>` : ""}</tr>`;
         }).join("");
         const headers = `<th class="serial">#</th><th>পণ্য</th><th class="num">স্টক</th><th class="num">ক্রয়মূল্য</th>${isExpiryModal ? `<th class="num">মেয়াদ</th>` : ""}`;
         return buildPdfHtml(`<div class="section"><h2>${selectedSupplier}</h2><table><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table></div>`, shopName, `${title} — ${selectedSupplier}`);
@@ -22188,7 +22188,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                       </div>
                       <div style={{ display:"flex", gap:10, marginTop:5 }}>
                         {p.spPrice > 0 ? <span style={{ color:"#a78bfa", fontSize:10 }}>{businessType === "veterinary" ? "TP" : "SP"}: ৳{p.spPrice}</span> : null}
-                        {p.costPrice ? <span style={{ color:"#f59e0b", fontSize:10 }}>ক্রয়: ৳{p.costPrice}</span> : null}
+                        {(p.lastRealCostPrice ?? p.costPrice) ? <span style={{ color:"#f59e0b", fontSize:10 }}>ক্রয়: ৳{p.lastRealCostPrice ?? p.costPrice}</span> : null}
                         {p.price ? <span style={{ color:"#1fd15e", fontSize:10 }}>বিক্রয়: ৳{p.price}</span> : null}
                       </div>
                       {/* 🗑️ মেয়াদোত্তীর্ণ ব্যাচ সরান — শুধু এডমিন, শুধু 'expired' লিস্টে */}
@@ -25824,15 +25824,15 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
                     padding: "4px 10px", boxShadow: "2px 2px 0 #17171a", whiteSpace: "nowrap",
                   }}>× {item.qty} @৳{item.price}</span>
                 </div>
-                <div style={{ textAlign: "right" }}>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
                   {_disc > 0 ? (
                     <>
-                      <div style={{ color: IS.sub, fontSize: 10, textDecoration: "line-through" }}>৳{fmt(_gross)}</div>
-                      <div style={{ color: "#fff", background: "#16a34a", fontSize: 10, fontWeight: 900, borderRadius: 6, padding: "1px 7px", marginTop: 1, display: "inline-block" }}>−৳{fmt(_disc)}{_pctDisplay > 0 ? ` (${_pctDisplay}%)` : ""}</div>
-                      <div style={{ color: _ac, fontSize: 18, fontWeight: 900, marginTop: 2 }}>৳{fmt(_net)}</div>
+                      <span style={{ display: "inline-block", color: "#fff", background: "#94a3b8", fontSize: 10, fontWeight: 900, borderRadius: 999, padding: "2px 9px", textDecoration: "line-through", whiteSpace: "nowrap" }}>৳{fmt(_gross)}</span>
+                      <span style={{ display: "inline-block", color: "#fff", background: "#16a34a", fontSize: 10, fontWeight: 900, borderRadius: 999, padding: "2px 9px", whiteSpace: "nowrap" }}>−৳{fmt(_disc)}{_pctDisplay > 0 ? ` (${_pctDisplay}%)` : ""}</span>
+                      <span style={{ display: "inline-block", color: "#fff", background: _ac, fontSize: 10, fontWeight: 900, borderRadius: 999, padding: "2px 9px", whiteSpace: "nowrap" }}>৳{fmt(_net)}</span>
                     </>
                   ) : (
-                    <div style={{ color: _ac, fontSize: 18, fontWeight: 900 }}>৳{fmt(_gross)}</div>
+                    <span style={{ display: "inline-block", color: "#fff", background: _ac, fontSize: 10, fontWeight: 900, borderRadius: 999, padding: "2px 9px", whiteSpace: "nowrap" }}>৳{fmt(_gross)}</span>
                   )}
                 </div>
               </div>
@@ -26169,7 +26169,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     const pool = inStock.length ? inStock : peSelProdForBatch.batches;
     const latest = [...pool].sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0))[0];
     if (!latest?.batchNo) return null;
-    return { label: latest.batchNo, isFree: !!latest.isFreeStock };
+    return { label: latest.batchNo, isFree: !!latest.isFreeStock, expiryDate: latest.expiryDate || "" };
   }, [peSelProdForBatch]);
   const peFilteredProds = useMemo(() => (
     peForm.productSearch
@@ -26974,7 +26974,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                                 {(() => { const ta = medTypeAbbr(p.dosageForm); return ta ? <span style={{ color: ta.color, fontWeight: 900, marginRight: 5 }}>{ta.abbr}.</span> : null; })()}
                                 {p.name}{p.unit ? <span style={{color:T.sub,fontSize:11}}> ({p.unit})</span> : null}
                               </div>
-                              <div style={{ color:T.sub, fontSize:11 }}>স্টক: {p.stock||0} · ক্রয়: ৳{p.costPrice||0}</div>
+                              <div style={{ color:T.sub, fontSize:11 }}>স্টক: {p.stock||0} · ক্রয়: ৳{p.lastRealCostPrice ?? p.costPrice ?? 0}</div>
                             </div>
                             <div style={{ color:"#a78bfa", fontWeight:900, fontSize:12 }}>৳{p.price||0}</div>
                           </div>
@@ -27139,9 +27139,9 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                   <span style={{ background: "#22c55e22", color: "#22c55e", fontSize: 11, borderRadius: 6, padding: "2px 8px", fontWeight: 700 }}>
                     বর্তমান স্টক: {selProd.stock || 0}{selProd.unit||""}
                   </span>
-                  {selProd.costPrice > 0 && (
+                  {(selProd.lastRealCostPrice ?? selProd.costPrice) > 0 && (
                     <span style={{ background: "#a78bfa22", color: "#a78bfa", fontSize: 11, borderRadius: 6, padding: "2px 8px", fontWeight: 700 }}>
-                      বর্তমান ক্রয়মূল্য: ৳{selProd.costPrice}
+                      বর্তমান ক্রয়মূল্য: ৳{selProd.lastRealCostPrice ?? selProd.costPrice}
                     </span>
                   )}
                   {selProd.price > 0 && (
@@ -27151,7 +27151,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                   )}
                   {latestBatchLabel && (
                     <span style={{ background: latestBatchLabel.isFree ? "#22c55e22" : "#f59e0b22", color: latestBatchLabel.isFree ? "#22c55e" : "#f59e0b", fontSize: 11, borderRadius: 6, padding: "2px 8px", fontWeight: 700 }}>
-                      {latestBatchLabel.isFree ? "🎁" : "🏷️"} {latestBatchLabel.label}{latestBatchLabel.isFree ? " (ফ্রি)" : ""}
+                      {latestBatchLabel.isFree ? "🎁" : "🏷️"} {latestBatchLabel.label}{latestBatchLabel.isFree ? " (ফ্রি)" : ""}{latestBatchLabel.expiryDate ? ` · মেয়াদ: ${fmtExpiryMonth(latestBatchLabel.expiryDate)}` : ""}
                     </span>
                   )}
                 </div>
@@ -27219,33 +27219,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               </div>
               )}
 
-              {/* মোট + নতুন এভারেজ ক্রয়মূল্য + নতুন এভারেজ বিক্রয়মূল্য Preview */}
-              {peForm.qty && parseFloat(peForm.qty) > 0 && (peForm.isFreeStock || (peForm.unitCost && parseFloat(peForm.unitCost) >= 0)) && (
-                <div style={{ background: "#a78bfa18", border: "1px solid #a78bfa44", borderRadius: 10, padding: "8px 12px", marginTop: -4, marginBottom: 8 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                    <span style={{ color: T.sub, fontSize: 12 }}>মোট ক্রয় মূল্য</span>
-                    <span style={{ color: "#a78bfa", fontWeight: 900, fontSize: 17 }}>
-                      ৳{(parseFloat(peForm.qty) * parseFloat(peForm.unitCost)).toLocaleString()}
-                    </span>
-                  </div>
-                  {selProd && (
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                      <span style={{ color: T.sub, fontSize: 11 }}>নতুন স্টক ভ্যালু (গড়, শুধু হিসাবের জন্য)</span>
-                      <span style={{ color: "#22c55e", fontWeight: 700, fontSize: 12 }}>
-                        ৳{((((selProd.stock||0) * (selProd.costPrice||0)) + (parseFloat(peForm.qty) * parseFloat(peForm.unitCost))) / ((selProd.stock||0) + parseFloat(peForm.qty))).toFixed(2)}
-                      </span>
-                    </div>
-                  )}
-                  {selProd && peForm.unitSell && parseFloat(peForm.unitSell) > 0 && (
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{ color: T.sub, fontSize: 11 }}>নতুন এভারেজ বিক্রয়মূল্য</span>
-                      <span style={{ color: "#38bdf8", fontWeight: 700, fontSize: 12 }}>
-                        ৳{(((selProd.price||0) + parseFloat(peForm.unitSell)) / 2).toFixed(2)}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              )}
+              {/* 🗑️ ফিক্স (৬ আগস্ট ২০২৬): "মোট ক্রয় মূল্য / নতুন স্টক ভ্যালু (গড়) / নতুন
+                   এভারেজ বিক্রয়মূল্য" প্রিভিউ বক্সটি সরিয়ে ফেলা হলো — অ্যাপ এখন প্রকৃত
+                   ব্যাচ-ভিত্তিক (weighted-average নয়) costing ব্যবহার করে, তাই এই
+                   গড়-ভিত্তিক প্রিভিউ ভুল ধারণা দিচ্ছিল। */}
+
 
               {/* 🆕 রিডিজাইন: "মেয়াদ উত্তীর্ণের তারিখ" ও "ব্যাচ নম্বর" পরস্পর রিলেটেড বলে একই
                    কার্ড/সেকশনে রাখা হলো। এই কার্ডের ফ্রি/বোনাস স্টক ফিল্ড থেকে দূরত্ব (marginTop:10)
@@ -28016,7 +27994,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                 {/* ── সারি ২: ক্রয়|বিক্রয়|স্টক|সাপ্লায়ার ── */}
                 <div style={{ display:"flex", gap:6, marginTop:3, flexWrap:"wrap", alignItems:"center" }}>
                   {p.productType !== "service" && p.spPrice > 0 && <span style={{ color:"#a78bfa", fontWeight:700, fontSize:11 }}>{businessType === "veterinary" ? "TP" : "SP"}: ৳{fmt(p.spPrice)}</span>}
-                  {p.productType !== "service" && p.costPrice > 0 && <span style={{ color:"#f59e0b", fontWeight:700, fontSize:11 }}>ক্রয়: ৳{fmt(p.costPrice)}</span>}
+                  {p.productType !== "service" && ((p.lastRealCostPrice ?? p.costPrice) > 0) && <span style={{ color:"#f59e0b", fontWeight:700, fontSize:11 }}>ক্রয়: ৳{fmt(p.lastRealCostPrice ?? p.costPrice)}</span>}
                   <span style={{ color:"#22c55e", fontWeight:700, fontSize:11 }}>{p.productType === "service" ? "চার্জ" : "বিক্রয়"}: ৳{fmt(p.price)}</span>
                   {p.productType !== "service" && (
                     <span style={{ color:(p.stock||0)===0?"#ef4444":(p.stock||0)<=(p.minStockAlert||5)?"#f59e0b":T.sub, fontSize:11, fontWeight:700 }}>
@@ -28049,10 +28027,10 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                         const daysLeft = b.expiryDate ? Math.ceil((new Date(b.expiryDate) - new Date()) / 86400000) : null;
                         const isExpired = daysLeft !== null && daysLeft < 0;
                         const isNear    = daysLeft !== null && daysLeft >= 0 && daysLeft <= 30;
-                        const bColor    = isExpired ? "#ef4444" : isNear ? "#f59e0b" : "#a78bfa";
+                        const bColor    = isExpired ? "#ef4444" : isNear ? "#f59e0b" : b.isFreeStock ? "#22c55e" : "#a78bfa";
                         return (
                           <span key={bi} style={{ display:"inline-flex", alignItems:"center", gap:4, background:bColor+"18", border:`1px solid ${bColor}44`, borderRadius:6, padding:"2px 7px" }}>
-                            <span style={{ color:bColor, fontSize:10, fontWeight:700 }}>📦 {b.batchNo} ({b.qty})</span>
+                            <span style={{ color:bColor, fontSize:10, fontWeight:700 }}>{b.isFreeStock ? "🎁" : "📦"} {b.batchNo} ({b.qty}){b.isFreeStock ? " ফ্রি" : ""}</span>
                             {b.expiryDate && (
                               <span style={{ color: isExpired?"#ef4444":isNear?"#f59e0b":"#94a3b8", fontSize:9, fontWeight:700 }}>
                                 {isExpired ? "⚠️মেয়াদ শেষ" : isNear ? `⏳${daysLeft}দিন` : `📅${b.expiryDate}`}
@@ -28073,7 +28051,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                     if (editId === p.id) { setEditId(null); setShowAdd(false); }
                     else {
                       setEditId(p.id);
-                      setForm({ name: p.name, price: String(p.price), stock: String(p.stock || 0), minStockAlert: String(p.minStockAlert || 5), category: p.category || "অন্যান্য", company: p.company || "", productType: (p.productType === "retail" ? "product" : p.productType) || "product", costPrice: String(p.costPrice || ""), spPrice: p.spPrice !== undefined && p.spPrice !== null ? String(p.spPrice) : "", expiryDate: p.expiryDate || "", barcode: p.barcode || "", unit: p.unit || "", demandType: p.demandType || "common", dosageForm: p.dosageForm || "" });
+                      setForm({ name: p.name, price: String(p.price), stock: String(p.stock || 0), minStockAlert: String(p.minStockAlert || 5), category: p.category || "অন্যান্য", company: p.company || "", productType: (p.productType === "retail" ? "product" : p.productType) || "product", costPrice: String((p.lastRealCostPrice ?? p.costPrice) || ""), spPrice: p.spPrice !== undefined && p.spPrice !== null ? String(p.spPrice) : "", expiryDate: p.expiryDate || "", barcode: p.barcode || "", unit: p.unit || "", demandType: p.demandType || "common", dosageForm: p.dosageForm || "" });
                       setExtraBatches([]);
                       setShowAdd(false);
                       setCompanyCustom(!!p.company && !BD_PHARMA_COMPANIES.includes(p.company));
@@ -28139,9 +28117,10 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                     {(p.batches || []).length > 0 ? (
                       <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
                         {p.batches.map((b, i) => (
-                          <div key={i} style={{ display:"flex", alignItems:"center", gap:6, background:"rgba(0,0,0,0.25)", border:"1px solid #f59e0b33", borderRadius:9, padding:"5px 8px" }}>
+                          <div key={i} style={{ display:"flex", alignItems:"center", gap:6, background: b.isFreeStock ? "rgba(34,197,94,0.1)" : "rgba(0,0,0,0.25)", border: b.isFreeStock ? "1px solid #22c55e55" : "1px solid #f59e0b33", borderRadius:9, padding:"5px 8px" }}>
                             <div style={{ width:66, flexShrink:0, overflow:"hidden" }}>
-                              <div style={{ color:"#fde68a", fontSize:11, fontWeight:800, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>📦 {b.batchNo}</div>
+                              <div style={{ color: b.isFreeStock ? "#4ade80" : "#fde68a", fontSize:11, fontWeight:800, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{b.isFreeStock ? "🎁" : "📦"} {b.batchNo}</div>
+                              {b.isFreeStock && <div style={{ color:"#4ade8099", fontSize:8, fontWeight:700 }}>ফ্রি ব্যাচ</div>}
                             </div>
                             <div style={{ flex:1, minWidth:0 }}>
                               <ExpiryYearMonthPicker value={batchExpiryEdits[i] ?? b.expiryDate ?? ""} onChange={v => setBatchExpiryEdits(be => ({ ...be, [i]: v }))} />
