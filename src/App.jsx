@@ -4823,22 +4823,29 @@ const BUSINESS_TYPE_REGISTRY = {
   // "সার্ভিস" হিসেবে ব্যবহার। বিদ্যমান `productType: "service"` টগল (যেটা আগে থেকেই
   // অ্যাপে আছে — স্টক/এক্সপায়ারি/ব্যাচ ছাড়াই "চার্জ" ভিত্তিক আইটেম) সেলুনের সার্ভিস
   // ক্যাটালগের জন্য নিখুঁত ফিট, তাই নতুন এনটিটি বানানো হয়নি। productForm-এ ব্যাচ/
-  // এক্সপায়ারি-নির্ভর ফিচারগুলো হাইড করা হলো যেহেতু সেলুনের মূল বিক্রি সার্ভিস
-  // (কনজিউমেবল/স্টক-ভিত্তিক পণ্য থাকলে productType "product" রেখে আলাদাভাবে যোগ করা
-  // যাবে, ফর্ম টগল থেকেই)। পরের ধাপে: স্টাফ কমিশন, টোকেন/সিরিয়াল, ড্যাশবোর্ড কার্ড।
+  // এক্সপায়ারি-নির্ভর ফিচারগুলো হাইড করা হলো যেহেতু সেলুনের মূল বিক্রি সার্ভিস।
+  // 🔴 ফিক্স (৬ আগস্ট ২০২৬, ক্লিনআপ ধাপ ১): আগে productForm/purchaseForm-এ "sp"
+  // নামে একটা ফিল্ড-টোকেন ছিল (semen-এও ছিল) কিন্তু কোডের কোথাও এই টোকেন চেক করা
+  // হয় না — সম্পূর্ণ ডেড কনফিগ, তাই সরানো হলো। এখন শুধু বাস্তবে-চেক-হওয়া টোকেনগুলোই
+  // (addBatchButton, bonusStock, purchasePrice) রাখা হয়েছে।
+  // এছাড়া "serviceOnly: true" — মালিক নিশ্চিত করেছেন সেলুনে কোনো ফিজিক্যাল
+  // পণ্য বিক্রি হয় না (শুধু সার্ভিস), তাই productType এখন সবসময় "service"-এ
+  // ফিক্সড থাকবে আর পণ্য/সার্ভিস টগলটাই ফর্ম থেকে হাইড হয়ে যাবে — dosageForm/
+  // company/স্টক/এক্সপায়ারি ফিল্ডগুলো এমনিতেই productType==="service"-এ
+  // (আগে থেকেই থাকা লজিক অনুযায়ী) রেন্ডার হয় না, তাই আলাদা hiddenFields টোকেন লাগেনি।
   salon: {
     id: "salon",
     label: "সেলুন",
     color: "#ec4899",
     collectionPrefix: "salon",
     hiddenFields: {
-      productForm: ["sp", "addBatchButton"],
-      purchaseForm: ["sp", "bonusStock"],
-      invoiceCard: [],
+      productForm: ["addBatchButton"],
+      purchaseForm: ["bonusStock"],
+      invoiceCard: ["purchasePrice"],
     },
     purchaseEntryRestrictToExisting: true,
     purchaseEntryListOrder: "newestFirst",
-    defaultProductType: "service",
+    serviceOnly: true,
   },
 };
 
@@ -8052,6 +8059,12 @@ const THEME_PRESETS = [
   { id:"porcelain", label:"Porcelain Jade", dark:false, accent:"#1f8a55", accentDark:"#6fcf97", bg:"#f5faf7", card:"#ffffff", border:"#b9e0c6", header:"#1f8a55", statusBar:"#1f8a55", text:"#0a1a12", sub:"#4c9e76", nav:"#ffffff", navActive:"#1f8a55", headingColor:"#0a1a12", meshD:null, meshL:["rgba(31,138,85,0.2)","rgba(111,207,151,0.16)","rgba(31,138,85,0.12)","rgba(111,207,151,0.1)"] },
   { id:"champagne", label:"Champagne Silk", dark:false, accent:"#8a7238", accentDark:"#d9c49a", bg:"#f7f0e6", card:"#fffcf7", border:"#cbb98f", header:"#8a7238", statusBar:"#8a7238", text:"#17140d", sub:"#91815a", nav:"#fffcf7", navActive:"#8a7238", headingColor:"#17140d", meshD:null, meshL:["rgba(138,114,56,0.2)","rgba(217,196,154,0.16)","rgba(138,114,56,0.12)","rgba(217,196,154,0.1)"] },
   { id:"arcticday", label:"Arctic Daylight", dark:false, accent:"#2f74c9", accentDark:"#4fa8e8", bg:"#f8fafc", card:"#ffffff", border:"#dbe4ec", header:"#2f74c9", statusBar:"#2f74c9", text:"#0a111a", sub:"#4d719d", nav:"#ffffff", navActive:"#2f74c9", headingColor:"#0a111a", meshD:null, meshL:["rgba(47,116,201,0.2)","rgba(79,168,232,0.16)","rgba(47,116,201,0.12)","rgba(79,168,232,0.1)"] },
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন প্রিমিয়াম রিডিজাইন) — "Vanity Chrome": সেলুনের LED
+  // ভ্যানিটি-মিরর লাইটিং থেকে অনুপ্রাণিত — অবসিডিয়ান কালো ব্যাকগ্রাউন্ড, ম্যাজেন্টা↔ভায়োলেট
+  // গ্র্যাডিয়েন্ট অ্যাকসেন্ট। businessType === "salon" হলে ডিফল্ট থিম হিসেবে অটো-এপ্লাই হয়
+  // (দ্র. boot init, activeTheme ডিফল্ট লজিক) — ইউজার চাইলে অন্য যেকোনো থিমেও বদলাতে পারবে,
+  // এই প্রিসেটটা বাকি সব থিমের মতোই সাধারণ একটা এন্ট্রি, salon-স্পেসিফিক হার্ডকোড নেই।
+  { id:"salonvanity", label:"Vanity Chrome", dark:true, accent:"#ff4fb0", accentDark:"#7c5cff", bg:"#0b0d14", card:"#160f22", border:"#2a1f3d", header:"#0b0d14", statusBar:"#0b0d14", text:"#f5eeff", sub:"#b98fcb", nav:"#160f22", navActive:"#ff4fb0", headingColor:"#ffa8da", meshD:["rgba(255,79,176,0.3)","rgba(124,92,255,0.24)","rgba(255,79,176,0.16)","rgba(124,92,255,0.14)"], meshL:null },
 ];
 
 // ─── হেডার/নেভ টেক্সট অটো-কনট্রাস্ট — ব্যাকগ্রাউন্ড রঙ যেকোনো থিমেই হোক না কেন,
@@ -11085,7 +11098,13 @@ function SmartBusinessMgmt() {
         users:                 rawUsers            || SEED_USERS,
         shopName:              shopNameVal         || "SBM",
         darkMode:              darkModeVal         ?? true,
-        activeTheme:           (activeThemeVal && activeThemeVal !== "dark") ? activeThemeVal : "neon",
+        // 🆕 (৬ আগস্ট ২০২৬, সেলুন প্রিমিয়াম রিডিজাইন) — salon বিজনেসে কোনো থিম আগে থেকে
+        // সেভ করা না থাকলে (নতুন শপ/প্রথম বুট) ডিফল্ট "Vanity Chrome"-এ যাবে, নাহলে অন্য
+        // সব বিজনেসের মতোই "neon"। ইউজার একবার ম্যানুয়ালি থিম বদলালে সেটাই সেভ/persist
+        // থাকবে (activeThemeVal সেট হয়ে যাবে), এই ডিফল্ট লজিক আর প্রযোজ্য হবে না।
+        activeTheme:           (activeThemeVal && activeThemeVal !== "dark")
+          ? activeThemeVal
+          : (businessTypeVal === "salon" ? "salonvanity" : "neon"),
         fontSize:              fontSizeVal         ?? 15,
         paymentInvoices:       rawPayInv           || [],
         firebaseConfig:        firebaseCfg,
@@ -13982,10 +14001,12 @@ function SmartBusinessMgmt() {
     let visible = isStaff ? all.filter(n => !["sms", "ai", "dailySummary", "auditTrail", "staffMgmt", "returns", "supplier", "subscription", "batchSync"].includes(n.id)) : all;
     // salon ছাড়া অন্য বিজনেস-টাইপে টোকেন কিউ প্রাসঙ্গিক না — হাইড
     if (businessType !== "salon") visible = visible.filter(n => n.id !== "serialQueue");
-    // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৬) — salon-এ পণ্য কেনা/ব্যাচ-ট্র্যাকিং প্রাসঙ্গিক
+    // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ১ ক্লিনআপ) — salon-এ পণ্য কেনা/ব্যাচ-ট্র্যাকিং প্রাসঙ্গিক
     // না (সার্ভিস-ভিত্তিক ব্যবসা, ফিজিক্যাল স্টক ব্যাচ/এক্সপায়ারি নেই) — তাই
     // "সাপ্লায়ার" (PO/সাপ্লায়ার পেমেন্ট) ও "লস-ঝুঁকি ও ব্যাচ সিঙ্ক" মডিউল হাইড।
-    if (businessType === "salon") visible = visible.filter(n => n.id !== "supplier" && n.id !== "batchSync");
+    // "AI ও অটোমেশন" ট্যাবও pharmacy-নির্ভর বাল্ক-ইমেজ-এন্ট্রির জন্য বানানো ছিল,
+    // salon-এ প্রাসঙ্গিক না (কোনো ফিজিক্যাল পণ্যের ছবি/স্ট্রিপ স্ক্যান করার দরকার নেই)।
+    if (businessType === "salon") visible = visible.filter(n => n.id !== "supplier" && n.id !== "batchSync" && n.id !== "ai");
     // 🔴 Session B: OFFLINE_MODE স্থায়ীভাবে true, তাই এই ফিল্টার কখনো চলত না —
     // "সাবস্ক্রিপশন" মেনু আইটেম সবসময় দৃশ্যমান থাকে, সরিয়ে দেওয়া হলো।
     // "এক্সপেন্স ট্রেকার" শুধু Admin রোল দেখতে পাবে — অন্য কোনো রোল (staff/অজানা) দেখবে না
@@ -14334,6 +14355,11 @@ function SmartBusinessMgmt() {
         @keyframes bounceIn   { 0%{transform:scale(0.8);opacity:0} 70%{transform:scale(1.05);opacity:1} 100%{transform:scale(1)} }
         @keyframes ripple     { from{transform:scale(0);opacity:0.4} to{transform:scale(2.5);opacity:0} }
         @keyframes glow       { 0%,100%{box-shadow:0 0 12px rgba(31,209,94,0.2)} 50%{box-shadow:0 0 28px rgba(31,209,94,0.45)} }
+        /* 🆕 (৬ আগস্ট ২০২৬, সেলুন প্রিমিয়াম রিডিজাইন) — "ডিজিটাল টিকিট চিপ" সিগনেচার
+           এলিমেন্টের জন্য। থিম-নিরপেক্ষ — box-shadow currentColor ব্যবহার করে, তাই যে
+           উপাদানে এই অ্যানিমেশন বসানো হবে তার নিজের color (T.accent) থেকেই গ্লো-রং আসে,
+           হার্ডকোড করা রং নেই বলে অন্য থিমেও কাজ করবে। */
+        @keyframes ticketGlow { 0%,100%{box-shadow:0 0 6px currentColor} 50%{box-shadow:0 0 18px currentColor} }
         @keyframes navPop     { 0%{transform:translateY(0)} 40%{transform:translateY(-4px)} 100%{transform:translateY(0)} }
         @keyframes meshFloat1 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(18px,-14px)} }
         @keyframes meshFloat2 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(-14px,12px)} }
@@ -24837,26 +24863,31 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             salonTodayCommission += (inv.total || 0) * (inv.staffCommissionRate ?? 0) / 100;
           });
 
+          // 🆕 (৬ আগস্ট ২০২৬, সেলুন প্রিমিয়াম রিডিজাইন) — আগে এই কার্ডে হার্ডকোড করা
+          // পার্পল/সবুজ/কমলা রং ছিল, থিম বদলালেও বদলাত না। এখন T.accent/T.accentDark
+          // (থিম-নিজস্ব রং) দিয়ে তৈরি — "Vanity Chrome" বা অন্য যেকোনো থিমে বসালে
+          // কার্ডের রং নিজে থেকেই সেই থিমের সাথে মানানসই হবে।
+          const cAccent = T.accent, cAccentDark = T.accentDark || T.accent;
           return (
             <div style={{ marginBottom:12 }}>
-              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12, padding:"10px 14px", background:"linear-gradient(135deg,#2e1065,#4c1d95)", borderRadius:14, border:"1px solid #8b5cf633" }}>
-                <div style={{ width:4, height:20, borderRadius:2, background:"linear-gradient(180deg,#a78bfa,#7c3aed)", flexShrink:0 }} />
-                <span style={{ color:"#ddd6fe", fontWeight:900, fontSize:13, letterSpacing:1, textTransform:"uppercase" }}>আজকের সেলুন কার্যক্রম</span>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12, padding:"10px 14px", background: `linear-gradient(135deg, ${cAccentDark}33, ${cAccent}22)`, borderRadius:14, border:`1px solid ${cAccent}44` }}>
+                <div style={{ width:4, height:20, borderRadius:2, background:`linear-gradient(180deg, ${cAccent}, ${cAccentDark})`, flexShrink:0, boxShadow:`0 0 10px ${cAccent}88` }} />
+                <span style={{ color: T.headingColor || T.text, fontWeight:900, fontSize:13, letterSpacing:1, textTransform:"uppercase" }}>আজকের সেলুন কার্যক্রম</span>
               </div>
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:9 }}>
-                <div className="tap-card" onClick={() => setTab("serialQueue")} style={{ cursor:"pointer", background:"#8b5cf614", border:"1px solid #8b5cf633", borderRadius:14, padding:"12px 10px", textAlign:"center" }}>
+                <div className="tap-card" onClick={() => setTab("serialQueue")} style={{ cursor:"pointer", background:`${cAccent}14`, border:`1px solid ${cAccent}33`, borderRadius:14, padding:"12px 10px", textAlign:"center" }}>
                   <div style={{ fontSize:20, marginBottom:4 }}>🎫</div>
-                  <div style={{ color:"#c4b5fd", fontWeight:900, fontSize:19, lineHeight:1, marginBottom:3 }}>{salonWaitingCount}+{salonServicingCount}</div>
+                  <div style={{ color:cAccent, fontWeight:900, fontSize:19, lineHeight:1, marginBottom:3, fontFamily:"'JetBrains Mono', monospace", textShadow:`0 0 12px ${cAccent}55` }}>{salonWaitingCount}+{salonServicingCount}</div>
                   <div style={{ color:T.sub, fontWeight:700, fontSize:10 }}>অপেক্ষায় + সার্ভিসে</div>
                 </div>
-                <div style={{ background:"#22c55e14", border:"1px solid #22c55e33", borderRadius:14, padding:"12px 10px", textAlign:"center" }}>
+                <div style={{ background:`${cAccentDark}14`, border:`1px solid ${cAccentDark}33`, borderRadius:14, padding:"12px 10px", textAlign:"center" }}>
                   <div style={{ fontSize:20, marginBottom:4 }}>💰</div>
-                  <div style={{ color:"#86efac", fontWeight:900, fontSize:19, lineHeight:1, marginBottom:3 }}>৳{fmt(salonTodayCommission)}</div>
+                  <div style={{ color:cAccentDark, fontWeight:900, fontSize:19, lineHeight:1, marginBottom:3, fontFamily:"'JetBrains Mono', monospace", textShadow:`0 0 12px ${cAccentDark}55` }}>৳{fmt(salonTodayCommission)}</div>
                   <div style={{ color:T.sub, fontWeight:700, fontSize:10 }}>আজকের কমিশন প্রদেয়</div>
                 </div>
-                <div style={{ background:"#f59e0b14", border:"1px solid #f59e0b33", borderRadius:14, padding:"12px 10px", textAlign:"center" }}>
+                <div style={{ background:"#22e3d614", border:"1px solid #22e3d633", borderRadius:14, padding:"12px 10px", textAlign:"center" }}>
                   <div style={{ fontSize:20, marginBottom:4 }}>👥</div>
-                  <div style={{ color:"#fcd34d", fontWeight:900, fontSize:19, lineHeight:1, marginBottom:3 }}>{staffIdsWithService.size}</div>
+                  <div style={{ color:"#5eead4", fontWeight:900, fontSize:19, lineHeight:1, marginBottom:3, fontFamily:"'JetBrains Mono', monospace", textShadow:"0 0 12px #22e3d655" }}>{staffIdsWithService.size}</div>
                   <div style={{ color:T.sub, fontWeight:700, fontSize:10 }}>স্টাফ সার্ভিস দিয়েছেন</div>
                 </div>
               </div>
@@ -26284,7 +26315,9 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const purchaseFormHidden = bizCfg.hiddenFields?.purchaseForm || [];
   const [showAdd,      setShowAdd]      = useState(false);
   const [editId,       setEditId]       = useState(null);
-  const [form,         setForm]         = useState({ name: "", price: "", stock: "", minStockAlert: "5", category: "অন্যান্য", company: "", productType: "product", costPrice: "", spPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common", dosageForm: "" });
+  // 🆕 (৬ আগস্ট ২০২৬, ক্লিনআপ ধাপ ১) — serviceOnly বিজনেসে (salon) নতুন ফর্ম
+  // সবসময় "service" দিয়ে শুরু হবে, প্রোডাক্ট মোডে যাওয়ার দরকারই নেই।
+  const [form,         setForm]         = useState({ name: "", price: "", stock: "", minStockAlert: "5", category: "অন্যান্য", company: "", productType: bizCfg.serviceOnly ? "service" : "product", costPrice: "", spPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common", dosageForm: "", durationMinutes: "" });
   // ── #৪ মাল্টি-ব্যাচ এক্সপায়ারি — নতুন পণ্যে একই সাথে একাধিক আলাদা এক্সপায়ারির চালান যোগ করার জন্য ──
   // প্রাথমিক স্টক/মেয়াদ (form.stock/form.expiryDate) থাকে প্রথম ব্যাচ হিসেবে, extraBatches-এ বাকিগুলো
   const [extraBatches, setExtraBatches] = useState([]); // [{ id, qty, expiryDate }]
@@ -26607,6 +26640,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       unit: (form.unit === "__typing__" ? "" : form.unit) || "",
       company: form.company || "",
       isFreeStock: !!form.isFreeStock,
+      // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ২) — আনুমানিক সময় (মিনিট), সংখ্যায় নরমালাইজড।
+      // ঐচ্ছিক — খালি রাখলে undefined (stripUndefinedDeep দিয়ে write-এর আগে বাদ যাবে)।
+      durationMinutes: form.durationMinutes !== "" && form.durationMinutes !== undefined && form.durationMinutes !== null
+        ? (parseInt(form.durationMinutes, 10) || undefined)
+        : undefined,
     };
     if (editId) {
       // ── audit log-এর জন্য আগের ভ্যালু সংরক্ষণ ────────────────────────────
@@ -26744,7 +26782,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       }
       showToast(batchRows.length > 1 ? `নতুন পণ্য যোগ হয়েছে (${batchRows.length}টি আলাদা ব্যাচে)` : "নতুন পণ্য যোগ হয়েছে");
     }
-    setForm({ name: "", price: "", stock: "", minStockAlert: "", category: "অন্যান্য", company: "", productType: form.productType || "product", costPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common", dosageForm: "" });
+    setForm({ name: "", price: "", stock: "", minStockAlert: "", category: "অন্যান্য", company: "", productType: form.productType || "product", costPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common", dosageForm: "", durationMinutes: "" });
     setFormErrors({});
     setExtraBatches([]);
     setShowAdd(false);
@@ -27745,7 +27783,10 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       {activeTab === "retail" && <>
 
       {/* ── ক্রয় এন্ট্রি কার্ড — হোম থেকে স্থানান্তরিত ── */}
-      {(currentUser?.role !== "staff" || (hasPerm && hasPerm(currentUser, "purchase_entry"))) && (() => {
+      {/* 🆕 (৬ আগস্ট ২০২৬, ক্লিনআপ ধাপ ১) — serviceOnly বিজনেসে (salon) কোনো
+          ফিজিক্যাল পণ্য কেনা হয় না়, তাই পুরো "ক্রয় এন্ট্রি" এন্ট্রি-পয়েন্টই
+          হাইড — নাহলে ট্যাপ করলে একটা অচল/অপ্রাসঙ্গিক ফ্লো খুলত। */}
+      {!bizCfg.serviceOnly && (currentUser?.role !== "staff" || (hasPerm && hasPerm(currentUser, "purchase_entry"))) && (() => {
         const todayPurchases2 = retailTodayPurchases;
         const todayPurchaseTotal2 = retailTodayPurchaseTotal;
         return (
@@ -27781,7 +27822,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
         {(currentUser?.role !== "staff" || currentUser?.canAddProduct) && <button style={{ flex: 1, ...S.addBtn, marginBottom: 0, height: 44, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: `linear-gradient(135deg,#16a34a,#22c55e)`, boxShadow: "0 4px 16px #22c55e44" }}
-          onClick={() => { setShowAdd(v => !v); setEditId(null); setCompanyCustom(false); setFormErrors({}); setExtraBatches([]); setForm({ name: "", price: "", stock: "", category: "অন্যান্য", company: "", productType: "product", costPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common", dosageForm: "" }); }}>
+          onClick={() => { setShowAdd(v => !v); setEditId(null); setCompanyCustom(false); setFormErrors({}); setExtraBatches([]); setForm({ name: "", price: "", stock: "", category: "অন্যান্য", company: "", productType: bizCfg.serviceOnly ? "service" : "product", costPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common", dosageForm: "", durationMinutes: "" }); }}>
           <IcPlus /> <span style={{ fontSize: 12, fontWeight: 800 }}>নতুন পণ্য</span>
         </button>}
         <SearchBar
@@ -27819,6 +27860,10 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             {editId ? (form.productType === "service" ? "সার্ভিস আপডেট" : "পণ্য আপডেট") : (form.productType === "service" ? "নতুন সার্ভিস" : "নতুন পণ্য")}
           </div>
           {/* ── পণ্য / সার্ভিস টগল ── */}
+          {/* 🆕 (৬ আগস্ট ২০২৬, ক্লিনআপ ধাপ ১) — serviceOnly বিজনেসে (salon) কখনোই
+              ফিজিক্যাল পণ্য বিক্রি হয় না, তাই টগলটাই অপ্রয়োজনীয় ও বিভ্রান্তিকর —
+              পুরোপুরি হাইড, ফর্ম সবসময় "service" মোডে থাকবে। */}
+          {!bizCfg.serviceOnly && (
           <div style={{ display:"flex", gap:8, marginBottom:12 }}>
             {[{ key:"product", label:"📦 পণ্য" }, { key:"service", label:"🔧 সার্ভিস" }].map(opt => (
               <button key={opt.key}
@@ -27828,6 +27873,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
               </button>
             ))}
           </div>
+          )}
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:6 }}>
             <label style={S.label}>🏷️ {form.productType === "service" ? "সার্ভিসের নাম" : "পণ্যের নাম"} *</label>
             {form.productType !== "service" && !editId && (
@@ -28059,6 +28105,14 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             <label style={S.label}>💰 সার্ভিস চার্জ (৳) *</label>
             <input style={{ ...S.input, border: formErrors.price ? "1.5px solid #ef4444" : S.input.border }} placeholder="" type="number" value={form.price} onChange={e => { setForm({ ...form, price: e.target.value }); if (parseFloat(e.target.value) > 0) setFormErrors(er=>({...er,price:false})); }} inputMode="numeric" pattern="[0-9]*" />
             {formErrors.price && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ সার্ভিস চার্জ আবশ্যক</div>}
+            {/* 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ২) — সার্ভিসের আনুমানিক সময় (মিনিট)।
+                শুধু serviceOnly (salon) বিজনেসে দরকার — টোকেন কিউতে ওয়েট-টাইম
+                এস্টিমেশনের জন্য এই ভ্যালু ব্যবহার হবে। ঐচ্ছিক — খালি রাখলে
+                কিউ এস্টিমেশন এই সার্ভিসটা বাদ দিয়ে হিসাব করবে। */}
+            {bizCfg.serviceOnly && (<>
+              <label style={{ ...S.label, marginTop:8 }}>⏱️ আনুমানিক সময় (মিনিট)</label>
+              <input style={{ ...S.input }} placeholder="যেমনঃ ১৫" type="number" value={form.durationMinutes || ""} onChange={e => setForm({ ...form, durationMinutes: e.target.value })} inputMode="numeric" pattern="[0-9]*" />
+            </>)}
           </>) : (<>
           {businessType === "veterinary" && (<>
           <label style={{ ...S.label, marginTop:8 }}>🏷️ TP (৳) <span style={{ color:T.sub, fontWeight:500, fontSize:11 }}>— শুধু রেফারেন্সের জন্য</span></label>
@@ -28295,7 +28349,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                     if (editId === p.id) { setEditId(null); setShowAdd(false); }
                     else {
                       setEditId(p.id);
-                      setForm({ name: p.name, price: String(p.price), stock: String(p.stock || 0), minStockAlert: String(p.minStockAlert || 5), category: p.category || "অন্যান্য", company: p.company || "", productType: (p.productType === "retail" ? "product" : p.productType) || "product", costPrice: String((p.lastRealCostPrice ?? p.costPrice) || ""), spPrice: p.spPrice !== undefined && p.spPrice !== null ? String(p.spPrice) : "", expiryDate: p.expiryDate || "", barcode: p.barcode || "", unit: p.unit || "", demandType: p.demandType || "common", dosageForm: p.dosageForm || "" });
+                      setForm({ name: p.name, price: String(p.price), stock: String(p.stock || 0), minStockAlert: String(p.minStockAlert || 5), category: p.category || "অন্যান্য", company: p.company || "", productType: (p.productType === "retail" ? "product" : p.productType) || "product", costPrice: String((p.lastRealCostPrice ?? p.costPrice) || ""), spPrice: p.spPrice !== undefined && p.spPrice !== null ? String(p.spPrice) : "", expiryDate: p.expiryDate || "", barcode: p.barcode || "", unit: p.unit || "", demandType: p.demandType || "common", dosageForm: p.dosageForm || "", durationMinutes: p.durationMinutes !== undefined && p.durationMinutes !== null ? String(p.durationMinutes) : "" });
                       setExtraBatches([]);
                       setShowAdd(false);
                       setCompanyCustom(!!p.company && !BD_PHARMA_COMPANIES.includes(p.company));
@@ -32356,6 +32410,23 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
     );
   };
 
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৩) — স্টাফ বিরতি টগল। এক ট্যাপে "বিরতিতে" মার্ক
+  // করা যায় (নামাজ/খাবারের বিরতি) — এই ফ্ল্যাগ ভবিষ্যতের মাল্টি-স্টাফ ওয়েট-টাইম
+  // এস্টিমেশন অ্যালগরিদমে ব্যবহার হবে (বিরতিতে থাকা স্টাফকে হিসাবের বাইরে রাখতে)।
+  // এখনই কোনো এস্টিমেশন লজিক নেই — শুধু ফ্ল্যাগ সেট/আনসেট + কার্ডে দেখানো।
+  const toggleStaffBreak = (u) => {
+    const updatedUser = { ...u, onBreak: !u.onBreak };
+    setUsers(prev => prev.map(x => x.id === u.id ? updatedUser : x));
+    showToast(updatedUser.onBreak ? `${u.name}-কে বিরতিতে মার্ক করা হয়েছে` : `${u.name} আবার সক্রিয়`, updatedUser.onBreak ? "#94a3b8" : "#22c55e");
+    verifyPermissionSync(
+      u.id,
+      (fresh) => !!fresh.onBreak === !!updatedUser.onBreak,
+      () => updatedUser,
+      showToast,
+      `${u.name}-এর বিরতি স্ট্যাটাস`
+    );
+  };
+
   // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৬) — existing স্টাফের কমিশন রেট বদলানো। নতুন
   // রেট শুধু আজকের পর থেকে নতুন ইনভয়েসে প্রযোজ্য হবে — পুরোনো ইনভয়েসে
   // item.staffCommissionRate স্ন্যাপশট হয়ে থাকে বলে ইতিহাস বদলায় না।
@@ -32583,14 +32654,29 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
             const schedule = (u.autoSchedules || []).find(s => s.key === "purchase_entry");
             const scheduleActive = isAutoScheduleActive(schedule);
             const initials = (u.name || "?").trim().charAt(0).toUpperCase();
+            // 🆕 (৬ আগস্ট ২০২৬, সেলুন প্রিমিয়াম রিডিজাইন) — আগে হার্ডকোড পার্পল
+            // (#8b5cf6/#4338ca) ছিল, থিম বদলালেও বদলাত না। এখন T.accent/T.accentDark
+            // দিয়ে — অ্যাভাটার রিং busy/free/বিরতি অনুযায়ী থিম-নিরপেক্ষ গ্লো রং পায়
+            // (ব্যস্ত হলে accent গ্লো, ফ্রি/স্বাভাবিক হলে accentDark গ্লো, বিরতিতে ধূসর ম্লান)।
+            const cAccent = T.accent, cAccentDark = T.accentDark || T.accent;
+            const onBreak = isSalon && !!u.onBreak;
             return (
-            <div key={u.id} style={{ background: "linear-gradient(145deg,#171335,#0f172a)", borderRadius: 14, border: "1px solid #8b5cf633", marginBottom: 10, overflow:"hidden", boxShadow:"0 4px 14px #00000033" }}>
+            <div key={u.id} style={{ background: T.card, borderRadius: 14, border: `1px solid ${onBreak ? "#64748b44" : cAccent + "33"}`, marginBottom: 10, overflow:"hidden", boxShadow:"0 4px 14px #00000033" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px" }}>
-                <div style={{ width: 38, height: 38, borderRadius: 11, background: "linear-gradient(135deg,#8b5cf6,#4338ca)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight:900, color:"#fff", flexShrink: 0, boxShadow:"0 3px 10px #8b5cf655" }}>{initials}</div>
+                <div style={{ width: 38, height: 38, borderRadius: 11, background: onBreak ? "linear-gradient(135deg,#64748b,#475569)" : `linear-gradient(135deg, ${cAccent}, ${cAccentDark})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight:900, color:"#fff", flexShrink: 0, boxShadow: onBreak ? "none" : `0 3px 10px ${cAccent}55`, opacity: onBreak ? 0.6 : 1 }}>{initials}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ color: T.text, fontWeight: 800, fontSize: 13 }}>{u.name}</div>
 
                   <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginTop:4 }}>
+                    {/* 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৩) — বিরতি টগল, শুধু salon-এ।
+                        এক ট্যাপে বিরতিতে/সক্রিয় মার্ক করা যায়। */}
+                    {isSalon && (
+                      <span
+                        onClick={() => toggleStaffBreak(u)}
+                        style={{ color: onBreak ? "#94a3b8" : "#5eead4", fontSize:9.5, fontWeight:700, background: onBreak ? "#64748b22" : "#22e3d622", border:`1px solid ${onBreak ? "#64748b44" : "#22e3d644"}`, borderRadius:20, padding:"1px 8px", cursor:"pointer" }}>
+                        {onBreak ? "☕ বিরতিতে" : "✅ সক্রিয়"}
+                      </span>
+                    )}
                     {activePurchasePerm && (
                       <span style={{ color:"#c4b5fd", fontSize:9.5, fontWeight:700, background:"#7c3aed22", border:"1px solid #7c3aed44", borderRadius:20, padding:"1px 8px" }}>
                         🔑 {new Date(activePurchasePerm.expiresAt).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",timeZone:"Asia/Dhaka"})} পর্যন্ত
@@ -32967,21 +33053,39 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
     showToast("টোকেন বাতিল হয়েছে", "#ef4444");
   };
 
-  const inputStyle = { width: "100%", boxSizing: "border-box", background: "#1e293b", border: `1px solid ${T.border}`, borderRadius: 8, padding: "9px 10px", color: T.text, fontSize: 13, fontWeight: 600, fontFamily: "inherit", marginBottom: 8 };
+  const inputStyle = { width: "100%", boxSizing: "border-box", background: T.input || "#1e293b", border: `1px solid ${T.border}`, borderRadius: 8, padding: "9px 10px", color: T.text, fontSize: 13, fontWeight: 600, fontFamily: "inherit", marginBottom: 8 };
+
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন প্রিমিয়াম রিডিজাইন) — "ডিজিটাল টিকিট চিপ": প্রতিটা টোকেন
+  // নাম্বারকে একটা ছোট মনোস্পেস চিপ হিসেবে দেখানো হয় (ডিজিটাল রিডআউটের মতো), থিমের
+  // accent-gradient বর্ডার দিয়ে। glow=true হলে (in_progress টোকেনে) ticketGlow পালস
+  // অ্যানিমেশন যোগ হয় — currentColor-নির্ভর বলে থিম বদলালেও নিজে থেকেই মানিয়ে যায়।
+  const TicketChip = ({ tokenNo, glow }) => (
+    <span style={{
+      display: "inline-flex", alignItems: "center", justifyContent: "center",
+      minWidth: 34, height: 26, padding: "0 8px", marginRight: 8,
+      borderRadius: 7, fontFamily: "'Courier New', monospace", fontWeight: 900, fontSize: 13,
+      color: T.headingColor || T.accent,
+      background: `linear-gradient(135deg, ${T.accent}22, ${T.accentDark}22)`,
+      border: `1.5px solid ${T.accent}77`,
+      ...(glow ? { color: T.accent, animation: "ticketGlow 2s ease-in-out infinite" } : null),
+    }}>
+      #{tokenNo}
+    </span>
+  );
 
   return (
     <div style={{ padding: "12px 14px 90px" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
         <div style={{ fontSize: 15, fontWeight: 900, color: T.text }}>🎫 টোকেন সিরিয়াল</div>
         <button onClick={() => setShowForm(v => !v)}
-          style={{ background: showForm ? "transparent" : "linear-gradient(135deg,#7c3aed,#5b21b6)", border: showForm ? `1.5px solid ${T.border}` : "none", color: showForm ? T.sub : "#fff", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+          style={{ background: showForm ? "transparent" : `linear-gradient(135deg, ${T.accent}, ${T.accentDark})`, border: showForm ? `1.5px solid ${T.border}` : "none", color: showForm ? T.sub : "#fff", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
           {showForm ? "✕ বন্ধ করুন" : "+ নতুন টোকেন"}
         </button>
       </div>
 
       {showForm && (
-        <div style={{ background: "#8b5cf60c", border: "1px solid #8b5cf622", borderRadius: 12, padding: 12, marginBottom: 14 }}>
-          <div style={{ fontSize: 11, fontWeight: 800, color: "#c4b5fd", marginBottom: 8 }}>টোকেন #{nextTokenNo}</div>
+        <div style={{ background: `${T.accent}0c`, border: `1px solid ${T.accent}22`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: T.headingColor || T.accent, marginBottom: 8 }}>টোকেন #{nextTokenNo}</div>
           <input style={inputStyle} placeholder="কাস্টমারের নাম *" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
           <input style={inputStyle} type="tel" placeholder="ফোন (ঐচ্ছিক)" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} />
           <input style={inputStyle} placeholder="সেবা / নোট (ঐচ্ছিক)" value={form.service} onChange={e => setForm(f => ({ ...f, service: e.target.value }))} />
@@ -32990,7 +33094,7 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
             {queueStaffOptions.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
           </select>
           <button onClick={addToken}
-            style={{ width: "100%", background: "linear-gradient(135deg,#7c3aed,#5b21b6)", border: "none", color: "#fff", borderRadius: 8, padding: "10px 10px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+            style={{ width: "100%", background: `linear-gradient(135deg, ${T.accent}, ${T.accentDark})`, border: "none", color: "#fff", borderRadius: 8, padding: "10px 10px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
             ✓ টোকেন যোগ করুন
           </button>
         </div>
@@ -33000,16 +33104,19 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
       <div style={{ fontSize: 11.5, fontWeight: 800, color: T.sub, marginBottom: 8 }}>🟢 চলছে ({inProgress.length})</div>
       {inProgress.length === 0 && <div style={{ fontSize: 12, color: T.sub, marginBottom: 14 }}>এই মুহূর্তে কেউ সার্ভিসে নেই</div>}
       {inProgress.map(t => (
-        <div key={t.id} style={{ background: "#22c55e0c", border: "1px solid #22c55e33", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+        <div key={t.id} style={{ background: `linear-gradient(135deg, ${T.accent}14, ${T.accentDark}0c)`, border: `1.5px solid ${T.accent}55`, borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 13, fontWeight: 800, color: T.text }}>#{t.tokenNo} · {t.customerName}</div>
-              <div style={{ fontSize: 10.5, color: T.sub, marginTop: 2 }}>
-                {staffName(t.staffId) || "স্টাফ নির্ধারিত নয়"}{t.service ? ` · ${t.service}` : ""}
+            <div style={{ minWidth: 0, display: "flex", alignItems: "center" }}>
+              <TicketChip tokenNo={t.tokenNo} glow />
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 800, color: T.text }}>{t.customerName}</div>
+                <div style={{ fontSize: 10.5, color: T.sub, marginTop: 2 }}>
+                  {staffName(t.staffId) || "স্টাফ নির্ধারিত নয়"}{t.service ? ` · ${t.service}` : ""}
+                </div>
               </div>
             </div>
             <button onClick={() => goToInvoiceFromQueue(t)}
-              style={{ flexShrink: 0, background: "linear-gradient(135deg,#22c55e,#15803d)", border: "none", color: "#fff", borderRadius: 8, padding: "8px 10px", fontSize: 11.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+              style={{ flexShrink: 0, background: `linear-gradient(135deg, ${T.accent}, ${T.accentDark})`, border: "none", color: "#fff", borderRadius: 8, padding: "8px 10px", fontSize: 11.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
               সম্পন্ন ও বিল করুন
             </button>
           </div>
@@ -33020,26 +33127,29 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
       <div style={{ fontSize: 11.5, fontWeight: 800, color: T.sub, margin: "14px 0 8px" }}>🕓 অপেক্ষমান ({waiting.length})</div>
       {waiting.length === 0 && <div style={{ fontSize: 12, color: T.sub, marginBottom: 8 }}>লাইনে কেউ নেই</div>}
       {waiting.map((t, idx) => (
-        <div key={t.id} style={{ background: "#f59e0b0c", border: "1px solid #f59e0b33", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+        <div key={t.id} style={{ background: "#f0b4290c", border: "1px solid #f0b42933", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 13, fontWeight: 800, color: T.text }}>#{t.tokenNo} · {t.customerName}</div>
-              <div style={{ fontSize: 10.5, color: T.sub, marginTop: 2 }}>
-                আনু. অপেক্ষা ~{idx * 15} মিনিট{t.service ? ` · ${t.service}` : ""}
+            <div style={{ minWidth: 0, display: "flex", alignItems: "flex-start" }}>
+              <TicketChip tokenNo={t.tokenNo} />
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 800, color: T.text }}>{t.customerName}</div>
+                <div style={{ fontSize: 10.5, color: T.sub, marginTop: 2 }}>
+                  আনু. অপেক্ষা ~{idx * 15} মিনিট{t.service ? ` · ${t.service}` : ""}
+                </div>
+                <select value={t.staffId || ""} onChange={e => assignStaff(t, e.target.value)}
+                  style={{ marginTop: 6, background: T.input || "#1e293b", border: `1px solid ${T.border}`, borderRadius: 6, padding: "4px 6px", color: T.text, fontSize: 10.5, fontFamily: "inherit" }}>
+                  <option value="">স্টাফ এসাইন করুন</option>
+                  {queueStaffOptions.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                </select>
               </div>
-              <select value={t.staffId || ""} onChange={e => assignStaff(t, e.target.value)}
-                style={{ marginTop: 6, background: "#1e293b", border: `1px solid ${T.border}`, borderRadius: 6, padding: "4px 6px", color: T.text, fontSize: 10.5, fontFamily: "inherit" }}>
-                <option value="">স্টাফ এসাইন করুন</option>
-                {queueStaffOptions.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-              </select>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
               <button onClick={() => startToken(t)}
-                style={{ background: "linear-gradient(135deg,#f59e0b,#b45309)", border: "none", color: "#fff", borderRadius: 8, padding: "7px 10px", fontSize: 11.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+                style={{ background: "linear-gradient(135deg,#f0b429,#b4780f)", border: "none", color: "#fff", borderRadius: 8, padding: "7px 10px", fontSize: 11.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
                 শুরু করুন
               </button>
               <button onClick={() => cancelToken(t)}
-                style={{ background: "transparent", border: `1px solid ${T.border}`, color: "#ef4444", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                style={{ background: "transparent", border: `1px solid ${T.border}`, color: T.danger || "#ef4444", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
                 ✕ বাতিল
               </button>
             </div>
@@ -33052,11 +33162,11 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
         <>
           <div style={{ fontSize: 11.5, fontWeight: 800, color: T.sub, margin: "14px 0 8px" }}>আজকের বাকি (বিল/বাতিল)</div>
           {doneToday.map(t => (
-            <div key={t.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "7px 9px", background: "#1e293b55", border: `1px solid ${T.border}`, borderRadius: 8, marginBottom: 5 }}>
-              <div style={{ fontSize: 11.5, color: T.sub }}>
+            <div key={t.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "7px 9px", background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, marginBottom: 5 }}>
+              <div style={{ fontSize: 11.5, color: T.sub, fontFamily: "'Courier New', monospace" }}>
                 #{t.tokenNo} · {t.customerName}
               </div>
-              <div style={{ fontSize: 10.5, fontWeight: 800, color: t.status === "billed" ? "#4ade80" : "#ef4444" }}>
+              <div style={{ fontSize: 10.5, fontWeight: 800, color: t.status === "billed" ? (T.success || "#4ade80") : (T.danger || "#ef4444") }}>
                 {t.status === "billed" ? "✓ বিল হয়েছে" : "✕ বাতিল"}
               </div>
             </div>
