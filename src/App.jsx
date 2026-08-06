@@ -231,6 +231,11 @@ const useAppStore = create(subscribeWithSelector((set) => ({
   // ডুপ্লিকেট করে রাখা হয় না, শুধু "টাকা হাতে দেওয়া/নেওয়া" এন্ট্রিগুলো।
   staffLedger:       [],
 
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৩) — টোকেন/সিরিয়াল কিউ: ওয়াক-ইন কাস্টমারদের
+  // অপেক্ষার লাইন ম্যানেজ করে (টোকেন নং, নাম, সেবা, স্টাফ-এসাইন, স্ট্যাটাস)।
+  // status: "waiting" → "in_progress" → "billed" (অথবা "cancelled")।
+  serialQueue:       [],
+
   // ── Shop / Auth ───────────────────────────────────────────────────────────
   shopName:          "SBM",
   businessType:      "pharmacy", // এখন থেকে এটাই "active" business type — একাধিক enabled থাকলে owner এটার মধ্যেই সুইচ করে
@@ -262,6 +267,10 @@ const useAppStore = create(subscribeWithSelector((set) => ({
   detailCId:         null,
   preselectedCust:   null,
   preselectedType:   null,
+  // 🆕 (সেলুন ধাপ ৩, টোকেন/সিরিয়াল কিউ) — ephemeral nav state: "টোকেন থেকে
+  // বিল করুন" চাপলে এই টোকেনের নাম/সেবা/স্টাফ ইনভয়েস কার্টে প্রি-ফিল হয়
+  // (preselectedCust-এর ঠিক একই প্যাটার্নে, persist করার দরকার নেই)।
+  queueBillPrefill:  null,
   invoiceKey:        0,
   dashModal:         null,
   invModal:          null,
@@ -3568,6 +3577,7 @@ const SK = {
   quotations:       "sbm-quotations",           // 📋 কোটেশন
   supplierPayments:  "sbm-supplier-payments",     // 🏭 সাপ্লায়ার পেমেন্ট
   staffLedger:       "sbm-staff-ledger",           // 💇 স্টাফ কমিশন অগ্রিম/পরিশোধ লগ (সেলুন)
+  serialQueue:       "sbm-serial-queue",            // 🎫 টোকেন/সিরিয়াল অপেক্ষার লাইন (সেলুন)
   recoveryPhone:   "sbm-recovery-phone",     // 📱 Recovery ফোন নম্বর
   recoveryPinHash: "sbm-recovery-pin-hash",  // 🔐 Recovery PIN hash
   lastMasterSync:  "sbm-last-master-sync",   // 🔄 Master Sync শেষ কখন হয়েছিল
@@ -3592,6 +3602,7 @@ const LOCAL_BUSINESS_SCOPED_KEYS = new Set([
   SK.deletedCustomers, SK.deletedProducts, SK.paymentInvoices,
   SK.suppliers, SK.purchaseOrders, SK.stockMovements, SK.cashLogs,
   SK.expenses, SK.returns, SK.auditLogs, SK.quotations, SK.supplierPayments, SK.staffLedger,
+  SK.serialQueue,
   // 🆕 ফিক্স (২০ জুলাই ২০২৬ — "থিম আলাদা বিজনেসে আলাদা হওয়া উচিত" ফিডব্যাক):
   // থিম/ডার্কমোড/ফন্টসাইজ আগে ইচ্ছাকৃতভাবে শপ-লেভেল (unprefixed, সব বিজনেসে
   // শেয়ার্ড) রাখা হয়েছিল। এখন ইউজারের স্পষ্ট অনুরোধে এগুলোও বিজনেস-স্কোপড —
@@ -10619,6 +10630,7 @@ function SmartBusinessMgmt() {
   const suppliers        = useAppStore(s => s.suppliers);
   const expenses         = useAppStore(s => s.expenses);
   const staffLedger      = useAppStore(s => s.staffLedger);
+  const serialQueue      = useAppStore(s => s.serialQueue);
   const returns          = useAppStore(s => s.returns);
   const auditLogs        = useAppStore(s => s.auditLogs);
   const quotations       = useAppStore(s => s.quotations);
@@ -10648,6 +10660,7 @@ function SmartBusinessMgmt() {
   const detailCId        = useAppStore(s => s.detailCId);
   const preselectedCust  = useAppStore(s => s.preselectedCust);
   const preselectedType  = useAppStore(s => s.preselectedType);
+  const queueBillPrefill = useAppStore(s => s.queueBillPrefill);
   const invoiceKey       = useAppStore(s => s.invoiceKey);
   const dashModal        = useAppStore(s => s.dashModal);
   const invModal         = useAppStore(s => s.invModal);
@@ -10720,6 +10733,7 @@ function SmartBusinessMgmt() {
   const setDetailCId        = useCallback((v) => _set("detailCId",        v), [_set]);
   const setPreselectedCust  = useCallback((v) => _set("preselectedCust",  v), [_set]);
   const setPreselectedType  = useCallback((v) => _set("preselectedType",  v), [_set]);
+  const setQueueBillPrefill = useCallback((v) => _set("queueBillPrefill", v), [_set]);
   const setInvoiceKey       = useCallback((v) => _set("invoiceKey",       v), [_set]);
   const setCurrentUser      = useCallback((v) => _set("currentUser",      v), [_set]);
   const setSmsCount         = useCallback((v) => _set("smsCount",         v), [_set]);
@@ -10766,6 +10780,7 @@ function SmartBusinessMgmt() {
   const setSuppliers        = useCallback((v) => _set("suppliers",        v), [_set]);
   const setExpenses         = useCallback((v) => _set("expenses",         v), [_set]);
   const setStaffLedger      = useCallback((v) => _set("staffLedger",      v), [_set]);
+  const setSerialQueue      = useCallback((v) => _set("serialQueue",      v), [_set]);
   const setReturns          = useCallback((v) => _set("returns",          v), [_set]);
   const setAuditLogs        = useCallback((v) => _set("auditLogs",        v), [_set]);
   const setQuotations       = useCallback((v) => _set("quotations",       v), [_set]);
@@ -11009,7 +11024,7 @@ function SmartBusinessMgmt() {
         SK.lastDriveBackup, SK.lastSnapshotBackup,
         SK.lastMasterSync, SK.autoMasterSyncEnabled, LK(SK.suppliers), LK(SK.purchaseOrders),
         LK(SK.stockMovements), LK(SK.cashLogs), LK(SK.expenses), LK(SK.returns), LK(SK.auditLogs),
-        LK(SK.quotations), LK(SK.supplierPayments), LK(SK.staffLedger),
+        LK(SK.quotations), LK(SK.supplierPayments), LK(SK.staffLedger), LK(SK.serialQueue),
       ];
       const boot1 = await loadMany(CRITICAL_KEYS);
       const rawCustomers    = boot1[LK(SK.customers)];
@@ -11133,6 +11148,7 @@ function SmartBusinessMgmt() {
           quotations:            boot2[LK(SK.quotations)]           || [],
           supplierPayments:      boot2[LK(SK.supplierPayments)]     || [],
           staffLedger:           boot2[LK(SK.staffLedger)]          || [],
+          serialQueue:           boot2[LK(SK.serialQueue)]          || [],
           // businessType/businessTypeLocked/enabledBusinessTypes এখন wave 1-এই
           // সেট হয়ে গেছে (দেখুন উপরের CRITICAL_KEYS কমেন্ট) — এখানে আর বসানো হয়
           // না, নাহলে wave 2 আবার সেগুলোকে (এই মুহূর্তে ঠিকমতোই থাকা) ওভাররাইট
@@ -11215,6 +11231,38 @@ function SmartBusinessMgmt() {
   const clearPreselected = useCallback(() => {
     setPreselectedCust(null); setPreselectedType(null);
   }, [setPreselectedCust, setPreselectedType]);
+
+  // 🆕 (সেলুন ধাপ ৩, টোকেন/সিরিয়াল কিউ) — একটা অপেক্ষমান টোকেন থেকে সরাসরি
+  // ইনভয়েস ট্যাবে গিয়ে ওয়াক-ইন কার্ট প্রি-ফিল করা (নাম/ফোন/স্টাফ/সেবা-নোট)।
+  // টোকেনটা "in_progress"-এ মার্ক হয় (যদি আগে থেকে না থাকে), যাতে বিলিং শুরু
+  // হয়েছে বোঝা যায় — actual "billed" মার্ক হবে ইনভয়েস সেভ হলে (দেখুন
+  // onQueueTokenBilled)।
+  const goToInvoiceFromQueue = useCallback((token) => {
+    if (!token) return;
+    setQueueBillPrefill({
+      tokenId:  token.id,
+      name:     token.customerName || "",
+      phone:    token.phone || "",
+      staffId:  token.staffId || null,
+      note:     token.service || token.note || "",
+    });
+    if (token.status === "waiting") {
+      setSerialQueue(prev => (prev || []).map(t =>
+        t.id === token.id ? { ...t, status: "in_progress", startedAt: Date.now() } : t
+      ));
+    }
+    setTab("invoice");
+  }, [setQueueBillPrefill, setSerialQueue, setTab]);
+
+  // ইনভয়েস সেভ হওয়ার পর কল হয় (queueBillPrefill.tokenId থাকলে) — টোকেনটা
+  // "billed" মার্ক করে দেয় এবং prefill স্টেট ক্লিয়ার করে দেয়।
+  const onQueueTokenBilled = useCallback((tokenId) => {
+    if (!tokenId) return;
+    setSerialQueue(prev => (prev || []).map(t =>
+      t.id === tokenId ? { ...t, status: "billed", billedAt: Date.now() } : t
+    ));
+    setQueueBillPrefill(null);
+  }, [setSerialQueue, setQueueBillPrefill]);
 
   // 🔴 ফিক্স (রুট কজ ৩ — রিকনেক্ট-পরবর্তী ড্রিফট-অ্যালার্ট): অফলাইন রেসের সব
   // কোণা কখনোই ১০০% প্রুফ করা যাবে না (উপরের void/return/createInvoice
@@ -11773,6 +11821,7 @@ function SmartBusinessMgmt() {
   // সরাসরি FSS.deleteRecord("expenses", id) কল করে (দেখুন Expenses পেজ)।
   useFSSCollection("expenses", expenses, setExpenses, fssReady, { onSync: setSyncToast, syncDeletes: false });
   useFSSCollection("staffLedger", staffLedger, setStaffLedger, fssReady, { onSync: setSyncToast, syncDeletes: false });
+  useFSSCollection("serialQueue", serialQueue, setSerialQueue, fssReady, { onSync: setSyncToast, syncDeletes: false });
   useEffect(() => {
     if (!fssReady || !FSS._db) return;
     // 🔴 মৃত কোড ছিল (Firebase সরানো হয়েছে, ২৯ জুলাই ২০২৬, Session A)।
@@ -12047,13 +12096,14 @@ function SmartBusinessMgmt() {
   // থাকা (local-only) দোকানে প্রতি রিলোডে এই ডেটা হারিয়ে যেত।
   useEffect(() => { if (loaded) debouncedSave(LK(SK.expenses),         expenses,         1500); }, [expenses,         loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.staffLedger),      staffLedger,      1500); }, [staffLedger,      loaded]);
+  useEffect(() => { if (loaded) debouncedSave(LK(SK.serialQueue),      serialQueue,      1500); }, [serialQueue,      loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.returns),          returns,          1500); }, [returns,          loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.auditLogs),        auditLogs,        2000); }, [auditLogs,        loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.quotations),       quotations,       1500); }, [quotations,       loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.supplierPayments), supplierPayments, 1500); }, [supplierPayments, loaded]);
   // 🔴 ফিক্স: "ব্যাকআপ প্রয়োজন" ব্যাজ আগে শুধু customers/products/invoices/txns
   // বদলালে জ্বলত — বাকি ব্যাকআপযোগ্য ফিল্ডগুলো বদলালে জ্বলত না।
-  useEffect(() => { if (loaded) setBackupNeeded(true); }, [suppliers, purchaseOrders, stockMovements, cashLogs, expenses, returns, auditLogs, quotations, supplierPayments, paymentInvoices, staffLedger, loaded]);
+  useEffect(() => { if (loaded) setBackupNeeded(true); }, [suppliers, purchaseOrders, stockMovements, cashLogs, expenses, returns, auditLogs, quotations, supplierPayments, paymentInvoices, staffLedger, serialQueue, loaded]);
 
   // 🖥️ Fix black screen on app resume/minimize (Capacitor WebView repaint bug)
   // 🔴 ফিক্স: visibilitychange ও Capacitor resume — দুটো ইভেন্টই একসাথে/কাছাকাছি
@@ -12175,7 +12225,7 @@ function SmartBusinessMgmt() {
     // বানানো হয় — নতুন কোনো collection ভবিষ্যতে যোগ হলে শুধু ওই একটা array-তে
     // নাম যোগ করলেই এই তিনটাই (payload, checksum, counts) নিজে থেকে কভার করবে,
     // এখানে আলাদা করে টাচ করা লাগবে না।
-    const stateMap = { customers, products, invoices: invoicesForBackup, txns: txnsForBackup, smsLog, paymentInvoices, purchaseOrders, stockMovements: stockMovementsForBackup, users, cashLogs: cashLogsForBackup, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, staffLedger };
+    const stateMap = { customers, products, invoices: invoicesForBackup, txns: txnsForBackup, smsLog, paymentInvoices, purchaseOrders, stockMovements: stockMovementsForBackup, users, cashLogs: cashLogsForBackup, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, staffLedger, serialQueue };
     const payload = {};
     const counts = {};
     BACKUP_FIELDS.forEach(f => {
@@ -12217,7 +12267,7 @@ function SmartBusinessMgmt() {
         history: license.history,
       },
     };
-  }, [customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, staffLedger, firebaseEnabled, businessType, enabledBusinessTypes, license.deviceId, license.unlockedUntil, license.history]);
+  }, [customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, staffLedger, serialQueue, firebaseEnabled, businessType, enabledBusinessTypes, license.deviceId, license.unlockedUntil, license.history]);
 
   // ── GoogleDriveSection/LocalStorageSection (ম্যানুয়াল Settings প্যানেল)-এ
   // `data`/`setters` prop হিসেবে যা যায় — আগে এই দুই জায়গাতেই আলাদা করে ১৮টা
@@ -12225,7 +12275,7 @@ function SmartBusinessMgmt() {
   // BACKUP_FIELDS রেজিস্ট্রি থেকে বানানো হয় — নতুন কোনো collection যোগ হলে এই
   // ম্যানুয়াল প্যানেল দুটোও নিজে থেকেই কভার হয়ে যাবে।
   const buildManualBackupData = useCallback(() => {
-    const stateMap = { customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, staffLedger };
+    const stateMap = { customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, staffLedger, serialQueue };
     const out = {};
     BACKUP_FIELDS.forEach(f => { out[f] = stateMap[f]; });
     // 🆕 Multi-Business RestoreGuard: buildBackupData-এর মতোই businessType ট্যাগ,
@@ -12240,9 +12290,9 @@ function SmartBusinessMgmt() {
       history: license.history,
     };
     return out;
-  }, [customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, staffLedger, businessType, enabledBusinessTypes, license.deviceId, license.unlockedUntil, license.history]);
+  }, [customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, staffLedger, serialQueue, businessType, enabledBusinessTypes, license.deviceId, license.unlockedUntil, license.history]);
   const manualBackupSetters = useMemo(() => {
-    const setterMap = { customers: setCustomers, products: setProducts, invoices: setInvoices, txns: setTxns, smsLog: setSmsLog, paymentInvoices: setPaymentInvoices, purchaseOrders: setPurchaseOrders, stockMovements: setStockMovements, users: setUsers, cashLogs: setCashLogs, suppliers: setSuppliers, expenses: setExpenses, returns: setReturns, auditLogs: setAuditLogs, quotations: setQuotations, supplierPayments: setSupplierPayments, deletedProducts: setDeletedProducts, deletedCustomers: setDeletedCustomers, staffLedger: setStaffLedger };
+    const setterMap = { customers: setCustomers, products: setProducts, invoices: setInvoices, txns: setTxns, smsLog: setSmsLog, paymentInvoices: setPaymentInvoices, purchaseOrders: setPurchaseOrders, stockMovements: setStockMovements, users: setUsers, cashLogs: setCashLogs, suppliers: setSuppliers, expenses: setExpenses, returns: setReturns, auditLogs: setAuditLogs, quotations: setQuotations, supplierPayments: setSupplierPayments, deletedProducts: setDeletedProducts, deletedCustomers: setDeletedCustomers, staffLedger: setStaffLedger, serialQueue: setSerialQueue };
     const out = {};
     BACKUP_FIELDS.forEach(f => { out["set" + f[0].toUpperCase() + f.slice(1)] = setterMap[f]; });
     return out;
@@ -13906,6 +13956,9 @@ function SmartBusinessMgmt() {
       // দেখানো হচ্ছে — আন্ডারলাইং স্ক্রিন/ডেটা একই (productType:"service" আইটেম),
       // শুধু লেবেল প্রসঙ্গ অনুযায়ী বদলাচ্ছে।
       { id: "products",  label: businessType === "salon" ? "সার্ভিস" : "পণ্য",     icon: "M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4zM3 6h18" },
+      // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৩): টোকেন/সিরিয়াল কিউ — শুধু salon
+      // বিজনেসে দেখানো হয় (নিচে businessType ফিল্টার দেখুন)।
+      { id: "serialQueue", label: "টোকেন সিরিয়াল", icon: "M12 8v4l3 3m6-3a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" },
       { id: "notifications", label: "নোটিফিকেশন", icon: "M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0" },
       { id: "dailySummary", label: "দৈনিক সারসংক্ষেপ", icon: "M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0" },
       { id: "expense",  label: "এক্সপেন্স ট্রেকার", icon: "M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" },
@@ -13927,6 +13980,12 @@ function SmartBusinessMgmt() {
     // Staff cannot see sms/ai/দৈনিক সারসংক্ষেপ/অডিট ট্রেইল/স্টাফ ব্যবস্থাপনা (settings এখন দেখবে — শুধু theme+font)
     // 🔴 ফিক্স: "ইনভয়েস হিস্ট্রি" (returns) ও "সাপ্লায়ার" (supplier) এখন থেকে শুধু admin/owner দেখবে — স্টাফের জন্য হাইড
     let visible = isStaff ? all.filter(n => !["sms", "ai", "dailySummary", "auditTrail", "staffMgmt", "returns", "supplier", "subscription", "batchSync"].includes(n.id)) : all;
+    // salon ছাড়া অন্য বিজনেস-টাইপে টোকেন কিউ প্রাসঙ্গিক না — হাইড
+    if (businessType !== "salon") visible = visible.filter(n => n.id !== "serialQueue");
+    // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৬) — salon-এ পণ্য কেনা/ব্যাচ-ট্র্যাকিং প্রাসঙ্গিক
+    // না (সার্ভিস-ভিত্তিক ব্যবসা, ফিজিক্যাল স্টক ব্যাচ/এক্সপায়ারি নেই) — তাই
+    // "সাপ্লায়ার" (PO/সাপ্লায়ার পেমেন্ট) ও "লস-ঝুঁকি ও ব্যাচ সিঙ্ক" মডিউল হাইড।
+    if (businessType === "salon") visible = visible.filter(n => n.id !== "supplier" && n.id !== "batchSync");
     // 🔴 Session B: OFFLINE_MODE স্থায়ীভাবে true, তাই এই ফিল্টার কখনো চলত না —
     // "সাবস্ক্রিপশন" মেনু আইটেম সবসময় দৃশ্যমান থাকে, সরিয়ে দেওয়া হলো।
     // "এক্সপেন্স ট্রেকার" শুধু Admin রোল দেখতে পাবে — অন্য কোনো রোল (staff/অজানা) দেখবে না
@@ -14746,6 +14805,8 @@ function SmartBusinessMgmt() {
               supplierPayments={supplierPayments}
               setSupplierPayments={setSupplierPayments}
               returns={returns}
+              serialQueue={serialQueue}
+              users={users}
             />
           </ErrorBoundary>
         )}
@@ -14795,6 +14856,8 @@ function SmartBusinessMgmt() {
               users={users}
               onDone={clearPreselected}
               license={license}
+              queueBillPrefill={queueBillPrefill}
+              onQueueTokenBilled={onQueueTokenBilled}
             />
           </ErrorBoundary>
         )}
@@ -15040,6 +15103,19 @@ function SmartBusinessMgmt() {
               invoices={invoices}
               products={products}
               stockMovements={stockMovements}
+            />
+          </ErrorBoundary>
+        )}
+        {tab === "serialQueue" && (
+          <ErrorBoundary T={T}>
+            <SerialQueueModule T={T} S={S}
+              currentUser={currentUser}
+              users={users}
+              showToast={showToast}
+              serialQueue={serialQueue}
+              setSerialQueue={setSerialQueue}
+              goToInvoiceFromQueue={goToInvoiceFromQueue}
+              businessType={businessType}
             />
           </ErrorBoundary>
         )}
@@ -17308,7 +17384,7 @@ function getInvoiceSkin(_isDark) {
   };
 }
 
-function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCustomers, setInvoices, setProducts, sendSMS, showToast, addTxn, shopName, btConnected, btDevice, onConnectBluetooth, createPaymentInvoice, preselectedCustomer, preselectedType, setTab, onDone, purchaseOrders = [], currentUser, businessType = "pharmacy", users = [], license = { isLocked: false } }) {
+function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCustomers, setInvoices, setProducts, sendSMS, showToast, addTxn, shopName, btConnected, btDevice, onConnectBluetooth, createPaymentInvoice, preselectedCustomer, preselectedType, setTab, onDone, purchaseOrders = [], currentUser, businessType = "pharmacy", users = [], license = { isLocked: false }, queueBillPrefill = null, onQueueTokenBilled }) {
   const IS = useMemo(() => getInvoiceSkin(isDark), [isDark]);
   // 🆕 ধাপ ৪: semen business-এ ইনভয়েস স্টেপ ২ প্রোডাক্ট কার্ডে ক্রয়মূল্য হাইড
   // (registry hiddenFields.invoiceCard: "purchasePrice")
@@ -17316,10 +17392,23 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
   // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৩) — কোন স্টাফ সার্ভিস দিয়েছে, শুধু salon-এ প্রযোজ্য।
   // ইনভয়েসে একজনই স্টাফ থাকবে (প্ল্যানে চূড়ান্ত)।
   const isSalon = businessType === "salon";
-  const staffOptions = isSalon ? users.filter(u => u.role === "staff") : [];
-  const [staffId,     setStaffId]     = useState(null);
-  const [step,       setStep]       = useState(preselectedCustomer ? 2 : 1);
-  const [selCust,    setSelCust]    = useState(preselectedCustomer || null);
+  // 🔴 ফিক্স (৬ আগস্ট ২০২৬ — মাল্টি-বিজনেস প্রোটেকশন): মাল্টি-বিজনেস শপে (ভবিষ্যতে
+  // salon + অন্য বিজনেস একসাথে চালু হলে) অন্য বিজনেসের স্টাফও এখানে দেখাত। এখন শুধু
+  // এই বিজনেসে assign করা স্টাফ (বা পুরনো রেকর্ড যেখানে assignedBusinessType নেই,
+  // তাদের আগের মতোই সবখানে দেখানো হয়) — single-business শপে (বর্তমান সব ৫০০ শপ) কোনো
+  // পরিবর্তন হয় না, যেহেতু addUser()-এ সবসময় assignedBusinessType সেট হয়ে যায় একই businessType-এ।
+  const staffOptions = isSalon ? users.filter(u => u.role === "staff" && (!u.assignedBusinessType || u.assignedBusinessType === businessType)) : [];
+  const [staffId,     setStaffId]     = useState(queueBillPrefill?.staffId || null);
+  const [step,       setStep]       = useState((preselectedCustomer || queueBillPrefill) ? 2 : 1);
+  // 🔴 ফিক্স (৬ আগস্ট ২০২৬ — টোকেন কিউ থেকে "সম্পন্ন ও বিল করুন" ব্রোকেন ছিল):
+  // queueBillPrefill থাকলে step সরাসরি 2-এ যায়, কিন্তু selCust আগে null-ই থেকে
+  // যেত (শুধু preselectedCustomer এই স্টেট সেট করত) — ফলে কাস্টমার/পণ্য বাছাই
+  // ছাড়াই ইনভয়েস সেভ করা যেত না ("কাস্টমার ও পণ্য বেছে নিন" এরর), অথচ ইউজার
+  // স্টেপ ১-এ ফেরার কোনো উপায়ও ছিল না। এখন queueBillPrefill থাকলে সরাসরি
+  // walk-in কাস্টমার হিসেবে selCust সেট হয়ে যায় (নিচের "Walk-in" বাটনের মতোই)।
+  const [selCust,    setSelCust]    = useState(preselectedCustomer || (queueBillPrefill
+    ? { id: "__walkin__", name: "Walk-in Customer", mobile: "", balance: 0, serial: "👤" }
+    : null));
   const [custSearch, setCustSearch] = useState("");
   const [items,      setItems]      = useState([]);
   const [catFilter,  setCatFilter]  = useState("সব");
@@ -17330,8 +17419,8 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
   const [dueDate,    setDueDate]    = useState(""); // বাকির পরিশোধের তারিখ
   const [walkInPayType,    setWalkInPayType]    = useState("cash"); // walk-in: cash | partial
   const [walkInPartialAmt, setWalkInPartialAmt] = useState(""); // walk-in নগদ পেলাম
-  const [walkInName,       setWalkInName]       = useState(""); // walk-in বাকি কাস্টমারের নাম
-  const [walkInMobile,     setWalkInMobile]     = useState(""); // walk-in বাকি কাস্টমারের মোবাইল
+  const [walkInName,       setWalkInName]       = useState(queueBillPrefill?.name || ""); // walk-in বাকি কাস্টমারের নাম
+  const [walkInMobile,     setWalkInMobile]     = useState(queueBillPrefill?.phone || ""); // walk-in বাকি কাস্টমারের মোবাইল
   const [walkInAddress,    setWalkInAddress]    = useState(""); // walk-in বাকি কাস্টমারের ঠিকানা
   const [walkInDueDate,    setWalkInDueDate]    = useState(""); // walk-in বাকির পরিশোধের তারিখ
   const [walkInCustMode,   setWalkInCustMode]   = useState("new"); // "new" | "existing" — বাকি/আংশিক বাকির কাস্টমার নতুন নাকি পুরোনো
@@ -17344,7 +17433,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
   const [modalNewMobile,  setModalNewMobile]  = useState("");
   const [modalNewAddress, setModalNewAddress] = useState("");
   const [selfUseOn,  setSelfUseOn]  = useState(false); // 🏠 নিজের ব্যবহার (Personal Use) টগল — Payment স্টেপে
-  const [note,       setNote]       = useState("");
+  const [note,       setNote]       = useState(queueBillPrefill?.note || "");
   const [discount,   setDiscount]   = useState(""); // টাকায় ডিসকাউন্ট
   const [discountPct, setDiscountPct] = useState(0); // % ডিসকাউন্ট (স্ট্যাকেবল)
   const [discountInputMode, setDiscountInputMode] = useState("flat"); // 🆕 "flat" (৳) বা "pct" (%) — একটি ফিল্ডে টগল করে ডিসকাউন্ট দেওয়ার মোড
@@ -18049,6 +18138,9 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     // অপেক্ষা করতে হচ্ছে না। নিচের ব্লকটা সম্পূর্ণ ব্যাকগ্রাউন্ডে (await ছাড়াই) চলবে। ──
     setPrintInv(inv);
     setCreating(false);
+    // 🆕 (সেলুন ধাপ ৩) — এই ইনভয়েসটা যদি টোকেন কিউ থেকে prefill হয়ে এসে থাকে,
+    // তাহলে ওই টোকেনটা এখন "billed" মার্ক করে দাও।
+    if (queueBillPrefill?.tokenId) onQueueTokenBilled?.(queueBillPrefill.tokenId);
 
     // ── ব্যাকগ্রাউন্ড রিকনসিলিয়েশন: আসল Firestore transaction(s) এখন চলবে।
     // সার্ভারের চূড়ান্ত মান (কনফ্লিক্ট/রেস কন্ডিশনে বিরল ক্ষেত্রে) লোকাল guess-এর
@@ -20852,7 +20944,7 @@ function InvoiceVoidModal({ inv, returns = [], products = [], customers = [], cu
 const MemoSmartInvoiceBuilder = React.memo(SmartInvoiceBuilder);
 
 // ── Dashboard ──────────────────────────────────────────────────────────────────
-function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, processReturn, currentUser, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, supplierPayments = [], setSupplierPayments, returns = [] }) {
+function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, processReturn, currentUser, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, supplierPayments = [], setSupplierPayments, returns = [], serialQueue = [], users = [] }) {
   const [viewInv,    setViewInv]    = useState(null);
   const [viewPayInv, setViewPayInv] = useState(null);
   const [listDate,   setListDate]   = useState(() => todayEn()); // YYYY-MM-DD
@@ -24723,8 +24815,63 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           })}
         </div>
 
+        {/* ══ 🆕 (৬ আগস্ট ২০২৬) আজকের সেলুন কার্যক্রম — শুধু salon বিজনেসে, টোকেন কিউ + স্টাফ
+             কমিশনের একটা এক-নজর সারসংক্ষেপ। নতুন কোনো ডেটা ট্র্যাক করা হয় না — সবই
+             আগে থেকেই থাকা serialQueue/invoices/users থেকে সরাসরি হিসাব হয়। ══ */}
+        {businessType === "salon" && (() => {
+          const salonTodayKey = todayEn();
+          const salonTodayTokens = (serialQueue || []).filter(t => t.dateKey === salonTodayKey);
+          const salonWaitingCount = salonTodayTokens.filter(t => t.status === "waiting").length;
+          const salonServicingCount = salonTodayTokens.filter(t => t.status === "in_progress").length;
+
+          const staffIdsWithService = new Set();
+          let salonTodayCommission = 0;
+          // 🔴 ফিক্স (৬ আগস্ট ২০২৬): "আমি নিজে (এডমিন)" সিলেক্ট করা ইনভয়েসের
+          // staffId "__admin__" — এটা প্রকৃত স্টাফ না, আর ওই ১০০% "কমিশন"
+          // আসলে মালিকের নিজের আয়, কাউকে "প্রদেয়" না। তাই এই দুই সংখ্যা থেকে
+          // (স্টাফ-সংখ্যা ও কমিশন-প্রদেয়) __admin__ ইনভয়েস বাদ দেওয়া হচ্ছে।
+          (invoices || []).forEach(inv => {
+            if (inv.dateKey !== salonTodayKey || inv.status === "voided" || !inv.staffId || inv.staffId === "__admin__") return;
+            staffIdsWithService.add(inv.staffId);
+            salonTodayCommission += (inv.total || 0) * (inv.staffCommissionRate ?? 0) / 100;
+          });
+
+          return (
+            <div style={{ marginBottom:12 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12, padding:"10px 14px", background:"linear-gradient(135deg,#2e1065,#4c1d95)", borderRadius:14, border:"1px solid #8b5cf633" }}>
+                <div style={{ width:4, height:20, borderRadius:2, background:"linear-gradient(180deg,#a78bfa,#7c3aed)", flexShrink:0 }} />
+                <span style={{ color:"#ddd6fe", fontWeight:900, fontSize:13, letterSpacing:1, textTransform:"uppercase" }}>আজকের সেলুন কার্যক্রম</span>
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:9 }}>
+                <div className="tap-card" onClick={() => setTab("serialQueue")} style={{ cursor:"pointer", background:"#8b5cf614", border:"1px solid #8b5cf633", borderRadius:14, padding:"12px 10px", textAlign:"center" }}>
+                  <div style={{ fontSize:20, marginBottom:4 }}>🎫</div>
+                  <div style={{ color:"#c4b5fd", fontWeight:900, fontSize:19, lineHeight:1, marginBottom:3 }}>{salonWaitingCount}+{salonServicingCount}</div>
+                  <div style={{ color:T.sub, fontWeight:700, fontSize:10 }}>অপেক্ষায় + সার্ভিসে</div>
+                </div>
+                <div style={{ background:"#22c55e14", border:"1px solid #22c55e33", borderRadius:14, padding:"12px 10px", textAlign:"center" }}>
+                  <div style={{ fontSize:20, marginBottom:4 }}>💰</div>
+                  <div style={{ color:"#86efac", fontWeight:900, fontSize:19, lineHeight:1, marginBottom:3 }}>৳{fmt(salonTodayCommission)}</div>
+                  <div style={{ color:T.sub, fontWeight:700, fontSize:10 }}>আজকের কমিশন প্রদেয়</div>
+                </div>
+                <div style={{ background:"#f59e0b14", border:"1px solid #f59e0b33", borderRadius:14, padding:"12px 10px", textAlign:"center" }}>
+                  <div style={{ fontSize:20, marginBottom:4 }}>👥</div>
+                  <div style={{ color:"#fcd34d", fontWeight:900, fontSize:19, lineHeight:1, marginBottom:3 }}>{staffIdsWithService.size}</div>
+                  <div style={{ color:T.sub, fontWeight:700, fontSize:10 }}>স্টাফ সার্ভিস দিয়েছেন</div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* ══ ইনভেন্টরি/স্টক বিশ্লেষণ ══ */}
-        <InventorySection T={T} S={S} products={products} setDashModal={setDashModal} shopName={shopName} setInvModal={setInvModal} purchaseOrders={purchaseOrders || []} />
+        {/* 🔴 ফিক্স (৬ আগস্ট ২০২৬ — salon-এ ডেড-এন্ড লিংক): "সাপ্লায়ার" ও "লস-ঝুঁকি
+            ও ব্যাচ সিঙ্ক" নেভ ট্যাব salon-এ হাইড করা হলেও এই সেকশনের "ক্রয় অর্ডার"
+            কার্ড হাইড হয়নি — ট্যাপ করলে তখনও order:create ফ্লো খুলত, যা সাপ্লায়ার
+            ছাড়া অচল। salon-এ ফিজিক্যাল স্টক/ব্যাচ/ক্রয় প্রাসঙ্গিক না বলে বাকি তিনটা
+            কার্ডও (স্টক/ক্রিটিক্যাল/স্টক-আউট) সবসময় ০ দেখাত — তাই পুরো সেকশনটাই হাইড। */}
+        {businessType !== "salon" && (
+          <InventorySection T={T} S={S} products={products} setDashModal={setDashModal} shopName={shopName} setInvModal={setInvModal} purchaseOrders={purchaseOrders || []} />
+        )}
 
       </div>
     </div>
@@ -29635,6 +29782,11 @@ const EXPENSE_CATEGORIES = [
   { id: "মোবাইল",     icon: "📱", color: "#8b5cf6" },
   { id: "পানি",       icon: "💧", color: "#06b6d4" },
   { id: "মেরামত",     icon: "🔧", color: "#f97316" },
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৭) — "consumables" ফিচার: সাধারণ খরচ ট্র্যাকারেই
+  // একটা বিল্ট-ইন ক্যাটাগরি (শ্যাম্পু/কালার/গ্লাভস/টিস্যু ইত্যাদি খরচ যোগ করার
+  // জন্য) — আলাদা কোনো ফর্ম/মডিউল বানানো হয়নি, এই ExpenseTracker-ই যথেষ্ট
+  // যেহেতু এটা এমনিতেই যেকোনো "সাধারণ দোকান-খরচ" ট্র্যাক করে।
+  { id: "কনজিউমেবলস", icon: "🧴", color: "#14b8a6" },
   { id: "বিজ্ঞাপন",   icon: "📢", color: "#ec4899" },
   { id: "অন্যান্য",   icon: "📦", color: "#94a3b8" },
 ];
@@ -32145,6 +32297,10 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
   const [ledgerFormStaffId, setLedgerFormStaffId] = useState(null);
   const [ledgerForm, setLedgerForm] = useState({ amount: "", type: "advance", note: "" });
   const [ledgerHistoryStaffId, setLedgerHistoryStaffId] = useState(null);
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৬) — existing স্টাফের commissionRate ইনলাইন এডিট।
+  const [editingRateStaffId, setEditingRateStaffId] = useState(null);
+  const [rateForm, setRateForm] = useState("");
+  useBackHandler(!!editingRateStaffId, () => { setEditingRateStaffId(null); return true; });
   // 🆕 স্টাফ ম্যানেজমেন্টের নেস্টেড লেয়ার — শেয়ার্ড back-stack-এ।
   useBackHandler(!!editingBizStaffId, () => { setEditingBizStaffId(null); return true; });
   useBackHandler(showNewUser,         () => { setShowNewUser(false); return true; });
@@ -32199,8 +32355,39 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
     );
   };
 
-  const deleteUser = (id) => {
-    setUsers(prev => prev.filter(u => u.id !== id));
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৬) — existing স্টাফের কমিশন রেট বদলানো। নতুন
+  // রেট শুধু আজকের পর থেকে নতুন ইনভয়েসে প্রযোজ্য হবে — পুরোনো ইনভয়েসে
+  // item.staffCommissionRate স্ন্যাপশট হয়ে থাকে বলে ইতিহাস বদলায় না।
+  const updateCommissionRate = (u) => {
+    const rate = Math.min(100, Math.max(0, parseFloat(rateForm) || 0));
+    const updatedUser = { ...u, commissionRate: rate };
+    setUsers(prev => prev.map(x => x.id === u.id ? updatedUser : x));
+    setEditingRateStaffId(null);
+    showToast(`${u.name}-এর কমিশন রেট ${rate}%-এ বদলানো হয়েছে`, "#22c55e");
+    verifyPermissionSync(
+      u.id,
+      (fresh) => fresh.commissionRate === rate,
+      () => updatedUser,
+      showToast,
+      `${u.name}-এর কমিশন রেট`
+    );
+  };
+
+  // 🔴 ফিক্স (৬ আগস্ট ২০২৬ — বকেয়া কমিশন থাকা অবস্থায় ডিলিট প্রোটেকশন নেই ছিল):
+  // কাস্টমার ডিলিটে "বাকি থাকলে আগে পরিশোধ করুন" গার্ড আগে থেকেই ছিল, কিন্তু স্টাফ
+  // ডিলিটে ছিল না — ফলে বকেয়া কমিশন থাকা অবস্থায় প্রোফাইল ডিলিট করলে সেই হিসাব
+  // (ডেটা থাকলেও) UI থেকে দেখার উপায় হারিয়ে যেত। শুধু salon-এ (যেখানে কমিশন
+  // প্রাসঙ্গিক) এই চেক প্রযোজ্য — অন্য বিজনেসে আগের মতোই আচরণ।
+  const deleteUser = (u) => {
+    if (isSalon && (!u.assignedBusinessType || u.assignedBusinessType === businessType)) {
+      const due = getStaffStats(u).due;
+      if (due > 0) {
+        showToast(`${u.name}-এর ৳${fmt(due)} কমিশন বাকি আছে — আগে পরিশোধ/অগ্রিম এন্ট্রি দিয়ে মিটিয়ে নিন`, "#ef4444");
+        return;
+      }
+    }
+    const id = u.id;
+    setUsers(prev => prev.filter(x => x.id !== id));
     // 🔴 ফিক্স: users-এ এখন sync layer আর diff দেখে অটো-ডিলিট করে না
     // (দেখুন useFSSCollection("users",...)-এর syncDeletes:false) — তাই
     // ইচ্ছাকৃত ডিলিটের সময় এখানেই সরাসরি Firestore থেকে মুছে ফেলা হয়।
@@ -32431,13 +32618,17 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
                   </div>
                 </div>
                 <button style={{ background: "#ef444415", border: "1px solid #ef444433", color: "#ef4444", borderRadius: 9, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}
-                  onClick={() => { if (window.confirm(`${u.name}-এর স্টাফ প্রোফাইল মুছবেন?`)) deleteUser(u.id); }}>
+                  onClick={() => { if (window.confirm(`${u.name}-এর স্টাফ প্রোফাইল মুছবেন?`)) deleteUser(u); }}>
                   🗑️
                 </button>
               </div>
 
               {/* 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৪) — স্টাফ কার্ড: আয়/কমিশন/বাকি পাবে, শুধু salon-এ */}
-              {isSalon && (() => {
+              {/* 🔴 ফিক্স (৬ আগস্ট ২০২৬ — মাল্টি-বিজনেস প্রোটেকশন): এই স্টাফ যদি অন্য
+                  বিজনেসে assign করা থাকে (ভবিষ্যতে salon + অন্য বিজনেস একসাথে চালু
+                  হলে), তাহলে এখানে কমিশন কার্ড দেখানো হবে না — স্টাফ লিস্টে
+                  (ম্যানেজমেন্টের জন্য) থাকবে ঠিকই, কিন্তু ভুল বিজনেসে কমিশন হিসাব হবে না। */}
+              {isSalon && (!u.assignedBusinessType || u.assignedBusinessType === businessType) && (() => {
                 const stats = getStaffStats(u);
                 return (
                   <div style={{ borderTop:"1px solid #8b5cf622", padding:"10px 12px", background:"#f59e0b0a" }}>
@@ -32474,6 +32665,12 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
                         style={{ flex:1, background: ledgerFormStaffId === u.id ? "#8b5cf633" : "#8b5cf618", border:"1px solid #8b5cf644", color:"#c4b5fd", borderRadius:9, padding:"7px 8px", fontSize:11.5, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
                         {ledgerFormStaffId === u.id ? "✕ বাতিল" : "+ অগ্রিম/পরিশোধ এন্ট্রি"}
                       </button>
+                      {/* 🆕 ধাপ ৬ — কমিশন রেট ইনলাইন এডিট */}
+                      <button
+                        onClick={() => { setEditingRateStaffId(v => v === u.id ? null : u.id); setRateForm(String(u.commissionRate ?? 50)); }}
+                        style={{ background: editingRateStaffId === u.id ? "#8b5cf633" : "transparent", border:`1px solid ${T.border}`, color:T.sub, borderRadius:9, padding:"7px 10px", fontSize:11.5, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
+                        ⚙️ {u.commissionRate ?? 50}%
+                      </button>
                       {staffLedger.some(l => l.staffId === u.id) && (
                         <button
                           onClick={() => setLedgerHistoryStaffId(v => v === u.id ? null : u.id)}
@@ -32482,6 +32679,22 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
                         </button>
                       )}
                     </div>
+
+                    {editingRateStaffId === u.id && (
+                      <div style={{ marginTop:8, background:"#0f172a", border:"1px solid #8b5cf644", borderRadius:10, padding:10, display:"flex", gap:6, alignItems:"center" }}>
+                        <input
+                          type="number" inputMode="decimal" min="0" max="100" placeholder="৫০"
+                          value={rateForm}
+                          onChange={e => setRateForm(e.target.value)}
+                          style={{ flex:1, boxSizing:"border-box", background:"#1e293b", border:`1px solid ${T.border}`, borderRadius:8, padding:"9px 10px", color:T.text, fontSize:13, fontWeight:700, fontFamily:"inherit" }}
+                        />
+                        <span style={{ fontSize:12, color:T.sub, fontWeight:700 }}>%</span>
+                        <button onClick={() => updateCommissionRate(u)}
+                          style={{ background:"linear-gradient(135deg,#7c3aed,#5b21b6)", border:"none", color:"#fff", borderRadius:8, padding:"9px 12px", fontSize:12, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
+                          ✓ সেভ
+                        </button>
+                      </div>
+                    )}
 
                     {ledgerFormStaffId === u.id && (
                       <div style={{ marginTop:8, background:"#0f172a", border:"1px solid #8b5cf644", borderRadius:10, padding:10 }}>
@@ -32685,6 +32898,170 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
 
       {/* 🔴 Session B: স্টাফ সেটআপ QR (Recovery Phone+PIN নির্ভর) OFFLINE_MODE বিল্ডে
           সবসময় হাইড ছিল — dead ব্লক সরানো হলো। */}
+    </div>
+  );
+}
+
+// ─── SerialQueueModule — টোকেন/সিরিয়াল অপেক্ষার লাইন (সেলুন) ──────────────────
+// 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৩): ওয়াক-ইন কাস্টমারদের জন্য দৈনিক টোকেন সিস্টেম।
+// প্রতিদিন সকাল থেকে tokenNo ১ থেকে শুরু হয় (dateKey দিয়ে "আজকের" টোকেন বাছাই
+// করা হয়)। ফ্লো: waiting → in_progress (স্টাফ এসাইন করে "শুরু করুন") →
+// billed (ইনভয়েসে "সম্পন্ন ও বিল করুন" চাপলে SmartInvoiceBuilder-এ প্রি-ফিল
+// হয়ে যায়, ইনভয়েস সেভ হলে onQueueTokenBilled() টোকেনটা billed মার্ক করে)।
+// অথবা cancelled (অপেক্ষমান অবস্থায় বাতিল করা যায়)। কোনো ডেটা invoices-এর
+// সাথে ডুপ্লিকেট করা হয় না — শুধু লাইন-ম্যানেজমেন্টের জন্য এই আলাদা লগ।
+function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQueue = [], setSerialQueue, goToInvoiceFromQueue, businessType = "salon" }) {
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ name: "", phone: "", service: "", staffId: "" });
+  useBackHandler(showForm, useCallback(() => { setShowForm(false); return true; }, []));
+
+  // 🔴 ফিক্স (৬ আগস্ট ২০২৬ — মাল্টি-বিজনেস প্রোটেকশন): SmartInvoiceBuilder-এর
+  // staffOptions ফিল্টারের মতোই — শুধু এই বিজনেসে assign করা স্টাফ টোকেন
+  // ফর্মে/এসাইনে দেখানো হয় (পুরনো assignedBusinessType-বিহীন রেকর্ড বাদ যায় না)।
+  const queueStaffOptions = React.useMemo(() =>
+    users.filter(u => u.role === "staff" && (!u.assignedBusinessType || u.assignedBusinessType === businessType)),
+    [users, businessType]
+  );
+
+  const todayKey = todayEn();
+  const todayTokens = useMemo(() => (serialQueue || []).filter(t => t.dateKey === todayKey), [serialQueue, todayKey]);
+  const waiting     = useMemo(() => todayTokens.filter(t => t.status === "waiting").sort((a, b) => (a.tokenNo || 0) - (b.tokenNo || 0)), [todayTokens]);
+  const inProgress  = useMemo(() => todayTokens.filter(t => t.status === "in_progress").sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0)), [todayTokens]);
+  const doneToday   = useMemo(() =>
+    todayTokens.filter(t => t.status === "billed" || t.status === "cancelled")
+      .sort((a, b) => (b.billedAt || b.createdAt || "").localeCompare(a.billedAt || a.createdAt || ""))
+      .slice(0, 10),
+    [todayTokens]);
+
+  const nextTokenNo = todayTokens.length ? Math.max(...todayTokens.map(t => t.tokenNo || 0)) + 1 : 1;
+  const staffName = (id) => users.find(u => u.id === id)?.name || null;
+
+  const addToken = () => {
+    if (!form.name.trim()) { showToast("কাস্টমারের নাম দিন", "#ef4444"); return; }
+    const token = {
+      id: uid(), tokenNo: nextTokenNo,
+      customerName: form.name.trim(), phone: form.phone.trim(), service: form.service.trim(),
+      staffId: form.staffId || null, note: "",
+      status: "waiting",
+      date: todayStr(), dateKey: todayKey, createdAt: new Date().toISOString(),
+      createdBy: currentUser?.name || "",
+    };
+    setSerialQueue(prev => [...(prev || []), token]);
+    setForm({ name: "", phone: "", service: "", staffId: "" });
+    setShowForm(false);
+    showToast(`টোকেন #${token.tokenNo} যোগ হয়েছে`, "#22c55e");
+  };
+
+  const startToken = (t) => {
+    setSerialQueue(prev => (prev || []).map(x => x.id === t.id ? { ...x, status: "in_progress", startedAt: Date.now() } : x));
+  };
+
+  const assignStaff = (t, staffId) => {
+    setSerialQueue(prev => (prev || []).map(x => x.id === t.id ? { ...x, staffId: staffId || null } : x));
+  };
+
+  const cancelToken = (t) => {
+    if (!window.confirm(`টোকেন #${t.tokenNo} (${t.customerName}) বাতিল করবেন?`)) return;
+    setSerialQueue(prev => (prev || []).map(x => x.id === t.id ? { ...x, status: "cancelled" } : x));
+    showToast("টোকেন বাতিল হয়েছে", "#ef4444");
+  };
+
+  const inputStyle = { width: "100%", boxSizing: "border-box", background: "#1e293b", border: `1px solid ${T.border}`, borderRadius: 8, padding: "9px 10px", color: T.text, fontSize: 13, fontWeight: 600, fontFamily: "inherit", marginBottom: 8 };
+
+  return (
+    <div style={{ padding: "12px 14px 90px" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+        <div style={{ fontSize: 15, fontWeight: 900, color: T.text }}>🎫 টোকেন সিরিয়াল</div>
+        <button onClick={() => setShowForm(v => !v)}
+          style={{ background: showForm ? "transparent" : "linear-gradient(135deg,#7c3aed,#5b21b6)", border: showForm ? `1.5px solid ${T.border}` : "none", color: showForm ? T.sub : "#fff", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+          {showForm ? "✕ বন্ধ করুন" : "+ নতুন টোকেন"}
+        </button>
+      </div>
+
+      {showForm && (
+        <div style={{ background: "#8b5cf60c", border: "1px solid #8b5cf622", borderRadius: 12, padding: 12, marginBottom: 14 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: "#c4b5fd", marginBottom: 8 }}>টোকেন #{nextTokenNo}</div>
+          <input style={inputStyle} placeholder="কাস্টমারের নাম *" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+          <input style={inputStyle} type="tel" placeholder="ফোন (ঐচ্ছিক)" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} />
+          <input style={inputStyle} placeholder="সেবা / নোট (ঐচ্ছিক)" value={form.service} onChange={e => setForm(f => ({ ...f, service: e.target.value }))} />
+          <select style={inputStyle} value={form.staffId} onChange={e => setForm(f => ({ ...f, staffId: e.target.value }))}>
+            <option value="">স্টাফ এসাইন করুন (ঐচ্ছিক)</option>
+            {queueStaffOptions.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+          <button onClick={addToken}
+            style={{ width: "100%", background: "linear-gradient(135deg,#7c3aed,#5b21b6)", border: "none", color: "#fff", borderRadius: 8, padding: "10px 10px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+            ✓ টোকেন যোগ করুন
+          </button>
+        </div>
+      )}
+
+      {/* চলছে (in_progress) */}
+      <div style={{ fontSize: 11.5, fontWeight: 800, color: T.sub, marginBottom: 8 }}>🟢 চলছে ({inProgress.length})</div>
+      {inProgress.length === 0 && <div style={{ fontSize: 12, color: T.sub, marginBottom: 14 }}>এই মুহূর্তে কেউ সার্ভিসে নেই</div>}
+      {inProgress.map(t => (
+        <div key={t.id} style={{ background: "#22c55e0c", border: "1px solid #22c55e33", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: T.text }}>#{t.tokenNo} · {t.customerName}</div>
+              <div style={{ fontSize: 10.5, color: T.sub, marginTop: 2 }}>
+                {staffName(t.staffId) || "স্টাফ নির্ধারিত নয়"}{t.service ? ` · ${t.service}` : ""}
+              </div>
+            </div>
+            <button onClick={() => goToInvoiceFromQueue(t)}
+              style={{ flexShrink: 0, background: "linear-gradient(135deg,#22c55e,#15803d)", border: "none", color: "#fff", borderRadius: 8, padding: "8px 10px", fontSize: 11.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+              সম্পন্ন ও বিল করুন
+            </button>
+          </div>
+        </div>
+      ))}
+
+      {/* অপেক্ষমান (waiting) */}
+      <div style={{ fontSize: 11.5, fontWeight: 800, color: T.sub, margin: "14px 0 8px" }}>🕓 অপেক্ষমান ({waiting.length})</div>
+      {waiting.length === 0 && <div style={{ fontSize: 12, color: T.sub, marginBottom: 8 }}>লাইনে কেউ নেই</div>}
+      {waiting.map((t, idx) => (
+        <div key={t.id} style={{ background: "#f59e0b0c", border: "1px solid #f59e0b33", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: T.text }}>#{t.tokenNo} · {t.customerName}</div>
+              <div style={{ fontSize: 10.5, color: T.sub, marginTop: 2 }}>
+                আনু. অপেক্ষা ~{idx * 15} মিনিট{t.service ? ` · ${t.service}` : ""}
+              </div>
+              <select value={t.staffId || ""} onChange={e => assignStaff(t, e.target.value)}
+                style={{ marginTop: 6, background: "#1e293b", border: `1px solid ${T.border}`, borderRadius: 6, padding: "4px 6px", color: T.text, fontSize: 10.5, fontFamily: "inherit" }}>
+                <option value="">স্টাফ এসাইন করুন</option>
+                {queueStaffOptions.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
+              <button onClick={() => startToken(t)}
+                style={{ background: "linear-gradient(135deg,#f59e0b,#b45309)", border: "none", color: "#fff", borderRadius: 8, padding: "7px 10px", fontSize: 11.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+                শুরু করুন
+              </button>
+              <button onClick={() => cancelToken(t)}
+                style={{ background: "transparent", border: `1px solid ${T.border}`, color: "#ef4444", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                ✕ বাতিল
+              </button>
+            </div>
+          </div>
+        </div>
+      ))}
+
+      {/* আজকের শেষ হওয়া টোকেন */}
+      {doneToday.length > 0 && (
+        <>
+          <div style={{ fontSize: 11.5, fontWeight: 800, color: T.sub, margin: "14px 0 8px" }}>আজকের বাকি (বিল/বাতিল)</div>
+          {doneToday.map(t => (
+            <div key={t.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "7px 9px", background: "#1e293b55", border: `1px solid ${T.border}`, borderRadius: 8, marginBottom: 5 }}>
+              <div style={{ fontSize: 11.5, color: T.sub }}>
+                #{t.tokenNo} · {t.customerName}
+              </div>
+              <div style={{ fontSize: 10.5, fontWeight: 800, color: t.status === "billed" ? "#4ade80" : "#ef4444" }}>
+                {t.status === "billed" ? "✓ বিল হয়েছে" : "✕ বাতিল"}
+              </div>
+            </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }
@@ -33544,6 +33921,7 @@ function Settings_({ T, S, shopName,
           SK.smsLog, SK.paymentInvoices, SK.purchaseOrders, SK.stockMovements,
           SK.deletedProducts, SK.deletedCustomers, SK.cashLogs, SK.suppliers,
           SK.expenses, SK.returns, SK.auditLogs, SK.quotations, SK.supplierPayments, SK.staffLedger,
+          SK.serialQueue,
         ];
         const allKeysToClear = scopedKeys.flatMap(allBizVariantsOf);
         await Promise.all(allKeysToClear.map(k => save(k, [])));
