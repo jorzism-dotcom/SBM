@@ -32140,9 +32140,16 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
   // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৩) — কমিশন ফিল্ড/কার্ড শুধু salon-এ প্রাসঙ্গিক।
   const isSalon = businessType === "salon";
   const [editingBizStaffId, setEditingBizStaffId] = useState(null);
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৫) — অগ্রিম/ধার এন্ট্রি ফর্ম কোন স্টাফের জন্য খোলা,
+  // এবং সাম্প্রতিক এন্ট্রি হিস্ট্রি কোন স্টাফের জন্য দেখানো হচ্ছে।
+  const [ledgerFormStaffId, setLedgerFormStaffId] = useState(null);
+  const [ledgerForm, setLedgerForm] = useState({ amount: "", type: "advance", note: "" });
+  const [ledgerHistoryStaffId, setLedgerHistoryStaffId] = useState(null);
   // 🆕 স্টাফ ম্যানেজমেন্টের নেস্টেড লেয়ার — শেয়ার্ড back-stack-এ।
   useBackHandler(!!editingBizStaffId, () => { setEditingBizStaffId(null); return true; });
   useBackHandler(showNewUser,         () => { setShowNewUser(false); return true; });
+  useBackHandler(!!ledgerFormStaffId, () => { setLedgerFormStaffId(null); return true; });
+  useBackHandler(!!ledgerHistoryStaffId, () => { setLedgerHistoryStaffId(null); return true; });
 
   if (currentUser?.role === "staff") {
     return (
@@ -32201,6 +32208,31 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
     showToast("স্টাফ অ্যাকাউন্ট মুছে ফেলা হয়েছে");
   };
 
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৫) — অগ্রিম/ধার এন্ট্রি: staffLedger-এ শুধু
+  // "টাকা হাতে দেওয়া" এন্ট্রি জমা হয় (advance = কমিশন উপার্জনের আগেই অগ্রিম,
+  // payout = ইতিমধ্যে উপার্জিত কমিশন হাতে পরিশোধ) — দুটোই "বাকি পাবে" থেকে
+  // একইভাবে বিয়োগ হয়, শুধু হিস্ট্রিতে আলাদা লেবেল হিসেবে দেখানো হয়।
+  const addLedgerEntry = (u) => {
+    const amt = parseFloat(ledgerForm.amount);
+    if (!amt || amt <= 0) { showToast("সঠিক পরিমাণ দিন", "#ef4444"); return; }
+    const entry = {
+      id: uid(), staffId: u.id, staffName: u.name,
+      type: ledgerForm.type, amount: amt, note: ledgerForm.note.trim(),
+      date: todayStr(), dateKey: todayEn(), createdAt: new Date().toISOString(),
+      createdBy: currentUser?.name || "মালিক",
+    };
+    setStaffLedger(prev => [...prev, entry]);
+    setLedgerForm({ amount: "", type: "advance", note: "" });
+    setLedgerFormStaffId(null);
+    showToast(`${u.name}-কে ৳${fmt(amt)} ${ledgerForm.type === "advance" ? "অগ্রিম" : "কমিশন পরিশোধ"} এন্ট্রি যোগ হয়েছে`, "#22c55e");
+  };
+
+  const deleteLedgerEntry = (entry) => {
+    if (!window.confirm(`এই ৳${fmt(entry.amount)}-এর এন্ট্রিটা মুছবেন?`)) return;
+    setStaffLedger(prev => prev.filter(l => l.id !== entry.id));
+    showToast("এন্ট্রি মুছে ফেলা হয়েছে", "#ef4444");
+  };
+
   const updateAutoSchedule = (u, nextSchedule) => {
     const updatedUser = {
       ...u,
@@ -32242,6 +32274,28 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
 
   const activeTempCount = staffList.filter(u => (u.tempPermissions||[]).some(p => p.key === "purchase_entry" && new Date(p.expiresAt) > new Date())).length;
   const activeScheduleCount = staffList.filter(u => isAutoScheduleActive((u.autoSchedules||[]).find(s => s.key === "purchase_entry"))).length;
+
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৪ — স্টাফ কার্ড UI) — প্রতিটা স্টাফের আয়/কমিশন
+  // সরাসরি invoices থেকে (staffId + সেভ-করা staffCommissionRate স্ন্যাপশট
+  // ব্যবহার করে, ডিসকাউন্টের-পরের/নেট total-এর উপর) হিসাব হয় — কোথাও ডুপ্লিকেট
+  // করে রাখা হয় না। "বাকি পাবে" = সারাজীবনের মোট কমিশন − staffLedger-এ
+  // থাকা সব এন্ট্রির (অগ্রিম/পরিশোধ, উভয়ই স্টাফের প্রাপ্য কমিয়ে দেয়) যোগফল।
+  const getStaffStats = (u) => {
+    const todayKey = todayEn();
+    const monthKey = todayKey.slice(0, 7);
+    let todayIncome = 0, todayCommission = 0, monthIncome = 0, monthCommission = 0, totalCommission = 0;
+    invoices.forEach(inv => {
+      if (inv.staffId !== u.id || inv.status === "voided") return;
+      const amt = inv.total || 0;
+      const rate = inv.staffCommissionRate ?? 0;
+      const commission = amt * rate / 100;
+      totalCommission += commission;
+      if (inv.dateKey === todayKey) { todayIncome += amt; todayCommission += commission; }
+      if ((inv.dateKey || "").slice(0, 7) === monthKey) { monthIncome += amt; monthCommission += commission; }
+    });
+    const totalPaidOut = staffLedger.filter(l => l.staffId === u.id).reduce((s, l) => s + (l.amount || 0), 0);
+    return { todayIncome, todayCommission, monthIncome, monthCommission, totalCommission, totalPaidOut, due: totalCommission - totalPaidOut };
+  };
 
   return (
     <div style={{ ...S.page, paddingBottom: 100 }}>
@@ -32381,6 +32435,116 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
                   🗑️
                 </button>
               </div>
+
+              {/* 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৪) — স্টাফ কার্ড: আয়/কমিশন/বাকি পাবে, শুধু salon-এ */}
+              {isSalon && (() => {
+                const stats = getStaffStats(u);
+                return (
+                  <div style={{ borderTop:"1px solid #8b5cf622", padding:"10px 12px", background:"#f59e0b0a" }}>
+                    <div style={{ fontSize:10.5, fontWeight:800, color:T.sub, marginBottom:8 }}>💰 আয় ও কমিশন</div>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+                      <div style={{ background:"#22c55e14", border:"1px solid #22c55e33", borderRadius:10, padding:"8px 10px" }}>
+                        <div style={{ fontSize:9.5, color:T.sub, fontWeight:700 }}>আজকের আয়</div>
+                        <div style={{ fontSize:14, fontWeight:900, color:"#4ade80" }}>৳{fmt(stats.todayIncome)}</div>
+                        <div style={{ fontSize:9.5, color:"#86efac", fontWeight:700, marginTop:2 }}>কমিশন ৳{fmt(stats.todayCommission)}</div>
+                      </div>
+                      <div style={{ background:"#8b5cf614", border:"1px solid #8b5cf633", borderRadius:10, padding:"8px 10px" }}>
+                        <div style={{ fontSize:9.5, color:T.sub, fontWeight:700 }}>এই মাসের আয়</div>
+                        <div style={{ fontSize:14, fontWeight:900, color:"#c4b5fd" }}>৳{fmt(stats.monthIncome)}</div>
+                        <div style={{ fontSize:9.5, color:"#a78bfa", fontWeight:700, marginTop:2 }}>কমিশন ৳{fmt(stats.monthCommission)}</div>
+                      </div>
+                    </div>
+                    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, marginTop:8, background: stats.due > 0 ? "#ef444414" : "#22c55e14", border:`1px solid ${stats.due > 0 ? "#ef444433" : "#22c55e33"}`, borderRadius:10, padding:"8px 10px" }}>
+                      <div>
+                        <div style={{ fontSize:9.5, color:T.sub, fontWeight:700 }}>{stats.due < 0 ? "বেশি নেওয়া হয়েছে" : "বাকি পাবে"}</div>
+                        <div style={{ fontSize:15, fontWeight:900, color: stats.due > 0 ? "#f87171" : "#4ade80" }}>৳{fmt(Math.abs(stats.due))}</div>
+                      </div>
+                      {stats.totalPaidOut > 0 && (
+                        <div style={{ textAlign:"right" }}>
+                          <div style={{ fontSize:9, color:T.sub, fontWeight:700 }}>মোট অগ্রিম/পরিশোধ</div>
+                          <div style={{ fontSize:11.5, fontWeight:800, color:T.text }}>৳{fmt(stats.totalPaidOut)}</div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 🆕 ধাপ ৫ — অগ্রিম/ধার এন্ট্রি বাটন + হিস্ট্রি টগল */}
+                    <div style={{ display:"flex", gap:6, marginTop:8 }}>
+                      <button
+                        onClick={() => { setLedgerFormStaffId(v => v === u.id ? null : u.id); setLedgerForm({ amount:"", type:"advance", note:"" }); }}
+                        style={{ flex:1, background: ledgerFormStaffId === u.id ? "#8b5cf633" : "#8b5cf618", border:"1px solid #8b5cf644", color:"#c4b5fd", borderRadius:9, padding:"7px 8px", fontSize:11.5, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
+                        {ledgerFormStaffId === u.id ? "✕ বাতিল" : "+ অগ্রিম/পরিশোধ এন্ট্রি"}
+                      </button>
+                      {staffLedger.some(l => l.staffId === u.id) && (
+                        <button
+                          onClick={() => setLedgerHistoryStaffId(v => v === u.id ? null : u.id)}
+                          style={{ background:"transparent", border:`1px solid ${T.border}`, color:T.sub, borderRadius:9, padding:"7px 10px", fontSize:11.5, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
+                          {ledgerHistoryStaffId === u.id ? "হিস্ট্রি লুকান" : "হিস্ট্রি"}
+                        </button>
+                      )}
+                    </div>
+
+                    {ledgerFormStaffId === u.id && (
+                      <div style={{ marginTop:8, background:"#0f172a", border:"1px solid #8b5cf644", borderRadius:10, padding:10 }}>
+                        <div style={{ display:"flex", gap:6, marginBottom:8 }}>
+                          {[["advance","অগ্রিম দিলাম"],["payout","কমিশন পরিশোধ"]].map(([k,label]) => (
+                            <button key={k}
+                              onClick={() => setLedgerForm(f => ({ ...f, type:k }))}
+                              style={{
+                                flex:1, padding:"7px 6px", borderRadius:8, fontFamily:"inherit", fontSize:11, fontWeight:800, cursor:"pointer",
+                                background: ledgerForm.type === k ? "#8b5cf633" : "transparent",
+                                border: `1.5px solid ${ledgerForm.type === k ? "#8b5cf6" : T.border}`,
+                                color: ledgerForm.type === k ? "#c4b5fd" : T.sub,
+                              }}>
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                        <input
+                          type="number" inputMode="decimal" placeholder="পরিমাণ (৳)"
+                          value={ledgerForm.amount}
+                          onChange={e => setLedgerForm(f => ({ ...f, amount: e.target.value }))}
+                          style={{ width:"100%", boxSizing:"border-box", background:"#1e293b", border:`1px solid ${T.border}`, borderRadius:8, padding:"9px 10px", color:T.text, fontSize:13, fontWeight:700, fontFamily:"inherit", marginBottom:8 }}
+                        />
+                        <input
+                          type="text" placeholder="নোট (ঐচ্ছিক)"
+                          value={ledgerForm.note}
+                          onChange={e => setLedgerForm(f => ({ ...f, note: e.target.value }))}
+                          style={{ width:"100%", boxSizing:"border-box", background:"#1e293b", border:`1px solid ${T.border}`, borderRadius:8, padding:"9px 10px", color:T.text, fontSize:12, fontFamily:"inherit", marginBottom:8 }}
+                        />
+                        <button onClick={() => addLedgerEntry(u)}
+                          style={{ width:"100%", background:"linear-gradient(135deg,#7c3aed,#5b21b6)", border:"none", color:"#fff", borderRadius:8, padding:"9px 10px", fontSize:12.5, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
+                          ✓ এন্ট্রি যোগ করুন
+                        </button>
+                      </div>
+                    )}
+
+                    {ledgerHistoryStaffId === u.id && (
+                      <div style={{ marginTop:8 }}>
+                        {staffLedger
+                          .filter(l => l.staffId === u.id)
+                          .sort((a,b) => (b.createdAt||"").localeCompare(a.createdAt||""))
+                          .slice(0, 15)
+                          .map(l => (
+                            <div key={l.id} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, padding:"7px 9px", background:"#8b5cf60c", border:"1px solid #8b5cf622", borderRadius:8, marginBottom:5 }}>
+                              <div style={{ minWidth:0 }}>
+                                <div style={{ fontSize:11.5, fontWeight:800, color: l.type === "advance" ? "#fbbf24" : "#4ade80" }}>
+                                  {l.type === "advance" ? "অগ্রিম" : "কমিশন পরিশোধ"} ৳{fmt(l.amount)}
+                                </div>
+                                <div style={{ fontSize:9.5, color:T.sub, marginTop:1 }}>
+                                  {l.date}{l.note ? ` · ${l.note}` : ""}
+                                </div>
+                              </div>
+                              <button onClick={() => deleteLedgerEntry(l)}
+                                style={{ background:"transparent", border:"none", color:"#ef4444", fontSize:14, cursor:"pointer", flexShrink:0, padding:4 }}>
+                                ✕
+                              </button>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* 🆕 ধাপ ৫: বিজনেস এসাইনমেন্ট এডিটর — শুধু multi-business শপে দেখানো হয় */}
               {isMultiBusinessShop && editingBizStaffId === u.id && (
