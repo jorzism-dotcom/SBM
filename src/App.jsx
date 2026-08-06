@@ -24037,19 +24037,33 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       // 🔴 ফিক্স (ইনভয়েস কার্ড সিরিয়াল): কার্ড লিস্ট এতদিন শুধু LIFO (নতুনতম আগে)
       // অর্ডারে দেখাত, কোনো ক্রমিক নাম্বার ছাড়াই — খুঁজে পেতে অসুবিধা হতো, বিশেষত
       // পুরনো ইনভয়েসে যেখানে real invoiceNo নেই (hash-fallback কোড দেখায়)। এখন
-      // প্রতিটা কার্ডে creation-order অনুযায়ী (যেটা সবার আগে তৈরি হয়েছে সেটা ১)
-      // একটা স্থায়ী, সরল সিরিয়াল ব্যাজ দেখানো হচ্ছে — শুধু ডিসপ্লে-লেয়ারে হিসাব করা,
+      // প্রতিটা কার্ডে একটা সিরিয়াল ব্যাজ দেখানো হচ্ছে — শুধু ডিসপ্লে-লেয়ারে হিসাব করা,
       // কোনো ডেটা/invoiceNo ফিল্ড পরিবর্তন হচ্ছে না। কার্ডের প্রদর্শন-অর্ডার (LIFO)
       // অপরিবর্তিতই থাকছে।
-      const invSerialMap = new Map(
-        allItems.slice()
-          .sort((a, b) => {
-            const ta = a.createdAt || (a.dateKey + "T00:00:00");
-            const tb = b.createdAt || (b.dateKey + "T00:00:00");
-            return ta.localeCompare(tb);
-          })
-          .map((it, idx) => [it.id, idx + 1])
-      );
+      // 🆕 ফিক্স (৬ আগস্ট ২০২৬ — দৈনিক সিরিয়াল): আগে এই সিরিয়াল পুরো লাইফটাইম
+      // creation-order অনুযায়ী গোনা হতো (আজকের ৫ম ইনভয়েসও "৫০০+" এর মতো বড় নম্বর
+      // দেখাত, আগের দিনগুলোর যোগফলের সাথে যোগ হয়ে)। এখন প্রতিটা dateKey (দিন)
+      // আলাদাভাবে গ্রুপ করে, প্রতিদিনের ভেতরেই creation-order অনুযায়ী ১ থেকে শুরু
+      // করে সিরিয়াল বসানো হচ্ছে — ফলে প্রতিদিনের প্রথম ইনভয়েস সবসময় "১" দেখাবে।
+      const invSerialMap = new Map();
+      {
+        const byDay = new Map();
+        allItems.forEach(it => {
+          const dk = it.dateKey || (it.createdAt ? it.createdAt.slice(0, 10) : "");
+          if (!byDay.has(dk)) byDay.set(dk, []);
+          byDay.get(dk).push(it);
+        });
+        byDay.forEach(dayItems => {
+          dayItems
+            .slice()
+            .sort((a, b) => {
+              const ta = a.createdAt || (a.dateKey + "T00:00:00");
+              const tb = b.createdAt || (b.dateKey + "T00:00:00");
+              return ta.localeCompare(tb);
+            })
+            .forEach((it, idx) => invSerialMap.set(it.id, idx + 1));
+        });
+      }
       const rangedItems = allItems
         .filter(inv => dmRange.inRange(inv.dateKey))
         .slice()
@@ -26126,6 +26140,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   // 🆕 পার-ব্যাচ এডিটর (কমপ্যাক্ট "পণ্য আপডেট" প্যানেল) — এক্সিস্টিং ব্যাচের qty override
   // (index কী দিয়ে, যেহেতু batchNo ইউনিক না-ও হতে পারে) + নতুন এক্সপায়ারির ব্যাচ যোগ
   const [batchEdits,   setBatchEdits]   = useState({}); // { [batchIndex]: newQty }
+  const [batchExpiryEdits, setBatchExpiryEdits] = useState({}); // { [batchIndex]: newExpiryDate }
   const [newBatchRows, setNewBatchRows] = useState([]); // [{ id, qty, expiryDate }]
   const addNewBatchRow    = () => setNewBatchRows(rows => [...rows, { id: uid(), qty: "", expiryDate: "" }]);
   const updateNewBatchRow = (id, patch) => setNewBatchRows(rows => rows.map(r => r.id === id ? { ...r, ...patch } : r));
@@ -26375,8 +26390,9 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
         let workingBatches = (p.batches || [])
           .map((b, i) => {
             const qty = parseFloat(batchEdits[i] ?? b.qty) || 0;
-            if (b.costMismatchIgnored) return { ...b, qty };
-            return { ...b, qty, sellPrice: newSellPrice, costPrice: b.isFreeStock ? b.costPrice : newCostPrice };
+            const expiryDate = batchExpiryEdits[i] !== undefined ? batchExpiryEdits[i] : (b.expiryDate || "");
+            if (b.costMismatchIgnored) return { ...b, qty, expiryDate };
+            return { ...b, qty, expiryDate, sellPrice: newSellPrice, costPrice: b.isFreeStock ? b.costPrice : newCostPrice };
           })
           .filter(b => b.qty > 0);
 
@@ -26428,6 +26444,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       showToast("পণ্য আপডেট হয়েছে");
       setEditId(null);
       setBatchEdits({});
+      setBatchExpiryEdits({});
       setNewBatchRows([]);
     } else {
       const newId = uid();
@@ -28062,8 +28079,10 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                       setCompanyCustom(!!p.company && !BD_PHARMA_COMPANIES.includes(p.company));
                       // 🆕 এক্সিস্টিং ব্যাচগুলোর qty দিয়ে batchEdits ইনিশিয়ালাইজ (index কী দিয়ে)
                       const initBE = {};
-                      (p.batches || []).forEach((b, i) => { initBE[i] = b.qty; });
+                      const initBEX = {};
+                      (p.batches || []).forEach((b, i) => { initBE[i] = b.qty; initBEX[i] = b.expiryDate || ""; });
                       setBatchEdits(initBE);
+                      setBatchExpiryEdits(initBEX);
                       setNewBatchRows([]);
                     }
                   }}>
@@ -28121,9 +28140,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                       <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
                         {p.batches.map((b, i) => (
                           <div key={i} style={{ display:"flex", alignItems:"center", gap:6, background:"rgba(0,0,0,0.25)", border:"1px solid #f59e0b33", borderRadius:9, padding:"5px 8px" }}>
-                            <div style={{ flex:1, minWidth:0, overflow:"hidden" }}>
+                            <div style={{ width:66, flexShrink:0, overflow:"hidden" }}>
                               <div style={{ color:"#fde68a", fontSize:11, fontWeight:800, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>📦 {b.batchNo}</div>
-                              {b.expiryDate && <div style={{ color:"#fbbf2499", fontSize:9, fontWeight:700 }}>📅 {b.expiryDate}</div>}
+                            </div>
+                            <div style={{ flex:1, minWidth:0 }}>
+                              <ExpiryYearMonthPicker value={batchExpiryEdits[i] ?? b.expiryDate ?? ""} onChange={v => setBatchExpiryEdits(be => ({ ...be, [i]: v }))} />
                             </div>
                             <button type="button" onClick={() => setBatchEdits(be => ({ ...be, [i]: Math.max(0, (parseFloat(be[i] ?? b.qty) || 0) - 1) }))}
                               style={{ width:28, height:28, flexShrink:0, borderRadius:8, border:"1px solid #ef444466", background:"linear-gradient(135deg,#ef444444,#ef444422)", color:"#fca5a5", fontSize:16, fontWeight:900, cursor:"pointer", fontFamily:"inherit" }}>−</button>
@@ -28190,7 +28211,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                   </>)}
                 </div>
                 <div style={{ display:"flex", gap:7 }}>
-                  <button style={{ ...S.cancelBtn, flex:1, padding:"8px", fontSize:12 }} onClick={() => { setEditId(null); setBatchEdits({}); setNewBatchRows([]); }}>বাতিল</button>
+                  <button style={{ ...S.cancelBtn, flex:1, padding:"8px", fontSize:12 }} onClick={() => { setEditId(null); setBatchEdits({}); setBatchExpiryEdits({}); setNewBatchRows([]); }}>বাতিল</button>
                   <button style={{ ...S.saveBtn, flex:2, padding:"8px", fontSize:12, background:"linear-gradient(135deg,#0369a1,#0ea5e9)" }} onClick={saveProduct}>
                     <IcCheck /> আপডেট
                   </button>
