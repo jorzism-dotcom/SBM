@@ -21038,16 +21038,25 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   // কোনো ওপেনিং এন্ট্রি না থাকে, তাহলে সর্বশেষ সক্রিয় দিনের ক্লোজিং ক্যাশ স্বয়ংক্রিয়ভাবে
   // ও নিঃশব্দে (কোনো কনফার্মেশন ছাড়াই) আজকের ওপেনিং ক্যাশ হিসেবে বসে যায়। মালিক পরে
   // চাইলে এন্ট্রিটা লিস্ট থেকে ট্যাপ করে এডিট (override) করতে পারবেন।
+  // 🔴 ফিক্স (৬ আগস্ট ২০২৬ — ক্যারি-ফরওয়ার্ড কখনো ট্রিগার হতো না): আগে শুধু
+  // pastOpeningDateKeys (যেসব দিনে ম্যানুয়াল/অটো "opening" এন্ট্রি ছিল) থেকে সর্বশেষ
+  // দিন বের করা হতো — কিন্তু বাস্তবে কেউ কখনো ম্যানুয়ালি ওপেনিং ক্যাশ না দিলে এই লিস্ট
+  // চিরকাল খালি থাকে, ফলে গতকাল বিক্রি/ক্যাশ ড্রয়ার সক্রিয় থাকা সত্ত্বেও (যেমন ৫ আগস্ট
+  // ৳৪২৫ ক্লোজিং থাকা সত্ত্বেও) ৬ আগস্ট ওপেনিং ৳০ দেখাচ্ছিল। এখন যেকোনো আগের দিনের
+  // প্রকৃত কার্যক্রম (ইনভয়েস/txn/cashLog — opening এন্ট্রি থাকা লাগবে না) থাকলেই
+  // সেই সর্বশেষ সক্রিয় দিনের ক্লোজিং ক্যাশ আজকের ওপেনিং হিসেবে ক্যারি ফরোয়ার্ড হবে।
   React.useEffect(() => {
     if (!fssReady) return;
     if (todayOpeningEntries.length > 0) return; // আজকের ওপেনিং আগেই বসানো আছে
 
-    const pastOpeningDateKeys = cashLogsAll
-      .filter(c => c.type === "opening" && c.dateKey && c.dateKey < todayKeyStr)
-      .map(c => c.dateKey);
-    if (pastOpeningDateKeys.length === 0) return; // প্রথমবার — ক্যারি করার আগের হিসাব নেই
+    const activityDateKeys = [
+      ...invoices.map(i => i.dateKey).filter(k => k && k < todayKeyStr),
+      ...txns.map(t => t.dateKey).filter(k => k && k < todayKeyStr),
+      ...cashLogsAll.map(c => c.dateKey).filter(k => k && k < todayKeyStr),
+    ];
+    if (activityDateKeys.length === 0) return; // প্রথমবার — ক্যারি করার আগের হিসাব নেই
 
-    const lastDateKey = pastOpeningDateKeys.reduce((a, b) => (b > a ? b : a));
+    const lastDateKey = activityDateKeys.reduce((a, b) => (b > a ? b : a));
 
     const prevSummary = buildDailySummaryData({
       invoices, txns, customers, products, cashLogs: cashLogsAll,
@@ -21966,7 +21975,11 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                       <td style={{ padding:"9px 10px", fontSize:12, textAlign:"center", fontWeight:700, color:"#0369a1", borderBottom:"1px solid #f1f5f9" }}>{i+1}</td>
                       <td style={{ padding:"9px 10px", fontSize:12.5, color:"#0f172a", borderBottom:"1px solid #f1f5f9" }}>
                         <DosageBadge dosageForm={p.dosageForm} />{p.name}{p.unit ? <span style={{ color:"#94a3b8", fontSize:11 }}> ({p.unit})</span> : null}
-                        {b.batchNo && <span style={{ color:"#94a3b8", fontSize:11 }}> — {b.batchNo}</span>}
+                        {b.batchNo && (
+                          <span style={{ color: b.isFreeStock ? "#16a34a" : "#94a3b8", fontSize:11, fontWeight: b.isFreeStock ? 800 : 400 }}>
+                            {" — "}{b.isFreeStock ? "🎁 " : ""}{b.batchNo}{b.isFreeStock ? " (ফ্রি)" : ""}
+                          </span>
+                        )}
                       </td>
                       <td style={{ padding:"9px 10px", fontSize:12, color:"#334155", borderBottom:"1px solid #f1f5f9" }}>{p.company || p.supplier || p.category || "অজ্ঞাত"}</td>
                       <td style={{ padding:"9px 10px", fontSize:12.5, fontWeight:700, color:"#0f172a", textAlign:"right", borderBottom:"1px solid #f1f5f9" }}>{b.qty||0}</td>
@@ -26140,7 +26153,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     const inStock = peSelProdForBatch.batches.filter(b => (b.qty || 0) > 0);
     const pool = inStock.length ? inStock : peSelProdForBatch.batches;
     const latest = [...pool].sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0))[0];
-    return latest?.batchNo || null;
+    if (!latest?.batchNo) return null;
+    return { label: latest.batchNo, isFree: !!latest.isFreeStock };
   }, [peSelProdForBatch]);
   const peFilteredProds = useMemo(() => (
     peForm.productSearch
@@ -26319,6 +26333,10 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       lastUpdated: now,
       minStockAlert: parseInt(form.minStockAlert) || (() => { const u = (form.unit||"").toLowerCase(); return (u.includes("বোতল")||u.includes("সিরাপ")||u.includes("ড্রপ")||u.includes("সাসপেনশন")) ? 5 : 20; })(),
       costPrice: form.isFreeStock ? 0 : (parseFloat(form.costPrice) || 0),
+      // 🆕 True Batch/FIFO costing: এখানে ম্যানুয়ালি সেট করা costPrice-ই এখন
+      // "সর্বশেষ real ক্রয়মূল্য" হিসেবে ধরা হচ্ছে (ফ্রি না হলে) — পরের Purchase
+      // Entry-র auto-fill এটাই দেখাবে।
+      lastRealCostPrice: form.isFreeStock ? 0 : (parseFloat(form.costPrice) || 0),
       // 🔴 ফিক্স: আগে খালি রাখলে `undefined` বসত — Firestore SDK-এর setDoc()
       // undefined ফিল্ড ভ্যালু মেনে নেয় না, সাথে সাথে exception থ্রো করত, ফলে
       // পুরো products write silently ব্যর্থ হয়ে যেত (purchaseOrders ঠিকই সিঙ্ক
@@ -26344,22 +26362,21 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
         if (p.id !== editId) return p;
         const prevStock = p.stock || 0;
 
-        // 🆕 ফিক্স (ব্যাচ-costPrice সিঙ্ক): প্রোডাক্ট এডিট থেকে ক্রয়/বিক্রয়মূল্য
-        // বদলালে আগে শুধু প্রোডাক্টের উপরের লেভেলের costPrice/price বদলাত,
-        // কিন্তু প্রতিটা ব্যাচের নিজস্ব costPrice/sellPrice অপরিবর্তিত থেকে
-        // যেত — বিক্রির সময় batch-level costPrice-ই ব্যবহার হয় বলে সেল
-        // পুরনো (ভুল) দামেই হিসাব হতে থাকত। এখন থেকে এখানেই সব এক্সিস্টিং
-        // ব্যাচে নতুন দাম অটো-প্রয়োগ হয়ে যাবে — শুধু "ব্যাচ সিঙ্ক" টুল থেকে
-        // ইউজার যেসব ব্যাচকে সরাসরি "রেখে দিন" (ইচ্ছাকৃতভাবে ভিন্ন দামে কেনা)
-        // বলে মার্ক করেছেন (costMismatchIgnored), সেগুলো স্কিপ হবে।
+        // (নিচে costPrice/sellPrice সিঙ্ক-লজিকের বিস্তারিত ব্যাখ্যা আছে)
         const newCostPrice = parseFloat(form.costPrice) || 0;
         const newSellPrice = parseFloat(form.price) || 0;
 
+        // 🔴 ফিক্স (True Batch/FIFO costing — ২০২৬): আগে এখানে ক্রয়/বিক্রয়মূল্য
+        // বদলালে সব এক্সিস্টিং ব্যাচের costPrice/sellPrice নতুন দামে ওভাররাইট
+        // হয়ে যেত — ফ্রি ব্যাচ (costPrice=0)-ও বাদ যেত না। এখন ফ্রি ব্যাচ
+        // (isFreeStock:true) সবসময় তার নিজের ০ দামই ধরে রাখে — বাকি সব
+        // (নন-ফ্রি) ব্যাচের costPrice আগের মতোই নতুন দামে সিঙ্ক হয়ে যায়,
+        // sellPrice সব ব্যাচেই সিঙ্ক থাকে যেমন আগে ছিল।
         let workingBatches = (p.batches || [])
           .map((b, i) => {
             const qty = parseFloat(batchEdits[i] ?? b.qty) || 0;
             if (b.costMismatchIgnored) return { ...b, qty };
-            return { ...b, qty, costPrice: newCostPrice, sellPrice: newSellPrice };
+            return { ...b, qty, sellPrice: newSellPrice, costPrice: b.isFreeStock ? b.costPrice : newCostPrice };
           })
           .filter(b => b.qty > 0);
 
@@ -26560,6 +26577,10 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           const newBatch = {
             batchNo, qty, costPrice: cost, sellPrice: sell,
             expiryDate: expiryDate || "", supplier: supplier || "", note: note || "", at: now,
+            // 🆕 True Batch/FIFO costing: এই ব্যাচ ফ্রি/বোনাস কিনা তা চিরস্থায়ীভাবে
+            // সংরক্ষণ করা হচ্ছে — আগে শুধু PE হিস্ট্রি এন্ট্রিতে থাকত, batches[]-এ
+            // থাকত না, ফলে পরবর্তী ক্রয়ে ব্যাচটা তার "ফ্রি" পরিচয় হারিয়ে ফেলত।
+            isFreeStock: !!isFreeStock,
           };
           const entry = {
             id: entryId,
@@ -26596,25 +26617,40 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                 const oldStock = p.stock || 0;
                 const oldCost  = p.costPrice || 0;
                 newStock = oldStock + qty;
+                // ইনভেন্টরি ভ্যালুয়েশনের জন্য (ড্যাশবোর্ড/রিপোর্টে "মোট স্টক মূল্য" জাতীয়
+                // মেট্রিকে ব্যবহৃত) — এই weighted-average product.costPrice হিসেবে থেকেই যাচ্ছে।
                 const newCostPrice = oldStock + qty > 0
                   ? (oldStock * oldCost + qty * cost) / (oldStock + qty)
                   : cost;
                 const roundedNewCost = Math.round(newCostPrice * 10000) / 10000;
-                // 🆕 ফিক্স (৩০ জুলাই ২০২৬ — ইউজারের অনুরোধে): ক্রয়-এন্ট্রি দিলে
-                // এখন বিদ্যমান সব ব্যাচও (costMismatchIgnored বাদে) নতুন গড়ে
-                // সিঙ্ক হয়ে যাবে — শুধু প্রোডাক্ট-লেভেল costPrice না, পুরো অ্যাপ
-                // এখন Weighted-Average Costing অনুসরণ করবে (নতুন ব্যাচও গড় দামেই)।
-                newBatch.costPrice = roundedNewCost;
+                // 🔴 ফিক্স (True Batch/FIFO costing — ২০২৬): আগে এখানে নতুন ব্যাচ সহ
+                // বিদ্যমান সব ব্যাচের costPrice নতুন weighted-average দিয়ে ওভাররাইট
+                // হয়ে যেত (৩০ জুলাই ২০২৬-এর Weighted-Average ফিক্স)। সমস্যা: ফ্রি/বোনাস
+                // ব্যাচ (cost=0) ঢুকলে সব ব্যাচের রেকর্ডকৃত cost গড়ে মিশে যেত, এবং
+                // computeStockDeductionFIFO()-এর ব্যাচ-ভিত্তিক profit হিসাব অর্থহীন হয়ে
+                // পড়ত (সব ব্যাচেই একই cost)। এখন প্রতিটা ব্যাচ (নতুনটা সহ) তার নিজের
+                // আসল রেকর্ডকৃত cost (ফ্রি হলে ০) চিরস্থায়ীভাবে ধরে রাখছে — শুধু
+                // product.costPrice (উপরের roundedNewCost) সামগ্রিক ভ্যালুয়েশনের জন্য
+                // গড় থাকছে, ব্যাচ-লেভেল অ্যাকাউন্টিং (FIFO বিক্রি/ভয়েড/লাভ হিসাব) আর
+                // এই গড়ের ওপর নির্ভর করবে না।
+                // নতুন ব্যাচের costPrice ইতিমধ্যেই তার আসল দামে সেট করা আছে (উপরে
+                // newBatch তৈরির সময়) — এখানে আর ওভাররাইট করা হচ্ছে না।
+                // 🆕 lastRealCostPrice: ফ্রি এন্ট্রি বাদে সর্বশেষ real ক্রয়মূল্য —
+                // পরবর্তী ক্রয় এন্ট্রি ফর্মের auto-fill এখন এটা ব্যবহার করবে, যাতে
+                // weighted-average drift (ফ্রি স্টকের কারণে) পরের এন্ট্রির ফর্মে
+                // ভুল/কম দাম দেখিয়ে বিভ্রান্ত না করে।
+                const newLastRealCost = isFreeStock ? (p.lastRealCostPrice ?? p.costPrice ?? 0) : cost;
                 return {
                   ...p,
                   stock: newStock,
                   costPrice: roundedNewCost,
+                  lastRealCostPrice: newLastRealCost,
                   price: sell || p.price,
                   spPrice: (spPrice !== undefined && spPrice !== "") ? (parseFloat(spPrice) || 0) : p.spPrice,
                   lastUpdated: now,
                   expiryDate: expiryDate || p.expiryDate,
                   batches: [
-                    ...(p.batches || []).map(b => b.costMismatchIgnored ? b : { ...b, costPrice: roundedNewCost }),
+                    ...(p.batches || []),
                     newBatch,
                   ],
                 };
@@ -26907,7 +26943,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                               productId: p.id,
                               productSearch: "",
                               supplier: p.company || p.category || f.supplier || "",
-                              unitCost: String(p.costPrice || ""),
+                              unitCost: String((p.lastRealCostPrice ?? p.costPrice) || ""),
                               unitSell: String(p.price || ""),
                               batch: nextBatch,
                             }));
@@ -27097,8 +27133,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                     </span>
                   )}
                   {latestBatchLabel && (
-                    <span style={{ background: "#f59e0b22", color: "#f59e0b", fontSize: 11, borderRadius: 6, padding: "2px 8px", fontWeight: 700 }}>
-                      🏷️ {latestBatchLabel}
+                    <span style={{ background: latestBatchLabel.isFree ? "#22c55e22" : "#f59e0b22", color: latestBatchLabel.isFree ? "#22c55e" : "#f59e0b", fontSize: 11, borderRadius: 6, padding: "2px 8px", fontWeight: 700 }}>
+                      {latestBatchLabel.isFree ? "🎁" : "🏷️"} {latestBatchLabel.label}{latestBatchLabel.isFree ? " (ফ্রি)" : ""}
                     </span>
                   )}
                 </div>
@@ -27177,7 +27213,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                   </div>
                   {selProd && (
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                      <span style={{ color: T.sub, fontSize: 11 }}>নতুন এভারেজ ক্রয়মূল্য</span>
+                      <span style={{ color: T.sub, fontSize: 11 }}>নতুন স্টক ভ্যালু (গড়, শুধু হিসাবের জন্য)</span>
                       <span style={{ color: "#22c55e", fontWeight: 700, fontSize: 12 }}>
                         ৳{((((selProd.stock||0) * (selProd.costPrice||0)) + (parseFloat(peForm.qty) * parseFloat(peForm.unitCost))) / ((selProd.stock||0) + parseFloat(peForm.qty))).toFixed(2)}
                       </span>
@@ -27209,14 +27245,14 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                   {peFormErrors.expiryDate && <div style={{ color:"#ef4444", fontSize:11, fontWeight:700, marginTop:4 }}>⚠️ মেয়াদ উত্তীর্ণের তারিখ আবশ্যক</div>}
                 </div>
                 <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                  <span style={{ color:"#a78bfa", fontWeight:900, fontSize:14 }}>{nextBatchLabel}</span>
-                  <span style={{ color:T.sub, fontSize:11 }}>🏷️ ব্যাচ নম্বর — স্বয়ংক্রিয়ভাবে যুক্ত হবে</span>
+                  <span style={{ color: peForm.isFreeStock ? "#22c55e" : "#a78bfa", fontWeight:900, fontSize:14 }}>{peForm.isFreeStock ? "🎁 " : ""}{nextBatchLabel}</span>
+                  <span style={{ color:T.sub, fontSize:11 }}>🏷️ ব্যাচ নম্বর — স্বয়ংক্রিয়ভাবে যুক্ত হবে{peForm.isFreeStock ? " (ফ্রি ব্যাচ)" : ""}</span>
                 </div>
               </div>
               ) : (
               <div style={{ marginTop:10, display:"flex", alignItems:"center", gap:10, padding:"10px 14px", borderRadius:12, border:"1px solid #a78bfa44", background:"#a78bfa10" }}>
-                <span style={{ color:"#a78bfa", fontWeight:900, fontSize:14 }}>{nextBatchLabel}</span>
-                <span style={{ color:T.sub, fontSize:11 }}>🏷️ ব্যাচ নম্বর — স্বয়ংক্রিয়ভাবে যুক্ত হবে</span>
+                <span style={{ color: peForm.isFreeStock ? "#22c55e" : "#a78bfa", fontWeight:900, fontSize:14 }}>{peForm.isFreeStock ? "🎁 " : ""}{nextBatchLabel}</span>
+                <span style={{ color:T.sub, fontSize:11 }}>🏷️ ব্যাচ নম্বর — স্বয়ংক্রিয়ভাবে যুক্ত হবে{peForm.isFreeStock ? " (ফ্রি ব্যাচ)" : ""}</span>
               </div>
               )}
 
@@ -27260,10 +27296,12 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                       supplier: peForm.supplier || company,
                       note: peForm.note || "",
                       at: now,
+                      isFreeStock: !!peForm.isFreeStock,
                     };
                     setProducts(prev => [...prev, {
                       id: newId, name, unit: unitFinal,
                       price: unitSell, costPrice: unitCost,
+                      lastRealCostPrice: peForm.isFreeStock ? 0 : unitCost,
                       // 🔴 ফিক্স: undefined নয়, null — Firestore setDoc() undefined-এ
                       // exception থ্রো করে products/purchaseOrders write ব্যর্থ করে দিত
                       // (দেখুন নতুন-পণ্য ফর্মের একই ফিক্সের কমেন্ট)।
@@ -27442,8 +27480,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                             মোট: ৳{(e.totalCost||0).toLocaleString()}
                           </span>
                           {e.batch && (
-                            <span style={{ background: "#f59e0b22", color: "#f59e0b", fontSize: 11, borderRadius: 6, padding: "2px 8px", fontWeight: 700 }}>
-                              🏷️ {e.batch}
+                            <span style={{ background: e.isFreeStock ? "#22c55e22" : "#f59e0b22", color: e.isFreeStock ? "#22c55e" : "#f59e0b", fontSize: 11, borderRadius: 6, padding: "2px 8px", fontWeight: 700 }}>
+                              {e.isFreeStock ? "🎁" : "🏷️"} {e.batch}{e.isFreeStock ? " ফ্রি" : ""}
                             </span>
                           )}
                           {expDays !== null && (
@@ -28227,25 +28265,14 @@ function BatchSyncTool({ T, S, products = [], setProducts, invoices = [], setInv
   }, [products]);
 
   // ── (B) ব্যাচ costPrice মিসম্যাচ ───────────────────────────────────────
-  const mismatches = React.useMemo(() => {
-    const out = [];
-    (products || []).forEach(p => {
-      if (p.productType === "service") return;
-      (p.batches || []).forEach((b, i) => {
-        if (b.costMismatchIgnored) return; // ইউজার আগেই "রেখে দিন" বলেছেন
-        if (b.costPrice == null) return;
-        const productCost = p.costPrice || 0;
-        if (Math.round((b.costPrice || 0) * 100) !== Math.round(productCost * 100)) {
-          out.push({
-            productId: p.id, productName: p.name, unit: p.unit,
-            batchIndex: i, batchNo: b.batchNo || `#${i + 1}`,
-            batchCost: b.costPrice || 0, productCost, qty: b.qty || 0,
-          });
-        }
-      });
-    });
-    return out;
-  }, [products]);
+  // 🔴 ফিক্স (True Batch/FIFO costing — ২০২৬): আগে "সব ব্যাচের costPrice
+  // product.costPrice-এর সাথে মিলতে হবে" এই ধারণায় এই চেকটা বানানো হয়েছিল
+  // (যখন প্রতিটা ক্রয়ে সব ব্যাচ জোর করে একই গড় দামে সিঙ্ক হয়ে যেত)। এখন
+  // প্রতিটা ব্যাচ তার নিজের আসল রেকর্ডকৃত cost ধরে রাখে (ফ্রি ব্যাচ=০,
+  // অন্যগুলো তাদের কেনা দামে) — তাই ব্যাচ-cost ≠ product-average এখন
+  // স্বাভাবিক ও কাঙ্ক্ষিত, "মিসম্যাচ" না। পুরনো লজিক এখন প্রতিটা ব্যাচকেই
+  // ভুলভাবে ফ্ল্যাগ করত বলে নিষ্ক্রিয় করা হলো।
+  const mismatches = React.useMemo(() => [], []);
 
   const canEdit = currentUser?.role === "admin" || currentUser?.role === "owner";
 
@@ -28341,10 +28368,13 @@ function BatchSyncTool({ T, S, products = [], setProducts, invoices = [], setInv
       const updatedBatches = (pr.batches || []).map(b => {
         if (b.costMismatchIgnored) return b;
         const next = { ...b, sellPrice: val };
-        if (costChanged) next.costPrice = costVal; // পণ্যের সাথে সব ব্যাচও সিঙ্ক করা হচ্ছে, নাহলে এটাই নতুন "ব্যাচ মিসম্যাচ" তৈরি করবে
+        // 🔴 ফিক্স (True Batch/FIFO costing — ২০২৬): ফ্রি ব্যাচ এখানেও বাদ —
+        // costChanged হলেও ফ্রি ব্যাচের costPrice চিরকাল ০-ই থাকবে, বাকি সব
+        // (নন-ফ্রি) ব্যাচ আগের মতোই নতুন দামে সিঙ্ক হবে।
+        if (costChanged && !b.isFreeStock) next.costPrice = costVal;
         return next;
       });
-      return { ...pr, price: val, ...(costChanged ? { costPrice: costVal } : {}), batches: updatedBatches };
+      return { ...pr, price: val, ...(costChanged ? { costPrice: costVal, lastRealCostPrice: costVal } : {}), batches: updatedBatches };
     }));
     auditLog?.("PRODUCT_PRICE_CHANGE", { productId: p.id, productName: p.name, oldPrice: p.price, newPrice: val, source: "batchSyncTool" });
     if (costChanged) {
