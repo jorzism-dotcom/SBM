@@ -17297,6 +17297,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
   const [note,       setNote]       = useState("");
   const [discount,   setDiscount]   = useState(""); // টাকায় ডিসকাউন্ট
   const [discountPct, setDiscountPct] = useState(0); // % ডিসকাউন্ট (স্ট্যাকেবল)
+  const [discountInputMode, setDiscountInputMode] = useState("flat"); // 🆕 "flat" (৳) বা "pct" (%) — একটি ফিল্ডে টগল করে ডিসকাউন্ট দেওয়ার মোড
   const [extraCharge, setExtraCharge] = useState(""); // অতিরিক্ত চার্জ (৳)
   const [creating,   setCreating]   = useState(false);
   const [expandedQtyPid, setExpandedQtyPid] = useState(null); // 🆕 পেমেন্ট পেজে qty/price পিলে ক্লিক করলে সেই কার্ডের উপরে ইনলাইন +/- এক্সপ্যান্ড
@@ -19034,8 +19035,13 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 background: IS.cardBg, border: IS.cardBorder, borderRadius: IS.id === "t5" ? (S.card?.borderRadius ?? 14) : 0,
                 boxShadow: IS.id === "t5" ? "none" : "none",
               }}>
-              <div style={{ color: IS.text, fontWeight: 800, fontSize: 14, marginBottom: 4 }}>{isSelfUse ? "🏠 নিজের ব্যবহার (Personal Use)" : selCust?.name}</div>
-              <div style={{ color: IS.sub, fontSize: 11, marginBottom: 8 }}>{items.filter(i=>i.qty>0).length}টি পণ্য · {items.filter(i=>i.qty>0).reduce((a,b)=>a+b.qty,0)}টি আইটেম</div>
+              <div style={{ textAlign: "center", marginBottom: 8 }}>
+                <span style={{ color: IS.accent, fontWeight: 900, fontSize: 14 }}>{isSelfUse ? "🏠 নিজের ব্যবহার (Personal Use)" : selCust?.name}</span>
+                <span style={{ color: IS.text, fontWeight: 800, fontSize: 13 }}>: </span>
+                <span style={{ color: "#16a34a", fontWeight: 800, fontSize: 13 }}>{items.filter(i=>i.qty>0).length}টি পণ্য</span>
+                <span style={{ color: IS.sub, fontWeight: 800, fontSize: 13 }}> · </span>
+                <span style={{ color: "#0ea5a4", fontWeight: 800, fontSize: 13 }}>{items.filter(i=>i.qty>0).reduce((a,b)=>a+b.qty,0)}টি আইটেম</span>
+              </div>
               {(() => {
                 const cartItems = items.filter(i => i.qty > 0);
                 // 🆕 কোলাপস/লিমিট সম্পূর্ণ বাদ — যত পণ্য থাকুক সব সবসময় দেখাবে, কোনো ভিতরের স্ক্রলও নেই
@@ -19139,12 +19145,13 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                                   <span style={{ fontSize: 15.5, fontWeight: 900, color: "#17171a", background: "#fde047", borderRadius: 5, padding: "1px 7px" }}>{item.qty}</span>
                                   <span style={{ color: "#fff" }}>× ৳{fmt(item.price)}</span>
                                 </button>
-                                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }} onClick={e => e.stopPropagation()}>
-                                  <span style={{ color: "#16a34a", fontSize: 9.5, fontWeight: 800 }}>ডিসকাউন্ট:</span>
+                                {/* 🆕 লেবেল একটু ছোট/বামে সরানো হয়েছে; বাটন ও ফিল্ড সমান সাইজ (৩৪px করে) — দুইটি মিলে উপরের qty×price পিলের প্রস্থের কাছাকাছি */}
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 3, marginLeft: -6 }} onClick={e => e.stopPropagation()}>
+                                  <span style={{ color: "#16a34a", fontSize: 8, fontWeight: 800, whiteSpace: "nowrap" }}>ডিসকাউন্ট:</span>
                                   <button
                                     type="button"
                                     onClick={() => toggleItemDiscMode(item.productId)}
-                                    style={{ background: "#16a34a", border: "1.5px solid #17171a", borderRadius: 7, padding: "2px 7px", fontSize: 10, fontWeight: 900, color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>
+                                    style={{ width: 34, background: "#16a34a", border: "1.5px solid #17171a", borderRadius: 7, padding: "2px 0", fontSize: 10, fontWeight: 900, color: "#fff", cursor: "pointer", fontFamily: "inherit", textAlign: "center" }}>
                                     {mode === "pct" ? "%" : "৳"}
                                   </button>
                                   {mode === "pct" ? (
@@ -19152,13 +19159,13 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                                       type="number" inputMode="decimal" placeholder="0"
                                       value={item.itemDiscount ? pctDisplay : ""}
                                       onChange={e => setItemDiscountPct(item.productId, e.target.value, lineSubtotal)}
-                                      style={{ width: 46, background: "#f0fdf4", border: "1.5px solid #16a34a", borderRadius: 7, padding: "2px 4px", fontSize: 10.5, fontWeight: 800, color: "#15803d", fontFamily: "inherit", textAlign: "center" }} />
+                                      style={{ width: 34, background: "#f0fdf4", border: "1.5px solid #16a34a", borderRadius: 7, padding: "2px 4px", fontSize: 10.5, fontWeight: 800, color: "#15803d", fontFamily: "inherit", textAlign: "center" }} />
                                   ) : (
                                     <input
                                       type="number" inputMode="numeric" placeholder="0"
                                       value={item.itemDiscount || ""}
                                       onChange={e => setItemDiscount(item.productId, e.target.value)}
-                                      style={{ width: 46, background: "#f0fdf4", border: "1.5px solid #16a34a", borderRadius: 7, padding: "2px 4px", fontSize: 10.5, fontWeight: 800, color: "#15803d", fontFamily: "inherit", textAlign: "center" }} />
+                                      style={{ width: 34, background: "#f0fdf4", border: "1.5px solid #16a34a", borderRadius: 7, padding: "2px 4px", fontSize: 10.5, fontWeight: 800, color: "#15803d", fontFamily: "inherit", textAlign: "center" }} />
                                   )}
                                 </div>
                               </div>
@@ -19253,6 +19260,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                     <button key={pct+"%"}
                       style={{ background: pct === discountPct ? T.accent : T.card, color: pct === discountPct ? "#fff" : T.sub, border:`1px solid ${pct === discountPct ? T.accent : T.border}`, borderRadius:14, padding:"2px 6px", fontSize:9.5, fontWeight:700, cursor:"pointer", fontFamily:"inherit", flexShrink:0 }}
                       onClick={() => {
+                        setDiscountInputMode("pct");
                         setDiscountPct(pct);
                         setDiscount(Math.round(subtotal * pct / 100));
                       }}>{pct}%</button>
@@ -19260,20 +19268,29 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                   <button style={{ background: T.accent+"22", color: T.accent, border:`1px solid ${T.accent}55`, borderRadius:14, padding:"2px 7px", fontSize:10, fontWeight:800, cursor:"pointer", fontFamily:"inherit", flexShrink:0, opacity: discountPct > 0 ? 1 : 0.3 }}
                     onClick={() => { setDiscountPct(0); setDiscount(""); }}>✕</button>
                 </div>
-                <div style={{ display:"flex", gap:5 }}>
-                  <input type="number" inputMode="decimal" placeholder="৳ পরিমাণ"
-                    value={discount}
-                    onChange={e => { setDiscountPct(0); setDiscount(e.target.value); }}
-                    style={{ ...S.input, marginBottom:0, fontSize:12, padding:"6px 8px", flex:1, minWidth:0 }} />
-                  <input type="number" inputMode="decimal" placeholder="% পার্সেন্ট" min="0" max="100" step="0.01"
-                    value={discountPct > 0 ? discountPct : ""}
-                    onChange={e => {
-                      const raw = e.target.value;
-                      const pct = raw === "" ? 0 : parseFloat(raw);
-                      setDiscountPct(Number.isFinite(pct) ? pct : 0);
-                      setDiscount(pct > 0 ? Math.round(subtotal * pct / 100) : "");
-                    }}
-                    style={{ ...S.input, marginBottom:0, fontSize:12, padding:"6px 8px", flex:1, minWidth:0 }} />
+                {/* 🆕 একটি ফিল্ড + ৳/% টগল বাটন — আইটেম-লেভেল ডিসকাউন্টের প্যাটার্নে; দুইটি আলাদা ফিল্ডের বদলে একটিতে ফ্ল্যাট বা পার্সেন্টেজ যেকোনোটা দেওয়া যায় */}
+                <div style={{ display:"flex", gap:5, alignItems:"center" }}>
+                  <button type="button"
+                    onClick={() => setDiscountInputMode(m => m === "pct" ? "flat" : "pct")}
+                    style={{ background: T.accent, border:"1.5px solid #17171a", borderRadius:8, padding:"6px 9px", fontSize:12, fontWeight:900, color:"#fff", cursor:"pointer", fontFamily:"inherit", flexShrink:0 }}>
+                    {discountInputMode === "pct" ? "%" : "৳"}
+                  </button>
+                  {discountInputMode === "pct" ? (
+                    <input type="number" inputMode="decimal" placeholder="% পার্সেন্ট" min="0" max="100" step="0.01"
+                      value={discountPct > 0 ? discountPct : ""}
+                      onChange={e => {
+                        const raw = e.target.value;
+                        const pct = raw === "" ? 0 : parseFloat(raw);
+                        setDiscountPct(Number.isFinite(pct) ? pct : 0);
+                        setDiscount(pct > 0 ? Math.round(subtotal * pct / 100) : "");
+                      }}
+                      style={{ ...S.input, marginBottom:0, fontSize:12, padding:"6px 8px", flex:1, minWidth:0 }} />
+                  ) : (
+                    <input type="number" inputMode="decimal" placeholder="৳ পরিমাণ"
+                      value={discount}
+                      onChange={e => { setDiscountPct(0); setDiscount(e.target.value); }}
+                      style={{ ...S.input, marginBottom:0, fontSize:12, padding:"6px 8px", flex:1, minWidth:0 }} />
+                  )}
                 </div>
               </div>
               {/* Extra Charge কার্ড */}
@@ -19302,7 +19319,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
             {/* Payment method */}
             {!isSelfUse && (
             <div style={{ marginBottom: 10 }}>
-              <div style={{ color: T.text, fontWeight: 700, fontSize: 13, marginBottom: 8 }}>পেমেন্ট পদ্ধতি</div>
+              <div style={{ textAlign: "center", color: "#8b5cf6", fontWeight: 900, fontSize: 14, marginBottom: 8 }}>💳 পেমেন্ট পদ্ধতি</div>
               {selCust?.id === "__walkin__" ? (
                 <div>
                   <div style={{ display:"flex", gap:8, marginBottom:10 }}>
