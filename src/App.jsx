@@ -19189,18 +19189,18 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                   <>
                     {hasDiscount && (
                       <>
-                        <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 6, display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, fontWeight:700, color: IS.text }}>
+                        <div style={{ borderTop: `1px solid ${T.border}`, marginTop: 6, paddingTop: 6, marginBottom: 7, display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, fontWeight:700, color: IS.text }}>
                           <span>সর্বমোট</span>
                           <span style={{ minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5, background:"#64748b", border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px" }}>৳{fmt(subtotal)}</span>
                         </div>
                         {itemDiscTotal > 0 && (
-                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, fontWeight:700, color: IS.text }}>
+                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, fontWeight:700, color: IS.text, marginBottom: 7 }}>
                           <span>পণ্যভিত্তিক ডিসকাউন্ট</span>
                           <span style={{ minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5, background:"#16a34a", border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px" }}>– ৳{fmt(itemDiscTotal)}</span>
                         </div>
                         )}
                         {discAmt > 0 && (
-                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, fontWeight:700, color: IS.text }}>
+                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, fontWeight:700, color: IS.text, marginBottom: 7 }}>
                           <span>ডিসকাউন্ট</span>
                           <span style={{ minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5, background:"#0ea5a4", border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px" }}>– ৳{fmt(discAmt)}</span>
                         </div>
@@ -25731,8 +25731,10 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
           {customer?.address && <div><b style={{ color: IS.text }}>ঠিকানা:</b> {customer.address}</div>}
         </div>
         <div style={S.dashed} />
-        <div style={{ display: "flex", justifyContent: "space-between", padding: "0 12px 6px", color: IS.sub, fontSize: 10.5, fontWeight: 800 }}>
-          <span>#  পণ্য</span><span>পরিমাণ · দাম · ছাড় · মোট</span>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 108px 92px", alignItems: "center", columnGap: 8, padding: "0 10px 6px", color: IS.sub, fontSize: 10.5, fontWeight: 800 }}>
+          <span>#  পণ্য</span>
+          <span style={{ textAlign: "center", marginRight: 48 }}>পরিমাণ · দাম</span>
+          <span style={{ textAlign: "right" }}>ছাড় · মোট</span>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {inv.items.map((item, idx) => {
@@ -25770,7 +25772,8 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
                   })()}
                 </span>
                 {/* qty × price পিল — নাম ও মূল্যের মাঝে ফিক্সড কলামে, রো-এর সাথে ভার্টিকেলি মিডল-এলাইন্ড */}
-                <div style={{ display: "flex", justifyContent: "center" }}>
+                {/* 🆕 আরও ০.৫০ ইঞ্চি (৪৮px) বামে সরানো হয়েছে (marginRight দিয়ে, center অ্যালাইনমেন্ট বজায় রেখে), হেডার লেবেলও একই পরিমাণ শিফট করা হয়েছে */}
+                <div style={{ display: "flex", justifyContent: "center", marginRight: 48 }}>
                   <span style={{
                     background: _ac, border: "1.5px solid #17171a", color: "#fff",
                     fontSize: 12.5, fontWeight: 900, borderRadius: IS.id === "t5" ? 10 : 6,
@@ -25848,23 +25851,29 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
             borderRadius: 999, padding: "3px 14px",
           }}>৳{fmt(inv.total)}</span>
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: IS.text, fontSize: 13, fontWeight: 700, marginBottom: inv.payType === "partial" ? 3 : 5 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: IS.text, fontSize: 13, fontWeight: 700, marginBottom: inv.payType === "partial" ? 7 : 5 }}>
           <span>পরিশোধ পদ্ধতি</span>
-          <span style={{ color: inv.payType==="baki"?"#dc2626":inv.payType==="partial"?"#ea580c":"#16a34a", fontWeight:900, fontSize: 14 }}>
+          <span style={{
+            minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5,
+            background: inv.payType==="baki" ? "#dc2626" : inv.payType==="partial" ? "#ea580c" : "#16a34a",
+            border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px", whiteSpace:"nowrap",
+          }}>
             {inv.payType === "baki" ? `বাকি ৳${fmt(inv.total)}`
               : inv.payType === "partial" ? `আংশিক — নগদ ৳${fmt(inv.paidAmount || 0)}`
               : "নগদ পরিশোধ"}
           </span>
         </div>
         {inv.payType === "partial" && (
-          <div style={{ display: "flex", justifyContent: "space-between", color: "#dc2626", fontSize: 14, fontWeight: 800, marginBottom: 5 }}>
-            <span>এখনকার বাকি</span><span>৳{fmt(inv.bakiAmount || 0)}</span>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, fontWeight: 700, color: IS.text, marginBottom: 7 }}>
+            <span>এখনকার বাকি</span>
+            <span style={{ minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5, background:"#f43f5e", border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px" }}>৳{fmt(inv.bakiAmount || 0)}</span>
           </div>
         )}
         {(inv.payType === "baki" || inv.payType === "partial" || (inv.prevBalance||0) > 0) && (
           <>
-            <div style={{ display: "flex", justifyContent: "space-between", color: "#ea580c", fontSize: 14, fontWeight: 800, marginTop: 4 }}>
-              <span>পূর্বের বাকি</span><span>৳{fmt(inv.prevBalance || 0)}</span>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, fontWeight: 700, color: IS.text, marginTop: 4 }}>
+              <span>পূর্বের বাকি</span>
+              <span style={{ minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5, background:"#eab308", border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px" }}>৳{fmt(inv.prevBalance || 0)}</span>
             </div>
             <div style={{ borderTop: `1px dashed ${T.border}`, marginTop: 8, marginBottom: 8 }} />
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "#fff", fontSize: 15, fontWeight: 900, padding: "9px 12px", background: "#dc2626", borderRadius: IS.id === "t5" ? 10 : 0, border: "1.5px solid #17171a", boxShadow: "none" }}>
