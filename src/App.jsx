@@ -225,6 +225,11 @@ const useAppStore = create(subscribeWithSelector((set) => ({
   deletedProducts:   [],
   smsTemplates:      null,
   smsGateway:        null,
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ২) — স্টাফ কমিশন লেজার: শুধু "advance"(অগ্রিম/ধার)
+  // ও "payout"(কমিশন পরিশোধ) এন্ট্রি রাখে। কমিশন উপার্জন নিজেই invoices থেকে
+  // (item.staffId + item.staffCommissionRate ব্যবহার করে) হিসাব হয় — এখানে
+  // ডুপ্লিকেট করে রাখা হয় না, শুধু "টাকা হাতে দেওয়া/নেওয়া" এন্ট্রিগুলো।
+  staffLedger:       [],
 
   // ── Shop / Auth ───────────────────────────────────────────────────────────
   shopName:          "SBM",
@@ -3562,6 +3567,7 @@ const SK = {
   auditLogs:       "sbm-audit-logs",           // 📋 অডিট ট্রেইল
   quotations:       "sbm-quotations",           // 📋 কোটেশন
   supplierPayments:  "sbm-supplier-payments",     // 🏭 সাপ্লায়ার পেমেন্ট
+  staffLedger:       "sbm-staff-ledger",           // 💇 স্টাফ কমিশন অগ্রিম/পরিশোধ লগ (সেলুন)
   recoveryPhone:   "sbm-recovery-phone",     // 📱 Recovery ফোন নম্বর
   recoveryPinHash: "sbm-recovery-pin-hash",  // 🔐 Recovery PIN hash
   lastMasterSync:  "sbm-last-master-sync",   // 🔄 Master Sync শেষ কখন হয়েছিল
@@ -3585,7 +3591,7 @@ const LOCAL_BUSINESS_SCOPED_KEYS = new Set([
   SK.customers, SK.products, SK.invoices, SK.txns, SK.smsLog,
   SK.deletedCustomers, SK.deletedProducts, SK.paymentInvoices,
   SK.suppliers, SK.purchaseOrders, SK.stockMovements, SK.cashLogs,
-  SK.expenses, SK.returns, SK.auditLogs, SK.quotations, SK.supplierPayments,
+  SK.expenses, SK.returns, SK.auditLogs, SK.quotations, SK.supplierPayments, SK.staffLedger,
   // 🆕 ফিক্স (২০ জুলাই ২০২৬ — "থিম আলাদা বিজনেসে আলাদা হওয়া উচিত" ফিডব্যাক):
   // থিম/ডার্কমোড/ফন্টসাইজ আগে ইচ্ছাকৃতভাবে শপ-লেভেল (unprefixed, সব বিজনেসে
   // শেয়ার্ড) রাখা হয়েছিল। এখন ইউজারের স্পষ্ট অনুরোধে এগুলোও বিজনেস-স্কোপড —
@@ -4386,7 +4392,7 @@ const FIELD_CHANGE_LOG_COLLECTIONS = [
   // deletedCustomers নিছক আর্কাইভ লিস্ট — এগুলোতে field-diff মূল্যহীন।
   "customers", "products", "invoices", "txns", "purchaseOrders",
   "cashLogs", "suppliers", "expenses", "returns", "quotations",
-  "supplierPayments", "paymentInvoices",
+  "supplierPayments", "paymentInvoices", "staffLedger",
 ];
 const FIELD_CHANGE_LOG_IGNORED_KEYS = new Set(["id", "_updatedAt", "_savedAt", "_slot", "slot", "_serverTs"]);
 const FIELD_CHANGE_LOG_MAX_ENTRIES = 5000; // prune-এর সীমা — স্টোরেজ সীমিত রাখতে (#১৩-এর সাথে সাংঘর্ষিক না হতে)
@@ -4801,6 +4807,27 @@ const BUSINESS_TYPE_REGISTRY = {
     purchaseEntryRestrictToExisting: true,
     purchaseEntryAllFieldsMandatory: true,
     purchaseEntryListOrder: "newestFirst",
+  },
+  // 🆕 (৬ আগস্ট ২০২৬) — সেলুন বিজনেস টাইপ, ধাপ ১: রেজিস্ট্রি এন্ট্রি + "পণ্য" স্ক্রিনকে
+  // "সার্ভিস" হিসেবে ব্যবহার। বিদ্যমান `productType: "service"` টগল (যেটা আগে থেকেই
+  // অ্যাপে আছে — স্টক/এক্সপায়ারি/ব্যাচ ছাড়াই "চার্জ" ভিত্তিক আইটেম) সেলুনের সার্ভিস
+  // ক্যাটালগের জন্য নিখুঁত ফিট, তাই নতুন এনটিটি বানানো হয়নি। productForm-এ ব্যাচ/
+  // এক্সপায়ারি-নির্ভর ফিচারগুলো হাইড করা হলো যেহেতু সেলুনের মূল বিক্রি সার্ভিস
+  // (কনজিউমেবল/স্টক-ভিত্তিক পণ্য থাকলে productType "product" রেখে আলাদাভাবে যোগ করা
+  // যাবে, ফর্ম টগল থেকেই)। পরের ধাপে: স্টাফ কমিশন, টোকেন/সিরিয়াল, ড্যাশবোর্ড কার্ড।
+  salon: {
+    id: "salon",
+    label: "সেলুন",
+    color: "#ec4899",
+    collectionPrefix: "salon",
+    hiddenFields: {
+      productForm: ["sp", "addBatchButton"],
+      purchaseForm: ["sp", "bonusStock"],
+      invoiceCard: [],
+    },
+    purchaseEntryRestrictToExisting: true,
+    purchaseEntryListOrder: "newestFirst",
+    defaultProductType: "service",
   },
 };
 
@@ -10591,6 +10618,7 @@ function SmartBusinessMgmt() {
   const txns             = useAppStore(s => s.txns);
   const suppliers        = useAppStore(s => s.suppliers);
   const expenses         = useAppStore(s => s.expenses);
+  const staffLedger      = useAppStore(s => s.staffLedger);
   const returns          = useAppStore(s => s.returns);
   const auditLogs        = useAppStore(s => s.auditLogs);
   const quotations       = useAppStore(s => s.quotations);
@@ -10737,6 +10765,7 @@ function SmartBusinessMgmt() {
   const setSyncToast        = useCallback((v) => _set("syncToast",        v), [_set]);
   const setSuppliers        = useCallback((v) => _set("suppliers",        v), [_set]);
   const setExpenses         = useCallback((v) => _set("expenses",         v), [_set]);
+  const setStaffLedger      = useCallback((v) => _set("staffLedger",      v), [_set]);
   const setReturns          = useCallback((v) => _set("returns",          v), [_set]);
   const setAuditLogs        = useCallback((v) => _set("auditLogs",        v), [_set]);
   const setQuotations       = useCallback((v) => _set("quotations",       v), [_set]);
@@ -10980,7 +11009,7 @@ function SmartBusinessMgmt() {
         SK.lastDriveBackup, SK.lastSnapshotBackup,
         SK.lastMasterSync, SK.autoMasterSyncEnabled, LK(SK.suppliers), LK(SK.purchaseOrders),
         LK(SK.stockMovements), LK(SK.cashLogs), LK(SK.expenses), LK(SK.returns), LK(SK.auditLogs),
-        LK(SK.quotations), LK(SK.supplierPayments),
+        LK(SK.quotations), LK(SK.supplierPayments), LK(SK.staffLedger),
       ];
       const boot1 = await loadMany(CRITICAL_KEYS);
       const rawCustomers    = boot1[LK(SK.customers)];
@@ -11103,6 +11132,7 @@ function SmartBusinessMgmt() {
           auditLogs:             boot2[LK(SK.auditLogs)]            || [],
           quotations:            boot2[LK(SK.quotations)]           || [],
           supplierPayments:      boot2[LK(SK.supplierPayments)]     || [],
+          staffLedger:           boot2[LK(SK.staffLedger)]          || [],
           // businessType/businessTypeLocked/enabledBusinessTypes এখন wave 1-এই
           // সেট হয়ে গেছে (দেখুন উপরের CRITICAL_KEYS কমেন্ট) — এখানে আর বসানো হয়
           // না, নাহলে wave 2 আবার সেগুলোকে (এই মুহূর্তে ঠিকমতোই থাকা) ওভাররাইট
@@ -11742,6 +11772,7 @@ function SmartBusinessMgmt() {
   // 🔴 ফিক্স: expenses-এও একই প্যাটার্ন — auto-delete বন্ধ, ইচ্ছাকৃত ডিলিট এখন
   // সরাসরি FSS.deleteRecord("expenses", id) কল করে (দেখুন Expenses পেজ)।
   useFSSCollection("expenses", expenses, setExpenses, fssReady, { onSync: setSyncToast, syncDeletes: false });
+  useFSSCollection("staffLedger", staffLedger, setStaffLedger, fssReady, { onSync: setSyncToast, syncDeletes: false });
   useEffect(() => {
     if (!fssReady || !FSS._db) return;
     // 🔴 মৃত কোড ছিল (Firebase সরানো হয়েছে, ২৯ জুলাই ২০২৬, Session A)।
@@ -12015,13 +12046,14 @@ function SmartBusinessMgmt() {
   // 🔴 ফিক্স: এই ৫টা কালেকশনের আগে কোনো লোকাল পার্সিস্টেন্স ছিল না — Firebase বন্ধ
   // থাকা (local-only) দোকানে প্রতি রিলোডে এই ডেটা হারিয়ে যেত।
   useEffect(() => { if (loaded) debouncedSave(LK(SK.expenses),         expenses,         1500); }, [expenses,         loaded]);
+  useEffect(() => { if (loaded) debouncedSave(LK(SK.staffLedger),      staffLedger,      1500); }, [staffLedger,      loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.returns),          returns,          1500); }, [returns,          loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.auditLogs),        auditLogs,        2000); }, [auditLogs,        loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.quotations),       quotations,       1500); }, [quotations,       loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.supplierPayments), supplierPayments, 1500); }, [supplierPayments, loaded]);
   // 🔴 ফিক্স: "ব্যাকআপ প্রয়োজন" ব্যাজ আগে শুধু customers/products/invoices/txns
   // বদলালে জ্বলত — বাকি ব্যাকআপযোগ্য ফিল্ডগুলো বদলালে জ্বলত না।
-  useEffect(() => { if (loaded) setBackupNeeded(true); }, [suppliers, purchaseOrders, stockMovements, cashLogs, expenses, returns, auditLogs, quotations, supplierPayments, paymentInvoices, loaded]);
+  useEffect(() => { if (loaded) setBackupNeeded(true); }, [suppliers, purchaseOrders, stockMovements, cashLogs, expenses, returns, auditLogs, quotations, supplierPayments, paymentInvoices, staffLedger, loaded]);
 
   // 🖥️ Fix black screen on app resume/minimize (Capacitor WebView repaint bug)
   // 🔴 ফিক্স: visibilitychange ও Capacitor resume — দুটো ইভেন্টই একসাথে/কাছাকাছি
@@ -12143,7 +12175,7 @@ function SmartBusinessMgmt() {
     // বানানো হয় — নতুন কোনো collection ভবিষ্যতে যোগ হলে শুধু ওই একটা array-তে
     // নাম যোগ করলেই এই তিনটাই (payload, checksum, counts) নিজে থেকে কভার করবে,
     // এখানে আলাদা করে টাচ করা লাগবে না।
-    const stateMap = { customers, products, invoices: invoicesForBackup, txns: txnsForBackup, smsLog, paymentInvoices, purchaseOrders, stockMovements: stockMovementsForBackup, users, cashLogs: cashLogsForBackup, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers };
+    const stateMap = { customers, products, invoices: invoicesForBackup, txns: txnsForBackup, smsLog, paymentInvoices, purchaseOrders, stockMovements: stockMovementsForBackup, users, cashLogs: cashLogsForBackup, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, staffLedger };
     const payload = {};
     const counts = {};
     BACKUP_FIELDS.forEach(f => {
@@ -12185,7 +12217,7 @@ function SmartBusinessMgmt() {
         history: license.history,
       },
     };
-  }, [customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, firebaseEnabled, businessType, enabledBusinessTypes, license.deviceId, license.unlockedUntil, license.history]);
+  }, [customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, staffLedger, firebaseEnabled, businessType, enabledBusinessTypes, license.deviceId, license.unlockedUntil, license.history]);
 
   // ── GoogleDriveSection/LocalStorageSection (ম্যানুয়াল Settings প্যানেল)-এ
   // `data`/`setters` prop হিসেবে যা যায় — আগে এই দুই জায়গাতেই আলাদা করে ১৮টা
@@ -12193,7 +12225,7 @@ function SmartBusinessMgmt() {
   // BACKUP_FIELDS রেজিস্ট্রি থেকে বানানো হয় — নতুন কোনো collection যোগ হলে এই
   // ম্যানুয়াল প্যানেল দুটোও নিজে থেকেই কভার হয়ে যাবে।
   const buildManualBackupData = useCallback(() => {
-    const stateMap = { customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers };
+    const stateMap = { customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, staffLedger };
     const out = {};
     BACKUP_FIELDS.forEach(f => { out[f] = stateMap[f]; });
     // 🆕 Multi-Business RestoreGuard: buildBackupData-এর মতোই businessType ট্যাগ,
@@ -12208,9 +12240,9 @@ function SmartBusinessMgmt() {
       history: license.history,
     };
     return out;
-  }, [customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, businessType, enabledBusinessTypes, license.deviceId, license.unlockedUntil, license.history]);
+  }, [customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, staffLedger, businessType, enabledBusinessTypes, license.deviceId, license.unlockedUntil, license.history]);
   const manualBackupSetters = useMemo(() => {
-    const setterMap = { customers: setCustomers, products: setProducts, invoices: setInvoices, txns: setTxns, smsLog: setSmsLog, paymentInvoices: setPaymentInvoices, purchaseOrders: setPurchaseOrders, stockMovements: setStockMovements, users: setUsers, cashLogs: setCashLogs, suppliers: setSuppliers, expenses: setExpenses, returns: setReturns, auditLogs: setAuditLogs, quotations: setQuotations, supplierPayments: setSupplierPayments, deletedProducts: setDeletedProducts, deletedCustomers: setDeletedCustomers };
+    const setterMap = { customers: setCustomers, products: setProducts, invoices: setInvoices, txns: setTxns, smsLog: setSmsLog, paymentInvoices: setPaymentInvoices, purchaseOrders: setPurchaseOrders, stockMovements: setStockMovements, users: setUsers, cashLogs: setCashLogs, suppliers: setSuppliers, expenses: setExpenses, returns: setReturns, auditLogs: setAuditLogs, quotations: setQuotations, supplierPayments: setSupplierPayments, deletedProducts: setDeletedProducts, deletedCustomers: setDeletedCustomers, staffLedger: setStaffLedger };
     const out = {};
     BACKUP_FIELDS.forEach(f => { out["set" + f[0].toUpperCase() + f.slice(1)] = setterMap[f]; });
     return out;
@@ -13870,7 +13902,10 @@ function SmartBusinessMgmt() {
       { id: "dashboard", label: "হোম",     icon: "M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" },
       { id: "customers", label: "কাস্টমার", icon: "M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" },
       { id: "invoice",   label: "ইনভয়েস",  icon: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6" },
-      { id: "products",  label: "পণ্য",     icon: "M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4zM3 6h18" },
+      // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ১): salon বিজনেসে "পণ্য" ট্যাবের লেবেল "সার্ভিস"
+      // দেখানো হচ্ছে — আন্ডারলাইং স্ক্রিন/ডেটা একই (productType:"service" আইটেম),
+      // শুধু লেবেল প্রসঙ্গ অনুযায়ী বদলাচ্ছে।
+      { id: "products",  label: businessType === "salon" ? "সার্ভিস" : "পণ্য",     icon: "M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4zM3 6h18" },
       { id: "notifications", label: "নোটিফিকেশন", icon: "M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0" },
       { id: "dailySummary", label: "দৈনিক সারসংক্ষেপ", icon: "M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0" },
       { id: "expense",  label: "এক্সপেন্স ট্রেকার", icon: "M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" },
@@ -13898,7 +13933,7 @@ function SmartBusinessMgmt() {
     if (currentUser?.role !== "admin" && currentUser?.role !== "owner") visible = visible.filter(n => n.id !== "expense");
     return visible;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isStaff, currentUser?.role]);
+  }, [isStaff, currentUser?.role, businessType]);
 
   // ── ফোনে বাটন কম রাখতে: শুধু হোম/কাস্টমার/ইনভয়েস/পণ্য নিচে থাকবে,
   // বাকি মডিউল "অন্যান্য" চাপলে সাইড থেকে খুলবে ──────────────────────────
@@ -14185,7 +14220,9 @@ function SmartBusinessMgmt() {
   const showDetail = tab === "customers" && detailCId;
   const detailCust = showDetail ? customers.find(c => c.id === detailCId) : null;
 
-  const tabTitles = { customers:"কাস্টমার", invoice:"নতুন ইনভয়েস", products:"ওষুধ তালিকা", settings:"সেটিং", ai:"AI ও অটোমেশন" };
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ১): salon-এ "products" স্ক্রিনের হেডার "সার্ভিস তালিকা" —
+  // বাকি সব businessType-এর জন্য আগের মতোই "ওষুধ তালিকা" (আচরণ অপরিবর্তিত)।
+  const tabTitles = { customers:"কাস্টমার", invoice:"নতুন ইনভয়েস", products: businessType === "salon" ? "সার্ভিস তালিকা" : "ওষুধ তালিকা", settings:"সেটিং", ai:"AI ও অটোমেশন" };
 
   // প্রতিটি মডিউলে আলাদা রং
   // Tab header gradient follows the active theme
@@ -14755,6 +14792,7 @@ function SmartBusinessMgmt() {
               purchaseOrders={purchaseOrders}
               currentUser={currentUser}
               businessType={businessType}
+              users={users}
               onDone={clearPreselected}
               license={license}
             />
@@ -15016,6 +15054,9 @@ function SmartBusinessMgmt() {
               recoveryPinHash={recoveryPinHash}
               enabledBusinessTypes={enabledBusinessTypes}
               businessType={businessType}
+              invoices={invoices}
+              staffLedger={staffLedger}
+              setStaffLedger={setStaffLedger}
             />
           </ErrorBoundary>
         )}
@@ -15841,9 +15882,9 @@ function PinPad({ T, onComplete, title = "PIN লিখুন", subtitle = "" })
 // যায়। একবার "নিশ্চিত করুন" চাপলে businessTypeLocked: true — এরপর এই স্ক্রিন
 // আর কখনো দেখাবে না (রিইনস্টল ছাড়া বদলানোর কোনো পথ ইচ্ছাকৃতভাবে নেই)।
 function BusinessTypeSelectScreen({ businessType, setBusinessType, enabledBusinessTypes, setEnabledBusinessTypes, setBusinessTypeLocked, onEnterViewer }) {
-  const ORDER = ["pharmacy", "veterinary", "semen"];
-  const ICONS = { pharmacy: "🏥", veterinary: "🐄", semen: "🧬" };
-  const DESCR = { pharmacy: "ঔষধ, মেডিসিন দোকান", veterinary: "পশু চিকিৎসা/ওষুধ", semen: "পশু প্রজনন/সিমেন" };
+  const ORDER = ["pharmacy", "veterinary", "semen", "salon"];
+  const ICONS = { pharmacy: "🏥", veterinary: "🐄", semen: "🧬", salon: "💇" };
+  const DESCR = { pharmacy: "ঔষধ, মেডিসিন দোকান", veterinary: "পশু চিকিৎসা/ওষুধ", semen: "পশু প্রজনন/সিমেন", salon: "চুল/ত্বক/সৌন্দর্য সার্ভিস" };
 
   const [selected, setSelected] = useState(() => {
     const base = (Array.isArray(enabledBusinessTypes) && enabledBusinessTypes.length)
@@ -16019,6 +16060,7 @@ function ViewerSetupScreen({ onDone, onExit }) {
     { key: "pharmacy", label: "ফার্মেসি", icon: "🏥" },
     { key: "veterinary", label: "ভেটেরিনারি", icon: "🐄" },
     { key: "semen", label: "সিমেন বিজনেস", icon: "🧬" },
+    { key: "salon", label: "সেলুন", icon: "💇" },
   ];
 
   const [connected, setConnected] = useState(() => !!localStorage.getItem("sbm_gd_token") && !GDrive.isTokenExpired());
@@ -16137,7 +16179,7 @@ function ViewerSetupScreen({ onDone, onExit }) {
 // `{voidInvoice && ...}` গার্ড), তাই আলাদা করে কোনো "ভিউয়ার-অনলি" ফ্ল্যাগ Dashboard-এ
 // পাস করতে হয়নি।
 function ViewerDashboardScreen({ onReconfigure, onExit }) {
-  const PREFIX_LABEL = { "": "সিঙ্গেল বিজনেস", pharmacy: "ফার্মেসি", veterinary: "ভেটেরিনারি", semen: "সিমেন বিজনেস" };
+  const PREFIX_LABEL = { "": "সিঙ্গেল বিজনেস", pharmacy: "ফার্মেসি", veterinary: "ভেটেরিনারি", semen: "সিমেন বিজনেস", salon: "সেলুন" };
   const prefix = localStorage.getItem(VK.prefix) || "";
 
   // ── থিম রিজলভ — মূল App() কম্পোনেন্ট ঠিক যেভাবে করে (একই storage key/ফলব্যাক),
@@ -17234,6 +17276,9 @@ const invoiceInitState = (preselectedCustomer) => ({
   discount: "",
   discountPct: 0,
   extraCharge: "",
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৩) — "কোন স্টাফ সার্ভিস দিয়েছে" ট্যাগ। শুধু salon
+  // বিজনেসে UI-তে দেখানো হবে (একটা ইনভয়েসে একজনই স্টাফ — প্ল্যানে চূড়ান্ত হয়েছে)।
+  staffId: null,
 });
 function invoiceReducer(state, action) {
   switch (action.type) {
@@ -17263,11 +17308,16 @@ function getInvoiceSkin(_isDark) {
   };
 }
 
-function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCustomers, setInvoices, setProducts, sendSMS, showToast, addTxn, shopName, btConnected, btDevice, onConnectBluetooth, createPaymentInvoice, preselectedCustomer, preselectedType, setTab, onDone, purchaseOrders = [], currentUser, businessType = "pharmacy", license = { isLocked: false } }) {
+function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCustomers, setInvoices, setProducts, sendSMS, showToast, addTxn, shopName, btConnected, btDevice, onConnectBluetooth, createPaymentInvoice, preselectedCustomer, preselectedType, setTab, onDone, purchaseOrders = [], currentUser, businessType = "pharmacy", users = [], license = { isLocked: false } }) {
   const IS = useMemo(() => getInvoiceSkin(isDark), [isDark]);
   // 🆕 ধাপ ৪: semen business-এ ইনভয়েস স্টেপ ২ প্রোডাক্ট কার্ডে ক্রয়মূল্য হাইড
   // (registry hiddenFields.invoiceCard: "purchasePrice")
   const hideCostPrice = (BUSINESS_TYPE_REGISTRY[businessType]?.hiddenFields?.invoiceCard || []).includes("purchasePrice");
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৩) — কোন স্টাফ সার্ভিস দিয়েছে, শুধু salon-এ প্রযোজ্য।
+  // ইনভয়েসে একজনই স্টাফ থাকবে (প্ল্যানে চূড়ান্ত)।
+  const isSalon = businessType === "salon";
+  const staffOptions = isSalon ? users.filter(u => u.role === "staff") : [];
+  const [staffId,     setStaffId]     = useState(null);
   const [step,       setStep]       = useState(preselectedCustomer ? 2 : 1);
   const [selCust,    setSelCust]    = useState(preselectedCustomer || null);
   const [custSearch, setCustSearch] = useState("");
@@ -17675,6 +17725,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     setPartialAmt(""); setNote(""); setDiscount(""); setDiscountPct(0); setExtraCharge(""); setPrintInv(null); setPrintMode(null); setSelfUseOn(false);
     setWalkInPayType("cash"); setWalkInPartialAmt(""); setWalkInName(""); setWalkInMobile(""); setWalkInAddress(""); setWalkInDueDate("");
     setWalkInCustMode("new"); setWalkInExistingId(""); setWalkInCustSearch("");
+    setStaffId(null);
     onDone?.();
   };
 
@@ -17880,6 +17931,17 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
       }),
       total: isSelfUse ? selfUseCost : total, subtotal: isSelfUse ? selfUseCost : subtotal, discount: discAmt, itemDiscount: isSelfUse ? 0 : itemDiscTotal, extraCharge: isSelfUse ? 0 : extraAmt,
       payType: effectivePayType, note,
+      // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৩) — কমিশন হিসাব ডিসকাউন্টের পরের (নেট) দামের
+      // উপর হবে (প্ল্যানে চূড়ান্ত), তাই এখানে `total`/`selfUseCost`-ই ব্যবহার হচ্ছে।
+      // rate টা sale-এর মুহূর্তেই স্ন্যাপশট করে রাখা হচ্ছে — পরে স্টাফের রেট
+      // বদলালেও পুরনো ইনভয়েসের কমিশন হিসাব বদলে যাবে না (ঐতিহাসিক নির্ভুলতা)।
+      staffId: (isSalon && !isSelfUse && staffId) ? staffId : null,
+      staffName: (isSalon && !isSelfUse && staffId)
+        ? (staffId === "__admin__" ? (currentUser?.name || "এডমিন") : (staffOptions.find(u => u.id === staffId)?.name || ""))
+        : null,
+      staffCommissionRate: (isSalon && !isSelfUse && staffId)
+        ? (staffId === "__admin__" ? 100 : (staffOptions.find(u => u.id === staffId)?.commissionRate ?? 50))
+        : null,
       paidAmount: isSelfUse ? 0 : isWalkIn ? walkInPaidAmt : paidAmt,
       bakiAmount: isSelfUse ? 0 : isWalkIn ? walkInBakiAmt : bakiAmt,
       overpayAmount: _overpayAmt,
@@ -19239,6 +19301,40 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 );
               })()}
             </div>
+
+            {/* 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৩) — কোন স্টাফ সার্ভিস দিয়েছেন, শুধু salon-এ */}
+            {isSalon && !isSelfUse && (
+              <div className="qc-gradient-card" style={{ ...S.card, marginBottom: 10, background: IS.cardBg, border: IS.cardBorder, borderRadius: IS.id === "t5" ? (S.card?.borderRadius ?? 14) : 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: IS.sub, marginBottom: 8 }}>💇 কোন স্টাফ সার্ভিস দিয়েছেন?</div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  <button type="button" onClick={() => setStaffId("__admin__")}
+                    style={{
+                      padding: "7px 12px", borderRadius: 20, cursor: "pointer", fontFamily: "inherit",
+                      fontSize: 12, fontWeight: 700,
+                      background: staffId === "__admin__" ? `${IS.accent}22` : "transparent",
+                      border: `1.5px solid ${staffId === "__admin__" ? IS.accent : IS.sub}66`,
+                      color: staffId === "__admin__" ? IS.accent : IS.sub,
+                    }}>
+                    👑 আমি নিজে (এডমিন)
+                  </button>
+                  {staffOptions.map(u => (
+                    <button type="button" key={u.id} onClick={() => setStaffId(u.id)}
+                      style={{
+                        padding: "7px 12px", borderRadius: 20, cursor: "pointer", fontFamily: "inherit",
+                        fontSize: 12, fontWeight: 700,
+                        background: staffId === u.id ? `${IS.accent}22` : "transparent",
+                        border: `1.5px solid ${staffId === u.id ? IS.accent : IS.sub}66`,
+                        color: staffId === u.id ? IS.accent : IS.sub,
+                      }}>
+                      {u.name}
+                    </button>
+                  ))}
+                </div>
+                {!staffId && (
+                  <div style={{ marginTop: 6, fontSize: 10.5, color: "#f59e0b", fontWeight: 700 }}>⚠️ স্টাফ বাছাই না করলে কমিশন কারো হিসাবে যুক্ত হবে না</div>
+                )}
+              </div>
+            )}
 
             {isSelfUse && (
               <div style={{ marginBottom:10, background:"linear-gradient(135deg,#7c2d1222,#ea580c11)", border:"1px solid #f9731633", borderRadius:14, padding:"10px 14px", color:"#f97316", fontSize:12, fontWeight:700, textAlign:"center" }}>
@@ -32033,14 +32129,16 @@ function SubscriptionModule({ T, S, license, showToast }) {
   );
 }
 
-function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, recoveryPhone, recoveryPinHash, enabledBusinessTypes = [], businessType }) {
+function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, recoveryPhone, recoveryPinHash, enabledBusinessTypes = [], businessType, invoices = [], staffLedger = [], setStaffLedger }) {
   const [showNewUser, setShowNewUser] = useState(false);
-  const [userForm, setUserForm] = useState({ name: "", username: "", password: "", pin: "", assignedBusinessType: businessType });
+  const [userForm, setUserForm] = useState({ name: "", username: "", password: "", pin: "", assignedBusinessType: businessType, commissionRate: "50" });
   const [search, setSearch] = useState("");
   // 🆕 ধাপ ৫ (Staff Permission System): শুধু সত্যিকারের multi-business শপে
   // (enabledBusinessTypes.length >= 2) business-assignment UI দেখানো হয় — বর্তমান
   // ৫০০ শপের সবগুলোতেই এটা no-op, existing UI/আচরণ অপরিবর্তিত থাকে (নিয়ম ৩)।
   const isMultiBusinessShop = Array.isArray(enabledBusinessTypes) && enabledBusinessTypes.length >= 2;
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৩) — কমিশন ফিল্ড/কার্ড শুধু salon-এ প্রাসঙ্গিক।
+  const isSalon = businessType === "salon";
   const [editingBizStaffId, setEditingBizStaffId] = useState(null);
   // 🆕 স্টাফ ম্যানেজমেন্টের নেস্টেড লেয়ার — শেয়ার্ড back-stack-এ।
   useBackHandler(!!editingBizStaffId, () => { setEditingBizStaffId(null); return true; });
@@ -32069,8 +32167,10 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
       ? userForm.assignedBusinessType
       : (enabledBusinessTypes[0] || businessType || null);
     const autoUsername = "staff-" + uid();
-    setUsers(prev => [...prev, { id: uid(), name: userForm.name.trim(), username: autoUsername, password: "", pin: "", role: "staff", assignedBusinessType }]);
-    setUserForm({ name: "", username: "", password: "", pin: "", assignedBusinessType: businessType });
+    // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৩) — কমিশন রেট (%), ডিফল্ট ৫০, ০-১০০ এর মধ্যে ক্ল্যাম্প।
+    const commissionRate = Math.min(100, Math.max(0, parseFloat(userForm.commissionRate) || 50));
+    setUsers(prev => [...prev, { id: uid(), name: userForm.name.trim(), username: autoUsername, password: "", pin: "", role: "staff", assignedBusinessType, commissionRate }]);
+    setUserForm({ name: "", username: "", password: "", pin: "", assignedBusinessType: businessType, commissionRate: "50" });
     setShowNewUser(false);
     showToast("নতুন স্টাফ প্রোফাইল তৈরি হয়েছে");
   };
@@ -32174,7 +32274,7 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" y1="8" x2="19" y2="14"/><line x1="22" y1="11" x2="16" y2="11"/></svg>
             স্টাফ তালিকা
           </div>
-          <button style={S.linkBtn} onClick={() => { setShowNewUser(v => !v); setUserForm({ name: "", username: "", password: "", pin: "" }); }}>
+          <button style={S.linkBtn} onClick={() => { setShowNewUser(v => !v); setUserForm({ name: "", username: "", password: "", pin: "", assignedBusinessType: businessType, commissionRate: "50" }); }}>
             {showNewUser ? "Cancel" : "+ যোগ করুন"}
           </button>
         </div>
@@ -32184,6 +32284,15 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
             <label style={S.label}>নাম</label>
             <input style={S.input} type="text" placeholder="যেমন: রহিম" value={userForm.name}
               onChange={e => setUserForm(f => ({ ...f, name: e.target.value }))} />
+            {/* 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৩) — কমিশন রেট (%), শুধু salon-এ দেখানো হয়।
+                অন্য সব বিজনেস টাইপে আচরণ অপরিবর্তিত (ফিল্ড হাইড, ডিফল্ট ৫০ সেভ হয়ে যায় কিন্তু ব্যবহার হয় না)। */}
+            {isSalon && (
+              <>
+                <label style={S.label}>কমিশন রেট (%)</label>
+                <input style={S.input} type="number" min="0" max="100" placeholder="৫০" value={userForm.commissionRate}
+                  onChange={e => setUserForm(f => ({ ...f, commissionRate: e.target.value }))} />
+              </>
+            )}
             {/* 🔴 Session B: আলাদা স্টাফ লগইন নেই (শুধু এডমিন↔স্টাফ কুইক-সুইচ) — dead
                 ইউজারনেম/পাসওয়ার্ড/PIN ফিল্ড ব্লক সরানো হলো, শুধু নাম দিলেই পারমিশন সেট করা যাবে। */}
             {isMultiBusinessShop && (
@@ -33248,6 +33357,7 @@ function Settings_({ T, S, shopName,
       if (typeof setReturns === "function") setReturns([]);
       if (typeof setQuotations === "function") setQuotations([]);
       if (typeof setSupplierPayments === "function") setSupplierPayments([]);
+      if (typeof setStaffLedger === "function") setStaffLedger([]);
       if (typeof setAuditLogs === "function") setAuditLogs([]); // 🔴 ফিক্স: আগে এটা বাদ ছিল
 
       // 🔴 ফিক্স: React state clear করলেই লোকাল স্টোরেজে সাথে সাথে লেখা হয় না —
@@ -33269,7 +33379,7 @@ function Settings_({ T, S, shopName,
           SK.customers, SK.products, SK.invoices, SK.txns,
           SK.smsLog, SK.paymentInvoices, SK.purchaseOrders, SK.stockMovements,
           SK.deletedProducts, SK.deletedCustomers, SK.cashLogs, SK.suppliers,
-          SK.expenses, SK.returns, SK.auditLogs, SK.quotations, SK.supplierPayments,
+          SK.expenses, SK.returns, SK.auditLogs, SK.quotations, SK.supplierPayments, SK.staffLedger,
         ];
         const allKeysToClear = scopedKeys.flatMap(allBizVariantsOf);
         await Promise.all(allKeysToClear.map(k => save(k, [])));

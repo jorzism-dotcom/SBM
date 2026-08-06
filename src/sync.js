@@ -21,7 +21,7 @@ export const FSS_COLLECTIONS = [
   "customers", "products", "invoices", "txns", "smsLog", "suppliers",
   "purchaseOrders", "stockMovements", "cashLogs", "paymentInvoices",
   "expenses", "returns", "auditLogs", "quotations", "supplierPayments",
-  "deletedProducts", "deletedCustomers",
+  "deletedProducts", "deletedCustomers", "staffLedger",
 ];
 export const BACKUP_FIELDS = [...FSS_COLLECTIONS, "users"];
 
@@ -31,7 +31,7 @@ export const BACKUP_FIELD_LABELS_BN = {
   stockMovements: "স্টক মুভমেন্ট", cashLogs: "ক্যাশ লগ", paymentInvoices: "পেমেন্ট ইনভয়েস",
   expenses: "খরচ", returns: "রিটার্ন", auditLogs: "অডিট লগ", quotations: "কোটেশন",
   supplierPayments: "সাপ্লায়ার পেমেন্ট", deletedProducts: "মোছা পণ্য",
-  deletedCustomers: "মোছা কাস্টমার", users: "ইউজার",
+  deletedCustomers: "মোছা কাস্টমার", users: "ইউজার", staffLedger: "স্টাফ লেজার",
 };
 
 // ── ব্যাকআপ পেলোড থেকে শুধু রেজিস্ট্রিতে-থাকা ফিল্ড বাছাই ─────────────────────
