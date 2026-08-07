@@ -6212,6 +6212,46 @@ const BT_CHAR_UUIDS = [
   "49535343-8841-43f4-a8d4-ecbe34729bb3",
 ];
 
+// 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৮ — টোকেন POS প্রিন্টিং) — সিরিয়াল কিউয়ের টোকেন
+// একটা ছোট থার্মাল স্লিপে প্রিন্ট করার জন্য আলাদা ESC/POS বিল্ডার। ইনভয়েস
+// প্রিন্টের buildEscPosBuffer() থেকে আলাদা রাখা হলো কারণ এখানে বড় টোকেন
+// নম্বর (GS ! দিয়ে ৪x সাইজ) আর সংক্ষিপ্ত তথ্যই যথেষ্ট — একই BT.print()
+// পাইপলাইন ব্যবহার হয়, শুধু ডেটা বাফার আলাদা।
+function buildTokenTicketBuffer(token, shopName) {
+  const enc = new TextEncoder();
+  const [ESC, GS, LF] = [0x1B, 0x1D, 0x0A];
+  const out = [];
+  const push  = (...b) => b.forEach(x => out.push(x));
+  const write = (s)    => enc.encode(String(s)).forEach(b => out.push(b));
+  const nl    = ()     => out.push(LF);
+  const bold  = (on)   => push(ESC, 0x45, on ? 1 : 0);
+  const align = (a)    => push(ESC, 0x61, a); // 0=left 1=center 2=right
+  const bigNum = (on)  => push(GS, 0x21, on ? 0x33 : 0x00); // ৪x width+height / normal
+
+  push(ESC, 0x40); // Initialize
+  align(1); bold(true);
+  write(shopName || "SBM"); nl();
+  write("--------------------------------"); nl();
+  bold(false);
+  write("টোকেন নং"); nl();
+  bigNum(true);
+  write(String(token.tokenNo ?? "")); nl();
+  bigNum(false);
+  write("--------------------------------"); nl();
+  align(0);
+  write("নাম   : " + (token.customerName || "")); nl();
+  if (token.service) { write("সেবা  : " + token.service); nl(); }
+  write("সময়   : " + (token.date || new Date().toLocaleString("bn-BD"))); nl();
+  write("--------------------------------"); nl();
+  align(1); bold(true);
+  write("ডাকা হলে কাউন্টারে আসুন"); nl();
+  bold(false);
+  nl(); nl(); nl();
+  push(GS, 0x56, 0x41, 0x10); // Partial cut
+
+  return new Uint8Array(out);
+}
+
 function buildEscPosBuffer(inv, shopName) {
   const enc = new TextEncoder(); // UTF-8
   const [ESC, GS, LF] = [0x1B, 0x1D, 0x0A];
@@ -14811,6 +14851,7 @@ function SmartBusinessMgmt() {
               cashModal={cashModal} setCashModal={setCashModal}
               paymentInvoices={paymentInvoices}
               shopName={shopName}
+              showToast={showToast}
               todayCashSale={todayCashSale}
               todayProfit={todayProfit}
               products={products}
@@ -15143,6 +15184,9 @@ function SmartBusinessMgmt() {
               setSerialQueue={setSerialQueue}
               goToInvoiceFromQueue={goToInvoiceFromQueue}
               businessType={businessType}
+              shopName={shopName}
+              btConnected={btConnected}
+              connectBluetooth={connectBluetooth}
             />
           </ErrorBoundary>
         )}
@@ -19015,7 +19059,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                       </div>
                       <div style={{ textAlign: "center" }}>
                         <div style={{ color: T.sub, fontSize: 9, fontWeight: 600 }}>ধরন</div>
-                        <div style={{ color: "#38bdf8", fontWeight: 800, fontSize: 10 }}>🔧 সার্ভিস</div>
+                        <div style={{ color: p.isCombo ? "#fbbf24" : "#38bdf8", fontWeight: 800, fontSize: 10 }}>{p.isCombo ? "🎁 কম্বো" : "🔧 সার্ভিস"}</div>
                       </div>
                     </div>
                   ) : (() => {
@@ -20971,7 +21015,7 @@ function InvoiceVoidModal({ inv, returns = [], products = [], customers = [], cu
 const MemoSmartInvoiceBuilder = React.memo(SmartInvoiceBuilder);
 
 // ── Dashboard ──────────────────────────────────────────────────────────────────
-function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, processReturn, currentUser, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, supplierPayments = [], setSupplierPayments, returns = [], serialQueue = [], users = [] }) {
+function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, showToast, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, processReturn, currentUser, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, supplierPayments = [], setSupplierPayments, returns = [], serialQueue = [], users = [] }) {
   const [viewInv,    setViewInv]    = useState(null);
   const [viewPayInv, setViewPayInv] = useState(null);
   const [listDate,   setListDate]   = useState(() => todayEn()); // YYYY-MM-DD
@@ -23926,6 +23970,13 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
 
 
   if (dashModal) {
+    // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৯) — ডিজাইন গ্যালারি (হেয়ারকাট/বিয়ার্ড), local-only IndexedDB
+    if (dashModal.type === "design-gallery") {
+      return (
+        <DesignGalleryView T={T} S={S} category={dashModal.category} showToast={showToast}
+          onBack={() => setDashModal(null)} />
+      );
+    }
     if (dashModal.type === "customer-breakdown") {
       const custBreakdownHtml = buildPdfHtml(`<div class="section"><table><thead><tr><th>#</th><th>নাম</th><th>মোবাইল</th><th class="num">বাকি</th></tr></thead><tbody>${dashModal.rows.map((r,i)=>`<tr><td>${i+1}</td><td>${r.name}</td><td>${r.mobile||""}</td><td class="num">৳${fmt(r.balance)}</td></tr>`).join("")}</tbody></table></div>`, shopName, "বাকি কাস্টমার তালিকা");
       return (
@@ -24894,6 +24945,24 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             </div>
           );
         })()}
+
+        {/* ══ 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৯) — ডিজাইন গ্যালারি: হেয়ারকাট/বিয়ার্ড ছবি কাস্টমারকে
+             দেখানোর জন্য দুইটা কার্ড, শুধু salon-এ। ছবি সম্পূর্ণ local-only (IndexedDB) —
+             Google Drive ব্যাকআপে যায় না (তুর্যের সিদ্ধান্ত অনুযায়ী, দেখুন DesignGalleryView) ══ */}
+        {businessType === "salon" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 9, marginBottom: 12 }}>
+            <div className="tap-card" onClick={() => setDashModal({ type: "design-gallery", category: "haircut" })}
+              style={{ cursor: "pointer", background: `${T.accent}14`, border: `1px solid ${T.accent}33`, borderRadius: 14, padding: "16px 12px", textAlign: "center" }}>
+              <div style={{ fontSize: 26, marginBottom: 6 }}>✂️</div>
+              <div style={{ color: T.text, fontWeight: 800, fontSize: 12.5 }}>হেয়ারকাট ডিজাইন</div>
+            </div>
+            <div className="tap-card" onClick={() => setDashModal({ type: "design-gallery", category: "beard" })}
+              style={{ cursor: "pointer", background: `${T.accentDark || T.accent}14`, border: `1px solid ${T.accentDark || T.accent}33`, borderRadius: 14, padding: "16px 12px", textAlign: "center" }}>
+              <div style={{ fontSize: 26, marginBottom: 6 }}>🧔</div>
+              <div style={{ color: T.text, fontWeight: 800, fontSize: 12.5 }}>বিয়ার্ড ট্রিমিং ডিজাইন</div>
+            </div>
+          </div>
+        )}
 
         {/* ══ ইনভেন্টরি/স্টক বিশ্লেষণ ══ */}
         {/* 🔴 ফিক্স (৬ আগস্ট ২০২৬ — salon-এ ডেড-এন্ড লিংক): "সাপ্লায়ার" ও "লস-ঝুঁকি
@@ -26317,7 +26386,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const [editId,       setEditId]       = useState(null);
   // 🆕 (৬ আগস্ট ২০২৬, ক্লিনআপ ধাপ ১) — serviceOnly বিজনেসে (salon) নতুন ফর্ম
   // সবসময় "service" দিয়ে শুরু হবে, প্রোডাক্ট মোডে যাওয়ার দরকারই নেই।
-  const [form,         setForm]         = useState({ name: "", price: "", stock: "", minStockAlert: "5", category: "অন্যান্য", company: "", productType: bizCfg.serviceOnly ? "service" : "product", costPrice: "", spPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common", dosageForm: "", durationMinutes: "" });
+  const [form,         setForm]         = useState({ name: "", price: "", stock: "", minStockAlert: "5", category: "অন্যান্য", company: "", productType: bizCfg.serviceOnly ? "service" : "product", costPrice: "", spPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common", dosageForm: "", durationMinutes: "", isCombo: false, comboIncludes: "" });
   // ── #৪ মাল্টি-ব্যাচ এক্সপায়ারি — নতুন পণ্যে একই সাথে একাধিক আলাদা এক্সপায়ারির চালান যোগ করার জন্য ──
   // প্রাথমিক স্টক/মেয়াদ (form.stock/form.expiryDate) থাকে প্রথম ব্যাচ হিসেবে, extraBatches-এ বাকিগুলো
   const [extraBatches, setExtraBatches] = useState([]); // [{ id, qty, expiryDate }]
@@ -26645,6 +26714,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       durationMinutes: form.durationMinutes !== "" && form.durationMinutes !== undefined && form.durationMinutes !== null
         ? (parseInt(form.durationMinutes, 10) || undefined)
         : undefined,
+      // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৯) — কম্বো প্যাকেজ ফ্ল্যাগ + কী কী আছে তার
+      // ফ্রি-টেক্সট বর্ণনা। ইনভয়েসে এটা সাধারণ সার্ভিসের মতোই এক লাইনে যোগ হয়,
+      // কোনো আলাদা দাম-ভাঙা/কমিশন-স্প্লিট লজিক নেই (ইচ্ছাকৃতভাবে সহজ রাখা হয়েছে)।
+      isCombo: !!form.isCombo,
+      comboIncludes: form.isCombo ? (form.comboIncludes || "").trim() : "",
     };
     if (editId) {
       // ── audit log-এর জন্য আগের ভ্যালু সংরক্ষণ ────────────────────────────
@@ -26782,7 +26856,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       }
       showToast(batchRows.length > 1 ? `নতুন পণ্য যোগ হয়েছে (${batchRows.length}টি আলাদা ব্যাচে)` : "নতুন পণ্য যোগ হয়েছে");
     }
-    setForm({ name: "", price: "", stock: "", minStockAlert: "", category: "অন্যান্য", company: "", productType: form.productType || "product", costPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common", dosageForm: "", durationMinutes: "" });
+    setForm({ name: "", price: "", stock: "", minStockAlert: "", category: "অন্যান্য", company: "", productType: form.productType || "product", costPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common", dosageForm: "", durationMinutes: "", isCombo: false, comboIncludes: "" });
     setFormErrors({});
     setExtraBatches([]);
     setShowAdd(false);
@@ -27822,7 +27896,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
         {(currentUser?.role !== "staff" || currentUser?.canAddProduct) && <button style={{ flex: 1, ...S.addBtn, marginBottom: 0, height: 44, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: `linear-gradient(135deg,#16a34a,#22c55e)`, boxShadow: "0 4px 16px #22c55e44" }}
-          onClick={() => { setShowAdd(v => !v); setEditId(null); setCompanyCustom(false); setFormErrors({}); setExtraBatches([]); setForm({ name: "", price: "", stock: "", category: "অন্যান্য", company: "", productType: bizCfg.serviceOnly ? "service" : "product", costPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common", dosageForm: "", durationMinutes: "" }); }}>
+          onClick={() => { setShowAdd(v => !v); setEditId(null); setCompanyCustom(false); setFormErrors({}); setExtraBatches([]); setForm({ name: "", price: "", stock: "", category: "অন্যান্য", company: "", productType: bizCfg.serviceOnly ? "service" : "product", costPrice: "", expiryDate: "", barcode: "", unit: "", isFreeStock: false, demandType: "common", dosageForm: "", durationMinutes: "", isCombo: false, comboIncludes: "" }); }}>
           <IcPlus /> <span style={{ fontSize: 12, fontWeight: 800 }}>নতুন পণ্য</span>
         </button>}
         <SearchBar
@@ -28112,6 +28186,19 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             {bizCfg.serviceOnly && (<>
               <label style={{ ...S.label, marginTop:8 }}>⏱️ আনুমানিক সময় (মিনিট)</label>
               <input style={{ ...S.input }} placeholder="যেমনঃ ১৫" type="number" value={form.durationMinutes || ""} onChange={e => setForm({ ...form, durationMinutes: e.target.value })} inputMode="numeric" pattern="[0-9]*" />
+              {/* 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৯) — কম্বো প্যাকেজ: একাধিক সার্ভিস একসাথে
+                  বেঁচলে (যেমন "হেয়ারকাট + বিয়ার্ড কম্বো") এটাও একটা সাধারণ সার্ভিস
+                  এন্ট্রি হিসেবেই সেভ হয় (নাম+দাম), শুধু isCombo ফ্ল্যাগ আর
+                  comboIncludes টেক্সট আলাদাভাবে যোগ হয় — invoice-এ আলাদা কোনো
+                  ভাঙা-দাম/কমিশন-স্প্লিট লজিক লাগে না, ইনভয়েসে একটাই লাইন-আইটেম
+                  হিসেবে যোগ হয় (সহজ ডিজাইন, তুর্যের সিদ্ধান্ত অনুযায়ী)। */}
+              <label style={{ display:"flex", alignItems:"center", gap:8, marginTop:10, cursor:"pointer" }}>
+                <input type="checkbox" checked={!!form.isCombo} onChange={e => setForm({ ...form, isCombo: e.target.checked })} style={{ width:16, height:16 }} />
+                <span style={{ ...S.label, marginTop:0 }}>🎁 এটা একটা কম্বো প্যাকেজ</span>
+              </label>
+              {form.isCombo && (
+                <input style={{ ...S.input, marginTop:6 }} placeholder="কী কী আছে (যেমনঃ হেয়ারকাট + বিয়ার্ড ট্রিম)" value={form.comboIncludes || ""} onChange={e => setForm({ ...form, comboIncludes: e.target.value })} />
+              )}
             </>)}
           </>) : (<>
           {businessType === "veterinary" && (<>
@@ -28285,6 +28372,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                     {p.name}{p.unit ? <span style={{ color: T.sub, fontWeight: 600, fontSize: 12, marginLeft: 4 }}>({p.unit})</span> : null}
                   </span>
                   {p.productType === "service" && <span style={{ background:"#0ea5e922", color:"#38bdf8", fontSize:10, borderRadius:6, padding:"1px 7px", fontWeight:800, border:"1px solid #38bdf844", flexShrink:0 }}>🔧 সার্ভিস</span>}
+                  {/* 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৯) — কম্বো প্যাকেজ ব্যাজ */}
+                  {p.isCombo && <span style={{ background:"#f59e0b22", color:"#fbbf24", fontSize:10, borderRadius:6, padding:"1px 7px", fontWeight:800, border:"1px solid #f59e0b44", flexShrink:0 }}>🎁 কম্বো</span>}
                   {p.demandType === "uncommon"
                     ? <span style={{ background:"#a78bfa22", color:"#a78bfa", fontSize:10, borderRadius:6, padding:"1px 7px", fontWeight:800, border:"1px solid #a78bfa44", flexShrink:0 }}>আনকমন</span>
                     : <span style={{ background:"#22c55e22", color:"#22c55e", fontSize:10, borderRadius:6, padding:"1px 7px", fontWeight:800, border:"1px solid #22c55e44", flexShrink:0 }}>কমন</span>}
@@ -28294,6 +28383,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                   {p.productType !== "service" && p.spPrice > 0 && <span style={{ color:"#a78bfa", fontWeight:700, fontSize:11 }}>{businessType === "veterinary" ? "TP" : "SP"}: ৳{fmt(p.spPrice)}</span>}
                   {p.productType !== "service" && ((p.lastRealCostPrice ?? p.costPrice) > 0) && <span style={{ color:"#f59e0b", fontWeight:700, fontSize:11 }}>ক্রয়: ৳{fmt(p.lastRealCostPrice ?? p.costPrice)}</span>}
                   <span style={{ color:"#22c55e", fontWeight:700, fontSize:11 }}>{p.productType === "service" ? "চার্জ" : "বিক্রয়"}: ৳{fmt(p.price)}</span>
+                  {p.isCombo && p.comboIncludes && <span style={{ color:T.sub, fontSize:11, fontWeight:600, fontStyle:"italic" }}>({p.comboIncludes})</span>}
                   {p.productType !== "service" && (
                     <span style={{ color:(p.stock||0)===0?"#ef4444":(p.stock||0)<=(p.minStockAlert||5)?"#f59e0b":T.sub, fontSize:11, fontWeight:700 }}>
                       স্টক: {p.stock||0}{(p.stock||0)===0?" 🚫":(p.stock||0)<=(p.minStockAlert||5)?" ⚠️":""}
@@ -28349,7 +28439,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                     if (editId === p.id) { setEditId(null); setShowAdd(false); }
                     else {
                       setEditId(p.id);
-                      setForm({ name: p.name, price: String(p.price), stock: String(p.stock || 0), minStockAlert: String(p.minStockAlert || 5), category: p.category || "অন্যান্য", company: p.company || "", productType: (p.productType === "retail" ? "product" : p.productType) || "product", costPrice: String((p.lastRealCostPrice ?? p.costPrice) || ""), spPrice: p.spPrice !== undefined && p.spPrice !== null ? String(p.spPrice) : "", expiryDate: p.expiryDate || "", barcode: p.barcode || "", unit: p.unit || "", demandType: p.demandType || "common", dosageForm: p.dosageForm || "", durationMinutes: p.durationMinutes !== undefined && p.durationMinutes !== null ? String(p.durationMinutes) : "" });
+                      setForm({ name: p.name, price: String(p.price), stock: String(p.stock || 0), minStockAlert: String(p.minStockAlert || 5), category: p.category || "অন্যান্য", company: p.company || "", productType: (p.productType === "retail" ? "product" : p.productType) || "product", costPrice: String((p.lastRealCostPrice ?? p.costPrice) || ""), spPrice: p.spPrice !== undefined && p.spPrice !== null ? String(p.spPrice) : "", expiryDate: p.expiryDate || "", barcode: p.barcode || "", unit: p.unit || "", demandType: p.demandType || "common", dosageForm: p.dosageForm || "", durationMinutes: p.durationMinutes !== undefined && p.durationMinutes !== null ? String(p.durationMinutes) : "", isCombo: !!p.isCombo, comboIncludes: p.comboIncludes || "" });
                       setExtraBatches([]);
                       setShowAdd(false);
                       setCompanyCustom(!!p.company && !BD_PHARMA_COMPANIES.includes(p.company));
@@ -32997,9 +33087,10 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
 // হয়ে যায়, ইনভয়েস সেভ হলে onQueueTokenBilled() টোকেনটা billed মার্ক করে)।
 // অথবা cancelled (অপেক্ষমান অবস্থায় বাতিল করা যায়)। কোনো ডেটা invoices-এর
 // সাথে ডুপ্লিকেট করা হয় না — শুধু লাইন-ম্যানেজমেন্টের জন্য এই আলাদা লগ।
-function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQueue = [], setSerialQueue, goToInvoiceFromQueue, businessType = "salon" }) {
+function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQueue = [], setSerialQueue, goToInvoiceFromQueue, businessType = "salon", shopName, btConnected, connectBluetooth }) {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: "", phone: "", service: "", staffId: "" });
+  const [suggestedStaffId, setSuggestedStaffId] = useState(null); // 🆕 ধাপ ৮
   useBackHandler(showForm, useCallback(() => { setShowForm(false); return true; }, []));
 
   // 🔴 ফিক্স (৬ আগস্ট ২০২৬ — মাল্টি-বিজনেস প্রোটেকশন): SmartInvoiceBuilder-এর
@@ -33023,6 +33114,54 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
   const nextTokenNo = todayTokens.length ? Math.max(...todayTokens.map(t => t.tokenNo || 0)) + 1 : 1;
   const staffName = (id) => users.find(u => u.id === id)?.name || null;
 
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৮ — মাল্টি-স্টাফ এস্টিমেশন + সার্ভিস সময়
+  // অটো-লার্নিং) — আগে অপেক্ষার সময় ছিল ফিক্সড idx*15 (এক স্টাফ ধরে নিয়ে)।
+  // এখন: (১) সাম্প্রতিক ২০টা "billed" টোকেনের startedAt→billedAt গড় সময় থেকে
+  // প্রকৃত গড় সার্ভিস-সময় শেখা হয় (কোনো ডেটা না থাকলে আগের মতোই ১৫ মিনিট
+  // ফলব্যাক), (২) সেই গড়কে বর্তমানে সক্রিয় (বিরতিতে-নয়) স্টাফ সংখ্যা দিয়ে
+  // ভাগ করে সমান্তরাল সার্ভিসিং হিসাব করা হয় — যত বেশি স্টাফ সক্রিয়, তত কম
+  // অপেক্ষা।
+  const avgServiceMinutes = useMemo(() => {
+    const recentDone = (serialQueue || [])
+      .filter(t => t.status === "billed" && typeof t.startedAt === "number" && typeof t.billedAt === "number" && t.billedAt > t.startedAt)
+      .sort((a, b) => b.billedAt - a.billedAt)
+      .slice(0, 20);
+    if (!recentDone.length) return 15; // পুরনো ফিক্সড ডিফল্টের সাথে সামঞ্জস্যপূর্ণ ফলব্যাক
+    const mins = recentDone
+      .map(t => (t.billedAt - t.startedAt) / 60000)
+      .filter(m => m > 0 && m < 180); // ১৮০ মিনিটের বেশি হলে ভুল/আউটলায়ার ধরে বাদ
+    if (!mins.length) return 15;
+    return mins.reduce((a, b) => a + b, 0) / mins.length;
+  }, [serialQueue]);
+
+  const activeStaffCount = Math.max(1, queueStaffOptions.filter(u => !u.onBreak).length);
+  const estimateWaitMinutes = (idx) => Math.max(1, Math.round(((idx + 1) * avgServiceMinutes) / activeStaffCount));
+
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৮ — পছন্দের স্টাফ অটো-সাজেস্ট) — একই ফোন
+  // নম্বরে আগে "billed" হওয়া টোকেনগুলো থেকে সবচেয়ে বেশিবার এসাইন করা
+  // staffId বের করা হয়। কাস্টমার আবার আসলে ফর্মে স্বয়ংক্রিয়ভাবে সেই স্টাফ
+  // প্রি-সিলেক্ট হয়ে যায় (ম্যানুয়ালি বদলানো যায়)।
+  const findPreferredStaff = (phone) => {
+    const p = (phone || "").trim();
+    if (p.length < 6) return null;
+    const past = (serialQueue || []).filter(t => t.phone && t.phone.trim() === p && t.staffId && t.status === "billed");
+    if (!past.length) return null;
+    const counts = {};
+    past.forEach(t => { counts[t.staffId] = (counts[t.staffId] || 0) + 1; });
+    const [topId] = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+    return queueStaffOptions.some(u => u.id === topId) ? topId : null;
+  };
+
+  const onPhoneChange = (phone) => {
+    setForm(f => ({ ...f, phone }));
+    const preferred = findPreferredStaff(phone);
+    setSuggestedStaffId(preferred);
+    if (preferred && !form.staffId) {
+      setForm(f => ({ ...f, phone, staffId: preferred }));
+      showToast(`পূর্বের পছন্দের স্টাফ স্বয়ংক্রিয়ভাবে নির্বাচিত: ${staffName(preferred)}`, "#0ea5e9");
+    }
+  };
+
   const addToken = () => {
     if (!form.name.trim()) { showToast("কাস্টমারের নাম দিন", "#ef4444"); return; }
     const token = {
@@ -33035,12 +33174,59 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
     };
     setSerialQueue(prev => [...(prev || []), token]);
     setForm({ name: "", phone: "", service: "", staffId: "" });
+    setSuggestedStaffId(null);
     setShowForm(false);
     showToast(`টোকেন #${token.tokenNo} যোগ হয়েছে`, "#22c55e");
   };
 
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৮ — টোকেন কল-আউট সাউন্ড) — Web Audio API
+  // দিয়ে দুই-স্বরের একটা সংক্ষিপ্ত বীপ বাজানো হয় (কোনো external asset লাগে
+  // না, তাই APK bundle-এ কিছু যোগ করার দরকার নেই)। navigator/AudioContext
+  // না থাকলে চুপচাপ ব্যর্থ হয় — কোনো ক্র্যাশ না করে।
+  const playCallSound = () => {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const beep = (freq, start, dur) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine"; osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime + start);
+        gain.gain.exponentialRampToValueAtTime(0.35, ctx.currentTime + start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + dur);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + start);
+        osc.stop(ctx.currentTime + start + dur + 0.03);
+      };
+      beep(880, 0, 0.18);
+      beep(1175, 0.22, 0.22);
+    } catch {}
+  };
+
   const startToken = (t) => {
     setSerialQueue(prev => (prev || []).map(x => x.id === t.id ? { ...x, status: "in_progress", startedAt: Date.now() } : x));
+    playCallSound();
+  };
+
+  // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৮ — টোকেন POS প্রিন্টিং) — BT প্রিন্টার
+  // সংযুক্ত থাকলে buildTokenTicketBuffer() দিয়ে একটা ছোট স্লিপ প্রিন্ট করে;
+  // না থাকলে সরাসরি বার্তা দেখিয়ে দেয় (invoice প্রিন্টের মতো HTML fallback
+  // এখানে দরকার নেই কারণ টোকেন স্লিপ শুধু থার্মাল প্রিন্টারের জন্যই প্রাসঙ্গিক)।
+  const printTokenTicket = async (t) => {
+    if (!(btConnected && BT.isConnected())) {
+      showToast("প্রিন্টার সংযুক্ত নেই — Settings থেকে আগে সংযোগ করুন", "#ef4444");
+      return;
+    }
+    try {
+      showToast("টোকেন প্রিন্ট হচ্ছে...", "#0ea5e9");
+      const data = buildTokenTicketBuffer(t, shopName);
+      const r = await BT.print(data);
+      if (r.ok) { showToast("✅ টোকেন প্রিন্ট সম্পন্ন"); await Haptic.success?.(); }
+      else showToast(r.msg || "প্রিন্ট ব্যর্থ", "#ef4444");
+    } catch (e) {
+      showToast("প্রিন্ট ব্যর্থ: " + (e?.message || ""), "#ef4444");
+    }
   };
 
   const assignStaff = (t, staffId) => {
@@ -33087,12 +33273,19 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
         <div style={{ background: `${T.accent}0c`, border: `1px solid ${T.accent}22`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
           <div style={{ fontSize: 11, fontWeight: 800, color: T.headingColor || T.accent, marginBottom: 8 }}>টোকেন #{nextTokenNo}</div>
           <input style={inputStyle} placeholder="কাস্টমারের নাম *" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
-          <input style={inputStyle} type="tel" placeholder="ফোন (ঐচ্ছিক)" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} />
+          <input style={inputStyle} type="tel" placeholder="ফোন (ঐচ্ছিক)" value={form.phone} onChange={e => onPhoneChange(e.target.value)} />
           <input style={inputStyle} placeholder="সেবা / নোট (ঐচ্ছিক)" value={form.service} onChange={e => setForm(f => ({ ...f, service: e.target.value }))} />
           <select style={inputStyle} value={form.staffId} onChange={e => setForm(f => ({ ...f, staffId: e.target.value }))}>
             <option value="">স্টাফ এসাইন করুন (ঐচ্ছিক)</option>
             {queueStaffOptions.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
           </select>
+          {/* 🆕 (সেলুন ধাপ ৮) — পছন্দের স্টাফ সাজেশন হিন্ট: যদি সাজেস্ট করা স্টাফ থাকে
+              কিন্তু কাস্টমার/মালিক অন্য কাউকে বেছে নিয়ে থাকেন, তাহলে হালকা রিমাইন্ডার দেখাও। */}
+          {suggestedStaffId && form.staffId !== suggestedStaffId && (
+            <div style={{ fontSize: 10.5, color: T.sub, marginTop: -4, marginBottom: 8 }}>
+              💡 পূর্বে {staffName(suggestedStaffId)} সার্ভিস দিয়েছেন
+            </div>
+          )}
           <button onClick={addToken}
             style={{ width: "100%", background: `linear-gradient(135deg, ${T.accent}, ${T.accentDark})`, border: "none", color: "#fff", borderRadius: 8, padding: "10px 10px", fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
             ✓ টোকেন যোগ করুন
@@ -33120,6 +33313,11 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
               সম্পন্ন ও বিল করুন
             </button>
           </div>
+          {/* 🆕 (সেলুন ধাপ ৮) — টোকেন স্লিপ প্রিন্ট বাটন, চলমান টোকেনের জন্য */}
+          <button onClick={() => printTokenTicket(t)}
+            style={{ marginTop: 8, width: "100%", background: "transparent", border: `1px solid ${T.border}`, color: T.sub, borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+            🖨️ টোকেন প্রিন্ট করুন
+          </button>
         </div>
       ))}
 
@@ -33134,7 +33332,7 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
               <div>
                 <div style={{ fontSize: 13, fontWeight: 800, color: T.text }}>{t.customerName}</div>
                 <div style={{ fontSize: 10.5, color: T.sub, marginTop: 2 }}>
-                  আনু. অপেক্ষা ~{idx * 15} মিনিট{t.service ? ` · ${t.service}` : ""}
+                  আনু. অপেক্ষা ~{estimateWaitMinutes(idx)} মিনিট ({activeStaffCount} জন সক্রিয়){t.service ? ` · ${t.service}` : ""}
                 </div>
                 <select value={t.staffId || ""} onChange={e => assignStaff(t, e.target.value)}
                   style={{ marginTop: 6, background: T.input || "#1e293b", border: `1px solid ${T.border}`, borderRadius: 6, padding: "4px 6px", color: T.text, fontSize: 10.5, fontFamily: "inherit" }}>
@@ -33147,6 +33345,12 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
               <button onClick={() => startToken(t)}
                 style={{ background: "linear-gradient(135deg,#f0b429,#b4780f)", border: "none", color: "#fff", borderRadius: 8, padding: "7px 10px", fontSize: 11.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
                 শুরু করুন
+              </button>
+              {/* 🆕 (সেলুন ধাপ ৮) — অপেক্ষমান অবস্থাতেই প্রিন্ট (কাস্টমার আসার সাথে সাথে
+                  হাতে দেওয়ার জন্য), in_progress-এ শুরু হওয়ার জন্য অপেক্ষা করতে হয় না */}
+              <button onClick={() => printTokenTicket(t)}
+                style={{ background: "transparent", border: `1px solid ${T.border}`, color: T.sub, borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                🖨️ প্রিন্ট
               </button>
               <button onClick={() => cancelToken(t)}
                 style={{ background: "transparent", border: `1px solid ${T.border}`, color: T.danger || "#ef4444", borderRadius: 8, padding: "6px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
@@ -33173,6 +33377,176 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
           ))}
         </>
       )}
+    </div>
+  );
+}
+
+// ─── DesignGalleryView — সেলুন ডিজাইন গ্যালারি (হেয়ারকাট/বিয়ার্ড ট্রিমিং) ───────
+// 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৯) — কাস্টমারকে ডিজাইন দেখানোর জন্য ছবির গ্যালারি।
+// ইচ্ছাকৃতভাবে সম্পূর্ণ local-only — সরাসরি _idb (IndexedDB) ব্যবহার করা হয়েছে,
+// FSS/backup/sync pipeline-এর কোনো অংশ না (SK রেজিস্ট্রিতে নেই, Drive ব্যাকআপের
+// stateMap-এও যোগ করা হয়নি) — তুর্যের সিদ্ধান্ত অনুযায়ী ছবি শুধু ডিভাইসেই থাকবে,
+// প্রতি ২০ মিনিটের ব্যাকআপ সাইকেলে বড় ইমেজ ডেটা পাঠানো হবে না (ফোন হারালে ছবি
+// হারাবে, কিন্তু ব্যাকআপ দ্রুত থাকবে)।
+// ছবি আপলোডের সময় canvas দিয়ে বড় দিক max ১৪৪০px-এ resize + ৮২% JPEG quality-তে
+// compress করা হয় — QHD ডিসপ্লেতে স্বচ্ছ দেখাবে, কিন্তু raw QHD ফাইলের (কয়েক MB)
+// বদলে সাধারণত ১৫০-৪০০KB এর মধ্যে থাকে, তাই ২০-৩০টা ডিজাইন মিলিয়েও ডিভাইস
+// স্টোরেজে বেশি চাপ পড়বে না।
+const DESIGN_GALLERY_KEY = "sbm-design-gallery";
+
+function compressImageFile(file, maxDim = 1440, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onload = () => {
+      img.onload = () => {
+        let { width, height } = img;
+        if (width >= height && width > maxDim) { height = Math.round(height * maxDim / width); width = maxDim; }
+        else if (height > width && height > maxDim) { width = Math.round(width * maxDim / height); height = maxDim; }
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = () => reject(new Error("ছবি লোড করা যায়নি"));
+      img.src = reader.result;
+    };
+    reader.onerror = () => reject(new Error("ফাইল পড়া যায়নি"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function DesignGalleryView({ T, S, category, showToast, onBack }) {
+  const [designs, setDesigns] = useState([]);
+  const [loaded, setLoaded]   = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState({ name: "", image: null });
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
+
+  const title = category === "haircut" ? "✂️ হেয়ারকাট ডিজাইন" : "🧔 বিয়ার্ড ট্রিমিং ডিজাইন";
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let list = [];
+      try {
+        const all = await _idb.get(DESIGN_GALLERY_KEY);
+        list = (all && all[category]) || [];
+      } catch { list = []; }
+      if (!cancelled) { setDesigns(list); setLoaded(true); }
+    })();
+    return () => { cancelled = true; };
+  }, [category]);
+
+  const persist = async (next) => {
+    setDesigns(next);
+    try {
+      let all = {};
+      try { all = (await _idb.get(DESIGN_GALLERY_KEY)) || {}; } catch {}
+      await _idb.set(DESIGN_GALLERY_KEY, { ...all, [category]: next });
+    } catch (e) {
+      showToast?.("সেভ করতে সমস্যা হয়েছে: " + (e?.message || ""), "#ef4444");
+    }
+  };
+
+  const openAdd  = () => { setEditingId(null); setForm({ name: "", image: null }); setShowForm(true); };
+  const openEdit = (d) => { setEditingId(d.id); setForm({ name: d.name, image: d.image }); setShowForm(true); };
+  const closeForm = () => { setShowForm(false); setForm({ name: "", image: null }); setEditingId(null); };
+
+  useBackHandler(showForm, useCallback(() => { closeForm(); return true; }, []));
+
+  const onPickImage = async (file) => {
+    if (!file) return;
+    setBusy(true);
+    try {
+      const dataUrl = await compressImageFile(file);
+      setForm(f => ({ ...f, image: dataUrl }));
+    } catch (e) {
+      showToast?.(e?.message || "ছবি প্রসেস করতে সমস্যা হয়েছে", "#ef4444");
+    }
+    setBusy(false);
+  };
+
+  const saveDesign = () => {
+    if (!form.name.trim()) { showToast?.("ডিজাইনের নাম দিন", "#ef4444"); return; }
+    if (!form.image) { showToast?.("একটা ছবি বেছে নিন", "#ef4444"); return; }
+    if (editingId) {
+      persist(designs.map(d => d.id === editingId ? { ...d, name: form.name.trim(), image: form.image } : d));
+      showToast?.("ডিজাইন আপডেট হয়েছে");
+    } else {
+      persist([...designs, { id: uid(), name: form.name.trim(), image: form.image, createdAt: Date.now() }]);
+      showToast?.("ডিজাইন যোগ হয়েছে");
+    }
+    closeForm();
+  };
+
+  const deleteDesign = (d) => {
+    if (!window.confirm(`"${d.name}" ডিজাইনটা মুছবেন?`)) return;
+    persist(designs.filter(x => x.id !== d.id));
+    showToast?.("ডিজাইন মুছে ফেলা হয়েছে", "#ef4444");
+  };
+
+  const inputStyle = { width: "100%", boxSizing: "border-box", background: T.input || "#1e293b", border: `1px solid ${T.border}`, borderRadius: 8, padding: "9px 10px", color: T.text, fontSize: 13, fontWeight: 600, fontFamily: "inherit", marginBottom: 8 };
+
+  return (
+    <div style={S.page}>
+      <button style={S.textBtn} onClick={onBack}>← ড্যাশবোর্ডে ফিরুন</button>
+      <div style={{ color: T.text, fontWeight: 900, fontSize: 16, marginBottom: 12 }}>{title}</div>
+
+      {!showForm && (
+        <button onClick={openAdd}
+          style={{ width: "100%", marginBottom: 14, background: `linear-gradient(135deg, ${T.accent}, ${T.accentDark})`, border: "none", color: "#fff", borderRadius: 10, padding: "11px 10px", fontSize: 13.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+          + নতুন ডিজাইন যোগ করুন
+        </button>
+      )}
+
+      {showForm && (
+        <div style={{ background: `${T.accent}0c`, border: `1px solid ${T.accent}22`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
+          <input style={inputStyle} placeholder="ডিজাইনের নাম *" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+          <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{ display: "none" }}
+            onChange={e => { const f = e.target.files?.[0]; e.target.value = ""; onPickImage(f); }} />
+          <button type="button" disabled={busy} onClick={() => fileRef.current?.click()}
+            style={{ width: "100%", marginBottom: 8, background: "transparent", border: `1.5px dashed ${T.border}`, color: T.sub, borderRadius: 8, padding: "10px", fontSize: 12.5, fontWeight: 700, cursor: busy ? "default" : "pointer", fontFamily: "inherit" }}>
+            {busy ? "ছবি প্রসেস হচ্ছে..." : (form.image ? "📷 ছবি বদলান" : "📷 ছবি বেছে নিন")}
+          </button>
+          {form.image && (
+            <img src={form.image} alt="" style={{ width: "100%", maxHeight: 220, objectFit: "cover", borderRadius: 8, marginBottom: 8, display: "block" }} />
+          )}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={saveDesign} disabled={busy}
+              style={{ flex: 1, background: `linear-gradient(135deg, ${T.accent}, ${T.accentDark})`, border: "none", color: "#fff", borderRadius: 8, padding: "10px", fontSize: 13, fontWeight: 800, cursor: busy ? "default" : "pointer", fontFamily: "inherit" }}>
+              ✓ সেভ করুন
+            </button>
+            <button onClick={closeForm}
+              style={{ flex: 1, background: "transparent", border: `1px solid ${T.border}`, color: T.sub, borderRadius: 8, padding: "10px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+              বাতিল
+            </button>
+          </div>
+        </div>
+      )}
+
+      {loaded && designs.length === 0 && !showForm && (
+        <div style={S.empty}>এখনো কোনো ডিজাইন যোগ করা হয়নি</div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        {designs.map(d => (
+          <div key={d.id} onClick={() => openEdit(d)}
+            style={{ cursor: "pointer", background: T.card, border: `1px solid ${T.border}`, borderRadius: 12, overflow: "hidden" }}>
+            <img src={d.image} alt={d.name} style={{ width: "100%", height: 140, objectFit: "cover", display: "block" }} />
+            <div style={{ padding: "8px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+              <div style={{ color: T.text, fontWeight: 700, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}</div>
+              <button onClick={(e) => { e.stopPropagation(); deleteDesign(d); }}
+                style={{ flexShrink: 0, background: "transparent", border: "none", color: T.danger || "#ef4444", fontSize: 14, cursor: "pointer" }}>
+                ✕
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
