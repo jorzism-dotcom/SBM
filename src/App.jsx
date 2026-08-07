@@ -11296,6 +11296,11 @@ function SmartBusinessMgmt() {
   // টোকেনটা "in_progress"-এ মার্ক হয় (যদি আগে থেকে না থাকে), যাতে বিলিং শুরু
   // হয়েছে বোঝা যায় — actual "billed" মার্ক হবে ইনভয়েস সেভ হলে (দেখুন
   // onQueueTokenBilled)।
+  // 🔴 (৭ আগস্ট ২০২৬, সেলুন — সরাসরি টোকেন কার্ডে বিল ফাইনাল) — আগে এটা
+  // setTab("invoice") দিয়ে পুরো ইনভয়েস ট্যাবে নিয়ে যেত। এখন ট্যাব বদলায় না —
+  // queueBillPrefill সেট হওয়া মাত্র নিচে একটা ফুল-স্ক্রিন ওভারলে
+  // (MemoSmartInvoiceBuilder, অবিকৃত/একই createInvoice লজিক) খুলে যায়, ঠিক
+  // টোকেন কার্ডের উপরেই — ইউজার কখনো আলাদা ইনভয়েস ট্যাবে যান না।
   const goToInvoiceFromQueue = useCallback((token) => {
     if (!token) return;
     setQueueBillPrefill({
@@ -11310,8 +11315,7 @@ function SmartBusinessMgmt() {
         t.id === token.id ? { ...t, status: "in_progress", startedAt: Date.now() } : t
       ));
     }
-    setTab("invoice");
-  }, [setQueueBillPrefill, setSerialQueue, setTab]);
+  }, [setQueueBillPrefill, setSerialQueue]);
 
   // ইনভয়েস সেভ হওয়ার পর কল হয় (queueBillPrefill.tokenId থাকলে) — টোকেনটা
   // "billed" মার্ক করে দেয় এবং prefill স্টেট ক্লিয়ার করে দেয়।
@@ -14199,6 +14203,9 @@ function SmartBusinessMgmt() {
   useBackHandler(!!cashModal,    useCallback(() => { setCashModal(null);    return true; }, []));
   useBackHandler(!!invModal,     useCallback(() => { setInvModal(null);     return true; }, []));
   useBackHandler(!!dashModal,    useCallback(() => { setDashModal(null);    return true; }, []));
+  // 🆕 (৭ আগস্ট ২০২৬) টোকেন-কার্ড থেকে খোলা বিল ওভারলেতে হার্ডওয়্যার ব্যাক চাপলে
+  // ওভারলে বন্ধ হবে (টোকেন in_progress অবস্থায়ই থেকে যাবে, পরে retry করা যায়)।
+  useBackHandler(!!queueBillPrefill && tab !== "invoice", useCallback(() => { setQueueBillPrefill(null); return true; }, [setQueueBillPrefill]));
   // 🔴 ফিক্স ("staircase ফলো না করে সরাসরি dashboard-এ চলে যাওয়া" — এই
   // সেশনে ধরা পড়েছে): `modal` (Zustand store-এর গ্লোবাল ফিল্ড — customer
   // জমা/বাকি TransactionModal এখান থেকে খোলে) এবং `showBizSwitcherList`
@@ -14926,6 +14933,47 @@ function SmartBusinessMgmt() {
               queueBillPrefill={queueBillPrefill}
               onQueueTokenBilled={onQueueTokenBilled}
             />
+          </ErrorBoundary>
+        )}
+        {/* 🆕 (৭ আগস্ট ২০২৬, সেলুন — টোকেন কার্ড থেকে সরাসরি বিল) — tab==="invoice" না হয়েও
+             queueBillPrefill সেট থাকলে (টোকেন কার্ডের "সম্পন্ন ও বিল করুন" চাপা হয়েছে) এই
+             ফুল-স্ক্রিন ওভারলে খোলে, ঠিক যে ট্যাবে (dashboard/serialQueue) ছিলেন তার উপরেই।
+             ভেতরে একই MemoSmartInvoiceBuilder + অবিকৃত createInvoice() — কোনো নতুন
+             বিলিং লজিক লেখা হয়নি, শুধু presentation বদলেছে। ইনভয়েস সেভ হলে
+             onQueueTokenBilled() queueBillPrefill নিজে থেকেই null করে দেয় বলে ওভারলে
+             স্বয়ংক্রিয়ভাবে বন্ধ হয়ে যায়। ম্যানুয়ালি বাতিল করলে (✕) টোকেন in_progress-এই
+             থেকে যায় — পরে আবার "সম্পন্ন ও বিল করুন" চাপলে retry করা যায়, কোনো ডেটা হারায় না। */}
+        {tab !== "invoice" && queueBillPrefill && (
+          <ErrorBoundary T={T}>
+            <div style={{ position:"fixed", inset:0, zIndex:9999, background:T.bg, display:"flex", flexDirection:"column" }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px", borderBottom:`1px solid ${T.border}` }}>
+                <span style={{ color:T.text, fontWeight:900, fontSize:14 }}>🎫 টোকেন থেকে বিল</span>
+                <button onClick={() => setQueueBillPrefill(null)}
+                  style={{ background:"transparent", border:`1.5px solid ${T.border}`, color:T.sub, borderRadius:8, padding:"6px 12px", fontSize:12, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
+                  ✕ বাতিল
+                </button>
+              </div>
+              <div style={{ flex:1, overflow:"auto" }}>
+                <MemoSmartInvoiceBuilder key={"queue-" + (queueBillPrefill.tokenId || "")} T={T} S={S} isDark={isDark}
+                  customers={customers} products={products}
+                  setCustomers={setCustomers} setInvoices={setInvoices} setProducts={setProducts}
+                  sendSMS={sendSMS} showToast={showToast} addTxn={addTxn} shopName={shopName}
+                  btConnected={btConnected} btDevice={btDevice} onConnectBluetooth={connectBluetooth}
+                  createPaymentInvoice={createPaymentInvoice}
+                  preselectedCustomer={null}
+                  preselectedType={null}
+                  setTab={setTab}
+                  purchaseOrders={purchaseOrders}
+                  currentUser={currentUser}
+                  businessType={businessType}
+                  users={users}
+                  onDone={() => setQueueBillPrefill(null)}
+                  license={license}
+                  queueBillPrefill={queueBillPrefill}
+                  onQueueTokenBilled={onQueueTokenBilled}
+                />
+              </div>
+            </div>
           </ErrorBoundary>
         )}
         {tab === "products" && (
@@ -21019,6 +21067,12 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   const [viewInv,    setViewInv]    = useState(null);
   const [viewPayInv, setViewPayInv] = useState(null);
   const [listDate,   setListDate]   = useState(() => todayEn()); // YYYY-MM-DD
+  // 🆕 (৭ আগস্ট ২০২৬, সেলুন ড্যাশবোর্ড রিস্ট্রাকচার) — শুধু salon বিজনেসে হোম ড্যাশবোর্ডে
+  // দুইটা ভিউ: "home" (টোকেন সিরিয়াল বড় কার্ড + ডিজাইন গ্যালারি ইত্যাদি, ডিফল্ট) আর
+  // "report" (ক্যাশ ড্রয়ার + আজকের রিপোর্ট গ্রিড + অ্যাডমিন/স্টাফ কার্ড — আগে যা হোমে সরাসরি
+  // দেখাত)। অন্য বিজনেস-টাইপে এই স্টেট ব্যবহারই হয় না (নিচে সব salon-গার্ডেড), তাই
+  // pharmacy/retail-এর হোম ড্যাশবোর্ড আগের মতোই অপরিবর্তিত থাকবে।
+  const [dashView, setDashView] = useState("home"); // "home" | "report" — salon-only
   // invModal is lifted to parent (SmartBusinessMgmt) for back-button support
   // 🆕 দুটি ক্রয় অর্ডার ফ্লো ("সকল পণ্য থেকে" ও "সাপ্লায়ার থেকে") সম্পূর্ণ আলাদা ও
   // স্বয়ংসম্পূর্ণ — তাই প্রতিটির নিজস্ব স্বতন্ত্র সিলেকশন-স্টেট, একটা আরেকটাকে প্রভাবিত করে না।
@@ -24614,6 +24668,48 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       <div style={{ padding:"0 14px" }}>
         <div style={{ height:14 }} />
 
+        {/* 🆕 (৭ আগস্ট ২০২৬) salon হোম ড্যাশবোর্ডের একদম শুরুতে — বড়, কালারফুল
+             "টোকেন সিরিয়াল" কার্ড। ট্যাপ করলে সরাসরি পূর্ণ টোকেন সিরিয়াল মডিউলে যায়। */}
+        {businessType === "salon" && dashView === "home" && (() => {
+          const tsAccent = T.accent, tsAccentDark = T.accentDark || T.accent;
+          const tsTodayKey = todayEn();
+          const tsTokens = (serialQueue || []).filter(t => t.dateKey === tsTodayKey);
+          const tsWaiting = tsTokens.filter(t => t.status === "waiting").length;
+          const tsServicing = tsTokens.filter(t => t.status === "in_progress").length;
+          return (
+            <div className="tap-card" onClick={() => setTab("serialQueue")} style={{
+              cursor:"pointer", marginBottom:14, position:"relative", overflow:"hidden",
+              borderRadius:20, padding:"20px 18px",
+              background: `linear-gradient(135deg, ${tsAccentDark}, ${tsAccent})`,
+              boxShadow: `0 12px 30px -10px ${tsAccent}66, inset 0 1px 0 rgba(255,255,255,0.15)`,
+            }}>
+              <div style={{ position:"absolute", top:-36, right:-36, width:130, height:130, borderRadius:"50%", background:"rgba(255,255,255,0.14)" }} />
+              <div style={{ position:"absolute", bottom:-50, left:-30, width:120, height:120, borderRadius:"50%", background:"rgba(255,255,255,0.08)" }} />
+              <div style={{ display:"flex", alignItems:"center", gap:14, position:"relative" }}>
+                <div style={{ fontSize:38, flexShrink:0, filter:"drop-shadow(0 3px 8px rgba(0,0,0,0.25))" }}>🎫</div>
+                <div style={{ flex:1 }}>
+                  <div style={{ color:"#fff", fontWeight:900, fontSize:17, letterSpacing:0.3 }}>টোকেন সিরিয়াল</div>
+                  <div style={{ color:"rgba(255,255,255,0.85)", fontWeight:700, fontSize:12, marginTop:2 }}>{tsWaiting} জন অপেক্ষায় • {tsServicing} জনের সার্ভিস চলছে</div>
+                </div>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* 🆕 (৭ আগস্ট ২০২৬) "আজকের রিপোর্ট" ভিউয়ের হেডার — "হোমে ফিরুন" বাটন */}
+        {businessType === "salon" && dashView === "report" && (
+          <div onClick={() => setDashView("home")} style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", marginBottom:12, padding:"10px 4px" }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={T.text} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            <span style={{ color:T.text, fontWeight:800, fontSize:14 }}>আজকের রিপোর্ট</span>
+          </div>
+        )}
+
+        {/* 🆕 (৭ আগস্ট ২০২৬) salon-এ ক্যাশ ড্রয়ার + আজকের রিপোর্ট গ্রিড হোম থেকে সরিয়ে
+             আলাদা "আজকের রিপোর্ট" ভিউতে (dashView==="report") নেওয়া হয়েছে। অন্য
+             বিজনেস-টাইপে (pharmacy/retail ইত্যাদি) এই ব্লক আগের মতোই সবসময় হোমে দেখাবে —
+             businessType !== "salon" হলে dashView-নির্বিশেষে সবসময় true। */}
+        {(businessType !== "salon" || dashView === "report") && (<>
         {/* ══ 💰 ক্যাশ ড্রয়ার — সবাই দেখতে ও ইনপুট দিতে পারবে ══ */}
         <div style={{
           marginBottom:16, position:"relative",
@@ -24893,10 +24989,63 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           })}
         </div>
 
+        {/* 🆕 (৭ আগস্ট ২০২৬) "আজকের রিপোর্ট" ভিউতে অ্যাডমিন + প্রতিটি স্টাফের আলাদা আলাদা
+             আজকের আয়/কমিশন কার্ড — শুধু salon বিজনেসে। নতুন কোনো ডেটা ট্র্যাক করা হয় না,
+             invoices/users থেকেই সরাসরি হিসাব হয় (আগের "আজকের সেলুন কার্যক্রম" সেকশনের
+             মতোই একই সোর্স, শুধু এখানে প্রতিটি স্টাফ আলাদা কার্ডে ভাঙা হয়েছে)। */}
+        {businessType === "salon" && (() => {
+          const trTodayKey = todayEn();
+          const staffMap = new Map((users || []).filter(u => u.role === "staff").map(u => [u.id, u]));
+          const perStaff = new Map(); // staffId -> { income, commission, count }
+          let adminIncome = 0, adminCount = 0;
+          (invoices || []).forEach(inv => {
+            if (inv.dateKey !== trTodayKey || inv.status === "voided" || !inv.staffId) return;
+            const amt = inv.total || 0;
+            if (inv.staffId === "__admin__") { adminIncome += amt; adminCount++; return; }
+            const cur = perStaff.get(inv.staffId) || { income: 0, commission: 0, count: 0 };
+            cur.income += amt;
+            cur.commission += amt * (inv.staffCommissionRate ?? 0) / 100;
+            cur.count += 1;
+            perStaff.set(inv.staffId, cur);
+          });
+          const staffCards = Array.from(perStaff.entries()).map(([id, v]) => ({ id, name: staffMap.get(id)?.name || "অজানা স্টাফ", ...v }));
+          const cAccent2 = T.accent, cAccentDark2 = T.accentDark || T.accent;
+          return (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10, padding:"10px 14px", background: `linear-gradient(135deg, ${cAccentDark2}33, ${cAccent2}22)`, borderRadius:14, border:`1px solid ${cAccent2}44` }}>
+                <div style={{ width:4, height:20, borderRadius:2, background:`linear-gradient(180deg, ${cAccent2}, ${cAccentDark2})`, flexShrink:0, boxShadow:`0 0 10px ${cAccent2}88` }} />
+                <span style={{ color: T.headingColor || T.text, fontWeight:900, fontSize:13, letterSpacing:1, textTransform:"uppercase" }}>স্টাফ-ভিত্তিক আজকের আয়</span>
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9 }}>
+                <div style={{ background:`${cAccent2}14`, border:`1px solid ${cAccent2}33`, borderRadius:14, padding:"12px 12px" }}>
+                  <div style={{ fontSize:18, marginBottom:4 }}>👑</div>
+                  <div style={{ color: T.text, fontWeight:800, fontSize:12, marginBottom:6 }}>আমি (অ্যাডমিন)</div>
+                  <div style={{ color:cAccent2, fontWeight:900, fontSize:17, fontFamily:"'JetBrains Mono', monospace" }}>৳{fmt(adminIncome)}</div>
+                  <div style={{ color:T.sub, fontWeight:600, fontSize:10, marginTop:2 }}>{adminCount}টি সার্ভিস</div>
+                </div>
+                {staffCards.length === 0 && (
+                  <div style={{ background:`${T.sub}10`, border:`1px dashed ${T.sub}44`, borderRadius:14, padding:"12px 12px", display:"flex", alignItems:"center", justifyContent:"center" }}>
+                    <div style={{ color:T.sub, fontWeight:700, fontSize:11, textAlign:"center" }}>আজ কোনো স্টাফ এখনো সার্ভিস দেয়নি</div>
+                  </div>
+                )}
+                {staffCards.map(s => (
+                  <div key={s.id} style={{ background:`${cAccentDark2}14`, border:`1px solid ${cAccentDark2}33`, borderRadius:14, padding:"12px 12px" }}>
+                    <div style={{ fontSize:18, marginBottom:4 }}>💇</div>
+                    <div style={{ color: T.text, fontWeight:800, fontSize:12, marginBottom:6, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{s.name}</div>
+                    <div style={{ color:cAccentDark2, fontWeight:900, fontSize:17, fontFamily:"'JetBrains Mono', monospace" }}>৳{fmt(s.income)}</div>
+                    <div style={{ color:T.sub, fontWeight:600, fontSize:10, marginTop:2 }}>কমিশন ৳{fmt(s.commission)} • {s.count}টি</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+        </>)}
+
         {/* ══ 🆕 (৬ আগস্ট ২০২৬) আজকের সেলুন কার্যক্রম — শুধু salon বিজনেসে, টোকেন কিউ + স্টাফ
              কমিশনের একটা এক-নজর সারসংক্ষেপ। নতুন কোনো ডেটা ট্র্যাক করা হয় না — সবই
              আগে থেকেই থাকা serialQueue/invoices/users থেকে সরাসরি হিসাব হয়। ══ */}
-        {businessType === "salon" && (() => {
+        {businessType === "salon" && dashView === "home" && (() => {
           const salonTodayKey = todayEn();
           const salonTodayTokens = (serialQueue || []).filter(t => t.dateKey === salonTodayKey);
           const salonWaitingCount = salonTodayTokens.filter(t => t.status === "waiting").length;
@@ -24931,10 +25080,10 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   <div style={{ color:cAccent, fontWeight:900, fontSize:19, lineHeight:1, marginBottom:3, fontFamily:"'JetBrains Mono', monospace", textShadow:`0 0 12px ${cAccent}55` }}>{salonWaitingCount}+{salonServicingCount}</div>
                   <div style={{ color:T.sub, fontWeight:700, fontSize:10 }}>অপেক্ষায় + সার্ভিসে</div>
                 </div>
-                <div style={{ background:`${cAccentDark}14`, border:`1px solid ${cAccentDark}33`, borderRadius:14, padding:"12px 10px", textAlign:"center" }}>
+                <div className="tap-card" onClick={() => setDashView("report")} style={{ cursor:"pointer", background:`${cAccentDark}14`, border:`1px solid ${cAccentDark}33`, borderRadius:14, padding:"12px 10px", textAlign:"center" }}>
                   <div style={{ fontSize:20, marginBottom:4 }}>💰</div>
                   <div style={{ color:cAccentDark, fontWeight:900, fontSize:19, lineHeight:1, marginBottom:3, fontFamily:"'JetBrains Mono', monospace", textShadow:`0 0 12px ${cAccentDark}55` }}>৳{fmt(salonTodayCommission)}</div>
-                  <div style={{ color:T.sub, fontWeight:700, fontSize:10 }}>আজকের কমিশন প্রদেয়</div>
+                  <div style={{ color:T.sub, fontWeight:700, fontSize:10 }}>আজকের কমিশন প্রদেয় • রিপোর্ট দেখুন</div>
                 </div>
                 <div style={{ background:"#22e3d614", border:"1px solid #22e3d633", borderRadius:14, padding:"12px 10px", textAlign:"center" }}>
                   <div style={{ fontSize:20, marginBottom:4 }}>👥</div>
@@ -24949,7 +25098,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
         {/* ══ 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৯) — ডিজাইন গ্যালারি: হেয়ারকাট/বিয়ার্ড ছবি কাস্টমারকে
              দেখানোর জন্য দুইটা কার্ড, শুধু salon-এ। ছবি সম্পূর্ণ local-only (IndexedDB) —
              Google Drive ব্যাকআপে যায় না (তুর্যের সিদ্ধান্ত অনুযায়ী, দেখুন DesignGalleryView) ══ */}
-        {businessType === "salon" && (
+        {businessType === "salon" && dashView === "home" && (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 9, marginBottom: 12 }}>
             <div className="tap-card" onClick={() => setDashModal({ type: "design-gallery", category: "haircut" })}
               style={{ cursor: "pointer", background: `${T.accent}14`, border: `1px solid ${T.accent}33`, borderRadius: 14, padding: "16px 12px", textAlign: "center" }}>
@@ -33105,9 +33254,20 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
   const todayTokens = useMemo(() => (serialQueue || []).filter(t => t.dateKey === todayKey), [serialQueue, todayKey]);
   const waiting     = useMemo(() => todayTokens.filter(t => t.status === "waiting").sort((a, b) => (a.tokenNo || 0) - (b.tokenNo || 0)), [todayTokens]);
   const inProgress  = useMemo(() => todayTokens.filter(t => t.status === "in_progress").sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0)), [todayTokens]);
+  // 🔴 ফিক্স (৭ আগস্ট ২০২৬ — "localeCompare is not a function" ক্র্যাশ): billedAt
+  // সেভ হয় সংখ্যা হিসেবে (Date.now(), দেখুন onQueueTokenBilled), কিন্তু createdAt
+  // সেভ হয় ISO স্ট্রিং হিসেবে। আগের sort সরাসরি .localeCompare() কল করত — billedAt
+  // সংখ্যা হলে সেটা .localeCompare-বিহীন, তাই প্রথম টোকেন billed হওয়ার পরপরই পুরো
+  // পেজ ক্র্যাশ করত। এখন দুটোকেই সংখ্যা টাইমস্ট্যাম্পে নরমালাইজ করে তুলনা হয়।
+  const tokenSortTime = (t) => {
+    if (typeof t.billedAt === "number") return t.billedAt;
+    if (t.billedAt) return new Date(t.billedAt).getTime() || 0;
+    if (t.createdAt) return new Date(t.createdAt).getTime() || 0;
+    return 0;
+  };
   const doneToday   = useMemo(() =>
     todayTokens.filter(t => t.status === "billed" || t.status === "cancelled")
-      .sort((a, b) => (b.billedAt || b.createdAt || "").localeCompare(a.billedAt || a.createdAt || ""))
+      .sort((a, b) => tokenSortTime(b) - tokenSortTime(a))
       .slice(0, 10),
     [todayTokens]);
 
@@ -33205,6 +33365,9 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
   };
 
   const startToken = (t) => {
+    // 🆕 (৭ আগস্ট ২০২৬) কাজ শুরু করার সময় স্টাফ এসাইন বাধ্যতামূলক — এসাইন না
+    // থাকলে "শুরু করুন" আটকে দিয়ে স্পষ্ট বার্তা দেখানো হয়।
+    if (!t.staffId) { showToast("আগে স্টাফ এসাইন করুন, তারপর শুরু করুন", "#ef4444"); return; }
     setSerialQueue(prev => (prev || []).map(x => x.id === t.id ? { ...x, status: "in_progress", startedAt: Date.now() } : x));
     playCallSound();
   };
@@ -33213,9 +33376,29 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
   // সংযুক্ত থাকলে buildTokenTicketBuffer() দিয়ে একটা ছোট স্লিপ প্রিন্ট করে;
   // না থাকলে সরাসরি বার্তা দেখিয়ে দেয় (invoice প্রিন্টের মতো HTML fallback
   // এখানে দরকার নেই কারণ টোকেন স্লিপ শুধু থার্মাল প্রিন্টারের জন্যই প্রাসঙ্গিক)।
+  // 🆕 (৭ আগস্ট ২০২৬) BT প্রিন্টার সংযুক্ত না থাকলে এখন আর শুধু এরর দেখিয়ে থেমে
+  // যায় না — invoice/PO প্রিন্টের মতোই একই openPrintWindow()+buildPdfHtml()
+  // দিয়ে একটা সাধারণ HTML প্রিভিউ/প্রিন্ট পেজ খোলে (A4/ব্রাউজার প্রিন্ট দিয়ে
+  // যেকোনো প্রিন্টারে প্রিন্ট করা যাবে, শুধু থার্মালেই সীমাবদ্ধ না)।
+  const printTokenTicketHTML = (t) => {
+    const body = `
+      <div class="section" style="text-align:center">
+        <h3>টোকেন নম্বর</h3>
+        <div style="font-size:52px;font-weight:900;letter-spacing:2px;margin:10px 0;">#${t.tokenNo}</div>
+        <table><tbody>
+          <tr><td>কাস্টমার</td><td class="num">${t.customerName || "-"}</td></tr>
+          ${t.phone ? `<tr><td>ফোন</td><td class="num">${t.phone}</td></tr>` : ""}
+          ${t.service ? `<tr><td>সেবা</td><td class="num">${t.service}</td></tr>` : ""}
+          ${staffName(t.staffId) ? `<tr><td>স্টাফ</td><td class="num">${staffName(t.staffId)}</td></tr>` : ""}
+        </tbody></table>
+      </div>`;
+    const html = buildPdfHtml(body, shopName, "টোকেন স্লিপ");
+    openPrintWindow(html);
+  };
+
   const printTokenTicket = async (t) => {
     if (!(btConnected && BT.isConnected())) {
-      showToast("প্রিন্টার সংযুক্ত নেই — Settings থেকে আগে সংযোগ করুন", "#ef4444");
+      printTokenTicketHTML(t);
       return;
     }
     try {
@@ -33264,7 +33447,7 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
         <div style={{ fontSize: 15, fontWeight: 900, color: T.text }}>🎫 টোকেন সিরিয়াল</div>
         <button onClick={() => setShowForm(v => !v)}
-          style={{ background: showForm ? "transparent" : `linear-gradient(135deg, ${T.accent}, ${T.accentDark})`, border: showForm ? `1.5px solid ${T.border}` : "none", color: showForm ? T.sub : "#fff", borderRadius: 8, padding: "8px 14px", fontSize: 12.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+          style={{ background: showForm ? "transparent" : `linear-gradient(135deg, ${T.accent}, ${T.accentDark})`, border: showForm ? `1.5px solid ${T.border}` : "none", color: showForm ? T.sub : "#fff", borderRadius: 10, padding: "9px 16px", fontSize: 12.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit", boxShadow: showForm ? "none" : `0 6px 16px -6px ${T.accent}88` }}>
           {showForm ? "✕ বন্ধ করুন" : "+ নতুন টোকেন"}
         </button>
       </div>
@@ -33297,7 +33480,7 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
       <div style={{ fontSize: 11.5, fontWeight: 800, color: T.sub, marginBottom: 8 }}>🟢 চলছে ({inProgress.length})</div>
       {inProgress.length === 0 && <div style={{ fontSize: 12, color: T.sub, marginBottom: 14 }}>এই মুহূর্তে কেউ সার্ভিসে নেই</div>}
       {inProgress.map(t => (
-        <div key={t.id} style={{ background: `linear-gradient(135deg, ${T.accent}14, ${T.accentDark}0c)`, border: `1.5px solid ${T.accent}55`, borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+        <div key={t.id} style={{ background: `linear-gradient(135deg, ${T.accent}18, ${T.accentDark}0e)`, border: `1.5px solid ${T.accent}55`, borderRadius: 16, padding: "12px 14px", marginBottom: 10, boxShadow: `0 6px 20px -8px ${T.accent}44, inset 0 1px 0 rgba(255,255,255,0.06)` }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
             <div style={{ minWidth: 0, display: "flex", alignItems: "center" }}>
               <TicketChip tokenNo={t.tokenNo} glow />
@@ -33325,7 +33508,7 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
       <div style={{ fontSize: 11.5, fontWeight: 800, color: T.sub, margin: "14px 0 8px" }}>🕓 অপেক্ষমান ({waiting.length})</div>
       {waiting.length === 0 && <div style={{ fontSize: 12, color: T.sub, marginBottom: 8 }}>লাইনে কেউ নেই</div>}
       {waiting.map((t, idx) => (
-        <div key={t.id} style={{ background: "#f0b4290c", border: "1px solid #f0b42933", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
+        <div key={t.id} style={{ background: "linear-gradient(135deg,#f0b4291a,#f0b4290a)", border: "1.5px solid #f0b42944", borderRadius: 16, padding: "12px 14px", marginBottom: 10, boxShadow: "0 6px 18px -9px #f0b42955" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
             <div style={{ minWidth: 0, display: "flex", alignItems: "flex-start" }}>
               <TicketChip tokenNo={t.tokenNo} />
@@ -33342,8 +33525,8 @@ function SerialQueueModule({ T, S, currentUser, users = [], showToast, serialQue
               </div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
-              <button onClick={() => startToken(t)}
-                style={{ background: "linear-gradient(135deg,#f0b429,#b4780f)", border: "none", color: "#fff", borderRadius: 8, padding: "7px 10px", fontSize: 11.5, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
+              <button onClick={() => startToken(t)} disabled={!t.staffId}
+                style={{ background: t.staffId ? "linear-gradient(135deg,#f0b429,#b4780f)" : `${T.sub}22`, border: "none", color: t.staffId ? "#fff" : T.sub, borderRadius: 8, padding: "7px 10px", fontSize: 11.5, fontWeight: 800, cursor: t.staffId ? "pointer" : "not-allowed", fontFamily: "inherit" }}>
                 শুরু করুন
               </button>
               {/* 🆕 (সেলুন ধাপ ৮) — অপেক্ষমান অবস্থাতেই প্রিন্ট (কাস্টমার আসার সাথে সাথে
