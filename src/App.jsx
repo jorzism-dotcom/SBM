@@ -8294,19 +8294,21 @@ function shadeColor(hex, percent) {
 // হালকা গ্লো (drop-shadow) যোগ করে — স্ক্রিনশটের FULL OF JOY/CULTURE ক্যাপশন
 // স্টাইলের মতো ভিজিবল, বোল্ড, সুন্দর দেখায়। size না দিলে ডিফল্ট 34px।
 function neonNumStyle(hex, size = 34) {
-  const light = shadeColor(hex, 45);
   return {
     fontFamily: "'Anton','Noto Sans Bengali',sans-serif",
     fontWeight: 400,
     fontSize: size,
     letterSpacing: 0.3,
     lineHeight: 1,
-    background: `linear-gradient(135deg, ${light}, ${hex})`,
+    display: "inline-block",
+    background: "linear-gradient(90deg, #22d3ee 0%, #4ade80 20%, #facc15 40%, #fb923c 58%, #f472b6 76%, #a78bfa 92%, #22d3ee 100%)",
+    backgroundSize: "300% auto",
+    animation: "qcRainbowText 5s linear infinite",
     WebkitBackgroundClip: "text",
     backgroundClip: "text",
     WebkitTextFillColor: "transparent",
     color: hex,
-    filter: `drop-shadow(0 0 10px ${hex}88)`,
+    filter: `drop-shadow(0 0 10px ${hex}aa)`,
   };
 }
 
@@ -14468,6 +14470,9 @@ function SmartBusinessMgmt() {
         @keyframes sbmIconPulse { 0%,100%{ opacity:0.8; transform:scale(1); } 50%{ opacity:1; transform:scale(1.12); } }
         @keyframes sbmClearPop  { 0%{ transform:scale(0.4) rotate(-20deg); opacity:0; } 60%{ transform:scale(1.18) rotate(4deg); opacity:1; } 100%{ transform:scale(1) rotate(0deg); opacity:1; } }
         @keyframes sbmShellIn   { 0%{ transform:scale(0.985); } 100%{ transform:scale(1); } }
+        /* 🆕 (৯ আগস্ট ২০২৬) ড্যাশবোর্ড কার্ডের সংখ্যার জন্য "Reels caption" স্টাইল
+           মাল্টিকালার (রামধনু) গ্র্যাডিয়েন্ট টেক্সট — ধীরে ধীরে রঙ বদলায় */
+        @keyframes qcRainbowText { 0% { background-position: 0% 50%; } 100% { background-position: 300% 50%; } }
 
         /* ── Premium Search Bars — নিজস্ব ফোকাস-স্টাইল ব্যবহার করে, তাই
            নিচের জেনেরিক input:focus রিং (box-shadow) এখানে বাদ — এটাই
@@ -19318,7 +19323,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
           </div>{/* end scrollable middle */}
 
           {/* Sticky bottom buttons — সবসময় দৃশ্যমান */}
-          <div style={{ flexShrink: 0, paddingTop: 8, paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 92px)", background: T.bg, position: "sticky", bottom: 0, zIndex: 300 }}>
+          <div style={{ flexShrink: 0, paddingTop: 8, paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 92px)", background: "#fbf9f5", position: "sticky", bottom: 0, zIndex: 300 }}>
             <div style={{ display: "flex", gap: 10 }}>
               <button
                 style={{
@@ -19610,7 +19615,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
             {!isSelfUse && (
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6, marginBottom:8 }}>
               {/* Discount কার্ড */}
-              <div className="qc-gradient-card" style={{ ...S.card, marginBottom:0, padding:"8px 9px", borderRadius:14 }}>
+              <div className="qc-gradient-card" style={{ ...S.card, marginBottom:0, padding:"8px 9px", borderRadius:14, background: IS.cardBg, "--qc-card-bg": IS.cardBg, border: IS.cardBorder }}>
                 <div style={{ color: T.sub, fontSize: 10.5, marginBottom: 5, display:"flex", alignItems:"center", gap:4 }}>
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={T.accent} strokeWidth="2.5" strokeLinecap="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
                   <span style={{ fontWeight:700 }}>ডিসকাউন্ট{discountPct > 0 ? ` (${discountPct}%)` : ""}</span>
@@ -19654,7 +19659,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 </div>
               </div>
               {/* Extra Charge কার্ড */}
-              <div className="qc-gradient-card" style={{ ...S.card, marginBottom:0, padding:"8px 9px", borderRadius:14 }}>
+              <div className="qc-gradient-card" style={{ ...S.card, marginBottom:0, padding:"8px 9px", borderRadius:14, background: IS.cardBg, "--qc-card-bg": IS.cardBg, border: IS.cardBorder }}>
                 <div style={{ color:"#f59e0b", fontSize:10.5, marginBottom:5, display:"flex", alignItems:"center", gap:4 }}>
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
                   <span style={{ fontWeight:700 }}>অতিরিক্ত চার্জ</span>
@@ -19823,7 +19828,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
           </div>
 
           {/* Sticky bottom buttons */}
-          <div style={{ flexShrink:0, paddingTop:8, paddingBottom:"calc(env(safe-area-inset-bottom, 0px) + 92px)", background:T.bg, position:"sticky", bottom:0, zIndex:300 }}>
+          <div style={{ flexShrink:0, paddingTop:8, paddingBottom:"calc(env(safe-area-inset-bottom, 0px) + 92px)", background:"#fbf9f5", position:"sticky", bottom:0, zIndex:300 }}>
             <div style={{ display:"flex", gap:10 }}>
               <button
                 style={{
@@ -20308,10 +20313,8 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">{c.iconPath}</svg>
               </div>
             </div>
-            <div style={ DT.dark
-              ? { ...neonNumStyle(cAccent, typeof c.value === "number" ? 26 : 15), marginBottom:4, textAlign:"center" }
-              : { color:valueColor, fontWeight:900, fontSize: typeof c.value === "number" ? 26 : 15, letterSpacing:-0.5, lineHeight:1, marginBottom:4, textAlign:"center" }
-            }>{c.value}<span style={{ fontSize:11, fontWeight:700, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", WebkitTextFillColor: DT.dark ? cAccent : undefined }}>{c.unit}</span></div>
+            <div style={{ ...neonNumStyle(cAccent, typeof c.value === "number" ? 30 : 17), marginBottom:4, textAlign:"center" }
+            }>{c.value}<span style={{ fontSize:12, fontWeight:800, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", color:cAccent, WebkitTextFillColor:cAccent }}>{c.unit}</span></div>
             <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
               {c.label}
               {showOutBadge && isStockOutCard && (
@@ -20371,7 +20374,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
               }}
               onClick={() => setInvModal('expired')}>
               <div style={{ position:"absolute", bottom:-20, right:-20, width:70, height:70, borderRadius:"50%", background: DT.dark ? "radial-gradient(circle,#ef44441a 0%,transparent 70%)" : "rgba(255,255,255,0.10)" }} />
-              <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:8 }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:7, marginBottom:8 }}>
                 <div style={{ background: DT.dark ? "#ef444418" : "rgba(255,255,255,0.22)", border: DT.dark ? "1px solid #ef444433" : "1px solid rgba(255,255,255,0.3)", borderRadius:9, padding:"5px 7px" }}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={DT.dark?"#fca5a5":expTtc.icon} strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
                 </div>
@@ -20379,12 +20382,10 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                   <span style={{ background:"#ef4444", color:"#fff", fontWeight:900, fontSize:9.5, borderRadius:20, padding:"2px 7px" }}>EXPIRED</span>
                 )}
               </div>
-              <div style={ DT.dark
-                ? { ...neonNumStyle("#fca5a5", 22), marginBottom:3 }
-                : { color:expTtc.value, fontWeight:900, fontSize:22, letterSpacing:-0.5, marginBottom:3 }
-              }>{expiredBatches.length}<span style={{ fontSize:11, fontWeight:700, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", WebkitTextFillColor: DT.dark ? "#fca5a5" : undefined }}>টি ব্যাচ</span></div>
-              <div style={{ color: DT.dark?"#e2e8f0":expTtc.label, fontWeight:800, fontSize:11.5, marginBottom:2 }}>মেয়াদোত্তীর্ণ</div>
-              <div style={{ color: DT.dark?"#64748b":expTtc.sub, fontSize:9.5 }}>{expiredBatches.length>0?"ক্লিক করে দেখুন":"কোনো মেয়াদোত্তীর্ণ নেই"}</div>
+              <div style={{ ...neonNumStyle("#ef4444", 26), marginBottom:3, textAlign:"center" }
+              }>{expiredBatches.length}<span style={{ fontSize:12, fontWeight:800, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", color:"#ef4444", WebkitTextFillColor:"#ef4444" }}>টি ব্যাচ</span></div>
+              <div style={{ color: DT.dark?"#e2e8f0":expTtc.label, fontWeight:800, fontSize:11.5, marginBottom:2, textAlign:"center" }}>মেয়াদোত্তীর্ণ</div>
+              <div style={{ color: DT.dark?"#64748b":expTtc.sub, fontSize:9.5, textAlign:"center" }}>{expiredBatches.length>0?"ক্লিক করে দেখুন":"কোনো মেয়াদোত্তীর্ণ নেই"}</div>
             </div>
 
             {/* মেয়াদ শেষের কাছাকাছি */}
@@ -20398,7 +20399,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
               }}
               onClick={() => setInvModal('near-expiry')}>
               <div style={{ position:"absolute", bottom:-20, right:-20, width:70, height:70, borderRadius:"50%", background: DT.dark ? "radial-gradient(circle,#f59e0b1a 0%,transparent 70%)" : "rgba(255,255,255,0.10)" }} />
-              <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:8 }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:7, marginBottom:8 }}>
                 <div style={{ background: DT.dark ? "#f59e0b18" : "rgba(255,255,255,0.22)", border: DT.dark ? "1px solid #f59e0b33" : "1px solid rgba(255,255,255,0.3)", borderRadius:9, padding:"5px 7px" }}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={DT.dark?"#fde68a":nearTtc.icon} strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                 </div>
@@ -20406,12 +20407,10 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                   <span style={{ background:"#f59e0b", color:"#fff", fontWeight:900, fontSize:9.5, borderRadius:20, padding:"2px 7px" }}>NEAR</span>
                 )}
               </div>
-              <div style={ DT.dark
-                ? { ...neonNumStyle("#fde68a", 22), marginBottom:3 }
-                : { color:nearTtc.value, fontWeight:900, fontSize:22, letterSpacing:-0.5, marginBottom:3 }
-              }>{nearExpiryBatches.length}<span style={{ fontSize:11, fontWeight:700, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", WebkitTextFillColor: DT.dark ? "#fde68a" : undefined }}>টি ব্যাচ</span></div>
-              <div style={{ color: DT.dark?"#e2e8f0":nearTtc.label, fontWeight:800, fontSize:11.5, marginBottom:2 }}>মেয়াদ শেষের কাছে</div>
-              <div style={{ color: DT.dark?"#64748b":nearTtc.sub, fontSize:9.5 }}>৩ মাসের মধ্যে মেয়াদ শেষ</div>
+              <div style={{ ...neonNumStyle("#f59e0b", 26), marginBottom:3, textAlign:"center" }
+              }>{nearExpiryBatches.length}<span style={{ fontSize:12, fontWeight:800, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", color:"#f59e0b", WebkitTextFillColor:"#f59e0b" }}>টি ব্যাচ</span></div>
+              <div style={{ color: DT.dark?"#e2e8f0":nearTtc.label, fontWeight:800, fontSize:11.5, marginBottom:2, textAlign:"center" }}>মেয়াদ শেষের কাছে</div>
+              <div style={{ color: DT.dark?"#64748b":nearTtc.sub, fontSize:9.5, textAlign:"center" }}>৩ মাসের মধ্যে মেয়াদ শেষ</div>
             </div>
           </div>
         );
@@ -25020,7 +25019,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   </div>
                 );
               })() : (
-                <div style={ DT.dark ? { ...neonNumStyle(cAccent, 34), marginBottom:4, textAlign:"center" } : { color:valueColor, fontWeight:900, fontSize:34, letterSpacing:-0.5, lineHeight:1, marginBottom:4, textAlign:"center" } }>{c.value}</div>
+                <div style={{ ...neonNumStyle(cAccent, 38), marginBottom:4, textAlign:"center" }}>{c.value}</div>
               )}
               <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, textAlign:"center" }}>{c.label}</div>
               <div style={{ color:subColor, fontWeight:600, fontSize:10, textAlign:"center" }}>{c.sub}</div>
@@ -25084,7 +25083,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">{c.iconPath}</svg>
                 </div>
               </div>
-              <div style={ DT.dark ? { ...neonNumStyle(cAccent, 34), marginBottom:4, textAlign:"center" } : { color:valueColor, fontWeight:900, fontSize:34, letterSpacing:-0.5, lineHeight:1, marginBottom:4, textAlign:"center" } }>{c.value}</div>
+              <div style={{ ...neonNumStyle(cAccent, 38), marginBottom:4, textAlign:"center" }}>{c.value}</div>
               <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, textAlign:"center" }}>{c.label}</div>
               <div style={{ color:subColor, fontWeight:600, fontSize:10, textAlign:"center" }}>{c.sub}</div>
             </div>
