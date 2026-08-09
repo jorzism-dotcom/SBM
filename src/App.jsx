@@ -8650,7 +8650,7 @@ function VoiceSearchButtonFull({ onResult, lang = "bn-BD", color = "#a78bfa", la
 }
 
 // ── Live Date & Time display ───────────────────────────────────────────────────
-function LiveDateTime({ themeColor = "#fde68a", accentColor = "#7dffc0", compact = true }) {
+function LiveDateTime({ themeColor = "#fde68a", accentColor = "#7dffc0", compact = true, isDark = true, headerColor }) {
   const [now, setNow] = useState(new Date());
   useEffect(() => {
     // প্রতি মিনিটে আপডেট — 60x কম re-render (Linear, Notion approach)
@@ -8666,24 +8666,26 @@ function LiveDateTime({ themeColor = "#fde68a", accentColor = "#7dffc0", compact
   // 🔴 ফিক্স: লাইভ ঘড়ি এখন সবসময় GMT+6 (বাংলাদেশ) সময় দেখায়, ডিভাইসের টাইমজোন যা-ই থাকুক
   const time = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: compact ? undefined : "2-digit", timeZone: "Asia/Dhaka" });
   const date = now.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "Asia/Dhaka" });
-  // 🔴 ফিক্স: date/dot আগে raw accentColor ব্যবহার করত, যেটা অনেক থিমে হেডারের
-  // মতোই hue (যেমন rosequartz-এ accent === header রং) — ফলে কালচে গ্লাস পিলের ওপর
-  // "সাদা দেখাচ্ছে না" — লো-কনট্রাস্ট/মিশে যাওয়া দেখাত। পিল সবসময় কালচে-স্বচ্ছ (rgba(0,0,0,..))
-  // ব্যাকগ্রাউন্ড, তাই accentColor-কে সাদার দিকে অনেকখানি হালকা করে নিরাপদ কনট্রাস্ট রাখা হলো।
-  const dateColor = shadeColor(accentColor, 62);
+  // 🔁 (৯ আগস্ট ২০২৬ — ইউজার-রিকোয়েস্টে ফিক্স) সময়/তারিখের টেক্সট রঙ এখন আর থিমের
+  // accent/heading রঙের ওপর নির্ভর করে না — ডার্ক থিমে সবসময় সাদা, লাইট থিমে সবসময়
+  // কালো, ঠিক যেমন দোকানের নামের পিলে। শপ নাম পিল ও এই পিল — দুটোই একই ফর্মুলার
+  // আধা-স্বচ্ছ কালচে ব্যাকগ্রাউন্ড (থিমের হেডার রঙের ওপর) ব্যবহার করে, তাই দেখতে
+  // একই "সেট"-এর অংশ মনে হয়।
+  const pillTextColor = isDark ? "#ffffff" : "#000000";
+  const dateColor = pillTextColor;
   if (compact) {
     // ── কমপ্যাক্ট, এক-লাইন pill — সময় ও তারিখ পাশাপাশি, শপ নামের নিচে আলাদা লাইনে ──
     return (
       <div style={{
         display: "inline-flex", alignItems: "center", gap: 7,
-        background: "rgba(0,0,0,0.24)",
+        background: "rgba(0,0,0,0.26)",
         borderRadius: 100,
         padding: "5px 13px",
         backdropFilter: "blur(8px)",
-        border: `1px solid ${themeColor}33`,
+        border: `1px solid ${(headerColor || themeColor)}55`,
       }}>
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={themeColor} strokeWidth="2.4" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-        <span style={{ color: themeColor, fontWeight: 800, fontSize: 13.5, letterSpacing: 0.4, fontVariantNumeric: "tabular-nums" }}>{time}</span>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={pillTextColor} strokeWidth="2.4" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        <span style={{ color: pillTextColor, fontWeight: 800, fontSize: 13.5, letterSpacing: 0.4, fontVariantNumeric: "tabular-nums" }}>{time}</span>
         <span style={{ color: `${dateColor}99`, fontSize: 12 }}>•</span>
         <span style={{ color: dateColor, fontWeight: 700, fontSize: 13, letterSpacing: 0.2 }}>{date}</span>
       </div>
@@ -14779,25 +14781,39 @@ function SmartBusinessMgmt() {
 
           {tab === "dashboard" && !showDetail ? (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
-              {/* Shop name — থিমের headingColor অনুসরণ করে (cyan-fixed নয়) */}
-              <span style={{
-                fontWeight: 900,
-                fontSize: 27,
-                letterSpacing: 0.8,
-                lineHeight: 1.2,
-                color: T.headingColor,
-                textShadow: `0 0 14px ${T.headingColor}77, 0 1px 8px rgba(0,0,0,0.4)`,
+              {/* 🔁 (৯ আগস্ট ২০২৬ — ইউজার-রিকোয়েস্টে ফিক্স) দোকানের নাম এখন ডেট/টাইমের
+                  মতোই একটা পিলে বসানো হলো — ব্যাকগ্রাউন্ড থিমের হেডার-রঙের ওপর
+                  আধা-স্বচ্ছ কালচে ওভারলে (একই ফর্মুলা যা নিচের LiveDateTime পিলে
+                  ব্যবহার হয়, তাই দুটো পিল একই "প্রিমিয়াম" লুকের), টেক্সট রঙ ফিক্সড —
+                  ডার্ক থিমে সাদা, লাইট থিমে কালো (থিমের accent/heading রঙ নির্ভর নয়,
+                  তাই সবসময় কনট্রাস্ট নিশ্চিত)। ফন্ট বড় (24px) ও বোল্ড (900)। */}
+              <div style={{
+                display: "inline-flex", alignItems: "center", gap: 7,
+                background: "rgba(0,0,0,0.26)",
+                borderRadius: 100,
+                padding: "7px 20px",
+                backdropFilter: "blur(10px)",
+                border: `1px solid ${T.header}55`,
+                boxShadow: `0 2px 16px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.12)`,
               }}>
-                {shopName}
-                {/* 🆕 ধাপ ৩: multi-business শপে শুধু — active business ব্র্যাকেটে, registry রঙে */}
-                {isMultiBusinessActive && (
-                  <span style={{ color: businessAccentColor, fontSize: 15, fontWeight: 800, marginLeft: 6, letterSpacing: 0.2 }}>
-                    ({BUSINESS_TYPE_REGISTRY[businessType]?.label || businessType})
-                  </span>
-                )}
-              </span>
+                <span style={{
+                  fontWeight: 900,
+                  fontSize: 24,
+                  letterSpacing: 0.6,
+                  lineHeight: 1.2,
+                  color: T.dark ? "#ffffff" : "#000000",
+                }}>
+                  {shopName}
+                  {/* 🆕 ধাপ ৩: multi-business শপে শুধু — active business ব্র্যাকেটে, registry রঙে */}
+                  {isMultiBusinessActive && (
+                    <span style={{ color: businessAccentColor, fontSize: 14, fontWeight: 800, marginLeft: 6, letterSpacing: 0.2 }}>
+                      ({BUSINESS_TYPE_REGISTRY[businessType]?.label || businessType})
+                    </span>
+                  )}
+                </span>
+              </div>
               {/* Live clock — থিম headingColor/accent, শপ নামের ঠিক নিচে আলাদা লাইনে */}
-              <MemoLiveDateTime themeColor={T.headingColor} accentColor={T.accent} compact />
+              <MemoLiveDateTime themeColor={T.headingColor} accentColor={T.accent} isDark={T.dark} headerColor={T.header} compact />
             </div>
           ) : showDetail ? (
             <>
@@ -16735,7 +16751,7 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
               <span style={{ fontWeight: 900, fontSize: 27, letterSpacing: 0.8, lineHeight: 1.2, color: T.headingColor, textShadow: `0 0 14px ${T.headingColor}77, 0 1px 8px rgba(0,0,0,0.4)` }}>
                 {shopName}
               </span>
-              <MemoLiveDateTime themeColor={T.headingColor} accentColor={T.accent} compact />
+              <MemoLiveDateTime themeColor={T.headingColor} accentColor={T.accent} isDark={T.dark} headerColor={T.header} compact />
               {/* 🆕 ফিক্স (২ আগস্ট ২০২৬ — "রিফ্রেশ হচ্ছে না মনে হয়"): এতদিন সিঙ্ক
                   স্ট্যাটাস/এরর শুধু "অন্যান্য" ড্রয়ার খুললেই দেখা যেত — মূল
                   স্ক্রিনে কোনো ইঙ্গিতই ছিল না রিফ্রেশ আসলে হচ্ছে/ব্যর্থ হচ্ছে
@@ -20282,7 +20298,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
       onClick:()=>openPage('out'),
     },
     {
-      label:"ক্রয় অর্ডার", value:"তৈরি করুন", unit:"",
+      label:"ক্রয় অর্ডার", value:"", unit:"",
       idx:3,
       sub:"স্টক দেখে অর্ডার করুন",
       iconPath: <><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></>,
@@ -20311,9 +20327,12 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
           const tint = DT.tint(c.idx);
           const cAccent = tint.hex;
           const ttc = tintTextColors(cAccent);
-          const valueColor = DT.dark ? cAccent : ttc.value;
-          const labelColor = DT.dark ? "#e2e8f0" : ttc.label;
-          const subColor   = DT.dark ? "#64748b" : ttc.sub;
+          // 🔁 (৯ আগস্ট ২০২৬ — ইউজার-রিকোয়েস্টে ফিক্স) লাইট থিমে বড় ফন্টের ভ্যালু কালো-ই
+          // থাকছে (আগের মতোই), কিন্তু লেবেল/সাব-টেক্সট এখন সাদা। ডার্ক থিমে ঠিক উল্টো —
+          // বড় ভ্যালু সাদা, লেবেল/সাব-টেক্সট কালো।
+          const valueColor = DT.dark ? "#ffffff" : "#000000";
+          const labelColor = DT.dark ? "#000000" : "#ffffff";
+          const subColor   = DT.dark ? "#000000" : "#ffffff";
           const iconColor  = DT.dark ? cAccent : ttc.icon;
           return (
           <div key={c.label || i} className="tap-card"
@@ -20407,7 +20426,12 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={DT.dark?"#fca5a5":expTtc.icon} strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
                 </div>
                 {expiredBatches.length > 0 && (
-                  <span style={{ background:"#ef4444", color:"#fff", fontWeight:900, fontSize:9.5, borderRadius:20, padding:"2px 7px" }}>EXPIRED</span>
+                  <span style={{ display:"inline-flex", alignItems:"center", gap:4, background:"#ef4444", color:"#fff", fontWeight:900, fontSize:10, borderRadius:20, padding:"2px 8px", letterSpacing:0.5,
+                    boxShadow:"0 0 0 3px rgba(239,68,68,0.35), 0 0 12px rgba(239,68,68,0.6)",
+                    animation:"blinkDot 0.8s ease-in-out infinite alternate" }}>
+                    <span style={{ width:6, height:6, borderRadius:"50%", background:"#fff", display:"inline-block", flexShrink:0 }} />
+                    EXPIRED
+                  </span>
                 )}
               </div>
               <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), marginBottom:3, textAlign:"center" }
@@ -20432,7 +20456,12 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={DT.dark?"#fde68a":nearTtc.icon} strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                 </div>
                 {nearExpiryBatches.length > 0 && (
-                  <span style={{ background:"#f59e0b", color:"#fff", fontWeight:900, fontSize:9.5, borderRadius:20, padding:"2px 7px" }}>NEAR</span>
+                  <span style={{ display:"inline-flex", alignItems:"center", gap:4, background:"#f59e0b", color:"#fff", fontWeight:900, fontSize:10, borderRadius:20, padding:"2px 8px", letterSpacing:0.5,
+                    boxShadow:"0 0 0 3px rgba(245,158,11,0.35), 0 0 12px rgba(245,158,11,0.6)",
+                    animation:"blinkDot 0.8s ease-in-out infinite alternate" }}>
+                    <span style={{ width:6, height:6, borderRadius:"50%", background:"#fff", display:"inline-block", flexShrink:0 }} />
+                    NEARLY EXPIRED
+                  </span>
                 )}
               </div>
               <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), marginBottom:3, textAlign:"center" }
@@ -21501,7 +21530,12 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       id: uid(), type: "opening", amount: carryAmount,
       note: `অটো-ক্যারি: ${lastDateKey}-এর ক্লোজিং ক্যাশ`,
       date: todayStr(), dateKey: todayKeyStr,
-      createdAt: new Date().toISOString(),
+      // 🔴 ফিক্স (৯ আগস্ট ২০২৬ — ইউজার-রিকোয়েস্টে): আগে createdAt আসল ওয়াল-ক্লক সময়
+      // (অ্যাপ যখন প্রথম খোলা হয়, যেমন দুপুর ২টায়) ব্যবহার করত, যা ভুল ইঙ্গিত দিত —
+      // এটা তো আসলে "রাত ১২টার পর" স্বয়ংক্রিয়ভাবে বসা উচিত এন্ট্রি (গতকালের ক্লোজিং
+      // ক্যাশ আজকের ওপেনিং হিসেবে)। এখন সবসময় আজকের বাংলাদেশ-টাইম মধ্যরাত (১২:০০ AM)
+      // ফিক্সড টাইমস্ট্যাম্প হিসেবে সেভ হয় — অ্যাপ যখনই খোলা হোক না কেন।
+      createdAt: new Date(`${todayKeyStr}T00:00:00+06:00`).toISOString(),
       by: "সিস্টেম (অটো)",
       source: "auto-carry",
     };
@@ -24522,6 +24556,12 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
         });
       // নগদ বিক্রয় modal-এ admin-only মোট লাভ/লস
       const _isCashModal = dashModal.baseTitle === "নগদ বিক্রয়ের ইনভয়েস";
+      // 🔴 ফিক্স (৯ আগস্ট ২০২৬ — "বাকির ইনভয়েস" টোটাল ভুল): আংশিক (partial) পেমেন্টের
+      // ইনভয়েসে আগে পুরো invoice total যোগ হতো, অথচ প্রকৃত বাকি অংশ শুধু
+      // bakiAmount (যেমন ৳৪০০ টোটালে ৳২০০ নগদ পেলে বাকি আসলে ৳২০০)। এই রিপোর্টের
+      // হেডার KPI কার্ড (todayBakiIncurred, txn-ভিত্তিক) আগে থেকেই সঠিক ছিল —
+      // এখন এই মডালও একই হিসাব মেনে চলছে।
+      const _isBakiModal = dashModal.baseTitle === "বাকির ইনভয়েস";
       // 🔴 ফিক্স (নগদ বিক্রয়ের ইনভয়েস total): আংশিক (partial) পেমেন্টের ইনভয়েসে
       // আগে পুরো invoice total যোগ হতো, অথচ ক্যাশ ড্রয়ারে/হোম ড্যাশবোর্ডে শুধু
       // paidAmount অংশটাই ঢোকে — ফলে এই রিপোর্টের টোটাল হোম KPI-এর সাথে মিলত না়।
@@ -24529,6 +24569,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       // অন্য রিপোর্ট (বাকির ইনভয়েস ইত্যাদি) অপরিবর্তিত — সেখানে পুরো total-ই সঠিক।
       const rangeTotal  = rangedItems.reduce((s, i) => {
         if (_isCashModal && i.payType === "partial") return s + Math.min(i.paidAmount || 0, i.total || 0);
+        if (_isBakiModal && i.payType === "partial") return s + (i.bakiAmount || 0);
         return s + (i.total || 0);
       }, 0);
       const _cashProdMap = new Map(products.map(p => [p.id, p]));
@@ -24671,9 +24712,11 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                     </div>
                   </div>
                   <div>
-                    <div style={{ color: isVoided ? "#6b7280" : isBaki ? "#fca5a5" : isPartial ? "#fde68a" : "#4ade80", fontWeight: 800, fontSize: 16, textAlign: "right", textDecoration: isVoided ? "line-through" : "none" }}>৳{fmt(inv.total)}</div>
+                    <div style={{ color: isVoided ? "#6b7280" : isBaki ? "#fca5a5" : isPartial ? "#fde68a" : "#4ade80", fontWeight: 800, fontSize: 16, textAlign: "right", textDecoration: isVoided ? "line-through" : "none" }}>৳{fmt(_isBakiModal && isPartial ? (inv.bakiAmount || 0) : inv.total)}</div>
                     {isPartial && (
-                      <div style={{ color: "#f59e0b", fontSize: 10, fontWeight: 700, textAlign: "right", marginTop: 2 }}>নগদ: ৳{fmt(inv.paidAmount || 0)}</div>
+                      <div style={{ color: "#f59e0b", fontSize: 10, fontWeight: 700, textAlign: "right", marginTop: 2 }}>
+                        {_isBakiModal ? `মোট: ৳${fmt(inv.total)} · নগদ: ৳${fmt(inv.paidAmount || 0)}` : `নগদ: ৳${fmt(inv.paidAmount || 0)}`}
+                      </div>
                     )}
                     <div style={{ ...S.txnBadge,
                       background: isVoided ? "#6b728022" : isBaki ? "#ef444433" : isPartial ? "#f59e0b33" : "#22c55e33",
@@ -24893,14 +24936,14 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             <div style={{ display:"flex", gap:8, fontSize:12, color: DT.dark ? "#cbd5e1" : "#fff", position:"relative" }}>
               {todayOpening && (
                 <div style={{ flex:1, background: DT.dark ? "rgba(14,165,233,0.1)" : "rgba(255,255,255,0.16)", borderRadius:12, padding:"8px 12px", border: DT.dark ? "1px solid #0ea5e93a" : "1px solid rgba(255,255,255,0.3)", backdropFilter:"blur(4px)" }}>
-                  <div style={{ fontSize:10.5, color: DT.dark ? "#7dd3fc" : "rgba(255,255,255,0.85)", fontWeight:700, marginBottom:2 }}>আজকের ওপেনিং</div>
-                  <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24) }}>৳{fmt(todayOpening.amount)}</div>
+                  <div style={{ fontSize:10.5, color: DT.dark ? "#7dd3fc" : "rgba(255,255,255,0.85)", fontWeight:700, marginBottom:2, textAlign:"center" }}>আজকের ওপেনিং</div>
+                  <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), textAlign:"center" }}>৳{fmt(todayOpening.amount)}</div>
                 </div>
               )}
               {todayWithdrawTotal > 0 && (
                 <div style={{ flex:1, background: DT.dark ? "rgba(244,63,94,0.1)" : "rgba(255,255,255,0.16)", borderRadius:12, padding:"8px 12px", border: DT.dark ? "1px solid #f43f5e3a" : "1px solid rgba(255,255,255,0.3)", backdropFilter:"blur(4px)" }}>
-                  <div style={{ fontSize:10.5, color: DT.dark ? "#fca5a5" : "rgba(255,255,255,0.85)", fontWeight:700, marginBottom:2 }}>আজকের উইথড্রয়াল</div>
-                  <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24) }}>৳{fmt(todayWithdrawTotal)}</div>
+                  <div style={{ fontSize:10.5, color: DT.dark ? "#fca5a5" : "rgba(255,255,255,0.85)", fontWeight:700, marginBottom:2, textAlign:"center" }}>আজকের উইথড্রয়াল</div>
+                  <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), textAlign:"center" }}>৳{fmt(todayWithdrawTotal)}</div>
                 </div>
               )}
             </div>
@@ -24967,9 +25010,12 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             const tint = DT.tint(c.idx);
             const cAccent = tint.hex;
             const ttc = tintTextColors(cAccent);
-            const valueColor = DT.dark ? cAccent : ttc.value;
-            const labelColor = DT.dark ? "#e2e8f0" : ttc.label;
-            const subColor   = DT.dark ? "#64748b" : ttc.sub;
+            // 🔁 (৯ আগস্ট ২০২৬ — ইউজার-রিকোয়েস্টে ফিক্স) লাইট থিমে বড় ফন্টের ভ্যালু কালো-ই
+            // থাকছে (আগের মতোই), কিন্তু লেবেল/সাব-টেক্সট এখন সাদা। ডার্ক থিমে ঠিক উল্টো —
+            // বড় ভ্যালু সাদা, লেবেল/সাব-টেক্সট কালো।
+            const valueColor = DT.dark ? "#ffffff" : "#000000";
+            const labelColor = DT.dark ? "#000000" : "#ffffff";
+            const subColor   = DT.dark ? "#000000" : "#ffffff";
             const iconColor  = DT.dark ? cAccent : ttc.icon;
             return (
             <div key={c.label || i} className="tap-card"
@@ -25041,8 +25087,8 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                         <div style={{ color: DT.dark ? "#fca5a5" : ttc.label, fontSize:8.5, fontWeight:700, marginBottom:1 }}>আজকের লস</div>
                       </div>
                     </div>
-                    <div style={{ borderTop: DT.dark ? `1px solid ${_net >= 0 ? cAccent+"33" : "#ef444433"}` : "1px solid rgba(255,255,255,0.3)", paddingTop:4, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                      <div style={{ color: DT.dark ? "#94a3b8" : ttc.label, fontSize:8.5, fontWeight:700 }}>নেট (লাভ−লস)</div>
+                    <div style={{ borderTop: DT.dark ? `1px solid ${_net >= 0 ? cAccent+"33" : "#ef444433"}` : "1px solid rgba(255,255,255,0.3)", paddingTop:4, display:"flex", justifyContent:"center", alignItems:"center" }}>
+                      <div style={{ color: DT.dark ? "#94a3b8" : ttc.label, fontSize:8.5, fontWeight:700, textAlign:"center" }}>নেট (লাভ−লস)</div>
                     </div>
                   </div>
                 );
@@ -25089,9 +25135,12 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             const tint = DT.tint(c.idx);
             const cAccent = tint.hex;
             const ttc = tintTextColors(cAccent);
-            const valueColor = DT.dark ? cAccent : ttc.value;
-            const labelColor = DT.dark ? "#e2e8f0" : ttc.label;
-            const subColor   = DT.dark ? "#64748b" : ttc.sub;
+            // 🔁 (৯ আগস্ট ২০২৬ — ইউজার-রিকোয়েস্টে ফিক্স) লাইট থিমে বড় ফন্টের ভ্যালু কালো-ই
+            // থাকছে (আগের মতোই), কিন্তু লেবেল/সাব-টেক্সট এখন সাদা। ডার্ক থিমে ঠিক উল্টো —
+            // বড় ভ্যালু সাদা, লেবেল/সাব-টেক্সট কালো।
+            const valueColor = DT.dark ? "#ffffff" : "#000000";
+            const labelColor = DT.dark ? "#000000" : "#ffffff";
+            const subColor   = DT.dark ? "#000000" : "#ffffff";
             const iconColor  = DT.dark ? cAccent : ttc.icon;
             return (
             <div key={c.label || i} className="tap-card"
