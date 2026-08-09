@@ -8671,10 +8671,11 @@ function LiveDateTime({ themeColor = "#fde68a", accentColor = "#7dffc0", compact
   // কালো, ঠিক যেমন দোকানের নামের পিলে। শপ নাম পিল ও এই পিল — দুটোই একই ফর্মুলার
   // আধা-স্বচ্ছ কালচে ব্যাকগ্রাউন্ড (থিমের হেডার রঙের ওপর) ব্যবহার করে, তাই দেখতে
   // একই "সেট"-এর অংশ মনে হয়।
-  // 🔁 (৯ আগস্ট ২০২৬ — ইউজার-রিকোয়েস্টে ফিক্স) লাইট থিমে পিলের ব্যাকগ্রাউন্ড কালো ও
-  // টেক্সট সাদা; ডার্ক থিমে উল্টো — ব্যাকগ্রাউন্ড সাদা ও টেক্সট কালো।
-  const pillTextColor = isDark ? "#000000" : "#ffffff";
-  const pillBgColor = isDark ? "rgba(255,255,255,0.85)" : "rgba(0,0,0,0.78)";
+  // 🔁 (৯ আগস্ট ২০২৬ — ইউজার-রিকোয়েস্টে ফিক্স ২) থিম-নির্ভর ফ্লিপ বাদ — এখন
+  // সবসময়, সব থিমে (লাইট/ডার্ক নির্বিশেষে) সাদা ব্যাকগ্রাউন্ড + কালো ফন্ট, শপ
+  // নামের পিলের সাথে হুবহু মিলিয়ে।
+  const pillTextColor = "#000000";
+  const pillBgColor = "#ffffff";
   const dateColor = pillTextColor;
   if (compact) {
     // ── কমপ্যাক্ট, এক-লাইন pill — সময় ও তারিখ পাশাপাশি, শপ নামের নিচে আলাদা লাইনে ──
@@ -14784,15 +14785,12 @@ function SmartBusinessMgmt() {
 
           {tab === "dashboard" && !showDetail ? (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
-              {/* 🔁 (৯ আগস্ট ২০২৬ — ইউজার-রিকোয়েস্টে ফিক্স) দোকানের নাম এখন ডেট/টাইমের
-                  মতোই একটা পিলে বসানো হলো — ব্যাকগ্রাউন্ড থিমের হেডার-রঙের ওপর
-                  আধা-স্বচ্ছ কালচে ওভারলে (একই ফর্মুলা যা নিচের LiveDateTime পিলে
-                  ব্যবহার হয়, তাই দুটো পিল একই "প্রিমিয়াম" লুকের), টেক্সট রঙ ফিক্সড —
-                  ডার্ক থিমে সাদা, লাইট থিমে কালো (থিমের accent/heading রঙ নির্ভর নয়,
-                  তাই সবসময় কনট্রাস্ট নিশ্চিত)। ফন্ট বড় (24px) ও বোল্ড (900)। */}
+              {/* 🔁 (৯ আগস্ট ২০২৬ — ইউজার-রিকোয়েস্টে ফিক্স ২) থিম-নির্ভর ফ্লিপ বাদ —
+                  এখন সবসময়, সব থিমে সাদা ব্যাকগ্রাউন্ড + কালো ফন্ট, একদম ডেট/টাইম
+                  পিলের (LiveDateTime, compact মোড) সাথে হুবহু মিলিয়ে। */}
               <div style={{
                 display: "inline-flex", alignItems: "center", gap: 7,
-                background: T.dark ? "rgba(255,255,255,0.85)" : "rgba(0,0,0,0.78)",
+                background: "#ffffff",
                 borderRadius: 100,
                 padding: "7px 20px",
                 backdropFilter: "blur(10px)",
@@ -14804,7 +14802,7 @@ function SmartBusinessMgmt() {
                   fontSize: 24,
                   letterSpacing: 0.6,
                   lineHeight: 1.2,
-                  color: T.dark ? "#000000" : "#ffffff",
+                  color: "#000000",
                 }}>
                   {shopName}
                   {/* 🆕 ধাপ ৩: multi-business শপে শুধু — active business ব্র্যাকেটে, registry রঙে */}
@@ -21185,6 +21183,31 @@ const MemoSmartInvoiceBuilder = React.memo(SmartInvoiceBuilder);
 function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, showToast, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, processReturn, currentUser, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, loaded = true, supplierPayments = [], setSupplierPayments, returns = [], serialQueue = [], users = [] }) {
   const [viewInv,    setViewInv]    = useState(null);
   const [viewPayInv, setViewPayInv] = useState(null);
+  // 🆕 ফিক্স (৯ আগস্ট ২০২৬ — ইনভয়েস ডিটেইলস থেকে ফিরলে লিস্টের স্ক্রল টপে চলে যাওয়া):
+  // viewInv/viewPayInv সেট হলে এই কম্পোনেন্ট সম্পূর্ণ আলাদা (অনেক ছোট) JSX-ট্রি রিটার্ন
+  // করে — একই <main> স্ক্রল-কন্টেইনারের ভেতরেই, কিন্তু কন্টেন্ট আকস্মিকভাবে ছোট হয়ে
+  // যাওয়ায় ব্রাউজার scrollTop ক্ল্যাম্প করে (সাধারণত ০-তে)। ফিরে আসার পর তালিকা আবার
+  // বড় হলেও scrollTop ম্যানুয়ালি রিস্টোর না করলে ০-তেই থেকে যায় — তাই সবসময় সবচেয়ে
+  // ওপরের/সাম্প্রতিক আইটেমে (যেমন ১১) নিয়ে যেত, যেই আইটেমে (যেমন ৩) ক্লিক করা হয়েছিল
+  // সেখানে না। এখন ওপেন করার আগে scrollTop সেভ করে, বন্ধ করার পর ২-ফ্রেম পরে (DOM
+  // পুরো তালিকা নিয়ে কমিট হওয়ার পর) সেই scrollTop রিস্টোর করা হচ্ছে।
+  const _viewScrollY = useRef(0);
+  const _saveScrollForView = useCallback(() => {
+    const mainEl = document.querySelector("main");
+    _viewScrollY.current = mainEl ? mainEl.scrollTop : 0;
+  }, []);
+  const _restoreScrollAfterView = useCallback(() => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const mainEl = document.querySelector("main");
+        if (mainEl) mainEl.scrollTop = _viewScrollY.current;
+      });
+    });
+  }, []);
+  const openInvoiceView = useCallback((inv) => { _saveScrollForView(); setViewInv(inv); }, [_saveScrollForView]);
+  const closeInvoiceView = useCallback(() => { setViewInv(null); _restoreScrollAfterView(); }, [_restoreScrollAfterView]);
+  const openPayInvoiceView = useCallback((pinv) => { _saveScrollForView(); setViewPayInv(pinv); }, [_saveScrollForView]);
+  const closePayInvoiceView = useCallback(() => { setViewPayInv(null); _restoreScrollAfterView(); }, [_restoreScrollAfterView]);
   const [listDate,   setListDate]   = useState(() => todayEn()); // YYYY-MM-DD
   // 🆕 (৭ আগস্ট ২০২৬, সেলুন ড্যাশবোর্ড রিস্ট্রাকচার) — শুধু salon বিজনেসে হোম ড্যাশবোর্ডে
   // দুইটা ভিউ: "home" (টোকেন সিরিয়াল বড় কার্ড + ডিজাইন গ্যালারি ইত্যাদি, ডিফল্ট) আর
@@ -21848,7 +21871,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     const cust = customers.find(c => c.id === viewInv.customerId);
     return (
       <div style={S.page}>
-        <button style={S.textBtn} onClick={() => setViewInv(null)}>← তালিকায় ফিরুন</button>
+        <button style={S.textBtn} onClick={closeInvoiceView}>← তালিকায় ফিরুন</button>
         <InvoiceReceipt T={T} S={S} inv={viewInv} customer={cust} type="buyer" returns={returns} />
       </div>
     );
@@ -21856,7 +21879,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   if (viewPayInv) {
     return (
       <div style={S.page}>
-        <button style={S.textBtn} onClick={() => setViewPayInv(null)}>← তালিকায় ফিরুন</button>
+        <button style={S.textBtn} onClick={closePayInvoiceView}>← তালিকায় ফিরুন</button>
         <PaymentInvoiceReceipt T={T} S={S} inv={viewPayInv} />
       </div>
     );
@@ -24279,7 +24302,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   <div key={idx} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:4, padding:"5px 0", borderBottom: idx < invs.length-1 ? `1px solid ${borderClr}` : "none" }}>
                     <div style={{ flex:1, minWidth:0 }}>
                       {/* ইনভয়েস নম্বরে ক্লিক করলে invoice detail modal */}
-                      <button onClick={(e) => { e.stopPropagation(); setViewInv(entry.inv); }}
+                      <button onClick={(e) => { e.stopPropagation(); openInvoiceView(entry.inv); }}
                         style={{ background:"none", border:"none", padding:0, cursor:"pointer", color:type==="profit"?"#c4b5fd":"#fca5a5", fontWeight:800, fontSize:11, fontFamily:"inherit", textDecoration:"underline" }}>
                         {entry.invNo}
                       </button>
@@ -24727,7 +24750,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
-                  <button style={{ ...S.invBtn, flex: 3 }} onClick={() => setViewInv(inv)}>
+                  <button style={{ ...S.invBtn, flex: 3 }} onClick={() => openInvoiceView(inv)}>
                     <IcInvoice /><span>ইনভয়েস দেখুন</span>
                     <span style={{ marginLeft: "auto", color: T.sub }}>{dispInvNo(inv)}</span>
                   </button>
@@ -24815,7 +24838,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                     <div style={{ color: "#ef4444", fontSize: 11, fontWeight: 600 }}>বর্তমান বাকি: ৳{fmt(pinv.remainingBalance ?? 0)}</div>
                   </div>
                 </div>
-                <button style={{ ...S.invBtn, color: "#22c55e", borderColor: "#22c55e44" }} onClick={() => setViewPayInv(pinv)}>
+                <button style={{ ...S.invBtn, color: "#22c55e", borderColor: "#22c55e44" }} onClick={() => openPayInvoiceView(pinv)}>
                   <IcCheck /><span>জমার রসিদ দেখুন</span>
                   <span style={{ marginLeft: "auto", color: T.sub }}>{dispInvNo(pinv, "RC")}</span>
                 </button>
@@ -25657,6 +25680,25 @@ const MemoCustomers = React.memo(Customers);
 function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvoices, shopName = "SBM", onGoToInvoice, setModal, products = [], returns = [], currentUser, showToast, voidInvoice, processReturn }) {
   const [viewInv,          setViewInv]          = useState(null);
   const [viewPayInv,       setViewPayInv]       = useState(null);
+  // 🆕 ফিক্স (৯ আগস্ট ২০২৬ — ইনভয়েস ডিটেইলস থেকে ফিরলে লেনদেন-তালিকার স্ক্রল টপে চলে
+  // যাওয়া): Dashboard কম্পোনেন্টে করা একই ফিক্স — দেখুন সেখানকার বিস্তারিত কমেন্ট।
+  const _viewScrollY = useRef(0);
+  const _saveScrollForView = useCallback(() => {
+    const mainEl = document.querySelector("main");
+    _viewScrollY.current = mainEl ? mainEl.scrollTop : 0;
+  }, []);
+  const _restoreScrollAfterView = useCallback(() => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const mainEl = document.querySelector("main");
+        if (mainEl) mainEl.scrollTop = _viewScrollY.current;
+      });
+    });
+  }, []);
+  const openInvoiceView = useCallback((inv) => { _saveScrollForView(); setViewInv(inv); }, [_saveScrollForView]);
+  const closeInvoiceView = useCallback(() => { setViewInv(null); _restoreScrollAfterView(); }, [_restoreScrollAfterView]);
+  const openPayInvoiceView = useCallback((pinv) => { _saveScrollForView(); setViewPayInv(pinv); }, [_saveScrollForView]);
+  const closePayInvoiceView = useCallback(() => { setViewPayInv(null); _restoreScrollAfterView(); }, [_restoreScrollAfterView]);
   const [txnPage,          setTxnPage]          = useState(1);
   const [histMonths,       setHistMonths]       = useState(null);
   const [showInvoicePicker,setShowInvoicePicker]= useState(false); // type picker
@@ -25689,8 +25731,8 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
   const paymentInvoiceMap = useMemo(() => new Map((paymentInvoices || []).map(p => [p.id, p])), [paymentInvoices]);
   // 🆕 কাস্টমার ডিটেইলের নেস্টেড লেয়ার — ইনভয়েস/পেমেন্ট রিসিট দেখা অবস্থায় ব্যাক করলে
   // লেনদেন তালিকায় ফিরবে, ইতিহাস প্যানেল খোলা থাকলে ব্যাক করলে সেটা বন্ধ হবে।
-  useBackHandler(!!viewInv,           () => { setViewInv(null); return true; });
-  useBackHandler(!!viewPayInv,        () => { setViewPayInv(null); return true; });
+  useBackHandler(!!viewInv,           () => { closeInvoiceView(); return true; });
+  useBackHandler(!!viewPayInv,        () => { closePayInvoiceView(); return true; });
   useBackHandler(histMonths !== null, () => { setHistMonths(null); return true; });
   if (!customer) return null;
   // Virtuoso handles virtualization — pagination removed
@@ -25725,7 +25767,7 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
     const cust = customers.find(c => c.id === viewInv.customerId);
     return (
       <div style={S.page}>
-        <button style={S.textBtn} onClick={() => setViewInv(null)}>← লেনদেনে ফিরুন</button>
+        <button style={S.textBtn} onClick={closeInvoiceView}>← লেনদেনে ফিরুন</button>
         <InvoiceReceipt T={T} S={S} inv={viewInv} customer={cust} type="buyer" returns={returns} />
       </div>
     );
@@ -25733,7 +25775,7 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
   if (viewPayInv) {
     return (
       <div style={S.page}>
-        <button style={S.textBtn} onClick={() => setViewPayInv(null)}>← লেনদেনে ফিরুন</button>
+        <button style={S.textBtn} onClick={closePayInvoiceView}>← লেনদেনে ফিরুন</button>
         <PaymentInvoiceReceipt T={T} S={S} inv={viewPayInv} />
       </div>
     );
@@ -25926,7 +25968,7 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
                       );
                     })()}
                     <div style={{ display: "flex", gap: 6 }}>
-                    <button style={{ ...S.invBtn, flex: 3 }} onClick={() => setViewInv(inv)}>
+                    <button style={{ ...S.invBtn, flex: 3 }} onClick={() => openInvoiceView(inv)}>
                       <IcInvoice /><span>ক্রয় ইনভয়েস দেখুন</span>
                       <span style={{ marginLeft: "auto", color: T.sub, textAlign: "right" }}>
                         <span style={{ display: "block", fontWeight: 800, color: T.text }}>{dispInvNo(inv)}</span>
@@ -25947,7 +25989,7 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
                   </div>
                 )}
                 {payInv && (
-                  <button style={{ ...S.invBtn, color: "#22c55e", borderColor: "#22c55e44" }} onClick={() => setViewPayInv(payInv)}>
+                  <button style={{ ...S.invBtn, color: "#22c55e", borderColor: "#22c55e44" }} onClick={() => openPayInvoiceView(payInv)}>
                     <IcCheck /><span>জমার রসিদ দেখুন</span>
                     <span style={{ marginLeft: "auto", color: T.sub, textAlign: "right" }}>
                       <span style={{ display: "block", fontWeight: 800, color: T.text }}>{dispInvNo(payInv, "RC")}</span>
