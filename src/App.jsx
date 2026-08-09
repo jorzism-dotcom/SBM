@@ -8671,14 +8671,17 @@ function LiveDateTime({ themeColor = "#fde68a", accentColor = "#7dffc0", compact
   // কালো, ঠিক যেমন দোকানের নামের পিলে। শপ নাম পিল ও এই পিল — দুটোই একই ফর্মুলার
   // আধা-স্বচ্ছ কালচে ব্যাকগ্রাউন্ড (থিমের হেডার রঙের ওপর) ব্যবহার করে, তাই দেখতে
   // একই "সেট"-এর অংশ মনে হয়।
-  const pillTextColor = isDark ? "#ffffff" : "#000000";
+  // 🔁 (৯ আগস্ট ২০২৬ — ইউজার-রিকোয়েস্টে ফিক্স) লাইট থিমে পিলের ব্যাকগ্রাউন্ড কালো ও
+  // টেক্সট সাদা; ডার্ক থিমে উল্টো — ব্যাকগ্রাউন্ড সাদা ও টেক্সট কালো।
+  const pillTextColor = isDark ? "#000000" : "#ffffff";
+  const pillBgColor = isDark ? "rgba(255,255,255,0.85)" : "rgba(0,0,0,0.78)";
   const dateColor = pillTextColor;
   if (compact) {
     // ── কমপ্যাক্ট, এক-লাইন pill — সময় ও তারিখ পাশাপাশি, শপ নামের নিচে আলাদা লাইনে ──
     return (
       <div style={{
         display: "inline-flex", alignItems: "center", gap: 7,
-        background: "rgba(0,0,0,0.26)",
+        background: pillBgColor,
         borderRadius: 100,
         padding: "5px 13px",
         backdropFilter: "blur(8px)",
@@ -14789,7 +14792,7 @@ function SmartBusinessMgmt() {
                   তাই সবসময় কনট্রাস্ট নিশ্চিত)। ফন্ট বড় (24px) ও বোল্ড (900)। */}
               <div style={{
                 display: "inline-flex", alignItems: "center", gap: 7,
-                background: "rgba(0,0,0,0.26)",
+                background: T.dark ? "rgba(255,255,255,0.85)" : "rgba(0,0,0,0.78)",
                 borderRadius: 100,
                 padding: "7px 20px",
                 backdropFilter: "blur(10px)",
@@ -14801,7 +14804,7 @@ function SmartBusinessMgmt() {
                   fontSize: 24,
                   letterSpacing: 0.6,
                   lineHeight: 1.2,
-                  color: T.dark ? "#ffffff" : "#000000",
+                  color: T.dark ? "#000000" : "#ffffff",
                 }}>
                   {shopName}
                   {/* 🆕 ধাপ ৩: multi-business শপে শুধু — active business ব্র্যাকেটে, registry রঙে */}
@@ -19800,12 +19803,15 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 background: IS.cardBg, "--qc-card-bg": IS.cardBg, border: IS.cardBorder, borderRadius: IS.id === "t5" ? (S.card?.borderRadius ?? 14) : 0,
                 boxShadow: IS.id === "t5" ? "none" : "none",
               }}>
-              {/* মোট খরচ */}
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems: "center", fontSize:13, color: IS.sub, marginBottom:6 }}>
-                <span>মোট খরচ</span>
+              {/* মোট খরচ — ইনভয়েস রিসিপ্ট পেজের মোট খরচ বারের সাথে হুবহু (কমলা সলিড বার) */}
+              <div style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8,
+                  background: IS.accent, border: "1.5px solid #17171a", borderRadius: 10,
+                  padding: "9px 12px",
+                }}>
+                <span style={{ fontWeight: 800, fontSize: 13, color: "#fff" }}>মোট খরচ</span>
                 <span style={{
-                  color: "#fff", fontWeight:900, fontSize: 14,
-                  background: IS.priceBg, border: "1.5px solid #17171a",
+                  fontWeight: 900, fontSize: 17, color: IS.accent, background: "#fff",
                   borderRadius: 999, padding: "3px 14px",
                 }}>৳{fmt(total)}</span>
               </div>
@@ -19842,25 +19848,17 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
               )}
               {/* বর্তমান বাকি (মোট = পূর্বের বাকি + এই ইনভয়েসের বাকি) */}
               {((selCust && selCust.id !== "__walkin__" && selCust.id !== "__selfuse__") || walkInExistingCust) && (prevBalance > 0 || displayBakiAmt > 0) && (
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, borderTop:`1px solid ${T.border}`, paddingTop:8, marginTop:2 }}>
-                  <span style={{ color: T.sub }}>মোট বাকি</span>
-                  <span style={{ color: "#fff", fontWeight:900, fontSize: 13.5, background: displayNewBalance > 0 ? "#dc2626" : "#16a34a", border: "1.5px solid #17171a", borderRadius: 999, padding: "3px 12px" }}>৳{fmt(Math.max(0, displayNewBalance))}</span>
+                /* মোট বাকি — ইনভয়েস রিসিপ্ট পেজের বর্তমান বাকি বারের সাথে হুবহু (লাল/সবুজ সলিড বার) */
+                <div style={{
+                    display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8,
+                    background: displayNewBalance > 0 ? "#dc2626" : "#16a34a", borderRadius: 10, border: "1.5px solid #17171a",
+                    padding: "9px 12px", color: "#fff", fontSize: 15, fontWeight: 900,
+                  }}>
+                  <span>মোট বাকি</span>
+                  <span style={{ background: "#fff", color: displayNewBalance > 0 ? "#dc2626" : "#16a34a", borderRadius: 999, padding: "3px 14px", fontSize: 17 }}>৳{fmt(Math.max(0, displayNewBalance))}</span>
                 </div>
               )}
             </div>
-            )}
-
-            {/* Due date — walk-in-এ দেখাবে না */}
-            {!isSelfUse && (payType === "baki" || payType === "partial") && selCust?.id !== "__walkin__" && (
-              <div style={{ marginBottom: 10, background: "#ef444411", borderRadius: 12, padding: "12px 14px", border: "1px solid #ef444433" }}>
-                <div style={{ color: "#ef4444", fontWeight: 700, fontSize: 12, marginBottom: 8, display:"flex", alignItems:"center", gap:6 }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.5" strokeLinecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-                  পরিশোধের তারিখ (ঐচ্ছিক)
-                </div>
-                <input type="date" style={{ ...S.input, color: dueDate?"#ef4444":undefined, fontWeight:dueDate?700:undefined }}
-                  value={dueDate} min={_dateKeyOf(new Date())}
-                  onChange={e => setDueDate(e.target.value)} />
-              </div>
             )}
 
           </div>
