@@ -20382,10 +20382,13 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                 ? <span className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>{c.unit}</span>
                 : <span style={{ fontSize:12, fontWeight:800, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", color:cAccent }}>{c.unit}</span>
             )}</div>
-            <div style={{
+            <div className={isOrderCard ? "kpi-value-lg" : undefined} style={{
               color: isOrderCard ? "#000000" : labelColor,
-              fontWeight: isOrderCard ? 900 : 800,
-              fontSize: isOrderCard ? 16 : 12,
+              fontWeight: 900,
+              fontSize: isOrderCard ? 24 : 12,
+              fontFamily: isOrderCard ? "'Noto Sans Bengali',sans-serif" : undefined,
+              letterSpacing: isOrderCard ? 0.2 : undefined,
+              lineHeight: isOrderCard ? 1 : undefined,
               marginBottom:2, textAlign:"center"
             }}>
               {c.label}
