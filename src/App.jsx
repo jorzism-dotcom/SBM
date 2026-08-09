@@ -19377,7 +19377,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
               <button
                 style={{
                   ...S.saveBtn, flex: 2, padding: 14, fontSize: 15,
-                  background: IS.priceBg, color: IS.priceText, border: IS.priceBorder,
+                  background: "linear-gradient(135deg,#15803d,#22c55e)", color: "#fff", border: "none",
                   boxShadow: "none", borderRadius: 12,
                 }}
                 disabled={items.filter(i=>i.qty>0).length === 0}
