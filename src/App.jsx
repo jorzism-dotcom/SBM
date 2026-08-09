@@ -14876,6 +14876,7 @@ function SmartBusinessMgmt() {
               expenses={expenses}
               cashFlow={cashFlow}
               fssReady={fssReady}
+              loaded={loaded}
               supplierPayments={supplierPayments}
               setSupplierPayments={setSupplierPayments}
               returns={returns}
@@ -21063,7 +21064,7 @@ function InvoiceVoidModal({ inv, returns = [], products = [], customers = [], cu
 const MemoSmartInvoiceBuilder = React.memo(SmartInvoiceBuilder);
 
 // ── Dashboard ──────────────────────────────────────────────────────────────────
-function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, showToast, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, processReturn, currentUser, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, supplierPayments = [], setSupplierPayments, returns = [], serialQueue = [], users = [] }) {
+function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, showToast, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, processReturn, currentUser, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, loaded = true, supplierPayments = [], setSupplierPayments, returns = [], serialQueue = [], users = [] }) {
   const [viewInv,    setViewInv]    = useState(null);
   const [viewPayInv, setViewPayInv] = useState(null);
   const [listDate,   setListDate]   = useState(() => todayEn()); // YYYY-MM-DD
@@ -21358,8 +21359,17 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   // ৳৪২৫ ক্লোজিং থাকা সত্ত্বেও) ৬ আগস্ট ওপেনিং ৳০ দেখাচ্ছিল। এখন যেকোনো আগের দিনের
   // প্রকৃত কার্যক্রম (ইনভয়েস/txn/cashLog — opening এন্ট্রি থাকা লাগবে না) থাকলেই
   // সেই সর্বশেষ সক্রিয় দিনের ক্লোজিং ক্যাশ আজকের ওপেনিং হিসেবে ক্যারি ফরোয়ার্ড হবে।
+  // 🔴 ফিক্স (৯ আগস্ট ২০২৬ — অটো-ক্যারি কখনো ট্রিগার হতো না): আগে এখানে
+  // `if (!fssReady) return;` গার্ড ছিল। কিন্তু Firebase পুরোপুরি সরিয়ে ফেলার
+  // পর (দেখুন FSS.init() — এখন সবসময় `return false;`) fssReady চিরকাল
+  // false-ই থাকে, তাই এই পুরো ইফেক্টটা এতদিন কারো জন্যই কখনো রান হয়নি —
+  // ঘড়ির তারিখ পাল্টালেও না। এই হিসাবটা (buildDailySummaryData দিয়ে আগের
+  // দিনের ক্লোজিং ক্যাশ বের করা, pushCashLog দিয়ে সেভ করা) সম্পূর্ণ লোকাল —
+  // Firestore-এর কোনো নির্ভরতা নেই — তাই fssReady গার্ডটা ভুল ছিল, এখন বাদ।
+  // `loaded` দিয়ে গার্ড করা হচ্ছে যাতে অ্যাপ বুট হয়ে আসল ডেটা লোড হওয়ার
+  // *আগে* (খালি অ্যারে অবস্থায়) ভুলবশত ৳০ ওপেনিং বসে না যায়।
   React.useEffect(() => {
-    if (!fssReady) return;
+    if (!loaded) return;
     if (todayOpeningEntries.length > 0) return; // আজকের ওপেনিং আগেই বসানো আছে
 
     const activityDateKeys = [
@@ -21387,7 +21397,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     };
     pushCashLog(entry);
     setCashLogs(prev => [entry, ...(prev || [])]);
-  }, [fssReady, todayKeyStr, todayOpeningEntries.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [loaded, todayKeyStr, todayOpeningEntries.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addCashLog = (type) => {
     const amt = parseFloat(cashAmount);
