@@ -20280,11 +20280,14 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
       onClick:()=>openPage('all'),
     },
     {
-      label:"ক্রিটিক্যাল স্টক", value:criticalStock.length, unit:"টি পণ্য",
-      idx:1,
-      sub:"সীমার কাছাকাছি স্টক",
-      iconPath: <><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,
-      onClick:()=>openPage('critical'),
+      // 🔁 (৯ আগস্ট ২০২৬ — ইউজার-রিকোয়েস্টে সোয়াপ) এই পজিশনে আগে "ক্রিটিক্যাল স্টক" ছিল,
+      // এখন "ক্রয় অর্ডার" এসেছে গ্রিডের ২য় (উপরের-ডান) ঘরে। idx অপরিবর্তিত রাখা হয়েছে
+      // যাতে কার্ডের নিজস্ব রঙ/টিন্ট আগের মতোই থাকে।
+      label:"ক্রয় অর্ডার", value:"", unit:"",
+      idx:3,
+      sub:"স্টক দেখে অর্ডার করুন",
+      iconPath: <><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></>,
+      onClick:()=>openPage('order'),
     },
     {
       label:"স্টক আউট", value:stockOut.length, unit:"টি পণ্য",
@@ -20294,11 +20297,12 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
       onClick:()=>openPage('out'),
     },
     {
-      label:"ক্রয় অর্ডার", value:"", unit:"",
-      idx:3,
-      sub:"স্টক দেখে অর্ডার করুন",
-      iconPath: <><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></>,
-      onClick:()=>openPage('order'),
+      // 🔁 আগে এই পজিশনে "ক্রয় অর্ডার" ছিল, এখন "ক্রিটিক্যাল স্টক" এসেছে গ্রিডের ৪র্থ (নিচের-ডান) ঘরে।
+      label:"ক্রিটিক্যাল স্টক", value:criticalStock.length, unit:"টি পণ্য",
+      idx:1,
+      sub:"সীমার কাছাকাছি স্টক",
+      iconPath: <><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,
+      onClick:()=>openPage('critical'),
     },
   ];
 
@@ -20330,6 +20334,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
           const labelColor = DT.dark ? "#000000" : "#ffffff";
           const subColor   = DT.dark ? "#000000" : "#ffffff";
           const iconColor  = DT.dark ? cAccent : ttc.icon;
+          const isOrderCard = c.label === "ক্রয় অর্ডার"; // 🆕 এই কার্ডের উপরের লেখা সবসময় কালো/বড়/বোল্ড
           return (
           <div key={c.label || i} className="tap-card"
             style={{
@@ -20345,21 +20350,12 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
             onClick={c.onClick}>
             <div style={{ position:"absolute", bottom:-30, right:-30, width:90, height:90, borderRadius:"50%", background: DT.dark ? `radial-gradient(circle,${cAccent}1a 0%,transparent 70%)` : "rgba(255,255,255,0.10)" }} />
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" style={{ position:"absolute", top:13, right:13 }}><polyline points="9 18 15 12 9 6"/></svg>
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"center", marginBottom:9 }}>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:7, marginBottom:9 }}>
               <div style={{ background: DT.dark ? `${cAccent}1a` : "rgba(255,255,255,0.22)", border: DT.dark ? `1px solid ${cAccent}33` : "1px solid rgba(255,255,255,0.3)", borderRadius:9, padding:"5px 7px" }}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">{c.iconPath}</svg>
               </div>
-            </div>
-            <div className={typeof c.value === "number" ? "kpi-value-lg" : undefined} style={ typeof c.value === "number"
-              ? { ...neonNumStyle(DT.dark, 24), marginBottom:4, textAlign:"center" }
-              : { color:valueColor, fontWeight:900, fontSize:16, textAlign:"center", marginBottom:4 }
-            }>{c.value}{c.unit && (
-              typeof c.value === "number"
-                ? <span className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>{c.unit}</span>
-                : <span style={{ fontSize:12, fontWeight:800, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", color:cAccent }}>{c.unit}</span>
-            )}</div>
-            <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
-              {c.label}
+              {/* 🔁 (৯ আগস্ট ২০২৬ — ইউজার-রিকোয়েস্টে রিপজিশন) LOW/ALERT পিল এখন লেবেলের পাশে না
+                  থেকে আইকনের পাশে বসছে — ঠিক EXPIRED/NEARLY EXPIRED কার্ডের প্যাটার্নের মতো। */}
               {showOutBadge && isStockOutCard && (
                 <span style={{ display:"inline-flex", alignItems:"center", gap:4, background:"#ef4444", color:"#fff", fontWeight:900, fontSize:10, borderRadius:20, padding:"2px 8px", letterSpacing:0.5,
                   boxShadow:"0 0 0 3px rgba(239,68,68,0.35), 0 0 12px rgba(239,68,68,0.6)",
@@ -20376,6 +20372,22 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                   LOW
                 </span>
               )}
+            </div>
+            <div className={typeof c.value === "number" ? "kpi-value-lg" : undefined} style={ typeof c.value === "number"
+              ? { ...neonNumStyle(DT.dark, 24), marginBottom:4, textAlign:"center" }
+              : { color:valueColor, fontWeight:900, fontSize:16, textAlign:"center", marginBottom:4 }
+            }>{c.value}{c.unit && (
+              typeof c.value === "number"
+                ? <span className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>{c.unit}</span>
+                : <span style={{ fontSize:12, fontWeight:800, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", color:cAccent }}>{c.unit}</span>
+            )}</div>
+            <div style={{
+              color: isOrderCard ? "#000000" : labelColor,
+              fontWeight: isOrderCard ? 900 : 800,
+              fontSize: isOrderCard ? 16 : 12,
+              marginBottom:2, textAlign:"center"
+            }}>
+              {c.label}
             </div>
             <div style={{ color:subColor, fontWeight:600, fontSize:10, textAlign:"center" }}>{c.sub}</div>
           </div>
