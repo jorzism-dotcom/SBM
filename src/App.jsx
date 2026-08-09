@@ -8098,27 +8098,27 @@ const THEME_PRESETS = [
   // Discord, Spotify, Airbnb, Stripe ইত্যাদি) আসল ডিজাইন ভাষা থেকে অনুপ্রাণিত ২০টি
   // নতুন থিম — ১০টি ডার্ক + ১০টি লাইট। আগের ১৮টি থিম সম্পূর্ণ প্রতিস্থাপিত।
   // ── ডার্ক (১০টি) ──
-  { id:"linearvoid", label:"Linear Void", dark:true, accent:"#5E6AD2", accentDark:"#8e97e0", bg:"#0C0C0F", card:"#18181B", border:"#27272A", header:"#0C0C0F", statusBar:"#0C0C0F", text:"#F4F4F5", sub:"#A1A1AA", nav:"#18181B", navActive:"#5E6AD2", headingColor:"#969ee2", meshD:["rgba(94,106,210,0.3)","rgba(142,151,224,0.24)","rgba(94,106,210,0.16)","rgba(142,151,224,0.14)"], meshL:null },
-  { id:"discordonyx", label:"Discord Onyx", dark:true, accent:"#5865F2", accentDark:"#8a93f6", bg:"#1E1F22", card:"#2B2D31", border:"#3A3C43", header:"#1E1F22", statusBar:"#1E1F22", text:"#F2F3F5", sub:"#949BA4", nav:"#2B2D31", navActive:"#5865F2", headingColor:"#929bf7", meshD:["rgba(88,101,242,0.3)","rgba(138,147,246,0.24)","rgba(88,101,242,0.16)","rgba(138,147,246,0.14)"], meshL:null },
-  { id:"spotifyblackout", label:"Spotify Blackout", dark:true, accent:"#1DB954", accentDark:"#61ce87", bg:"#0A0A0A", card:"#181818", border:"#2A2A2A", header:"#0A0A0A", statusBar:"#0A0A0A", text:"#FFFFFF", sub:"#A7A7A7", nav:"#181818", navActive:"#1DB954", headingColor:"#6cd290", meshD:["rgba(29,185,84,0.3)","rgba(97,206,135,0.24)","rgba(29,185,84,0.16)","rgba(97,206,135,0.14)"], meshL:null },
-  { id:"xdim", label:"X Dim", dark:true, accent:"#1D9BF0", accentDark:"#61b9f4", bg:"#15202B", card:"#1E2732", border:"#38444D", header:"#15202B", statusBar:"#15202B", text:"#E7E9EA", sub:"#8B98A5", nav:"#1E2732", navActive:"#1D9BF0", headingColor:"#6cbef5", meshD:["rgba(29,155,240,0.3)","rgba(97,185,244,0.24)","rgba(29,155,240,0.16)","rgba(97,185,244,0.14)"], meshL:null },
-  { id:"liquidobsidian", label:"Liquid Obsidian", dark:true, accent:"#0A84FF", accentDark:"#54a9ff", bg:"#000000", card:"#1C1C1E", border:"#38383A", header:"#000000", statusBar:"#000000", text:"#F5F5F7", sub:"#98989D", nav:"#1C1C1E", navActive:"#0A84FF", headingColor:"#60afff", meshD:["rgba(10,132,255,0.3)","rgba(84,169,255,0.24)","rgba(10,132,255,0.16)","rgba(84,169,255,0.14)"], meshL:null },
-  { id:"raycastvoid", label:"Raycast Void", dark:true, accent:"#FF6363", accentDark:"#ff9292", bg:"#0B0B0F", card:"#19191F", border:"#2B2B33", header:"#0B0B0F", statusBar:"#0B0B0F", text:"#F1F1F3", sub:"#8C8C96", nav:"#19191F", navActive:"#FF6363", headingColor:"#ff9a9a", meshD:["rgba(255,99,99,0.3)","rgba(255,146,146,0.24)","rgba(255,99,99,0.16)","rgba(255,146,146,0.14)"], meshL:null },
-  { id:"revolutmidnight", label:"Revolut Midnight", dark:true, accent:"#7D5FFF", accentDark:"#a48fff", bg:"#0B0E17", card:"#151A28", border:"#232B3D", header:"#0B0E17", statusBar:"#0B0E17", text:"#ECEFF6", sub:"#7C88A3", nav:"#151A28", navActive:"#7D5FFF", headingColor:"#aa97ff", meshD:["rgba(125,95,255,0.3)","rgba(164,143,255,0.24)","rgba(125,95,255,0.16)","rgba(164,143,255,0.14)"], meshL:null },
-  { id:"notioncharcoal", label:"Notion Charcoal", dark:true, accent:"#E16259", accentDark:"#ea918b", bg:"#191919", card:"#202020", border:"#333333", header:"#191919", statusBar:"#191919", text:"#E9E9E7", sub:"#9B9B98", nav:"#202020", navActive:"#E16259", headingColor:"#ec9993", meshD:["rgba(225,98,89,0.3)","rgba(234,145,139,0.24)","rgba(225,98,89,0.16)","rgba(234,145,139,0.14)"], meshL:null },
-  { id:"cashappneo", label:"Cash App Neo", dark:true, accent:"#00D64F", accentDark:"#4ce284", bg:"#000000", card:"#141414", border:"#2B2B2B", header:"#000000", statusBar:"#000000", text:"#FFFFFF", sub:"#8F8F8F", nav:"#141414", navActive:"#00D64F", headingColor:"#59e48d", meshD:["rgba(0,214,79,0.3)","rgba(76,226,132,0.24)","rgba(0,214,79,0.16)","rgba(76,226,132,0.14)"], meshL:null },
-  { id:"threadsink", label:"Threads Ink", dark:true, accent:"#B48CFF", accentDark:"#caaeff", bg:"#101010", card:"#181818", border:"#2C2C2C", header:"#101010", statusBar:"#101010", text:"#F5F5F5", sub:"#A8A8A8", nav:"#181818", navActive:"#B48CFF", headingColor:"#ceb4ff", meshD:["rgba(180,140,255,0.3)","rgba(202,174,255,0.24)","rgba(180,140,255,0.16)","rgba(202,174,255,0.14)"], meshL:null },
+  { id:"linearvoid", label:"Linear Void", dark:true, accent:"#5E6AD2", accentDark:"#8e97e0", bg:"#0B1220", card:"#18181B", border:"#27272A", header:"#0C0C0F", statusBar:"#0C0C0F", text:"#F4F4F5", sub:"#A1A1AA", nav:"#18181B", navActive:"#5E6AD2", headingColor:"#969ee2", meshD:["rgba(94,106,210,0.3)","rgba(142,151,224,0.24)","rgba(94,106,210,0.16)","rgba(142,151,224,0.14)"], meshL:null },
+  { id:"discordonyx", label:"Discord Onyx", dark:true, accent:"#5865F2", accentDark:"#8a93f6", bg:"#0B1220", card:"#2B2D31", border:"#3A3C43", header:"#1E1F22", statusBar:"#1E1F22", text:"#F2F3F5", sub:"#949BA4", nav:"#2B2D31", navActive:"#5865F2", headingColor:"#929bf7", meshD:["rgba(88,101,242,0.3)","rgba(138,147,246,0.24)","rgba(88,101,242,0.16)","rgba(138,147,246,0.14)"], meshL:null },
+  { id:"spotifyblackout", label:"Spotify Blackout", dark:true, accent:"#1DB954", accentDark:"#61ce87", bg:"#0B1220", card:"#181818", border:"#2A2A2A", header:"#0A0A0A", statusBar:"#0A0A0A", text:"#FFFFFF", sub:"#A7A7A7", nav:"#181818", navActive:"#1DB954", headingColor:"#6cd290", meshD:["rgba(29,185,84,0.3)","rgba(97,206,135,0.24)","rgba(29,185,84,0.16)","rgba(97,206,135,0.14)"], meshL:null },
+  { id:"xdim", label:"X Dim", dark:true, accent:"#1D9BF0", accentDark:"#61b9f4", bg:"#0B1220", card:"#1E2732", border:"#38444D", header:"#15202B", statusBar:"#15202B", text:"#E7E9EA", sub:"#8B98A5", nav:"#1E2732", navActive:"#1D9BF0", headingColor:"#6cbef5", meshD:["rgba(29,155,240,0.3)","rgba(97,185,244,0.24)","rgba(29,155,240,0.16)","rgba(97,185,244,0.14)"], meshL:null },
+  { id:"liquidobsidian", label:"Liquid Obsidian", dark:true, accent:"#0A84FF", accentDark:"#54a9ff", bg:"#0B1220", card:"#1C1C1E", border:"#38383A", header:"#0B1220", statusBar:"#0B1220", text:"#F5F5F7", sub:"#98989D", nav:"#1C1C1E", navActive:"#0A84FF", headingColor:"#60afff", meshD:["rgba(10,132,255,0.3)","rgba(84,169,255,0.24)","rgba(10,132,255,0.16)","rgba(84,169,255,0.14)"], meshL:null },
+  { id:"raycastvoid", label:"Raycast Void", dark:true, accent:"#FF6363", accentDark:"#ff9292", bg:"#0B1220", card:"#19191F", border:"#2B2B33", header:"#0B0B0F", statusBar:"#0B0B0F", text:"#F1F1F3", sub:"#8C8C96", nav:"#19191F", navActive:"#FF6363", headingColor:"#ff9a9a", meshD:["rgba(255,99,99,0.3)","rgba(255,146,146,0.24)","rgba(255,99,99,0.16)","rgba(255,146,146,0.14)"], meshL:null },
+  { id:"revolutmidnight", label:"Revolut Midnight", dark:true, accent:"#7D5FFF", accentDark:"#a48fff", bg:"#0B1220", card:"#151A28", border:"#232B3D", header:"#0B0E17", statusBar:"#0B0E17", text:"#ECEFF6", sub:"#7C88A3", nav:"#151A28", navActive:"#7D5FFF", headingColor:"#aa97ff", meshD:["rgba(125,95,255,0.3)","rgba(164,143,255,0.24)","rgba(125,95,255,0.16)","rgba(164,143,255,0.14)"], meshL:null },
+  { id:"notioncharcoal", label:"Notion Charcoal", dark:true, accent:"#E16259", accentDark:"#ea918b", bg:"#0B1220", card:"#202020", border:"#333333", header:"#191919", statusBar:"#191919", text:"#E9E9E7", sub:"#9B9B98", nav:"#202020", navActive:"#E16259", headingColor:"#ec9993", meshD:["rgba(225,98,89,0.3)","rgba(234,145,139,0.24)","rgba(225,98,89,0.16)","rgba(234,145,139,0.14)"], meshL:null },
+  { id:"cashappneo", label:"Cash App Neo", dark:true, accent:"#00D64F", accentDark:"#4ce284", bg:"#0B1220", card:"#141414", border:"#2B2B2B", header:"#0B1220", statusBar:"#0B1220", text:"#FFFFFF", sub:"#8F8F8F", nav:"#141414", navActive:"#00D64F", headingColor:"#59e48d", meshD:["rgba(0,214,79,0.3)","rgba(76,226,132,0.24)","rgba(0,214,79,0.16)","rgba(76,226,132,0.14)"], meshL:null },
+  { id:"threadsink", label:"Threads Ink", dark:true, accent:"#B48CFF", accentDark:"#caaeff", bg:"#0B1220", card:"#181818", border:"#2C2C2C", header:"#101010", statusBar:"#101010", text:"#F5F5F5", sub:"#A8A8A8", nav:"#181818", navActive:"#B48CFF", headingColor:"#ceb4ff", meshD:["rgba(180,140,255,0.3)","rgba(202,174,255,0.24)","rgba(180,140,255,0.16)","rgba(202,174,255,0.14)"], meshL:null },
   // ── লাইট (১০টি) ──
-  { id:"airbnbcloud", label:"Airbnb Cloud", dark:false, accent:"#FF385C", accentDark:"#cc2d4a", bg:"#FFFFFF", card:"#FFFFFF", border:"#EBEBEB", header:"#FF385C", statusBar:"#FF385C", text:"#222222", sub:"#717171", nav:"#FFFFFF", navActive:"#FF385C", headingColor:"#222222", meshD:null, meshL:["rgba(255,56,92,0.2)","rgba(204,45,74,0.16)","rgba(255,56,92,0.12)","rgba(204,45,74,0.1)"] },
-  { id:"stripepaper", label:"Stripe Paper", dark:false, accent:"#635BFF", accentDark:"#4f49cc", bg:"#F6F9FC", card:"#FFFFFF", border:"#E3E8EE", header:"#635BFF", statusBar:"#635BFF", text:"#0A2540", sub:"#697386", nav:"#FFFFFF", navActive:"#635BFF", headingColor:"#0A2540", meshD:null, meshL:["rgba(99,91,255,0.2)","rgba(79,73,204,0.16)","rgba(99,91,255,0.12)","rgba(79,73,204,0.1)"] },
-  { id:"duolingoowl", label:"Duolingo Owl", dark:false, accent:"#58CC02", accentDark:"#46a302", bg:"#FFFFFF", card:"#F7F7F7", border:"#E5E5E5", header:"#58CC02", statusBar:"#58CC02", text:"#3C3C3C", sub:"#777777", nav:"#F7F7F7", navActive:"#58CC02", headingColor:"#3C3C3C", meshD:null, meshL:["rgba(88,204,2,0.2)","rgba(70,163,2,0.16)","rgba(88,204,2,0.12)","rgba(70,163,2,0.1)"] },
-  { id:"notionivory", label:"Notion Ivory", dark:false, accent:"#2383E2", accentDark:"#1c69b5", bg:"#FFFFFF", card:"#F7F6F3", border:"#E9E8E4", header:"#2383E2", statusBar:"#2383E2", text:"#37352F", sub:"#787774", nav:"#F7F6F3", navActive:"#2383E2", headingColor:"#37352F", meshD:null, meshL:["rgba(35,131,226,0.2)","rgba(28,105,181,0.16)","rgba(35,131,226,0.12)","rgba(28,105,181,0.1)"] },
-  { id:"instagramfrost", label:"Instagram Frost", dark:false, accent:"#DD2A7B", accentDark:"#b12262", bg:"#FAFAFA", card:"#FFFFFF", border:"#EFEFEF", header:"#DD2A7B", statusBar:"#DD2A7B", text:"#262626", sub:"#8E8E8E", nav:"#FFFFFF", navActive:"#DD2A7B", headingColor:"#262626", meshD:null, meshL:["rgba(221,42,123,0.2)","rgba(177,34,98,0.16)","rgba(221,42,123,0.12)","rgba(177,34,98,0.1)"] },
-  { id:"superhumanporcelain", label:"Superhuman Porcelain", dark:false, accent:"#3D5AFE", accentDark:"#3148cb", bg:"#FBFBFA", card:"#FFFFFF", border:"#EAEAE8", header:"#3D5AFE", statusBar:"#3D5AFE", text:"#1A1A1A", sub:"#8A8A85", nav:"#FFFFFF", navActive:"#3D5AFE", headingColor:"#1A1A1A", meshD:null, meshL:["rgba(61,90,254,0.2)","rgba(49,72,203,0.16)","rgba(61,90,254,0.12)","rgba(49,72,203,0.1)"] },
-  { id:"arcsunlit", label:"Arc Sunlit", dark:false, accent:"#FF6F3C", accentDark:"#cc5930", bg:"#FDF6EC", card:"#FFFFFF", border:"#F0E4D0", header:"#FF6F3C", statusBar:"#FF6F3C", text:"#2B2013", sub:"#8C7A5E", nav:"#FFFFFF", navActive:"#FF6F3C", headingColor:"#2B2013", meshD:null, meshL:["rgba(255,111,60,0.2)","rgba(204,89,48,0.16)","rgba(255,111,60,0.12)","rgba(204,89,48,0.1)"] },
-  { id:"thingssky", label:"Things Sky", dark:false, accent:"#007AFF", accentDark:"#0062cc", bg:"#F5F5F7", card:"#FFFFFF", border:"#E2E2E6", header:"#007AFF", statusBar:"#007AFF", text:"#1D1D1F", sub:"#6E6E73", nav:"#FFFFFF", navActive:"#007AFF", headingColor:"#1D1D1F", meshD:null, meshL:["rgba(0,122,255,0.2)","rgba(0,98,204,0.16)","rgba(0,122,255,0.12)","rgba(0,98,204,0.1)"] },
-  { id:"telegramsky", label:"Telegram Sky", dark:false, accent:"#229ED9", accentDark:"#1b7eae", bg:"#FFFFFF", card:"#F0F4F8", border:"#DCE6EE", header:"#229ED9", statusBar:"#229ED9", text:"#17212B", sub:"#6D7883", nav:"#F0F4F8", navActive:"#229ED9", headingColor:"#17212B", meshD:null, meshL:["rgba(34,158,217,0.2)","rgba(27,126,174,0.16)","rgba(34,158,217,0.12)","rgba(27,126,174,0.1)"] },
-  { id:"headspacesunrise", label:"Headspace Sunrise", dark:false, accent:"#FF8000", accentDark:"#cc6600", bg:"#FFF8F0", card:"#FFFFFF", border:"#FBE4CC", header:"#FF8000", statusBar:"#FF8000", text:"#2E2013", sub:"#8A7259", nav:"#FFFFFF", navActive:"#FF8000", headingColor:"#2E2013", meshD:null, meshL:["rgba(255,128,0,0.2)","rgba(204,102,0,0.16)","rgba(255,128,0,0.12)","rgba(204,102,0,0.1)"] },
+  { id:"airbnbcloud", label:"Airbnb Cloud", dark:false, accent:"#FF385C", accentDark:"#cc2d4a", bg:"#F8FAFC", card:"#F8FAFC", border:"#EBEBEB", header:"#FF385C", statusBar:"#FF385C", text:"#222222", sub:"#717171", nav:"#F8FAFC", navActive:"#FF385C", headingColor:"#222222", meshD:null, meshL:["rgba(255,56,92,0.2)","rgba(204,45,74,0.16)","rgba(255,56,92,0.12)","rgba(204,45,74,0.1)"] },
+  { id:"stripepaper", label:"Stripe Paper", dark:false, accent:"#635BFF", accentDark:"#4f49cc", bg:"#F8FAFC", card:"#F8FAFC", border:"#E3E8EE", header:"#635BFF", statusBar:"#635BFF", text:"#0A2540", sub:"#697386", nav:"#F8FAFC", navActive:"#635BFF", headingColor:"#0A2540", meshD:null, meshL:["rgba(99,91,255,0.2)","rgba(79,73,204,0.16)","rgba(99,91,255,0.12)","rgba(79,73,204,0.1)"] },
+  { id:"duolingoowl", label:"Duolingo Owl", dark:false, accent:"#58CC02", accentDark:"#46a302", bg:"#F8FAFC", card:"#F7F7F7", border:"#E5E5E5", header:"#58CC02", statusBar:"#58CC02", text:"#3C3C3C", sub:"#777777", nav:"#F7F7F7", navActive:"#58CC02", headingColor:"#3C3C3C", meshD:null, meshL:["rgba(88,204,2,0.2)","rgba(70,163,2,0.16)","rgba(88,204,2,0.12)","rgba(70,163,2,0.1)"] },
+  { id:"notionivory", label:"Notion Ivory", dark:false, accent:"#2383E2", accentDark:"#1c69b5", bg:"#F8FAFC", card:"#F7F6F3", border:"#E9E8E4", header:"#2383E2", statusBar:"#2383E2", text:"#37352F", sub:"#787774", nav:"#F7F6F3", navActive:"#2383E2", headingColor:"#37352F", meshD:null, meshL:["rgba(35,131,226,0.2)","rgba(28,105,181,0.16)","rgba(35,131,226,0.12)","rgba(28,105,181,0.1)"] },
+  { id:"instagramfrost", label:"Instagram Frost", dark:false, accent:"#DD2A7B", accentDark:"#b12262", bg:"#F8FAFC", card:"#F8FAFC", border:"#EFEFEF", header:"#DD2A7B", statusBar:"#DD2A7B", text:"#262626", sub:"#8E8E8E", nav:"#F8FAFC", navActive:"#DD2A7B", headingColor:"#262626", meshD:null, meshL:["rgba(221,42,123,0.2)","rgba(177,34,98,0.16)","rgba(221,42,123,0.12)","rgba(177,34,98,0.1)"] },
+  { id:"superhumanporcelain", label:"Superhuman Porcelain", dark:false, accent:"#3D5AFE", accentDark:"#3148cb", bg:"#F8FAFC", card:"#F8FAFC", border:"#EAEAE8", header:"#3D5AFE", statusBar:"#3D5AFE", text:"#1A1A1A", sub:"#8A8A85", nav:"#F8FAFC", navActive:"#3D5AFE", headingColor:"#1A1A1A", meshD:null, meshL:["rgba(61,90,254,0.2)","rgba(49,72,203,0.16)","rgba(61,90,254,0.12)","rgba(49,72,203,0.1)"] },
+  { id:"arcsunlit", label:"Arc Sunlit", dark:false, accent:"#FF6F3C", accentDark:"#cc5930", bg:"#F8FAFC", card:"#F8FAFC", border:"#F0E4D0", header:"#FF6F3C", statusBar:"#FF6F3C", text:"#2B2013", sub:"#8C7A5E", nav:"#F8FAFC", navActive:"#FF6F3C", headingColor:"#2B2013", meshD:null, meshL:["rgba(255,111,60,0.2)","rgba(204,89,48,0.16)","rgba(255,111,60,0.12)","rgba(204,89,48,0.1)"] },
+  { id:"thingssky", label:"Things Sky", dark:false, accent:"#007AFF", accentDark:"#0062cc", bg:"#F8FAFC", card:"#F8FAFC", border:"#E2E2E6", header:"#007AFF", statusBar:"#007AFF", text:"#1D1D1F", sub:"#6E6E73", nav:"#F8FAFC", navActive:"#007AFF", headingColor:"#1D1D1F", meshD:null, meshL:["rgba(0,122,255,0.2)","rgba(0,98,204,0.16)","rgba(0,122,255,0.12)","rgba(0,98,204,0.1)"] },
+  { id:"telegramsky", label:"Telegram Sky", dark:false, accent:"#229ED9", accentDark:"#1b7eae", bg:"#F8FAFC", card:"#F0F4F8", border:"#DCE6EE", header:"#229ED9", statusBar:"#229ED9", text:"#17212B", sub:"#6D7883", nav:"#F0F4F8", navActive:"#229ED9", headingColor:"#17212B", meshD:null, meshL:["rgba(34,158,217,0.2)","rgba(27,126,174,0.16)","rgba(34,158,217,0.12)","rgba(27,126,174,0.1)"] },
+  { id:"headspacesunrise", label:"Headspace Sunrise", dark:false, accent:"#FF8000", accentDark:"#cc6600", bg:"#F8FAFC", card:"#F8FAFC", border:"#FBE4CC", header:"#FF8000", statusBar:"#FF8000", text:"#2E2013", sub:"#8A7259", nav:"#F8FAFC", navActive:"#FF8000", headingColor:"#2E2013", meshD:null, meshL:["rgba(255,128,0,0.2)","rgba(204,102,0,0.16)","rgba(255,128,0,0.12)","rgba(204,102,0,0.1)"] },
 ];
 
 // ─── হেডার/নেভ টেক্সট অটো-কনট্রাস্ট — ব্যাকগ্রাউন্ড রঙ যেকোনো থিমেই হোক না কেন,
@@ -8288,27 +8288,29 @@ function shadeColor(hex, percent) {
   return `#${(0x1000000 + r * 0x10000 + g * 0x100 + b).toString(16).slice(1)}`;
 }
 
-// 🆕 (৯ আগস্ট ২০২৬) "Reels-caption" স্টাইল বোল্ড ডিজিট — ড্যাশবোর্ড কার্ডের বড়
-// সংখ্যাগুলোতে (ক্যাশ ড্রয়ার, আজকের রিপোর্ট, বাকি পরিসংখ্যান, ইনভেন্টরি) কার্ডের
-// নিজস্ব accent রঙ থেকে একটা দুই-টোনের গ্র্যাডিয়েন্ট বসিয়ে, টেক্সটে ক্লিপ করে, একটা
-// হালকা গ্লো (drop-shadow) যোগ করে — স্ক্রিনশটের FULL OF JOY/CULTURE ক্যাপশন
-// স্টাইলের মতো ভিজিবল, বোল্ড, সুন্দর দেখায়। size না দিলে ডিফল্ট 34px।
-function neonNumStyle(hex, size = 34) {
+// 🔁 (৯ আগস্ট ২০২৬ — ব্যবহারকারীর অনুরোধে আপডেট) আগে এখানে accent রঙ থেকে
+// মাল্টি-কালার গ্র্যাডিয়েন্ট বসানো হতো। এখন সেটা বাদ দিয়ে সলিড, বড়, বোল্ড
+// প্রিমিয়াম কালার — ডার্ক থিমে অফ-হোয়াইট (#F8FAFC), লাইট থিমে রিচ চারকোল-ব্ল্যাক
+// (#0B1220)। isDark বুলিয়ান দিয়ে কোনটা বসবে ঠিক হয়, size না দিলে ডিফল্ট 34px।
+// 🔁 (৯ আগস্ট ২০২৬ — আরও বোল্ড লাগার জন্য) Anton ফন্টে শুধু একটাই weight (400)
+// থাকে, তাই fontWeight বাড়িয়ে কাজ হয় না। এখানে WebkitTextStroke (আউটলাইন) +
+// ডুপ্লিকেট অফসেট textShadow দিয়ে "ফক্স-বোল্ড" ইফেক্ট তৈরি করা হচ্ছে — ফন্ট স্ট্রোক
+// মোটা দেখাবে, ডার্ক থিমে গ্লো-ও বজায় থাকবে।
+function neonNumStyle(isDark, size = 34) {
+  const color = isDark ? "#F8FAFC" : "#0B1220";
   return {
     fontFamily: "'Anton','Noto Sans Bengali',sans-serif",
-    fontWeight: 400,
+    fontWeight: 900,
     fontSize: size,
-    letterSpacing: 0.3,
+    letterSpacing: 0.2,
     lineHeight: 1,
     display: "block",
     width: "100%",
-    background: "linear-gradient(90deg, #22d3ee 0%, #4ade80 20%, #facc15 40%, #fb923c 58%, #f472b6 76%, #a78bfa 92%, #22d3ee 100%)",
-    WebkitBackgroundClip: "text",
-    backgroundClip: "text",
-    WebkitTextFillColor: "transparent",
-    WebkitTextStroke: "0.5px rgba(0,0,0,0.22)",
-    color: hex,
-    filter: `drop-shadow(0 0 10px ${hex}aa)`,
+    color,
+    WebkitTextStroke: `1.3px ${color}`,
+    textShadow: isDark
+      ? `1px 0 0 ${color}, -1px 0 0 ${color}, 0 1px 0 ${color}, 0 -1px 0 ${color}, 0.7px 0.7px 0 ${color}, -0.7px 0.7px 0 ${color}, 0.7px -0.7px 0 ${color}, -0.7px -0.7px 0 ${color}, 0 0 14px rgba(248,250,252,0.3)`
+      : `1px 0 0 ${color}, -1px 0 0 ${color}, 0 1px 0 ${color}, 0 -1px 0 ${color}, 0.7px 0.7px 0 ${color}, -0.7px 0.7px 0 ${color}, 0.7px -0.7px 0 ${color}, -0.7px -0.7px 0 ${color}`,
   };
 }
 
@@ -8320,8 +8322,8 @@ function neonNumStyle(hex, size = 34) {
 function tintTextColors(hex) {
   const isDarkEnough = relativeLuminance(hex) <= 0.42;
   return isDarkEnough
-    ? { value:"#fff", label:"rgba(255,255,255,0.92)", sub:"rgba(255,255,255,0.7)", icon:"#fff" }
-    : { value:"#1a1f2b", label:"rgba(20,24,33,0.88)", sub:"rgba(20,24,33,0.62)", icon:"#1a1f2b" };
+    ? { value:"#F8FAFC", label:"rgba(248,250,252,0.92)", sub:"rgba(248,250,252,0.7)", icon:"#F8FAFC" }
+    : { value:"#0B1220", label:"rgba(11,18,32,0.88)", sub:"rgba(11,18,32,0.62)", icon:"#0B1220" };
 }
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
@@ -20328,11 +20330,11 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
               </div>
             </div>
             <div style={ typeof c.value === "number"
-              ? { ...neonNumStyle(cAccent, 30), marginBottom:4, textAlign:"center" }
+              ? { ...neonNumStyle(DT.dark, 36), marginBottom:4, textAlign:"center" }
               : { color:valueColor, fontWeight:900, fontSize:16, textAlign:"center", marginBottom:4 }
             }>{c.value}{c.unit && (
               typeof c.value === "number"
-                ? <span style={{ ...neonNumStyle(cAccent, 14), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>{c.unit}</span>
+                ? <span style={{ ...neonNumStyle(DT.dark, 16), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>{c.unit}</span>
                 : <span style={{ fontSize:12, fontWeight:800, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", color:cAccent }}>{c.unit}</span>
             )}</div>
             <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
@@ -20402,8 +20404,8 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                   <span style={{ background:"#ef4444", color:"#fff", fontWeight:900, fontSize:9.5, borderRadius:20, padding:"2px 7px" }}>EXPIRED</span>
                 )}
               </div>
-              <div style={{ ...neonNumStyle("#ef4444", 26), marginBottom:3, textAlign:"center" }
-              }>{expiredBatches.length}<span style={{ ...neonNumStyle("#ef4444", 13), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>টি ব্যাচ</span></div>
+              <div style={{ ...neonNumStyle(DT.dark, 32), marginBottom:3, textAlign:"center" }
+              }>{expiredBatches.length}<span style={{ ...neonNumStyle(DT.dark, 15), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>টি ব্যাচ</span></div>
               <div style={{ color: DT.dark?"#e2e8f0":expTtc.label, fontWeight:800, fontSize:11.5, marginBottom:2, textAlign:"center" }}>মেয়াদোত্তীর্ণ</div>
               <div style={{ color: DT.dark?"#64748b":expTtc.sub, fontSize:9.5, textAlign:"center" }}>{expiredBatches.length>0?"ক্লিক করে দেখুন":"কোনো মেয়াদোত্তীর্ণ নেই"}</div>
             </div>
@@ -20427,8 +20429,8 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                   <span style={{ background:"#f59e0b", color:"#fff", fontWeight:900, fontSize:9.5, borderRadius:20, padding:"2px 7px" }}>NEAR</span>
                 )}
               </div>
-              <div style={{ ...neonNumStyle("#f59e0b", 26), marginBottom:3, textAlign:"center" }
-              }>{nearExpiryBatches.length}<span style={{ ...neonNumStyle("#f59e0b", 13), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>টি ব্যাচ</span></div>
+              <div style={{ ...neonNumStyle(DT.dark, 32), marginBottom:3, textAlign:"center" }
+              }>{nearExpiryBatches.length}<span style={{ ...neonNumStyle(DT.dark, 15), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>টি ব্যাচ</span></div>
               <div style={{ color: DT.dark?"#e2e8f0":nearTtc.label, fontWeight:800, fontSize:11.5, marginBottom:2, textAlign:"center" }}>মেয়াদ শেষের কাছে</div>
               <div style={{ color: DT.dark?"#64748b":nearTtc.sub, fontSize:9.5, textAlign:"center" }}>৩ মাসের মধ্যে মেয়াদ শেষ</div>
             </div>
@@ -24865,7 +24867,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               <span style={{ color: DT.dark ? "#cbd5e1" : "#fff", fontSize:12.5, fontWeight:800 }}>আজকের ক্যাশ ড্রয়ার</span>
             </div>
             <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-              <span style={neonNumStyle("#4ade80", 18)}>৳{fmt(todayCashDrawerNow)}</span>
+              <span style={neonNumStyle(DT.dark, 22)}>৳{fmt(todayCashDrawerNow)}</span>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={DT.dark ? "#94a3b8" : "#ffffffcc"} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
             </div>
           </div>
@@ -24886,13 +24888,13 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               {todayOpening && (
                 <div style={{ flex:1, background: DT.dark ? "rgba(14,165,233,0.1)" : "rgba(255,255,255,0.16)", borderRadius:12, padding:"8px 12px", border: DT.dark ? "1px solid #0ea5e93a" : "1px solid rgba(255,255,255,0.3)", backdropFilter:"blur(4px)" }}>
                   <div style={{ fontSize:10.5, color: DT.dark ? "#7dd3fc" : "rgba(255,255,255,0.85)", fontWeight:700, marginBottom:2 }}>আজকের ওপেনিং</div>
-                  <div style={{ ...neonNumStyle("#0ea5e9", 18) }}>৳{fmt(todayOpening.amount)}</div>
+                  <div style={{ ...neonNumStyle(DT.dark, 22) }}>৳{fmt(todayOpening.amount)}</div>
                 </div>
               )}
               {todayWithdrawTotal > 0 && (
                 <div style={{ flex:1, background: DT.dark ? "rgba(244,63,94,0.1)" : "rgba(255,255,255,0.16)", borderRadius:12, padding:"8px 12px", border: DT.dark ? "1px solid #f43f5e3a" : "1px solid rgba(255,255,255,0.3)", backdropFilter:"blur(4px)" }}>
                   <div style={{ fontSize:10.5, color: DT.dark ? "#fca5a5" : "rgba(255,255,255,0.85)", fontWeight:700, marginBottom:2 }}>আজকের উইথড্রয়াল</div>
-                  <div style={{ ...neonNumStyle("#f43f5e", 18) }}>৳{fmt(todayWithdrawTotal)}</div>
+                  <div style={{ ...neonNumStyle(DT.dark, 22) }}>৳{fmt(todayWithdrawTotal)}</div>
                 </div>
               )}
             </div>
@@ -25039,7 +25041,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   </div>
                 );
               })() : (
-                <div style={{ ...neonNumStyle(cAccent, 38), marginBottom:4, textAlign:"center" }}>{c.value}</div>
+                <div style={{ ...neonNumStyle(DT.dark, 46), marginBottom:4, textAlign:"center" }}>{c.value}</div>
               )}
               <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, textAlign:"center" }}>{c.label}</div>
               <div style={{ color:subColor, fontWeight:600, fontSize:10, textAlign:"center" }}>{c.sub}</div>
@@ -25103,7 +25105,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">{c.iconPath}</svg>
                 </div>
               </div>
-              <div style={{ ...neonNumStyle(cAccent, 38), marginBottom:4, textAlign:"center" }}>{c.value}</div>
+              <div style={{ ...neonNumStyle(DT.dark, 46), marginBottom:4, textAlign:"center" }}>{c.value}</div>
               <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, textAlign:"center" }}>{c.label}</div>
               <div style={{ color:subColor, fontWeight:600, fontSize:10, textAlign:"center" }}>{c.sub}</div>
             </div>
