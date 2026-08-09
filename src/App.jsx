@@ -8310,6 +8310,18 @@ function neonNumStyle(hex, size = 34) {
   };
 }
 
+// 🆕 (৯ আগস্ট ২০২৬ — ফিজিবিলিটি ফিক্স) নতুন থিমগুলোর কিছু অ্যাকসেন্ট রঙ (যেমন
+// Duolingo সবুজ) monoPalette-এর lightness শিফটের পর যথেষ্ট হালকা হয়ে যায় যে তার
+// উপর সাদা টেক্সট আর যথেষ্ট কনট্রাস্ট পায় না। এই হেল্পার প্রতিটা কার্ডের নিজের
+// ব্যাকগ্রাউন্ড রঙ (hex) দেখে রানটাইমে সাদা বা গাঢ় টেক্সট বেছে নেয় — যেকোনো
+// থিম/যেকোনো অ্যাকসেন্টেই (লাইট মোডের সলিড-কালার কার্ডে) সবসময় ভিজিবল থাকে।
+function tintTextColors(hex) {
+  const isDarkEnough = relativeLuminance(hex) <= 0.42;
+  return isDarkEnough
+    ? { value:"#fff", label:"rgba(255,255,255,0.92)", sub:"rgba(255,255,255,0.7)", icon:"#fff" }
+    : { value:"#1a1f2b", label:"rgba(20,24,33,0.88)", sub:"rgba(20,24,33,0.62)", icon:"#1a1f2b" };
+}
+
 // ─── Icons ────────────────────────────────────────────────────────────────────
 const Ic = ({ d, size = 18 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d={d} /></svg>
@@ -20271,10 +20283,11 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
           const showCritBadge = isCriticalCard && critCount > 0;
           const tint = DT.tint(c.idx);
           const cAccent = tint.hex;
-          const valueColor = DT.dark ? cAccent : "#fff";
-          const labelColor = DT.dark ? "#e2e8f0" : "rgba(255,255,255,0.92)";
-          const subColor   = DT.dark ? "#64748b" : "rgba(255,255,255,0.7)";
-          const iconColor  = DT.dark ? cAccent : "#fff";
+          const ttc = tintTextColors(cAccent);
+          const valueColor = DT.dark ? cAccent : ttc.value;
+          const labelColor = DT.dark ? "#e2e8f0" : ttc.label;
+          const subColor   = DT.dark ? "#64748b" : ttc.sub;
+          const iconColor  = DT.dark ? cAccent : ttc.icon;
           return (
           <div key={c.label || i} className="tap-card"
             style={{
@@ -20342,6 +20355,8 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
 
         const expTint = DT.tint(2);   // লাল-ঘেঁষা ভ্যারিয়েন্ট
         const nearTint = DT.tint(1);  // অ্যাম্বার-ঘেঁষা ভ্যারিয়েন্ট
+        const expTtc = tintTextColors(expTint.hex);
+        const nearTtc = tintTextColors(nearTint.hex);
 
         return (
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9, marginBottom:9 }}>
@@ -20358,7 +20373,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
               <div style={{ position:"absolute", bottom:-20, right:-20, width:70, height:70, borderRadius:"50%", background: DT.dark ? "radial-gradient(circle,#ef44441a 0%,transparent 70%)" : "rgba(255,255,255,0.10)" }} />
               <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:8 }}>
                 <div style={{ background: DT.dark ? "#ef444418" : "rgba(255,255,255,0.22)", border: DT.dark ? "1px solid #ef444433" : "1px solid rgba(255,255,255,0.3)", borderRadius:9, padding:"5px 7px" }}>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={DT.dark?"#fca5a5":"#fff"} strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={DT.dark?"#fca5a5":expTtc.icon} strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
                 </div>
                 {expiredBatches.length > 0 && (
                   <span style={{ background:"#ef4444", color:"#fff", fontWeight:900, fontSize:9.5, borderRadius:20, padding:"2px 7px" }}>EXPIRED</span>
@@ -20366,10 +20381,10 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
               </div>
               <div style={ DT.dark
                 ? { ...neonNumStyle("#fca5a5", 22), marginBottom:3 }
-                : { color:"#fff", fontWeight:900, fontSize:22, letterSpacing:-0.5, marginBottom:3 }
+                : { color:expTtc.value, fontWeight:900, fontSize:22, letterSpacing:-0.5, marginBottom:3 }
               }>{expiredBatches.length}<span style={{ fontSize:11, fontWeight:700, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", WebkitTextFillColor: DT.dark ? "#fca5a5" : undefined }}>টি ব্যাচ</span></div>
-              <div style={{ color: DT.dark?"#e2e8f0":"rgba(255,255,255,0.92)", fontWeight:800, fontSize:11.5, marginBottom:2 }}>মেয়াদোত্তীর্ণ</div>
-              <div style={{ color: DT.dark?"#64748b":"rgba(255,255,255,0.7)", fontSize:9.5 }}>{expiredBatches.length>0?"ক্লিক করে দেখুন":"কোনো মেয়াদোত্তীর্ণ নেই"}</div>
+              <div style={{ color: DT.dark?"#e2e8f0":expTtc.label, fontWeight:800, fontSize:11.5, marginBottom:2 }}>মেয়াদোত্তীর্ণ</div>
+              <div style={{ color: DT.dark?"#64748b":expTtc.sub, fontSize:9.5 }}>{expiredBatches.length>0?"ক্লিক করে দেখুন":"কোনো মেয়াদোত্তীর্ণ নেই"}</div>
             </div>
 
             {/* মেয়াদ শেষের কাছাকাছি */}
@@ -20385,7 +20400,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
               <div style={{ position:"absolute", bottom:-20, right:-20, width:70, height:70, borderRadius:"50%", background: DT.dark ? "radial-gradient(circle,#f59e0b1a 0%,transparent 70%)" : "rgba(255,255,255,0.10)" }} />
               <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:8 }}>
                 <div style={{ background: DT.dark ? "#f59e0b18" : "rgba(255,255,255,0.22)", border: DT.dark ? "1px solid #f59e0b33" : "1px solid rgba(255,255,255,0.3)", borderRadius:9, padding:"5px 7px" }}>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={DT.dark?"#fde68a":"#fff"} strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={DT.dark?"#fde68a":nearTtc.icon} strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                 </div>
                 {nearExpiryBatches.length > 0 && (
                   <span style={{ background:"#f59e0b", color:"#fff", fontWeight:900, fontSize:9.5, borderRadius:20, padding:"2px 7px" }}>NEAR</span>
@@ -20393,10 +20408,10 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
               </div>
               <div style={ DT.dark
                 ? { ...neonNumStyle("#fde68a", 22), marginBottom:3 }
-                : { color:"#fff", fontWeight:900, fontSize:22, letterSpacing:-0.5, marginBottom:3 }
+                : { color:nearTtc.value, fontWeight:900, fontSize:22, letterSpacing:-0.5, marginBottom:3 }
               }>{nearExpiryBatches.length}<span style={{ fontSize:11, fontWeight:700, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", WebkitTextFillColor: DT.dark ? "#fde68a" : undefined }}>টি ব্যাচ</span></div>
-              <div style={{ color: DT.dark?"#e2e8f0":"rgba(255,255,255,0.92)", fontWeight:800, fontSize:11.5, marginBottom:2 }}>মেয়াদ শেষের কাছে</div>
-              <div style={{ color: DT.dark?"#64748b":"rgba(255,255,255,0.7)", fontSize:9.5 }}>৩ মাসের মধ্যে মেয়াদ শেষ</div>
+              <div style={{ color: DT.dark?"#e2e8f0":nearTtc.label, fontWeight:800, fontSize:11.5, marginBottom:2 }}>মেয়াদ শেষের কাছে</div>
+              <div style={{ color: DT.dark?"#64748b":nearTtc.sub, fontSize:9.5 }}>৩ মাসের মধ্যে মেয়াদ শেষ</div>
             </div>
           </div>
         );
@@ -24924,10 +24939,11 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           ].filter(c => !(currentUser?.role === "staff" && c.isProfit)).filter(c => !c.hidden).map((c, i) => {
             const tint = DT.tint(c.idx);
             const cAccent = tint.hex;
-            const valueColor = DT.dark ? cAccent : "#fff";
-            const labelColor = DT.dark ? "#e2e8f0" : "rgba(255,255,255,0.92)";
-            const subColor   = DT.dark ? "#64748b" : "rgba(255,255,255,0.7)";
-            const iconColor  = DT.dark ? cAccent : "#fff";
+            const ttc = tintTextColors(cAccent);
+            const valueColor = DT.dark ? cAccent : ttc.value;
+            const labelColor = DT.dark ? "#e2e8f0" : ttc.label;
+            const subColor   = DT.dark ? "#64748b" : ttc.sub;
+            const iconColor  = DT.dark ? cAccent : ttc.icon;
             return (
             <div key={c.label || i} className="tap-card"
               style={{
@@ -24985,21 +25001,21 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                 const _totalLoss = _netAfterReturns < 0 ? _netAfterReturns : 0;
                 const _net = _netAfterReturns;
                 const lossAccent = DT.mono[5]; // লস সবসময় নিউট্রাল/সতর্কতামূলক ধূসর-লাল টোনে
-                const profitCol = DT.dark ? cAccent : "#fff";
-                const lossCol   = DT.dark ? (_totalLoss < 0 ? "#ef4444" : "#475569") : "#fff";
-                const netCol    = DT.dark ? (_net >= 0 ? cAccent : "#ef4444") : "#fff";
+                const profitCol = DT.dark ? cAccent : ttc.value;
+                const lossCol   = DT.dark ? (_totalLoss < 0 ? "#ef4444" : "#475569") : ttc.value;
+                const netCol    = DT.dark ? (_net >= 0 ? cAccent : "#ef4444") : ttc.value;
                 return (
                   <div style={{ marginBottom:3 }}>
                     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", marginBottom:4 }}>
                       <div>
-                        <div style={{ color: DT.dark ? "#86efac" : "rgba(255,255,255,0.75)", fontSize:8.5, fontWeight:700, marginBottom:1 }}>আজকের লাভ</div>
+                        <div style={{ color: DT.dark ? "#86efac" : ttc.label, fontSize:8.5, fontWeight:700, marginBottom:1 }}>আজকের লাভ</div>
                       </div>
                       <div style={{ textAlign:"right" }}>
-                        <div style={{ color: DT.dark ? "#fca5a5" : "rgba(255,255,255,0.75)", fontSize:8.5, fontWeight:700, marginBottom:1 }}>আজকের লস</div>
+                        <div style={{ color: DT.dark ? "#fca5a5" : ttc.label, fontSize:8.5, fontWeight:700, marginBottom:1 }}>আজকের লস</div>
                       </div>
                     </div>
                     <div style={{ borderTop: DT.dark ? `1px solid ${_net >= 0 ? cAccent+"33" : "#ef444433"}` : "1px solid rgba(255,255,255,0.3)", paddingTop:4, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-                      <div style={{ color: DT.dark ? "#94a3b8" : "rgba(255,255,255,0.75)", fontSize:8.5, fontWeight:700 }}>নেট (লাভ−লস)</div>
+                      <div style={{ color: DT.dark ? "#94a3b8" : ttc.label, fontSize:8.5, fontWeight:700 }}>নেট (লাভ−লস)</div>
                     </div>
                   </div>
                 );
@@ -25045,10 +25061,11 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           ].map((c, i) => {
             const tint = DT.tint(c.idx);
             const cAccent = tint.hex;
-            const valueColor = DT.dark ? cAccent : "#fff";
-            const labelColor = DT.dark ? "#e2e8f0" : "rgba(255,255,255,0.92)";
-            const subColor   = DT.dark ? "#64748b" : "rgba(255,255,255,0.7)";
-            const iconColor  = DT.dark ? cAccent : "#fff";
+            const ttc = tintTextColors(cAccent);
+            const valueColor = DT.dark ? cAccent : ttc.value;
+            const labelColor = DT.dark ? "#e2e8f0" : ttc.label;
+            const subColor   = DT.dark ? "#64748b" : ttc.sub;
+            const iconColor  = DT.dark ? cAccent : ttc.icon;
             return (
             <div key={c.label || i} className="tap-card"
               style={{
@@ -34884,7 +34901,7 @@ function Settings_({ T, S, shopName,
                           <span style={{ display:"block", width:16, height:16, borderRadius:"50%", background:p.accent, boxShadow:`0 0 8px ${p.accent}99` }}/>
                           {activeTheme===p.id && (
                             <span style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
-                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={tintTextColors(p.accent).icon} strokeWidth="3.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
                             </span>
                           )}
                         </div>
@@ -34906,7 +34923,7 @@ function Settings_({ T, S, shopName,
                           <span style={{ display:"block", width:16, height:16, borderRadius:"50%", background:p.accent, boxShadow:`0 0 8px ${p.accent}99` }}/>
                           {activeTheme===p.id && (
                             <span style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
-                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={tintTextColors(p.accent).icon} strokeWidth="3.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
                             </span>
                           )}
                         </div>
@@ -35060,7 +35077,7 @@ function Settings_({ T, S, shopName,
                         <span style={{ display:"block", width:16, height:16, borderRadius:"50%", background:p.accent, boxShadow:`0 0 8px ${p.accent}99` }}/>
                         {activeTheme===p.id && (
                           <span style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={tintTextColors(p.accent).icon} strokeWidth="3.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
                           </span>
                         )}
                       </div>
@@ -35083,7 +35100,7 @@ function Settings_({ T, S, shopName,
                         <span style={{ display:"block", width:16, height:16, borderRadius:"50%", background:p.accent, boxShadow:`0 0 8px ${p.accent}99` }}/>
                         {activeTheme===p.id && (
                           <span style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={tintTextColors(p.accent).icon} strokeWidth="3.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
                           </span>
                         )}
                       </div>
