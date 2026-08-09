@@ -15687,6 +15687,20 @@ function makeS(T) {
   const fs = (base) => `clamp(${base - 1}px, ${base / 375 * 100}vw, ${base + 2}px)`;
   const sp = (n) => `clamp(${Math.max(n-2,4)}px, ${n / 375 * 100}vw, ${n+4}px)`;
 
+  // 🔁 (৯ আগস্ট ২০২৬ — কাস্টমার কার্ড রিডিজাইন) card-এর বেস স্টাইল আলাদা ভ্যারিয়েবলে
+  // বের করা হয়েছে, যাতে নিচে custCard এটাকে স্প্রেড করে নিজের কমপ্যাক্ট ভার্সন বানাতে পারে
+  // (নিজের object literal-এর ভিতর থেকে "S.card" রেফার করা সম্ভব না, তাই এই লোকাল ভ্যারিয়েবল)।
+  const cardBase = {
+      background: T.card, borderRadius: 22,
+      padding: sp(18), marginBottom: sp(14),
+      border: "1.5px solid transparent",
+      backgroundImage: `linear-gradient(${T.card}, ${T.card}), linear-gradient(135deg, ${T.accent}80, ${(T.accentDark || T.accent)}40)`,
+      backgroundOrigin: "border-box",
+      backgroundClip: "padding-box, border-box",
+      boxShadow: `${T.shadow}, 0 0 16px ${T.accentGlow}, inset 0 1px 0 rgba(255,255,255,0.04)`,
+      animation: "fadeUp 0.25s cubic-bezier(0.4,0,0.2,1)",
+  };
+
   return {
     root: {
       fontFamily: "'Noto Sans Bengali','Hind Siliguri',sans-serif",
@@ -15908,16 +15922,7 @@ function makeS(T) {
     // এর বদলে T.accent/T.accentDark (থিম-নিজস্ব রং), যাতে থিম বদলালে কার্ডের
     // বর্ডারও ঠিকমতো বদলায়। shadow-ও এখন T.shadow/T.shadowGlow (প্রতিটা থিমে
     // আলাদাভাবে সংজ্ঞায়িত) থেকে আসছে — light থিমে হালকা shadow, dark থিমে গাঢ়।
-    card: {
-      background: T.card, borderRadius: 22,
-      padding: sp(18), marginBottom: sp(14),
-      border: "1.5px solid transparent",
-      backgroundImage: `linear-gradient(${T.card}, ${T.card}), linear-gradient(135deg, ${T.accent}80, ${(T.accentDark || T.accent)}40)`,
-      backgroundOrigin: "border-box",
-      backgroundClip: "padding-box, border-box",
-      boxShadow: `${T.shadow}, 0 0 16px ${T.accentGlow}, inset 0 1px 0 rgba(255,255,255,0.04)`,
-      animation: "fadeUp 0.25s cubic-bezier(0.4,0,0.2,1)",
-    },
+    card: cardBase,
     cardTitle: { color: "#1fd15e", fontWeight: 900, fontSize: fs(18), marginBottom: sp(14), letterSpacing: 0.3 },
 
     // ── Inputs ────────────────────────────────────────
@@ -15976,12 +15981,13 @@ function makeS(T) {
     },
 
     // ── Customer Cards ────────────────────────────────
+    // 🔁 (৯ আগস্ট ২০২৬ — ইউজার-রিকোয়েস্টে রিডিজাইন) পণ্য কার্ডের (qc-gradient-card) মতো
+    // ডিজাইন + কমপ্যাক্ট সাইজ — cardBase স্প্রেড করে borderRadius/padding/margin কমানো হয়েছে।
     custCard: {
-      background: T.card,
-      borderRadius: 22, padding: sp(16),
-      border: `1.5px solid #f9731644`,
-      boxShadow: "0 4px 20px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.04)",
-      transition: "box-shadow 0.2s, transform 0.2s",
+      ...cardBase,
+      borderRadius: 16,
+      padding: sp(11),
+      marginBottom: 0,
     },
     custName: {
       color: "#60a5fa",
@@ -18842,22 +18848,23 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
           }}>
             {filteredCustomers.map((c, idx) => (
               <div key={c.id}
+                className="qc-gradient-card"
                 onClick={() => { setSelCust(prev => (prev?.id === c.id ? null : c)); setCustSearch(""); }}
                 style={{
                   display: "flex", alignItems: "center", gap: 12,
-                  padding: "12px 14px", borderRadius: IS.id === "t5" ? 14 : 0, cursor: "pointer",
-                  marginBottom: 5,
+                  padding: "10px 12px", borderRadius: IS.id === "t5" ? 14 : 0, cursor: "pointer",
+                  marginBottom: 6,
                   background: selCust?.id === c.id ? IS.accentSoft : IS.cardBg,
-                  border: selCust?.id === c.id ? `1.5px solid ${IS.accent}` : IS.cardBorder,
+                  "--qc-card-bg": selCust?.id === c.id ? IS.accentSoft : IS.cardBg,
+                  boxShadow: selCust?.id === c.id ? `0 0 0 2px ${IS.accent}, 0 0 14px ${IS.accent}55` : "none",
                   transition: "all 0.15s",
-                  boxShadow: selCust?.id === c.id && IS.id === "t5" ? "none" : "none",
                 }}>
                 {/* Avatar */}
                 <div style={{
-                  width: 42, height: 42, borderRadius: IS.id === "t5" ? 12 : 4, flexShrink: 0,
+                  width: 36, height: 36, borderRadius: IS.id === "t5" ? 11 : 4, flexShrink: 0,
                   background: selCust?.id === c.id ? (IS.id === "t5" ? IS.priceBg : `linear-gradient(135deg, ${IS.accent}, #0090b3)`) : IS.cardBg2,
                   display: "flex", alignItems: "center", justifyContent: "center",
-                  fontWeight: 900, fontSize: 13,
+                  fontWeight: 900, fontSize: 12,
                   color: selCust?.id === c.id ? IS.priceText : IS.sub,
                   border: selCust?.id === c.id ? IS.priceBorder : IS.cardBorder,
                 }}>{c.serial}</div>
@@ -18865,23 +18872,23 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{
                     color: selCust?.id === c.id ? IS.accent : IS.text,
-                    fontWeight: 700, fontSize: 14,
+                    fontWeight: 700, fontSize: 13,
                     overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                   }}>{c.name}</div>
-                  <div style={{ color: IS.sub, fontSize: 11, marginTop: 2 }}>{c.mobile}</div>
+                  <div style={{ color: IS.sub, fontSize: 10, marginTop: 1 }}>{c.mobile}</div>
                 </div>
                 {/* Balance badge */}
                 <div style={{ flexShrink: 0 }}>
                   {c.balance > 0
                     ? <div style={{
                         background: IS.priceBg, border: IS.priceBorder,
-                        color: IS.priceText, borderRadius: IS.id === "t5" ? 10 : 4, padding: "4px 10px",
-                        fontSize: 11, fontWeight: 800, boxShadow: IS.priceShadow, textShadow: IS.priceTextShadow,
+                        color: IS.priceText, borderRadius: IS.id === "t5" ? 10 : 4, padding: "3px 9px",
+                        fontSize: 10, fontWeight: 800, boxShadow: IS.priceShadow, textShadow: IS.priceTextShadow,
                       }}>বাকি ৳{fmt(c.balance)}</div>
                     : <div style={{
                         background: IS.accentSoft, border: `1px solid ${IS.accent}55`,
-                        color: IS.accent, borderRadius: IS.id === "t5" ? 10 : 4, padding: "4px 10px",
-                        fontSize: 11, fontWeight: 700,
+                        color: IS.accent, borderRadius: IS.id === "t5" ? 10 : 4, padding: "3px 9px",
+                        fontSize: 10, fontWeight: 700,
                       }}>✓ পরিষ্কার</div>
                   }
                 </div>
@@ -25594,51 +25601,50 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
           itemContent={(idx, c) => {
             const rfm = rfmMap.get(c.id);
             return (
-          <div key={c.id} style={{ ...S.custCard, position:"relative", overflow:"hidden" }}>
+          <div key={c.id} className="qc-gradient-card" style={{ ...S.custCard, marginBottom: 8, position:"relative", overflow:"hidden" }}>
             {/* Dynamic background glow */}
             <div style={{ position:"absolute", top:-20, right:-20, width:100, height:100, borderRadius:"50%", background: c.balance > 0 ? "radial-gradient(circle,#ef444412 0%,transparent 70%)" : "radial-gradient(circle,#22c55e12 0%,transparent 70%)", pointerEvents:"none" }} />
             {/* Top row: clickable name+info block + balance */}
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, position:"relative", zIndex:1 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, position:"relative", zIndex:1 }}>
               <button
                 onClick={() => onOpenDetail(c.id)}
-                style={{ display: "flex", gap: 12, alignItems: "center", background: "none", border: "none", cursor: "pointer", textAlign: "left", padding: 0, flex: 1, minWidth: 0 }}>
-                <div style={{ ...S.avatar, background: c.balance > 0 ? "linear-gradient(145deg,#b91c1c,#ef4444)" : "linear-gradient(145deg,#16a34a,#22c55e)", boxShadow: c.balance > 0 ? "0 4px 16px #ef444444, 0 0 0 2px #ef444422" : "0 4px 16px #22c55e44, 0 0 0 2px #22c55e22" }}>{c.serial}</div>
+                style={{ display: "flex", gap: 9, alignItems: "center", background: "none", border: "none", cursor: "pointer", textAlign: "left", padding: 0, flex: 1, minWidth: 0 }}>
+                <div style={{ ...S.avatar, width:36, height:36, borderRadius:11, fontSize:13, background: c.balance > 0 ? "linear-gradient(145deg,#b91c1c,#ef4444)" : "linear-gradient(145deg,#16a34a,#22c55e)", boxShadow: c.balance > 0 ? "0 3px 10px #ef444444, 0 0 0 2px #ef444422" : "0 3px 10px #22c55e44, 0 0 0 2px #22c55e22" }}>{c.serial}</div>
                 <div style={{ minWidth: 0, flex:1 }}>
-                  <div style={{ ...S.custName, marginBottom: 3, display:"flex", alignItems:"center", gap:6 }}>
+                  <div style={{ ...S.custName, fontSize:14, marginBottom: 1, display:"flex", alignItems:"center", gap:4 }}>
                     <HighlightText text={c.name} query={search} highlightColor="#3b82f6" />
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
                   </div>
-                  <div style={{ color: T.sub, fontSize: 14, fontWeight: 700, display:"flex", alignItems:"center", gap:4 }}>
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                  <div style={{ color: T.sub, fontSize: 12, fontWeight: 700, display:"flex", alignItems:"center", gap:4 }}>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
                     {c.mobile}
                   </div>
-                  {c.address && <div style={{ color: T.sub, fontSize: 12, fontWeight: 600, marginTop:2 }}>📍 {c.address}</div>}
+                  {c.address && <div style={{ color: T.sub, fontSize: 11, fontWeight: 600, marginTop:1 }}>📍 {c.address}</div>}
                 </div>
               </button>
-              <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 8 }}>
-                {/* 🆕 (ইউজার ফিডব্যাক — ২৮ জুলাই ২০২৬) ফন্ট 20→26, ড্যাশবোর্ড কার্ডের মতোই বড় দেখাতে */}
-                <div style={{ color: c.balance > 0 ? "#ef4444" : "#22c55e", fontWeight: 900, fontSize: 26, letterSpacing:-0.5, textShadow: `0 0 16px ${c.balance > 0 ? "#ef4444" : "#22c55e"}44` }}>৳{fmt(Math.abs(c.balance))}</div>
-                <div style={{ background: c.balance > 0 ? "#ef444418" : "#22c55e18", color: c.balance > 0 ? "#f87171" : "#4ade80", fontSize: 11, fontWeight: 800, borderRadius:8, padding:"2px 8px", marginTop:4, border: `1px solid ${c.balance > 0 ? "#ef444433" : "#22c55e33"}` }}>
+              <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 6 }}>
+                <div style={{ color: c.balance > 0 ? "#ef4444" : "#22c55e", fontWeight: 900, fontSize: 18, letterSpacing:-0.3, textShadow: `0 0 12px ${c.balance > 0 ? "#ef4444" : "#22c55e"}44` }}>৳{fmt(Math.abs(c.balance))}</div>
+                <div style={{ background: c.balance > 0 ? "#ef444418" : "#22c55e18", color: c.balance > 0 ? "#f87171" : "#4ade80", fontSize: 10, fontWeight: 800, borderRadius:7, padding:"1px 7px", marginTop:3, border: `1px solid ${c.balance > 0 ? "#ef444433" : "#22c55e33"}` }}>
                   {c.balance > 0 ? "বাকি আছে" : c.balance < 0 ? "অগ্রিম জমা আছে" : "✓ পরিশোধ"}
                 </div>
               </div>
             </div>
             {/* Action row */}
-            <div style={{ display: "flex", alignItems: "center", gap: 8, position:"relative", zIndex:1 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 5, position:"relative", zIndex:1 }}>
               <button style={{
                 ...S.actionBtn, flex: 1, justifyContent: "center",
                 background: "linear-gradient(135deg,#1d4ed8,#3b82f6)",
                 color: "#ffffff",
                 border: "none",
-                fontSize: 13,
+                fontSize: 12,
                 fontWeight: 800,
-                borderRadius: 12,
-                boxShadow: "0 4px 14px #3b82f644",
-                padding: "11px 8px",
-                letterSpacing: 0.3,
+                borderRadius: 10,
+                boxShadow: "0 3px 10px #3b82f644",
+                padding: "8px 6px",
+                letterSpacing: 0.2,
               }}
                 onClick={() => onGoToInvoice(c)}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                 ইনভয়েস
               </button>
               {currentUser?.role !== "staff" && (
@@ -25647,32 +25653,31 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
                 background: "linear-gradient(135deg,#16a34a,#22c55e)",
                 color: "#ffffff",
                 border: "none",
-                fontSize: 13,
+                fontSize: 12,
                 fontWeight: 800,
-                borderRadius: 12,
-                boxShadow: "0 4px 14px #22c55e44",
-                padding: "11px 8px",
-                letterSpacing: 0.3,
+                borderRadius: 10,
+                boxShadow: "0 3px 10px #22c55e44",
+                padding: "8px 6px",
+                letterSpacing: 0.2,
               }}
                 onClick={() => setModal({ type: "transaction", data: { ...c, _mode: "joma" } })}>
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
                 জমা
               </button>
               )}
               {currentUser?.role !== "staff" && (
-              <button style={{ ...S.actionBtn, background: "#0ea5e918", color: "#0ea5e9", padding: "10px 14px", border:"1px solid #0ea5e933", display:"flex", alignItems:"center", gap:4, fontSize:12, fontWeight:700 }}
+              <button style={{ ...S.actionBtn, background: "#0ea5e918", color: "#0ea5e9", padding: "8px 10px", border:"1px solid #0ea5e933", display:"flex", alignItems:"center", gap:3, fontSize:11, fontWeight:700, borderRadius:10 }}
                 onClick={() => { const f = { name: c.name, mobile: c.mobile, address: c.address || "" }; setForm(f); setEditId(c.id); setShowAdd(true); }}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-                এডিট করুন
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
               </button>
               )}
               {currentUser?.role !== "staff" && (confirmId === c.id ? (
                 <>
-                  <button style={{ ...S.actionBtn, background: "#ef444422", color: "#ef4444", fontSize: 12, padding: "10px 10px", border:"1px solid #ef444433" }} onClick={() => confirmDelete(c.id)}>✓ হ্যাঁ</button>
-                  <button style={{ ...S.actionBtn, background: T.bg, color: T.sub, fontSize: 12, padding: "10px 10px" }} onClick={() => setConfirmId(null)}>না</button>
+                  <button style={{ ...S.actionBtn, background: "#ef444422", color: "#ef4444", fontSize: 11, padding: "8px 8px", border:"1px solid #ef444433", borderRadius:10 }} onClick={() => confirmDelete(c.id)}>✓</button>
+                  <button style={{ ...S.actionBtn, background: T.bg, color: T.sub, fontSize: 11, padding: "8px 8px", borderRadius:10 }} onClick={() => setConfirmId(null)}>না</button>
                 </>
               ) : (
-                <button style={{ ...S.actionBtn, background: "#ef444412", color: "#f87171", padding: "10px 14px", border:"1px solid #ef444422" }}
+                <button style={{ ...S.actionBtn, background: "#ef444412", color: "#f87171", padding: "8px 10px", border:"1px solid #ef444422", borderRadius:10 }}
                   onClick={() => requestDelete(c.id)}><IcTrash /></button>
               ))}
             </div>
