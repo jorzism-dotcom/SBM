@@ -14445,11 +14445,15 @@ function SmartBusinessMgmt() {
           outline: none !important;
         }
 
-        /* ── 🌈 Quantum Core multicolour gradient border (static, thick) ── */
+        /* ── 🌈 Quantum Core multicolour gradient border (static, thick) ──
+           কার্ডের ভেতরের রং --qc-card-bg CSS ভ্যারিয়েবল থেকে নেওয়া হয় (fallback: T.card)।
+           ইনভয়েস মডিউলের মতো জায়গায় যেখানে নিজস্ব থিম-কালার (IS.cardBg) দরকার,
+           সেখানে inline style-এ '--qc-card-bg': IS.cardBg দিলেই এই !important রুল
+           আর সেই কার্ডের রং জোর করে বদলে দেবে না। ── */
         .qc-gradient-card {
           border: 4px solid transparent !important;
           background:
-            linear-gradient(${T.card}, ${T.card}) padding-box,
+            linear-gradient(var(--qc-card-bg, ${T.card}), var(--qc-card-bg, ${T.card})) padding-box,
             linear-gradient(135deg, #a78bfa 0%, #a78bfa 25%, #3b82f6 25%, #3b82f6 50%, #84cc16 50%, #84cc16 75%, #f97316 75%, #f97316 100%) border-box !important;
         }
 
@@ -18994,7 +18998,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
             <div style={{ width:24, height:24, borderRadius: IS.id === "t5" ? 8 : 4, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center", background: IS.accentSoft, border: `1px solid ${IS.accent}66` }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={IS.accent} strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             </div>
-            <input className="sbm-search-input" style={{ flex: 1, background: "none", border: "none", outline: "none", color: T.text, fontSize: 13, fontFamily: "inherit", padding: 0 }}
+            <input className="sbm-search-input" style={{ flex: 1, background: "none", border: "none", outline: "none", color: IS.text, fontSize: 13, fontFamily: "inherit", padding: 0 }}
               placeholder={`পণ্য খুঁজুন... (${products.length}টি)`}
               defaultValue={prodSearch}
               ref={el => { if (el && !el._b) { el._b=true; el.addEventListener("compositionend",(e)=>{setProdSearch(e.target.value);setProdPage(1);},{passive:true}); el.addEventListener("input",(e)=>{setProdSearch(e.target.value);setProdPage(1);},{passive:true}); el.addEventListener("keydown",(e)=>{if(e.key==="Escape"){el.value="";setProdSearch("");setProdPage(1);}},{passive:true}); } }} onChange={()=>{}}
@@ -19320,7 +19324,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
             {/* Order summary */}
             <div className="qc-gradient-card" style={{
                 ...S.card, marginBottom: 10,
-                background: IS.cardBg, border: IS.cardBorder, borderRadius: IS.id === "t5" ? (S.card?.borderRadius ?? 14) : 0,
+                background: IS.cardBg, "--qc-card-bg": IS.cardBg, border: IS.cardBorder, borderRadius: IS.id === "t5" ? (S.card?.borderRadius ?? 14) : 0,
                 boxShadow: IS.id === "t5" ? "none" : "none",
               }}>
               <div style={{ textAlign: "center", marginBottom: 8 }}>
@@ -19530,7 +19534,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
 
             {/* 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ৩) — কোন স্টাফ সার্ভিস দিয়েছেন, শুধু salon-এ */}
             {isSalon && !isSelfUse && (
-              <div className="qc-gradient-card" style={{ ...S.card, marginBottom: 10, background: IS.cardBg, border: IS.cardBorder, borderRadius: IS.id === "t5" ? (S.card?.borderRadius ?? 14) : 0 }}>
+              <div className="qc-gradient-card" style={{ ...S.card, marginBottom: 10, background: IS.cardBg, "--qc-card-bg": IS.cardBg, border: IS.cardBorder, borderRadius: IS.id === "t5" ? (S.card?.borderRadius ?? 14) : 0 }}>
                 <div style={{ fontSize: 12, fontWeight: 800, color: IS.sub, marginBottom: 8 }}>💇 কোন স্টাফ সার্ভিস দিয়েছেন?</div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   <button type="button" onClick={() => setStaffId("__admin__")}
@@ -19716,7 +19720,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
             {!isSelfUse && (
             <div className="qc-gradient-card" style={{
                 ...S.card, marginBottom: 10,
-                background: IS.cardBg, border: IS.cardBorder, borderRadius: IS.id === "t5" ? (S.card?.borderRadius ?? 14) : 0,
+                background: IS.cardBg, "--qc-card-bg": IS.cardBg, border: IS.cardBorder, borderRadius: IS.id === "t5" ? (S.card?.borderRadius ?? 14) : 0,
                 boxShadow: IS.id === "t5" ? "none" : "none",
               }}>
               {/* মোট খরচ */}
