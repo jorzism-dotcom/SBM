@@ -19591,9 +19591,10 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                       </>
                     )}
                     {/* 🆕 (৫ আগস্ট ২০২৬) সবসময় দেখা যাবে — ডিসকাউন্ট/এক্সট্রা না থাকলে "সর্বমোট", থাকলে "নেট মোট"; সলিড কমলা কার্ড (বর্তমান বাকি কার্ডের স্টাইলে, ভিন্ন রঙে) */}
+                    {/* 🔁 (৯ আগস্ট ২০২৬ — ইউজার-রিকোয়েস্টে ফিক্স) কালার এখন IS.accent — "মোট খরচ" বারের সাথে হুবহু মিলবে */}
                     <div style={{
                       display:"flex", justifyContent:"space-between", alignItems: "center", marginTop: hasDiscount ? 14 : 10,
-                      background: "#f97316", border: "1.5px solid #17171a",
+                      background: IS.accent, border: "1.5px solid #17171a",
                       borderRadius: IS.id === "t5" ? 10 : 0,
                       clipPath: IS.id === "t10" ? IS.clipSm : "none",
                       padding: "9px 12px", position: "relative",
@@ -19603,7 +19604,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                         <span style={{ position:"absolute", width:12, height:12, bottom:-2, right:-2, borderBottom:`2px solid ${IS.cornerAccent}`, borderRight:`2px solid ${IS.cornerAccent}` }} />
                       </>}
                       <span style={{ fontSize:13, fontWeight:800, color: "#fff" }}>{hasDiscount ? "নেট মোট" : "সর্বমোট"}</span>
-                      <span style={{ fontSize:17, fontWeight:900, color: "#f97316", background: "#fff", borderRadius: 999, padding: "3px 14px" }}>৳{fmt(total)}</span>
+                      <span style={{ fontSize:17, fontWeight:900, color: IS.accent, background: "#fff", borderRadius: 999, padding: "3px 14px" }}>৳{fmt(total)}</span>
                     </div>
                   </>
                 );
