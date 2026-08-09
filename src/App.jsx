@@ -8300,13 +8300,13 @@ function neonNumStyle(hex, size = 34) {
     fontSize: size,
     letterSpacing: 0.3,
     lineHeight: 1,
-    display: "inline-block",
+    display: "block",
+    width: "100%",
     background: "linear-gradient(90deg, #22d3ee 0%, #4ade80 20%, #facc15 40%, #fb923c 58%, #f472b6 76%, #a78bfa 92%, #22d3ee 100%)",
-    backgroundSize: "300% auto",
-    animation: "qcRainbowText 5s linear infinite",
     WebkitBackgroundClip: "text",
     backgroundClip: "text",
     WebkitTextFillColor: "transparent",
+    WebkitTextStroke: "0.5px rgba(0,0,0,0.22)",
     color: hex,
     filter: `drop-shadow(0 0 10px ${hex}aa)`,
   };
@@ -14470,9 +14470,6 @@ function SmartBusinessMgmt() {
         @keyframes sbmIconPulse { 0%,100%{ opacity:0.8; transform:scale(1); } 50%{ opacity:1; transform:scale(1.12); } }
         @keyframes sbmClearPop  { 0%{ transform:scale(0.4) rotate(-20deg); opacity:0; } 60%{ transform:scale(1.18) rotate(4deg); opacity:1; } 100%{ transform:scale(1) rotate(0deg); opacity:1; } }
         @keyframes sbmShellIn   { 0%{ transform:scale(0.985); } 100%{ transform:scale(1); } }
-        /* 🆕 (৯ আগস্ট ২০২৬) ড্যাশবোর্ড কার্ডের সংখ্যার জন্য "Reels caption" স্টাইল
-           মাল্টিকালার (রামধনু) গ্র্যাডিয়েন্ট টেক্সট — ধীরে ধীরে রঙ বদলায় */
-        @keyframes qcRainbowText { 0% { background-position: 0% 50%; } 100% { background-position: 300% 50%; } }
 
         /* ── Premium Search Bars — নিজস্ব ফোকাস-স্টাইল ব্যবহার করে, তাই
            নিচের জেনেরিক input:focus রিং (box-shadow) এখানে বাদ — এটাই
@@ -17546,6 +17543,22 @@ function invoiceReducer(state, action) {
 // যা-ই থাকুক না কেন, ইনভয়েস তৈরির ৪টি পেইজেই (Customer/Products/Payment/Receipt)
 // সবসময় থিম ০৫ (বোল্ড প্রাইস ট্যাগ, ব্রুটালিস্ট) প্রয়োগ হবে — বাকি অ্যাপের থিম-সিস্টেম অপরিবর্তিত।
 function getInvoiceSkin(_isDark) {
+  if (_isDark) {
+    return {
+      id: "t5",
+      cardBg: "#1b1e26", cardBg2: "#232733", cardBorder: "2px solid #454b5a",
+      text: "#f1f5f9", sub: "#a3adc2",
+      accent: "#ff6a45", accentSoft: "#ff6a4530", accentText: "#ffffff",
+      priceBg: "#ff6a45",
+      priceBorder: "1px solid #454b5a", priceText: "#fff",
+      priceShadow: "3px 3px 0 #00000066", priceTextShadow: "none",
+      glowShadow: "none",
+      cornerAccent: "#454b5a",
+      clip: "none", clipSm: "none",
+      radius: 10,
+      pageBg: "#12141a",
+    };
+  }
   return {
     id: "t5",
     cardBg: "#ffffff", cardBg2: "#fffaf5", cardBorder: "2px solid #17171a",
@@ -17558,6 +17571,7 @@ function getInvoiceSkin(_isDark) {
     cornerAccent: "#17171a",
     clip: "none", clipSm: "none",
     radius: 10,
+    pageBg: "#fbf9f5",
   };
 }
 
@@ -18579,7 +18593,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
   );
 
   return (
-    <div style={{ ...S.page, background: "#fbf9f5", flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0, boxSizing: "border-box" }}>
+    <div style={{ ...S.page, background: IS.pageBg, flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0, boxSizing: "border-box" }}>
       <div ref={el => { if (el) { setStepBarHeight(el.offsetHeight); } }} style={{ position: "relative" }}>
         <StepBar />
         {step === 3 && (
@@ -18963,7 +18977,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                   return (
                   <div key={item.productId} style={{
                     display: "flex", alignItems: "center", gap: 4, minWidth: 0,
-                    background: "#ffffff", border: `1.5px solid ${_cartAccent}66`, borderLeft: `3px solid ${_cartAccent}`,
+                    background: IS.cardBg, border: `1.5px solid ${_cartAccent}66`, borderLeft: `3px solid ${_cartAccent}`,
                     borderRadius: 8, padding: "4px 5px",
                     boxShadow: "0 1px 4px rgba(0,0,0,0.10)",
                   }}>
@@ -19323,7 +19337,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
           </div>{/* end scrollable middle */}
 
           {/* Sticky bottom buttons — সবসময় দৃশ্যমান */}
-          <div style={{ flexShrink: 0, paddingTop: 8, paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 92px)", background: "#fbf9f5", position: "sticky", bottom: 0, zIndex: 300 }}>
+          <div style={{ flexShrink: 0, paddingTop: 8, paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 92px)", background: IS.pageBg, position: "sticky", bottom: 0, zIndex: 300 }}>
             <div style={{ display: "flex", gap: 10 }}>
               <button
                 style={{
@@ -19828,7 +19842,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
           </div>
 
           {/* Sticky bottom buttons */}
-          <div style={{ flexShrink:0, paddingTop:8, paddingBottom:"calc(env(safe-area-inset-bottom, 0px) + 92px)", background:"#fbf9f5", position:"sticky", bottom:0, zIndex:300 }}>
+          <div style={{ flexShrink:0, paddingTop:8, paddingBottom:"calc(env(safe-area-inset-bottom, 0px) + 92px)", background:IS.pageBg, position:"sticky", bottom:0, zIndex:300 }}>
             <div style={{ display:"flex", gap:10 }}>
               <button
                 style={{
@@ -20313,8 +20327,14 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">{c.iconPath}</svg>
               </div>
             </div>
-            <div style={{ ...neonNumStyle(cAccent, typeof c.value === "number" ? 30 : 17), marginBottom:4, textAlign:"center" }
-            }>{c.value}<span style={{ fontSize:12, fontWeight:800, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", color:cAccent, WebkitTextFillColor:cAccent }}>{c.unit}</span></div>
+            <div style={ typeof c.value === "number"
+              ? { ...neonNumStyle(cAccent, 30), marginBottom:4, textAlign:"center" }
+              : { color:valueColor, fontWeight:900, fontSize:16, textAlign:"center", marginBottom:4 }
+            }>{c.value}{c.unit && (
+              typeof c.value === "number"
+                ? <span style={{ ...neonNumStyle(cAccent, 14), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>{c.unit}</span>
+                : <span style={{ fontSize:12, fontWeight:800, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", color:cAccent }}>{c.unit}</span>
+            )}</div>
             <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
               {c.label}
               {showOutBadge && isStockOutCard && (
@@ -20383,7 +20403,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                 )}
               </div>
               <div style={{ ...neonNumStyle("#ef4444", 26), marginBottom:3, textAlign:"center" }
-              }>{expiredBatches.length}<span style={{ fontSize:12, fontWeight:800, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", color:"#ef4444", WebkitTextFillColor:"#ef4444" }}>টি ব্যাচ</span></div>
+              }>{expiredBatches.length}<span style={{ ...neonNumStyle("#ef4444", 13), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>টি ব্যাচ</span></div>
               <div style={{ color: DT.dark?"#e2e8f0":expTtc.label, fontWeight:800, fontSize:11.5, marginBottom:2, textAlign:"center" }}>মেয়াদোত্তীর্ণ</div>
               <div style={{ color: DT.dark?"#64748b":expTtc.sub, fontSize:9.5, textAlign:"center" }}>{expiredBatches.length>0?"ক্লিক করে দেখুন":"কোনো মেয়াদোত্তীর্ণ নেই"}</div>
             </div>
@@ -20408,7 +20428,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                 )}
               </div>
               <div style={{ ...neonNumStyle("#f59e0b", 26), marginBottom:3, textAlign:"center" }
-              }>{nearExpiryBatches.length}<span style={{ fontSize:12, fontWeight:800, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", color:"#f59e0b", WebkitTextFillColor:"#f59e0b" }}>টি ব্যাচ</span></div>
+              }>{nearExpiryBatches.length}<span style={{ ...neonNumStyle("#f59e0b", 13), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>টি ব্যাচ</span></div>
               <div style={{ color: DT.dark?"#e2e8f0":nearTtc.label, fontWeight:800, fontSize:11.5, marginBottom:2, textAlign:"center" }}>মেয়াদ শেষের কাছে</div>
               <div style={{ color: DT.dark?"#64748b":nearTtc.sub, fontSize:9.5, textAlign:"center" }}>৩ মাসের মধ্যে মেয়াদ শেষ</div>
             </div>
@@ -24866,13 +24886,13 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               {todayOpening && (
                 <div style={{ flex:1, background: DT.dark ? "rgba(14,165,233,0.1)" : "rgba(255,255,255,0.16)", borderRadius:12, padding:"8px 12px", border: DT.dark ? "1px solid #0ea5e93a" : "1px solid rgba(255,255,255,0.3)", backdropFilter:"blur(4px)" }}>
                   <div style={{ fontSize:10.5, color: DT.dark ? "#7dd3fc" : "rgba(255,255,255,0.85)", fontWeight:700, marginBottom:2 }}>আজকের ওপেনিং</div>
-                  <div style={{ fontWeight:900, fontSize:15, color:"#fff" }}>৳{fmt(todayOpening.amount)}</div>
+                  <div style={{ ...neonNumStyle("#0ea5e9", 18) }}>৳{fmt(todayOpening.amount)}</div>
                 </div>
               )}
               {todayWithdrawTotal > 0 && (
                 <div style={{ flex:1, background: DT.dark ? "rgba(244,63,94,0.1)" : "rgba(255,255,255,0.16)", borderRadius:12, padding:"8px 12px", border: DT.dark ? "1px solid #f43f5e3a" : "1px solid rgba(255,255,255,0.3)", backdropFilter:"blur(4px)" }}>
                   <div style={{ fontSize:10.5, color: DT.dark ? "#fca5a5" : "rgba(255,255,255,0.85)", fontWeight:700, marginBottom:2 }}>আজকের উইথড্রয়াল</div>
-                  <div style={{ fontWeight:900, fontSize:15, color:"#fff" }}>৳{fmt(todayWithdrawTotal)}</div>
+                  <div style={{ ...neonNumStyle("#f43f5e", 18) }}>৳{fmt(todayWithdrawTotal)}</div>
                 </div>
               )}
             </div>
