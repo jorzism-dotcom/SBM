@@ -7712,6 +7712,20 @@ const uid      = () => Date.now().toString(36) + Math.random().toString(36).slic
 // ফরম্যাট (real invoiceNo থাকলে সেটা, নাহলে সবসময় id-র শেষ ৬ ক্যারেক্টার + সঠিক prefix)।
 const dispInvNo = (inv, prefix = "INV") =>
   (inv && inv.invoiceNo) || `${prefix}-${((inv && inv.id) || "").slice(-6).toUpperCase()}`;
+// 🆕 dashModal ইনভয়েস-রিপোর্ট কার্ডের (বিক্রয়/নগদ/বাকি/নিজের ব্যবহার/বাতিলকৃত) filter
+// শর্তগুলো — allItems প্রথমবার setDashModal()-এ বসানো হয় সেই একই শর্তে; আর্কাইভ
+// থেকে টানা রেকর্ড merge করার সময়ও ঠিক এই একই শর্ত প্রয়োগ করতে হয় (দেখুন dmArchiveRows)।
+const _dashInvMatchesReport = (inv, baseTitle) => {
+  if (baseTitle === "বাতিলকৃত ইনভয়েস") return inv.status === "voided";
+  if (inv.status === "voided") return false;
+  switch (baseTitle) {
+    case "বিক্রয়ের ইনভয়েস": return !inv.isSelfUse;
+    case "নগদ বিক্রয়ের ইনভয়েস": return !inv.isSelfUse && (inv.payType === "cash" || inv.payType === "partial");
+    case "বাকির ইনভয়েস": return inv.payType === "baki" || (inv.payType === "partial" && inv.bakiAmount > 0);
+    case "নিজের ব্যবহারের ইনভয়েস": return !!inv.isSelfUse;
+    default: return true;
+  }
+};
 const todayStr = () => new Date().toLocaleDateString("en-US", { timeZone: "Asia/Dhaka" });
 const nowStr   = () => new Date().toLocaleString("en-US");
 const fmt      = (n) => fmtMoney(n);
@@ -21253,6 +21267,25 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
 
   // ── 📅 dashModal ডিটেইলস পেজের তারিখ রেঞ্জ state — Rules of Hooks অনুযায়ী top-level এ unconditional call ──
   const dmRange = useUnifiedDayMonthNav();
+  // 🔴 ফিক্স (৯ আগস্ট ২০২৬ — ৬ মাসের বেশি পুরনো দিন/মাসের রিপোর্ট খালি দেখানো):
+  // dashModal-এর "allItems" ওপেন হওয়ার মুহূর্তে লাইভ `invoices` state থেকে বানানো
+  // হয় (নিচে দেখুন setDashModal কলগুলো) — কিন্তু ৬ মাসের বেশি পুরনো ইনভয়েস
+  // archiveOldInvoices() দিয়ে লাইভ state থেকে সরিয়ে IndexedDB আর্কাইভে রাখা হয়।
+  // ফলে ব্যবহারকারী dmRange-এ পুরনো দিন/মাসে গেলে রিপোর্ট "কোনো ইনভয়েস নেই" দেখাত,
+  // যদিও ইনভয়েস আসলে আর্কাইভে ঠিকই আছে। এখন রেঞ্জ ৬-মাসের কাটঅফের আগে গেলে
+  // InvoiceArchive থেকে ওই রেঞ্জের রেকর্ড টেনে (নিচে allItems-এ) merge করা হয়।
+  const [dmArchiveRows, setDmArchiveRows] = React.useState([]);
+  React.useEffect(() => {
+    if (!dashModal || dashModal.type !== "invoices") { setDmArchiveRows([]); return; }
+    const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 6);
+    const cutoffKey = _dateKeyOf(cutoff);
+    if (dmRange.startKey >= cutoffKey) { setDmArchiveRows([]); return; } // সম্পূর্ণ রেঞ্জই লাইভ ডেটায় আছে, আর্কাইভ লাগবে না
+    let cancelled = false;
+    InvoiceArchive.queryPage({ dateFrom: dmRange.startKey, dateTo: dmRange.endKey, pageSize: 100000 })
+      .then(res => { if (!cancelled) setDmArchiveRows(res?.rows || []); })
+      .catch(() => { if (!cancelled) setDmArchiveRows([]); });
+    return () => { cancelled = true; };
+  }, [dashModal, dmRange.startKey, dmRange.endKey]); // eslint-disable-line react-hooks/exhaustive-deps
   // ক্যাশ হিস্ট্রি Print/WhatsApp বাটনের busy-state — আগে cashModal==="history" ব্লকের ভিতরে conditionally call হতো যা Rules of Hooks ভঙ্গ করে React error #310 (Rendered more hooks than during the previous render) সৃষ্টি করছিল
   const [cashHistBusy, setCashHistBusy] = React.useState(false);
 
@@ -24363,7 +24396,15 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     }
     if (dashModal.type === "invoices") {
       // ── তারিখ রেঞ্জ অনুযায়ী ফিল্টার ও সর্ট (নতুনতম উপরে) ──
-      const allItems    = dashModal.allItems || dashModal.items || [];
+      // 🔴 ফিক্স (৯ আগস্ট ২০২৬): লাইভ allItems-এর সাথে dmArchiveRows (৬ মাসের বেশি
+      // পুরনো, IndexedDB থেকে fetched) merge — dedup by id, একই রিপোর্ট-টাইপের শর্ত মেনেই।
+      const allItems = (() => {
+        const live = dashModal.allItems || dashModal.items || [];
+        const fromArchive = (dmArchiveRows || []).filter(inv => _dashInvMatchesReport(inv, dashModal.baseTitle));
+        if (!fromArchive.length) return live;
+        const seen = new Set(live.map(i => i.id));
+        return [...live, ...fromArchive.filter(i => !seen.has(i.id))];
+      })();
       // 🔴 ফিক্স (ইনভয়েস কার্ড সিরিয়াল): কার্ড লিস্ট এতদিন শুধু LIFO (নতুনতম আগে)
       // অর্ডারে দেখাত, কোনো ক্রমিক নাম্বার ছাড়াই — খুঁজে পেতে অসুবিধা হতো, বিশেষত
       // পুরনো ইনভয়েসে যেখানে real invoiceNo নেই (hash-fallback কোড দেখায়)। এখন
@@ -25498,7 +25539,27 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
   // paymentInvoices.find() চালানো হতো — অর্থাৎ প্রতি row-এ পুরো invoices array (linear scan)।
   // ১,০০,০০০ ইনভয়েসে স্ক্রল করলে প্রতি ব্যাচ (~২০ row) ২০ লক্ষ তুলনা হতো। এখন একবারে
   // Map বানিয়ে O(1) lookup — ঠিক যেভাবে কোডের অন্য জায়গায় (globalProdMap, prodMap ইত্যাদি) করা হয়।
-  const invoiceMap = useMemo(() => new Map((invoices || []).map(iv => [iv.id, iv])), [invoices]);
+  // 🔴 ফিক্স (৯ আগস্ট ২০২৬ — ৬ মাসের বেশি পুরনো লেনদেনে ইনভয়েস বাটন উধাও):
+  // ৬ মাসের বেশি পুরনো ইনভয়েস archiveOldInvoices() লাইভ `invoices` state থেকে
+  // সরিয়ে IndexedDB-র InvoiceArchive-এ রাখে (দেখুন Dashboard কম্পোনেন্ট)। কিন্তু
+  // এই invoiceMap শুধু লাইভ `invoices` থেকেই বানানো হতো — ফলে পুরনো txn-এ
+  // t.invoiceId থাকলেও invoiceMap.get() undefined ফিরিয়ে দিত, আর পুরো
+  // "ক্রয় ইনভয়েস দেখুন" বাটনটাই (নতুন ইনভয়েস-নাম্বার ব্যাজসহ) উধাও হয়ে যেত।
+  // এখন এই কাস্টমারের আর্কাইভড ইনভয়েসও (customerId দিয়ে) টেনে merge করা হচ্ছে।
+  const [archivedCustInvs, setArchivedCustInvs] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!customer?.id) { setArchivedCustInvs([]); return; }
+    InvoiceArchive.queryPage({ customerId: customer.id, pageSize: 100000 })
+      .then(res => { if (!cancelled) setArchivedCustInvs(res?.rows || []); })
+      .catch(() => { if (!cancelled) setArchivedCustInvs([]); });
+    return () => { cancelled = true; };
+  }, [customer?.id]);
+  const invoiceMap = useMemo(() => {
+    const m = new Map((invoices || []).map(iv => [iv.id, iv]));
+    for (const iv of archivedCustInvs) if (!m.has(iv.id)) m.set(iv.id, iv);
+    return m;
+  }, [invoices, archivedCustInvs]);
   const paymentInvoiceMap = useMemo(() => new Map((paymentInvoices || []).map(p => [p.id, p])), [paymentInvoices]);
   // 🆕 কাস্টমার ডিটেইলের নেস্টেড লেয়ার — ইনভয়েস/পেমেন্ট রিসিট দেখা অবস্থায় ব্যাক করলে
   // লেনদেন তালিকায় ফিরবে, ইতিহাস প্যানেল খোলা থাকলে ব্যাক করলে সেটা বন্ধ হবে।
@@ -25741,7 +25802,10 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
                     <div style={{ display: "flex", gap: 6 }}>
                     <button style={{ ...S.invBtn, flex: 3 }} onClick={() => setViewInv(inv)}>
                       <IcInvoice /><span>ক্রয় ইনভয়েস দেখুন</span>
-                      <span style={{ marginLeft: "auto", color: T.sub }}>{inv.items.length}টি পণ্য · ৳{fmt(inv.total)}</span>
+                      <span style={{ marginLeft: "auto", color: T.sub, textAlign: "right" }}>
+                        <span style={{ display: "block", fontWeight: 800, color: T.text }}>{dispInvNo(inv)}</span>
+                        <span style={{ display: "block", fontSize: 10 }}>{inv.items.length}টি পণ্য · ৳{fmt(inv.total)}</span>
+                      </span>
                     </button>
                     {voidInvoice && currentUser?.role !== "staff" && inv.status !== "voided" && (
                       <button
@@ -25759,7 +25823,10 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
                 {payInv && (
                   <button style={{ ...S.invBtn, color: "#22c55e", borderColor: "#22c55e44" }} onClick={() => setViewPayInv(payInv)}>
                     <IcCheck /><span>জমার রসিদ দেখুন</span>
-                    <span style={{ marginLeft: "auto", color: T.sub }}>৳{fmt(payInv.amount)}</span>
+                    <span style={{ marginLeft: "auto", color: T.sub, textAlign: "right" }}>
+                      <span style={{ display: "block", fontWeight: 800, color: T.text }}>{dispInvNo(payInv, "RC")}</span>
+                      <span style={{ display: "block", fontSize: 10 }}>৳{fmt(payInv.amount)}</span>
+                    </span>
                   </button>
                 )}
               </div>
