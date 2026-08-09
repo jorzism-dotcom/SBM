@@ -8292,18 +8292,15 @@ function shadeColor(hex, percent) {
 // মাল্টি-কালার গ্র্যাডিয়েন্ট বসানো হতো। এখন সেটা বাদ দিয়ে সলিড, বড়, বোল্ড
 // প্রিমিয়াম কালার — ডার্ক থিমে অফ-হোয়াইট (#F8FAFC), লাইট থিমে রিচ চারকোল-ব্ল্যাক
 // (#0B1220)। isDark বুলিয়ান দিয়ে কোনটা বসবে ঠিক হয়, size না দিলে ডিফল্ট 34px।
-// 🔁 (৯ আগস্ট ২০২৬ — আরও বোল্ড লাগার জন্য) Anton ফন্টে শুধু একটাই weight (400)
-// থাকে, তাই fontWeight বাড়িয়ে কাজ হয় না। এখানে WebkitTextStroke (আউটলাইন) +
-// ডুপ্লিকেট অফসেট textShadow দিয়ে "ফক্স-বোল্ড" ইফেক্ট তৈরি করা হচ্ছে — ফন্ট স্ট্রোক
-// মোটা দেখাবে, ডার্ক থিমে গ্লো-ও বজায় থাকবে।
+// 🔁 (৯ আগস্ট ২০২৬ — ব্যবহারকারীর ফিডব্যাকে ফিক্স) আগে Anton ফন্ট + WebkitTextStroke +
+// ডুপ্লিকেট অফসেট textShadow দিয়ে "ফক্স-বোল্ড" তৈরি করা হতো। এই কম্বিনেশন ছোট সাইজে
+// (২২px) গিয়ে অক্ষরগুলো একসাথে ঘেঁটে/স্মাজড দেখাচ্ছিল, আর ৳ চিহ্নে Anton ফন্ট না
+// থাকায় Noto Sans Bengali-তে ফলব্যাক করে মিক্সড ফন্ট লুক তৈরি করছিল। এখন শুধু
+// Noto Sans Bengali, ওয়েট ৯০০ — পরিষ্কার বোল্ড, কোনো স্ট্রোক/শ্যাডো ট্রিক নেই।
 function neonNumStyle(isDark, size = 34) {
   const color = isDark ? "#F8FAFC" : "#0B1220";
-  // 🔴 ফিক্স (৯ আগস্ট ২০২৬ — "ছোট কার্ডে ওভারফ্লো" বাগ): স্ট্রোক আগে সবসময় 1.3px
-  // ফিক্সড ছিল, যেটা বড় সাইজে (৪৬px) ঠিক থাকলেও কার্ডে জায়গা বেশি খেয়ে ফেলত।
-  // এখন সাইজ অনুপাতে স্ট্রোক স্কেল হয় (২২px-এ ≈০.৬px), তাই সরু কার্ডেও লাইন ভাঙে না।
-  const stroke = Math.max(0.5, +(size * 1.3 / 46).toFixed(2));
   return {
-    fontFamily: "'Anton','Noto Sans Bengali',sans-serif",
+    fontFamily: "'Noto Sans Bengali',sans-serif",
     fontWeight: 900,
     fontSize: size,
     letterSpacing: 0.2,
@@ -8311,10 +8308,6 @@ function neonNumStyle(isDark, size = 34) {
     display: "block",
     width: "100%",
     color,
-    WebkitTextStroke: `${stroke}px ${color}`,
-    textShadow: isDark
-      ? `1px 0 0 ${color}, -1px 0 0 ${color}, 0 1px 0 ${color}, 0 -1px 0 ${color}, 0.7px 0.7px 0 ${color}, -0.7px 0.7px 0 ${color}, 0.7px -0.7px 0 ${color}, -0.7px -0.7px 0 ${color}, 0 0 14px rgba(248,250,252,0.3)`
-      : `1px 0 0 ${color}, -1px 0 0 ${color}, 0 1px 0 ${color}, 0 -1px 0 ${color}, 0.7px 0.7px 0 ${color}, -0.7px 0.7px 0 ${color}, 0.7px -0.7px 0 ${color}, -0.7px -0.7px 0 ${color}`,
   };
 }
 
@@ -14663,7 +14656,7 @@ function SmartBusinessMgmt() {
            !important-এর মধ্যে source-order অনুযায়ী এটাই শেষ পর্যন্ত জেতে — KPI
            কার্ডের বড় ডিজিট (neonNumStyle 46px) সহ যেকোনো জায়গায় সত্যিকারের বড় সাইজ
            বজায় থাকবে, গ্লোবাল ফন্ট-সাইজ বুস্ট সেটিং যা-ই হোক না কেন। */
-        .kpi-value-lg { font-size: 22px !important; }
+        .kpi-value-lg { font-size: 24px !important; }
 
         /* ── Content z-index above mesh ─────────────── */
         header, main, nav { position: relative; z-index: 1; }
@@ -20342,12 +20335,12 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">{c.iconPath}</svg>
               </div>
             </div>
-            <div style={ typeof c.value === "number"
-              ? { ...neonNumStyle(DT.dark, 36), marginBottom:4, textAlign:"center" }
+            <div className={typeof c.value === "number" ? "kpi-value-lg" : undefined} style={ typeof c.value === "number"
+              ? { ...neonNumStyle(DT.dark, 24), marginBottom:4, textAlign:"center" }
               : { color:valueColor, fontWeight:900, fontSize:16, textAlign:"center", marginBottom:4 }
             }>{c.value}{c.unit && (
               typeof c.value === "number"
-                ? <span style={{ ...neonNumStyle(DT.dark, 16), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>{c.unit}</span>
+                ? <span className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>{c.unit}</span>
                 : <span style={{ fontSize:12, fontWeight:800, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", color:cAccent }}>{c.unit}</span>
             )}</div>
             <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
@@ -20417,8 +20410,8 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                   <span style={{ background:"#ef4444", color:"#fff", fontWeight:900, fontSize:9.5, borderRadius:20, padding:"2px 7px" }}>EXPIRED</span>
                 )}
               </div>
-              <div style={{ ...neonNumStyle(DT.dark, 32), marginBottom:3, textAlign:"center" }
-              }>{expiredBatches.length}<span style={{ ...neonNumStyle(DT.dark, 15), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>টি ব্যাচ</span></div>
+              <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), marginBottom:3, textAlign:"center" }
+              }>{expiredBatches.length}<span className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>টি ব্যাচ</span></div>
               <div style={{ color: DT.dark?"#e2e8f0":expTtc.label, fontWeight:800, fontSize:11.5, marginBottom:2, textAlign:"center" }}>মেয়াদোত্তীর্ণ</div>
               <div style={{ color: DT.dark?"#64748b":expTtc.sub, fontSize:9.5, textAlign:"center" }}>{expiredBatches.length>0?"ক্লিক করে দেখুন":"কোনো মেয়াদোত্তীর্ণ নেই"}</div>
             </div>
@@ -20442,8 +20435,8 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                   <span style={{ background:"#f59e0b", color:"#fff", fontWeight:900, fontSize:9.5, borderRadius:20, padding:"2px 7px" }}>NEAR</span>
                 )}
               </div>
-              <div style={{ ...neonNumStyle(DT.dark, 32), marginBottom:3, textAlign:"center" }
-              }>{nearExpiryBatches.length}<span style={{ ...neonNumStyle(DT.dark, 15), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>টি ব্যাচ</span></div>
+              <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), marginBottom:3, textAlign:"center" }
+              }>{nearExpiryBatches.length}<span className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>টি ব্যাচ</span></div>
               <div style={{ color: DT.dark?"#e2e8f0":nearTtc.label, fontWeight:800, fontSize:11.5, marginBottom:2, textAlign:"center" }}>মেয়াদ শেষের কাছে</div>
               <div style={{ color: DT.dark?"#64748b":nearTtc.sub, fontSize:9.5, textAlign:"center" }}>৩ মাসের মধ্যে মেয়াদ শেষ</div>
             </div>
@@ -24880,7 +24873,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               <span style={{ color: DT.dark ? "#cbd5e1" : "#fff", fontSize:12.5, fontWeight:800 }}>আজকের ক্যাশ ড্রয়ার</span>
             </div>
             <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-              <span style={neonNumStyle(DT.dark, 22)}>৳{fmt(todayCashDrawerNow)}</span>
+              <span className="kpi-value-lg" style={neonNumStyle(DT.dark, 24)}>৳{fmt(todayCashDrawerNow)}</span>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={DT.dark ? "#94a3b8" : "#ffffffcc"} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
             </div>
           </div>
@@ -24901,13 +24894,13 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               {todayOpening && (
                 <div style={{ flex:1, background: DT.dark ? "rgba(14,165,233,0.1)" : "rgba(255,255,255,0.16)", borderRadius:12, padding:"8px 12px", border: DT.dark ? "1px solid #0ea5e93a" : "1px solid rgba(255,255,255,0.3)", backdropFilter:"blur(4px)" }}>
                   <div style={{ fontSize:10.5, color: DT.dark ? "#7dd3fc" : "rgba(255,255,255,0.85)", fontWeight:700, marginBottom:2 }}>আজকের ওপেনিং</div>
-                  <div style={{ ...neonNumStyle(DT.dark, 22) }}>৳{fmt(todayOpening.amount)}</div>
+                  <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24) }}>৳{fmt(todayOpening.amount)}</div>
                 </div>
               )}
               {todayWithdrawTotal > 0 && (
                 <div style={{ flex:1, background: DT.dark ? "rgba(244,63,94,0.1)" : "rgba(255,255,255,0.16)", borderRadius:12, padding:"8px 12px", border: DT.dark ? "1px solid #f43f5e3a" : "1px solid rgba(255,255,255,0.3)", backdropFilter:"blur(4px)" }}>
                   <div style={{ fontSize:10.5, color: DT.dark ? "#fca5a5" : "rgba(255,255,255,0.85)", fontWeight:700, marginBottom:2 }}>আজকের উইথড্রয়াল</div>
-                  <div style={{ ...neonNumStyle(DT.dark, 22) }}>৳{fmt(todayWithdrawTotal)}</div>
+                  <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24) }}>৳{fmt(todayWithdrawTotal)}</div>
                 </div>
               )}
             </div>
@@ -25054,7 +25047,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   </div>
                 );
               })() : (
-                <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 22), marginBottom:4, textAlign:"center" }}>{c.value}</div>
+                <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), marginBottom:4, textAlign:"center" }}>{c.value}</div>
               )}
               <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, textAlign:"center" }}>{c.label}</div>
               <div style={{ color:subColor, fontWeight:600, fontSize:10, textAlign:"center" }}>{c.sub}</div>
@@ -25118,7 +25111,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">{c.iconPath}</svg>
                 </div>
               </div>
-              <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 22), marginBottom:4, textAlign:"center" }}>{c.value}</div>
+              <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), marginBottom:4, textAlign:"center" }}>{c.value}</div>
               <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, textAlign:"center" }}>{c.label}</div>
               <div style={{ color:subColor, fontWeight:600, fontSize:10, textAlign:"center" }}>{c.sub}</div>
             </div>
