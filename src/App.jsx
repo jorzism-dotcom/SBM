@@ -280,7 +280,7 @@ const useAppStore = create(subscribeWithSelector((set) => ({
 
   // ── Theme ─────────────────────────────────────────────────────────────────
   darkMode:          true,
-  activeTheme:       "neon",
+  activeTheme:       "linearvoid",
   fontSize:          15,
 
   // ── SMS ───────────────────────────────────────────────────────────────────
@@ -8094,31 +8094,31 @@ const LIGHT = {
 
 // ─── Theme Presets ────────────────────────────────────────────────────────────
 const THEME_PRESETS = [
-  // ── বাম পাশ (Light) | ডান পাশ (Dark) — 2-column grid-এ পাশাপাশি দেখাবে ──
-  { id:"neon", label:"Neo-Tokyo Neon", dark:true, accent:"#00e5ff", accentDark:"#ff2a6d", bg:"#050507", card:"#05191d", border:"#04363e", header:"#050507", statusBar:"#050507", text:"#e8e6f0", sub:"#4dbecb", nav:"#05191d", navActive:"#00e5ff", headingColor:"#64e8f7", meshD:["rgba(0,229,255,0.3)","rgba(255,42,109,0.24)","rgba(0,229,255,0.16)","rgba(255,42,109,0.14)"], meshL:null },
-  { id:"auroraglass", label:"Aurora Glass", dark:true, accent:"#7c7fff", accentDark:"#00c9a7", bg:"#060714", card:"#111229", border:"#202148", header:"#060714", statusBar:"#060714", text:"#eef0ff", sub:"#4d50cb", nav:"#111229", navActive:"#7c7fff", headingColor:"#9ea0fa", meshD:["rgba(124,127,255,0.3)","rgba(0,201,167,0.24)","rgba(124,127,255,0.16)","rgba(0,201,167,0.14)"], meshL:null },
-  { id:"bioocean", label:"Bioluminescent Ocean", dark:true, accent:"#00ffb4", accentDark:"#00d4ff", bg:"#020b0c", card:"#02211b", border:"#024131", header:"#020b0c", statusBar:"#020b0c", text:"#dff7f0", sub:"#4dcba6", nav:"#02211b", navActive:"#00ffb4", headingColor:"#64f7cc", meshD:["rgba(0,255,180,0.3)","rgba(0,212,255,0.24)","rgba(0,255,180,0.16)","rgba(0,212,255,0.14)"], meshL:null },
-  { id:"solarflare", label:"Solar Flare", dark:true, accent:"#ffb703", accentDark:"#ff6a00", bg:"#0c0906", card:"#221906", border:"#412f05", header:"#0c0906", statusBar:"#0c0906", text:"#fff3e6", sub:"#cba74d", nav:"#221906", navActive:"#ffb703", headingColor:"#f7ce67", meshD:["rgba(255,183,3,0.3)","rgba(255,106,0,0.24)","rgba(255,183,3,0.16)","rgba(255,106,0,0.14)"], meshL:null },
-  { id:"vapor", label:"Vaporwave Sunset", dark:true, accent:"#ff6ec7", accentDark:"#ffaa3c", bg:"#1a0b2e", card:"#2f143c", border:"#4c2150", header:"#1a0b2e", statusBar:"#1a0b2e", text:"#ffe6f5", sub:"#cb4d9b", nav:"#2f143c", navActive:"#ff6ec7", headingColor:"#fa9ed6", meshD:["rgba(255,110,199,0.3)","rgba(255,170,60,0.24)","rgba(255,110,199,0.16)","rgba(255,170,60,0.14)"], meshL:null },
-  { id:"ruby", label:"Blood Ruby", dark:true, accent:"#ff5c76", accentDark:"#e0a4ad", bg:"#0d0507", card:"#230d11", border:"#42181f", header:"#0d0507", statusBar:"#0d0507", text:"#ffe9ec", sub:"#cb4d61", nav:"#230d11", navActive:"#ff5c76", headingColor:"#fa9ead", meshD:["rgba(255,92,118,0.3)","rgba(224,164,173,0.24)","rgba(255,92,118,0.16)","rgba(224,164,173,0.14)"], meshL:null },
-  { id:"sapphire", label:"Midnight Sapphire", dark:true, accent:"#5aa8ff", accentDark:"#c9d8ff", bg:"#020712", card:"#0a1527", border:"#152a46", header:"#020712", statusBar:"#020712", text:"#e8f1ff", sub:"#4d89cb", nav:"#0a1527", navActive:"#5aa8ff", headingColor:"#9ec9fa", meshD:["rgba(90,168,255,0.3)","rgba(201,216,255,0.24)","rgba(90,168,255,0.16)","rgba(201,216,255,0.14)"], meshL:null },
-  { id:"volt", label:"Volt Lime", dark:true, accent:"#d4ff5c", accentDark:"#a3e635", bg:"#0a0d05", card:"#1c230d", border:"#364218", header:"#0a0d05", statusBar:"#0a0d05", text:"#f2ffe0", sub:"#aacb4d", nav:"#1c230d", navActive:"#d4ff5c", headingColor:"#e2fa9e", meshD:["rgba(212,255,92,0.3)","rgba(163,230,53,0.24)","rgba(212,255,92,0.16)","rgba(163,230,53,0.14)"], meshL:null },
-  { id:"pearl", label:"Pearl Platinum", dark:false, accent:"#6b6f95", accentDark:"#9a9dc2", bg:"#f7f7fa", card:"#ffffff", border:"#dcdce6", header:"#6b6f95", statusBar:"#6b6f95", text:"#0f1015", sub:"#646787", nav:"#ffffff", navActive:"#6b6f95", headingColor:"#0f1015", meshD:null, meshL:["rgba(107,111,149,0.2)","rgba(154,157,194,0.16)","rgba(107,111,149,0.12)","rgba(154,157,194,0.1)"] },
-  { id:"frostmint", label:"Frosted Mint Glass", dark:false, accent:"#0ea472", accentDark:"#34d399", bg:"#eafaf3", card:"#ffffff", border:"#b8ecd4", header:"#0ea472", statusBar:"#0ea472", text:"#071c15", sub:"#3fac87", nav:"#ffffff", navActive:"#0ea472", headingColor:"#071c15", meshD:null, meshL:["rgba(14,164,114,0.2)","rgba(52,211,153,0.16)","rgba(14,164,114,0.12)","rgba(52,211,153,0.1)"] },
-  { id:"ivorygold", label:"Ivory Gold Luxe", dark:false, accent:"#a9812f", accentDark:"#e6c581", bg:"#faf6ee", card:"#fffdf8", border:"#d9b978", header:"#a9812f", statusBar:"#a9812f", text:"#19140b", sub:"#9a8251", nav:"#fffdf8", navActive:"#a9812f", headingColor:"#19140b", meshD:null, meshL:["rgba(169,129,47,0.2)","rgba(230,197,129,0.16)","rgba(169,129,47,0.12)","rgba(230,197,129,0.1)"] },
-  { id:"skychrome", label:"Sky Chrome", dark:false, accent:"#1c7aad", accentDark:"#7fc7ec", bg:"#eef6fb", card:"#ffffff", border:"#b8dcef", header:"#1c7aad", statusBar:"#1c7aad", text:"#09151b", sub:"#4783a4", nav:"#ffffff", navActive:"#1c7aad", headingColor:"#09151b", meshD:null, meshL:["rgba(28,122,173,0.2)","rgba(127,199,236,0.16)","rgba(28,122,173,0.12)","rgba(127,199,236,0.1)"] },
-  { id:"rosequartz", label:"Blush Rose Quartz", dark:false, accent:"#c25f70", accentDark:"#f4a7b0", bg:"#fdf1f2", card:"#fffbfc", border:"#f0c3c8", header:"#c25f70", statusBar:"#c25f70", text:"#170c0e", sub:"#925862", nav:"#fffbfc", navActive:"#c25f70", headingColor:"#170c0e", meshD:null, meshL:["rgba(194,95,112,0.2)","rgba(244,167,176,0.16)","rgba(194,95,112,0.12)","rgba(244,167,176,0.1)"] },
-  { id:"lavender", label:"Cloud Lavender", dark:false, accent:"#7c5cc4", accentDark:"#b6a1ec", bg:"#f4f1fb", card:"#ffffff", border:"#d9cdf2", header:"#7c5cc4", statusBar:"#7c5cc4", text:"#100c18", sub:"#6a5794", nav:"#ffffff", navActive:"#7c5cc4", headingColor:"#100c18", meshD:null, meshL:["rgba(124,92,196,0.2)","rgba(182,161,236,0.16)","rgba(124,92,196,0.12)","rgba(182,161,236,0.1)"] },
-  { id:"solarwhite", label:"Solar White", dark:false, accent:"#e07800", accentDark:"#ffb347", bg:"#fffaf3", card:"#ffffff", border:"#ffd9a3", header:"#e07800", statusBar:"#e07800", text:"#1e1305", sub:"#b67a35", nav:"#ffffff", navActive:"#e07800", headingColor:"#1e1305", meshD:null, meshL:["rgba(224,120,0,0.2)","rgba(255,179,71,0.16)","rgba(224,120,0,0.12)","rgba(255,179,71,0.1)"] },
-  { id:"porcelain", label:"Porcelain Jade", dark:false, accent:"#1f8a55", accentDark:"#6fcf97", bg:"#f5faf7", card:"#ffffff", border:"#b9e0c6", header:"#1f8a55", statusBar:"#1f8a55", text:"#0a1a12", sub:"#4c9e76", nav:"#ffffff", navActive:"#1f8a55", headingColor:"#0a1a12", meshD:null, meshL:["rgba(31,138,85,0.2)","rgba(111,207,151,0.16)","rgba(31,138,85,0.12)","rgba(111,207,151,0.1)"] },
-  { id:"champagne", label:"Champagne Silk", dark:false, accent:"#8a7238", accentDark:"#d9c49a", bg:"#f7f0e6", card:"#fffcf7", border:"#cbb98f", header:"#8a7238", statusBar:"#8a7238", text:"#17140d", sub:"#91815a", nav:"#fffcf7", navActive:"#8a7238", headingColor:"#17140d", meshD:null, meshL:["rgba(138,114,56,0.2)","rgba(217,196,154,0.16)","rgba(138,114,56,0.12)","rgba(217,196,154,0.1)"] },
-  { id:"arcticday", label:"Arctic Daylight", dark:false, accent:"#2f74c9", accentDark:"#4fa8e8", bg:"#f8fafc", card:"#ffffff", border:"#dbe4ec", header:"#2f74c9", statusBar:"#2f74c9", text:"#0a111a", sub:"#4d719d", nav:"#ffffff", navActive:"#2f74c9", headingColor:"#0a111a", meshD:null, meshL:["rgba(47,116,201,0.2)","rgba(79,168,232,0.16)","rgba(47,116,201,0.12)","rgba(79,168,232,0.1)"] },
-  // 🆕 (৬ আগস্ট ২০২৬, সেলুন প্রিমিয়াম রিডিজাইন) — "Vanity Chrome": সেলুনের LED
-  // ভ্যানিটি-মিরর লাইটিং থেকে অনুপ্রাণিত — অবসিডিয়ান কালো ব্যাকগ্রাউন্ড, ম্যাজেন্টা↔ভায়োলেট
-  // গ্র্যাডিয়েন্ট অ্যাকসেন্ট। businessType === "salon" হলে ডিফল্ট থিম হিসেবে অটো-এপ্লাই হয়
-  // (দ্র. boot init, activeTheme ডিফল্ট লজিক) — ইউজার চাইলে অন্য যেকোনো থিমেও বদলাতে পারবে,
-  // এই প্রিসেটটা বাকি সব থিমের মতোই সাধারণ একটা এন্ট্রি, salon-স্পেসিফিক হার্ডকোড নেই।
-  { id:"salonvanity", label:"Vanity Chrome", dark:true, accent:"#ff4fb0", accentDark:"#7c5cff", bg:"#0b0d14", card:"#160f22", border:"#2a1f3d", header:"#0b0d14", statusBar:"#0b0d14", text:"#f5eeff", sub:"#b98fcb", nav:"#160f22", navActive:"#ff4fb0", headingColor:"#ffa8da", meshD:["rgba(255,79,176,0.3)","rgba(124,92,255,0.24)","rgba(255,79,176,0.16)","rgba(124,92,255,0.14)"], meshL:null },
+  // ── 🆕 (৯ আগস্ট ২০২৬) প্রিমিয়াম থিম রিফ্রেশ — ২০২৬-এর জনপ্রিয় অ্যাপগুলোর (Linear,
+  // Discord, Spotify, Airbnb, Stripe ইত্যাদি) আসল ডিজাইন ভাষা থেকে অনুপ্রাণিত ২০টি
+  // নতুন থিম — ১০টি ডার্ক + ১০টি লাইট। আগের ১৮টি থিম সম্পূর্ণ প্রতিস্থাপিত।
+  // ── ডার্ক (১০টি) ──
+  { id:"linearvoid", label:"Linear Void", dark:true, accent:"#5E6AD2", accentDark:"#8e97e0", bg:"#0C0C0F", card:"#18181B", border:"#27272A", header:"#0C0C0F", statusBar:"#0C0C0F", text:"#F4F4F5", sub:"#A1A1AA", nav:"#18181B", navActive:"#5E6AD2", headingColor:"#969ee2", meshD:["rgba(94,106,210,0.3)","rgba(142,151,224,0.24)","rgba(94,106,210,0.16)","rgba(142,151,224,0.14)"], meshL:null },
+  { id:"discordonyx", label:"Discord Onyx", dark:true, accent:"#5865F2", accentDark:"#8a93f6", bg:"#1E1F22", card:"#2B2D31", border:"#3A3C43", header:"#1E1F22", statusBar:"#1E1F22", text:"#F2F3F5", sub:"#949BA4", nav:"#2B2D31", navActive:"#5865F2", headingColor:"#929bf7", meshD:["rgba(88,101,242,0.3)","rgba(138,147,246,0.24)","rgba(88,101,242,0.16)","rgba(138,147,246,0.14)"], meshL:null },
+  { id:"spotifyblackout", label:"Spotify Blackout", dark:true, accent:"#1DB954", accentDark:"#61ce87", bg:"#0A0A0A", card:"#181818", border:"#2A2A2A", header:"#0A0A0A", statusBar:"#0A0A0A", text:"#FFFFFF", sub:"#A7A7A7", nav:"#181818", navActive:"#1DB954", headingColor:"#6cd290", meshD:["rgba(29,185,84,0.3)","rgba(97,206,135,0.24)","rgba(29,185,84,0.16)","rgba(97,206,135,0.14)"], meshL:null },
+  { id:"xdim", label:"X Dim", dark:true, accent:"#1D9BF0", accentDark:"#61b9f4", bg:"#15202B", card:"#1E2732", border:"#38444D", header:"#15202B", statusBar:"#15202B", text:"#E7E9EA", sub:"#8B98A5", nav:"#1E2732", navActive:"#1D9BF0", headingColor:"#6cbef5", meshD:["rgba(29,155,240,0.3)","rgba(97,185,244,0.24)","rgba(29,155,240,0.16)","rgba(97,185,244,0.14)"], meshL:null },
+  { id:"liquidobsidian", label:"Liquid Obsidian", dark:true, accent:"#0A84FF", accentDark:"#54a9ff", bg:"#000000", card:"#1C1C1E", border:"#38383A", header:"#000000", statusBar:"#000000", text:"#F5F5F7", sub:"#98989D", nav:"#1C1C1E", navActive:"#0A84FF", headingColor:"#60afff", meshD:["rgba(10,132,255,0.3)","rgba(84,169,255,0.24)","rgba(10,132,255,0.16)","rgba(84,169,255,0.14)"], meshL:null },
+  { id:"raycastvoid", label:"Raycast Void", dark:true, accent:"#FF6363", accentDark:"#ff9292", bg:"#0B0B0F", card:"#19191F", border:"#2B2B33", header:"#0B0B0F", statusBar:"#0B0B0F", text:"#F1F1F3", sub:"#8C8C96", nav:"#19191F", navActive:"#FF6363", headingColor:"#ff9a9a", meshD:["rgba(255,99,99,0.3)","rgba(255,146,146,0.24)","rgba(255,99,99,0.16)","rgba(255,146,146,0.14)"], meshL:null },
+  { id:"revolutmidnight", label:"Revolut Midnight", dark:true, accent:"#7D5FFF", accentDark:"#a48fff", bg:"#0B0E17", card:"#151A28", border:"#232B3D", header:"#0B0E17", statusBar:"#0B0E17", text:"#ECEFF6", sub:"#7C88A3", nav:"#151A28", navActive:"#7D5FFF", headingColor:"#aa97ff", meshD:["rgba(125,95,255,0.3)","rgba(164,143,255,0.24)","rgba(125,95,255,0.16)","rgba(164,143,255,0.14)"], meshL:null },
+  { id:"notioncharcoal", label:"Notion Charcoal", dark:true, accent:"#E16259", accentDark:"#ea918b", bg:"#191919", card:"#202020", border:"#333333", header:"#191919", statusBar:"#191919", text:"#E9E9E7", sub:"#9B9B98", nav:"#202020", navActive:"#E16259", headingColor:"#ec9993", meshD:["rgba(225,98,89,0.3)","rgba(234,145,139,0.24)","rgba(225,98,89,0.16)","rgba(234,145,139,0.14)"], meshL:null },
+  { id:"cashappneo", label:"Cash App Neo", dark:true, accent:"#00D64F", accentDark:"#4ce284", bg:"#000000", card:"#141414", border:"#2B2B2B", header:"#000000", statusBar:"#000000", text:"#FFFFFF", sub:"#8F8F8F", nav:"#141414", navActive:"#00D64F", headingColor:"#59e48d", meshD:["rgba(0,214,79,0.3)","rgba(76,226,132,0.24)","rgba(0,214,79,0.16)","rgba(76,226,132,0.14)"], meshL:null },
+  { id:"threadsink", label:"Threads Ink", dark:true, accent:"#B48CFF", accentDark:"#caaeff", bg:"#101010", card:"#181818", border:"#2C2C2C", header:"#101010", statusBar:"#101010", text:"#F5F5F5", sub:"#A8A8A8", nav:"#181818", navActive:"#B48CFF", headingColor:"#ceb4ff", meshD:["rgba(180,140,255,0.3)","rgba(202,174,255,0.24)","rgba(180,140,255,0.16)","rgba(202,174,255,0.14)"], meshL:null },
+  // ── লাইট (১০টি) ──
+  { id:"airbnbcloud", label:"Airbnb Cloud", dark:false, accent:"#FF385C", accentDark:"#cc2d4a", bg:"#FFFFFF", card:"#FFFFFF", border:"#EBEBEB", header:"#FF385C", statusBar:"#FF385C", text:"#222222", sub:"#717171", nav:"#FFFFFF", navActive:"#FF385C", headingColor:"#222222", meshD:null, meshL:["rgba(255,56,92,0.2)","rgba(204,45,74,0.16)","rgba(255,56,92,0.12)","rgba(204,45,74,0.1)"] },
+  { id:"stripepaper", label:"Stripe Paper", dark:false, accent:"#635BFF", accentDark:"#4f49cc", bg:"#F6F9FC", card:"#FFFFFF", border:"#E3E8EE", header:"#635BFF", statusBar:"#635BFF", text:"#0A2540", sub:"#697386", nav:"#FFFFFF", navActive:"#635BFF", headingColor:"#0A2540", meshD:null, meshL:["rgba(99,91,255,0.2)","rgba(79,73,204,0.16)","rgba(99,91,255,0.12)","rgba(79,73,204,0.1)"] },
+  { id:"duolingoowl", label:"Duolingo Owl", dark:false, accent:"#58CC02", accentDark:"#46a302", bg:"#FFFFFF", card:"#F7F7F7", border:"#E5E5E5", header:"#58CC02", statusBar:"#58CC02", text:"#3C3C3C", sub:"#777777", nav:"#F7F7F7", navActive:"#58CC02", headingColor:"#3C3C3C", meshD:null, meshL:["rgba(88,204,2,0.2)","rgba(70,163,2,0.16)","rgba(88,204,2,0.12)","rgba(70,163,2,0.1)"] },
+  { id:"notionivory", label:"Notion Ivory", dark:false, accent:"#2383E2", accentDark:"#1c69b5", bg:"#FFFFFF", card:"#F7F6F3", border:"#E9E8E4", header:"#2383E2", statusBar:"#2383E2", text:"#37352F", sub:"#787774", nav:"#F7F6F3", navActive:"#2383E2", headingColor:"#37352F", meshD:null, meshL:["rgba(35,131,226,0.2)","rgba(28,105,181,0.16)","rgba(35,131,226,0.12)","rgba(28,105,181,0.1)"] },
+  { id:"instagramfrost", label:"Instagram Frost", dark:false, accent:"#DD2A7B", accentDark:"#b12262", bg:"#FAFAFA", card:"#FFFFFF", border:"#EFEFEF", header:"#DD2A7B", statusBar:"#DD2A7B", text:"#262626", sub:"#8E8E8E", nav:"#FFFFFF", navActive:"#DD2A7B", headingColor:"#262626", meshD:null, meshL:["rgba(221,42,123,0.2)","rgba(177,34,98,0.16)","rgba(221,42,123,0.12)","rgba(177,34,98,0.1)"] },
+  { id:"superhumanporcelain", label:"Superhuman Porcelain", dark:false, accent:"#3D5AFE", accentDark:"#3148cb", bg:"#FBFBFA", card:"#FFFFFF", border:"#EAEAE8", header:"#3D5AFE", statusBar:"#3D5AFE", text:"#1A1A1A", sub:"#8A8A85", nav:"#FFFFFF", navActive:"#3D5AFE", headingColor:"#1A1A1A", meshD:null, meshL:["rgba(61,90,254,0.2)","rgba(49,72,203,0.16)","rgba(61,90,254,0.12)","rgba(49,72,203,0.1)"] },
+  { id:"arcsunlit", label:"Arc Sunlit", dark:false, accent:"#FF6F3C", accentDark:"#cc5930", bg:"#FDF6EC", card:"#FFFFFF", border:"#F0E4D0", header:"#FF6F3C", statusBar:"#FF6F3C", text:"#2B2013", sub:"#8C7A5E", nav:"#FFFFFF", navActive:"#FF6F3C", headingColor:"#2B2013", meshD:null, meshL:["rgba(255,111,60,0.2)","rgba(204,89,48,0.16)","rgba(255,111,60,0.12)","rgba(204,89,48,0.1)"] },
+  { id:"thingssky", label:"Things Sky", dark:false, accent:"#007AFF", accentDark:"#0062cc", bg:"#F5F5F7", card:"#FFFFFF", border:"#E2E2E6", header:"#007AFF", statusBar:"#007AFF", text:"#1D1D1F", sub:"#6E6E73", nav:"#FFFFFF", navActive:"#007AFF", headingColor:"#1D1D1F", meshD:null, meshL:["rgba(0,122,255,0.2)","rgba(0,98,204,0.16)","rgba(0,122,255,0.12)","rgba(0,98,204,0.1)"] },
+  { id:"telegramsky", label:"Telegram Sky", dark:false, accent:"#229ED9", accentDark:"#1b7eae", bg:"#FFFFFF", card:"#F0F4F8", border:"#DCE6EE", header:"#229ED9", statusBar:"#229ED9", text:"#17212B", sub:"#6D7883", nav:"#F0F4F8", navActive:"#229ED9", headingColor:"#17212B", meshD:null, meshL:["rgba(34,158,217,0.2)","rgba(27,126,174,0.16)","rgba(34,158,217,0.12)","rgba(27,126,174,0.1)"] },
+  { id:"headspacesunrise", label:"Headspace Sunrise", dark:false, accent:"#FF8000", accentDark:"#cc6600", bg:"#FFF8F0", card:"#FFFFFF", border:"#FBE4CC", header:"#FF8000", statusBar:"#FF8000", text:"#2E2013", sub:"#8A7259", nav:"#FFFFFF", navActive:"#FF8000", headingColor:"#2E2013", meshD:null, meshL:["rgba(255,128,0,0.2)","rgba(204,102,0,0.16)","rgba(255,128,0,0.12)","rgba(204,102,0,0.1)"] },
 ];
 
 // ─── হেডার/নেভ টেক্সট অটো-কনট্রাস্ট — ব্যাকগ্রাউন্ড রঙ যেকোনো থিমেই হোক না কেন,
@@ -8286,6 +8286,28 @@ function shadeColor(hex, percent) {
   g = Math.max(0, Math.min(255, g));
   b = Math.max(0, Math.min(255, b));
   return `#${(0x1000000 + r * 0x10000 + g * 0x100 + b).toString(16).slice(1)}`;
+}
+
+// 🆕 (৯ আগস্ট ২০২৬) "Reels-caption" স্টাইল বোল্ড ডিজিট — ড্যাশবোর্ড কার্ডের বড়
+// সংখ্যাগুলোতে (ক্যাশ ড্রয়ার, আজকের রিপোর্ট, বাকি পরিসংখ্যান, ইনভেন্টরি) কার্ডের
+// নিজস্ব accent রঙ থেকে একটা দুই-টোনের গ্র্যাডিয়েন্ট বসিয়ে, টেক্সটে ক্লিপ করে, একটা
+// হালকা গ্লো (drop-shadow) যোগ করে — স্ক্রিনশটের FULL OF JOY/CULTURE ক্যাপশন
+// স্টাইলের মতো ভিজিবল, বোল্ড, সুন্দর দেখায়। size না দিলে ডিফল্ট 34px।
+function neonNumStyle(hex, size = 34) {
+  const light = shadeColor(hex, 45);
+  return {
+    fontFamily: "'Anton','Noto Sans Bengali',sans-serif",
+    fontWeight: 400,
+    fontSize: size,
+    letterSpacing: 0.3,
+    lineHeight: 1,
+    background: `linear-gradient(135deg, ${light}, ${hex})`,
+    WebkitBackgroundClip: "text",
+    backgroundClip: "text",
+    WebkitTextFillColor: "transparent",
+    color: hex,
+    filter: `drop-shadow(0 0 10px ${hex}88)`,
+  };
 }
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
@@ -11154,11 +11176,11 @@ function SmartBusinessMgmt() {
         darkMode:              darkModeVal         ?? true,
         // 🆕 (৬ আগস্ট ২০২৬, সেলুন প্রিমিয়াম রিডিজাইন) — salon বিজনেসে কোনো থিম আগে থেকে
         // সেভ করা না থাকলে (নতুন শপ/প্রথম বুট) ডিফল্ট "Vanity Chrome"-এ যাবে, নাহলে অন্য
-        // সব বিজনেসের মতোই "neon"। ইউজার একবার ম্যানুয়ালি থিম বদলালে সেটাই সেভ/persist
+        // সব বিজনেসের মতোই "Linear Void"। ইউজার একবার ম্যানুয়ালি থিম বদলালে সেটাই সেভ/persist
         // থাকবে (activeThemeVal সেট হয়ে যাবে), এই ডিফল্ট লজিক আর প্রযোজ্য হবে না।
         activeTheme:           (activeThemeVal && activeThemeVal !== "dark")
           ? activeThemeVal
-          : (businessTypeVal === "salon" ? "salonvanity" : "neon"),
+          : (businessTypeVal === "salon" ? "threadsink" : "linearvoid"),
         fontSize:              fontSizeVal         ?? 15,
         paymentInvoices:       rawPayInv           || [],
         firebaseConfig:        firebaseCfg,
@@ -11710,7 +11732,7 @@ function SmartBusinessMgmt() {
           load(LK(SK.darkMode)), load(LK(SK.activeTheme)), load(LK(SK.fontSize)),
         ]);
         setDarkMode(dm ?? true);
-        setActiveTheme((at && at !== "dark") ? at : "neon");
+        setActiveTheme((at && at !== "dark") ? at : "linearvoid");
         setFontSize(fs ?? 15);
       })();
     }
@@ -16400,7 +16422,7 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
   // যাতে ইউজার মূল ডিভাইসে যে থিম/ডার্কমোড/ফন্ট বেছেছে ভিউয়ার ডিভাইসেও ঠিক সেটাই দেখায় ──
   const [themeReady,  setThemeReady]  = useState(false);
   const [darkMode,    setVDarkMode]   = useState(true);
-  const [activeTheme, setVActiveTheme]= useState("neon");
+  const [activeTheme, setVActiveTheme]= useState("linearvoid");
   const [fontSize,    setVFontSize]   = useState(15);
   const [shopName,    setVShopName]   = useState("SBM");
 
@@ -16413,7 +16435,7 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
       ]);
       if (cancelled) return;
       setVDarkMode(dm ?? true);
-      setVActiveTheme((at && at !== "dark") ? at : "neon");
+      setVActiveTheme((at && at !== "dark") ? at : "linearvoid");
       setVFontSize(fs ?? 15);
       setVShopName(sn || "SBM");
       setThemeReady(true);
@@ -20267,14 +20289,17 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
             }}
             onClick={c.onClick}>
             <div style={{ position:"absolute", bottom:-30, right:-30, width:90, height:90, borderRadius:"50%", background: DT.dark ? `radial-gradient(circle,${cAccent}1a 0%,transparent 70%)` : "rgba(255,255,255,0.10)" }} />
-            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:9 }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" style={{ position:"absolute", top:13, right:13 }}><polyline points="9 18 15 12 9 6"/></svg>
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"center", marginBottom:9 }}>
               <div style={{ background: DT.dark ? `${cAccent}1a` : "rgba(255,255,255,0.22)", border: DT.dark ? `1px solid ${cAccent}33` : "1px solid rgba(255,255,255,0.3)", borderRadius:9, padding:"5px 7px" }}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">{c.iconPath}</svg>
               </div>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
             </div>
-            <div style={{ color:valueColor, fontWeight:900, fontSize: typeof c.value === "number" ? 26 : 15, letterSpacing:-0.5, lineHeight:1, textShadow: DT.dark ? `0 0 16px ${cAccent}44` : "none", marginBottom:4 }}>{c.value}<span style={{ fontSize:11, fontWeight:700, marginLeft:4 }}>{c.unit}</span></div>
-            <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, display:"flex", alignItems:"center", gap:6 }}>
+            <div style={ DT.dark
+              ? { ...neonNumStyle(cAccent, typeof c.value === "number" ? 26 : 15), marginBottom:4, textAlign:"center" }
+              : { color:valueColor, fontWeight:900, fontSize: typeof c.value === "number" ? 26 : 15, letterSpacing:-0.5, lineHeight:1, marginBottom:4, textAlign:"center" }
+            }>{c.value}<span style={{ fontSize:11, fontWeight:700, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", WebkitTextFillColor: DT.dark ? cAccent : undefined }}>{c.unit}</span></div>
+            <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
               {c.label}
               {showOutBadge && isStockOutCard && (
                 <span style={{ display:"inline-flex", alignItems:"center", gap:4, background:"#ef4444", color:"#fff", fontWeight:900, fontSize:10, borderRadius:20, padding:"2px 8px", letterSpacing:0.5,
@@ -20293,7 +20318,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                 </span>
               )}
             </div>
-            <div style={{ color:subColor, fontWeight:600, fontSize:10 }}>{c.sub}</div>
+            <div style={{ color:subColor, fontWeight:600, fontSize:10, textAlign:"center" }}>{c.sub}</div>
           </div>
           );
         })}
@@ -20339,7 +20364,10 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                   <span style={{ background:"#ef4444", color:"#fff", fontWeight:900, fontSize:9.5, borderRadius:20, padding:"2px 7px" }}>EXPIRED</span>
                 )}
               </div>
-              <div style={{ color: DT.dark?"#fca5a5":"#fff", fontWeight:900, fontSize:22, letterSpacing:-0.5, marginBottom:3 }}>{expiredBatches.length}<span style={{ fontSize:11, fontWeight:700, marginLeft:4 }}>টি ব্যাচ</span></div>
+              <div style={ DT.dark
+                ? { ...neonNumStyle("#fca5a5", 22), marginBottom:3 }
+                : { color:"#fff", fontWeight:900, fontSize:22, letterSpacing:-0.5, marginBottom:3 }
+              }>{expiredBatches.length}<span style={{ fontSize:11, fontWeight:700, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", WebkitTextFillColor: DT.dark ? "#fca5a5" : undefined }}>টি ব্যাচ</span></div>
               <div style={{ color: DT.dark?"#e2e8f0":"rgba(255,255,255,0.92)", fontWeight:800, fontSize:11.5, marginBottom:2 }}>মেয়াদোত্তীর্ণ</div>
               <div style={{ color: DT.dark?"#64748b":"rgba(255,255,255,0.7)", fontSize:9.5 }}>{expiredBatches.length>0?"ক্লিক করে দেখুন":"কোনো মেয়াদোত্তীর্ণ নেই"}</div>
             </div>
@@ -20363,7 +20391,10 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                   <span style={{ background:"#f59e0b", color:"#fff", fontWeight:900, fontSize:9.5, borderRadius:20, padding:"2px 7px" }}>NEAR</span>
                 )}
               </div>
-              <div style={{ color: DT.dark?"#fde68a":"#fff", fontWeight:900, fontSize:22, letterSpacing:-0.5, marginBottom:3 }}>{nearExpiryBatches.length}<span style={{ fontSize:11, fontWeight:700, marginLeft:4 }}>টি ব্যাচ</span></div>
+              <div style={ DT.dark
+                ? { ...neonNumStyle("#fde68a", 22), marginBottom:3 }
+                : { color:"#fff", fontWeight:900, fontSize:22, letterSpacing:-0.5, marginBottom:3 }
+              }>{nearExpiryBatches.length}<span style={{ fontSize:11, fontWeight:700, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", WebkitTextFillColor: DT.dark ? "#fde68a" : undefined }}>টি ব্যাচ</span></div>
               <div style={{ color: DT.dark?"#e2e8f0":"rgba(255,255,255,0.92)", fontWeight:800, fontSize:11.5, marginBottom:2 }}>মেয়াদ শেষের কাছে</div>
               <div style={{ color: DT.dark?"#64748b":"rgba(255,255,255,0.7)", fontSize:9.5 }}>৩ মাসের মধ্যে মেয়াদ শেষ</div>
             </div>
@@ -24800,7 +24831,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               <span style={{ color: DT.dark ? "#cbd5e1" : "#fff", fontSize:12.5, fontWeight:800 }}>আজকের ক্যাশ ড্রয়ার</span>
             </div>
             <div style={{ display:"flex", alignItems:"center", gap:6 }}>
-              <span style={{ color:"#fff", fontWeight:900, fontSize:18 }}>৳{fmt(todayCashDrawerNow)}</span>
+              <span style={neonNumStyle("#4ade80", 18)}>৳{fmt(todayCashDrawerNow)}</span>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={DT.dark ? "#94a3b8" : "#ffffffcc"} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
             </div>
           </div>
@@ -24912,14 +24943,14 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               }}
               onClick={c.onClick}>
               <div style={{ position:"absolute", bottom:-30, right:-30, width:90, height:90, borderRadius:"50%", background: DT.dark ? `radial-gradient(circle,${cAccent}1a 0%,transparent 70%)` : "rgba(255,255,255,0.10)" }} />
-              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:c.isProfit ? 3 : 9 }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" style={{ position:"absolute", top:13, right:13 }}><polyline points="9 18 15 12 9 6"/></svg>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8, marginBottom:c.isProfit ? 3 : 9 }}>
                 <div style={{ background: DT.dark ? `${cAccent}1a` : "rgba(255,255,255,0.22)", border: DT.dark ? `1px solid ${cAccent}33` : "1px solid rgba(255,255,255,0.3)", borderRadius:9, padding:"5px 7px" }}>
                   {c.iconPath && <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">{c.iconPath}</svg>}
                 </div>
                 {c.isProfit && (
                   <div style={{ fontSize:9, fontWeight:800, color: DT.dark ? cAccent : "rgba(255,255,255,0.85)", letterSpacing:0.4, opacity:0.85 }}>আজকের নেট ফলাফল</div>
                 )}
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
               </div>
               {/* কার্ডের উপরে অতিরিক্ত তথ্য (যেমন: নিজের ব্যবহারের ক্রয়মূল্য) */}
               {c.topNote && (
@@ -24973,10 +25004,10 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   </div>
                 );
               })() : (
-                <div style={{ color:valueColor, fontWeight:900, fontSize:34, letterSpacing:-0.5, lineHeight:1, textShadow: DT.dark ? `0 0 20px ${cAccent}55` : "none", marginBottom:4 }}>{c.value}</div>
+                <div style={ DT.dark ? { ...neonNumStyle(cAccent, 34), marginBottom:4, textAlign:"center" } : { color:valueColor, fontWeight:900, fontSize:34, letterSpacing:-0.5, lineHeight:1, marginBottom:4, textAlign:"center" } }>{c.value}</div>
               )}
-              <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2 }}>{c.label}</div>
-              <div style={{ color:subColor, fontWeight:600, fontSize:10 }}>{c.sub}</div>
+              <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, textAlign:"center" }}>{c.label}</div>
+              <div style={{ color:subColor, fontWeight:600, fontSize:10, textAlign:"center" }}>{c.sub}</div>
             </div>
             );
           })}
@@ -25030,15 +25061,15 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               }}
               onClick={() => setDashModal(c.modal)}>
               <div style={{ position:"absolute", bottom:-30, right:-30, width:90, height:90, borderRadius:"50%", background: DT.dark ? `radial-gradient(circle,${cAccent}1a 0%,transparent 70%)` : "rgba(255,255,255,0.10)" }} />
-              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:9 }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" style={{ position:"absolute", top:13, right:13 }}><polyline points="9 18 15 12 9 6"/></svg>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"center", marginBottom:9 }}>
                 <div style={{ background: DT.dark ? `${cAccent}1a` : "rgba(255,255,255,0.22)", border: DT.dark ? `1px solid ${cAccent}33` : "1px solid rgba(255,255,255,0.3)", borderRadius:9, padding:"5px 7px" }}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">{c.iconPath}</svg>
                 </div>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
               </div>
-              <div style={{ color:valueColor, fontWeight:900, fontSize:34, letterSpacing:-0.5, lineHeight:1, textShadow: DT.dark ? `0 0 20px ${cAccent}55` : "none", marginBottom:4 }}>{c.value}</div>
-              <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2 }}>{c.label}</div>
-              <div style={{ color:subColor, fontWeight:600, fontSize:10 }}>{c.sub}</div>
+              <div style={ DT.dark ? { ...neonNumStyle(cAccent, 34), marginBottom:4, textAlign:"center" } : { color:valueColor, fontWeight:900, fontSize:34, letterSpacing:-0.5, lineHeight:1, marginBottom:4, textAlign:"center" } }>{c.value}</div>
+              <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, textAlign:"center" }}>{c.label}</div>
+              <div style={{ color:subColor, fontWeight:600, fontSize:10, textAlign:"center" }}>{c.sub}</div>
             </div>
             );
           })}
