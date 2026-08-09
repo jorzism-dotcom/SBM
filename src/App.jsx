@@ -8298,6 +8298,10 @@ function shadeColor(hex, percent) {
 // মোটা দেখাবে, ডার্ক থিমে গ্লো-ও বজায় থাকবে।
 function neonNumStyle(isDark, size = 34) {
   const color = isDark ? "#F8FAFC" : "#0B1220";
+  // 🔴 ফিক্স (৯ আগস্ট ২০২৬ — "ছোট কার্ডে ওভারফ্লো" বাগ): স্ট্রোক আগে সবসময় 1.3px
+  // ফিক্সড ছিল, যেটা বড় সাইজে (৪৬px) ঠিক থাকলেও কার্ডে জায়গা বেশি খেয়ে ফেলত।
+  // এখন সাইজ অনুপাতে স্ট্রোক স্কেল হয় (২২px-এ ≈০.৬px), তাই সরু কার্ডেও লাইন ভাঙে না।
+  const stroke = Math.max(0.5, +(size * 1.3 / 46).toFixed(2));
   return {
     fontFamily: "'Anton','Noto Sans Bengali',sans-serif",
     fontWeight: 900,
@@ -8307,7 +8311,7 @@ function neonNumStyle(isDark, size = 34) {
     display: "block",
     width: "100%",
     color,
-    WebkitTextStroke: `1.3px ${color}`,
+    WebkitTextStroke: `${stroke}px ${color}`,
     textShadow: isDark
       ? `1px 0 0 ${color}, -1px 0 0 ${color}, 0 1px 0 ${color}, 0 -1px 0 ${color}, 0.7px 0.7px 0 ${color}, -0.7px 0.7px 0 ${color}, 0.7px -0.7px 0 ${color}, -0.7px -0.7px 0 ${color}, 0 0 14px rgba(248,250,252,0.3)`
       : `1px 0 0 ${color}, -1px 0 0 ${color}, 0 1px 0 ${color}, 0 -1px 0 ${color}, 0.7px 0.7px 0 ${color}, -0.7px 0.7px 0 ${color}, 0.7px -0.7px 0 ${color}, -0.7px -0.7px 0 ${color}`,
@@ -14435,7 +14439,7 @@ function SmartBusinessMgmt() {
       {/* ── Gemini-style Background ──────────────────── */}
       <div data-mesh="1" style={{ position:"fixed", inset:0, zIndex:0, pointerEvents:"none", background: currentPreset.bg }} />
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Bengali:wght@400;500;700;800&family=Hind+Siliguri:wght@400;500;600;700;800&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Bengali:wght@400;500;700;800&family=Hind+Siliguri:wght@400;500;600;700;800&family=Anton&display=swap');
 
         /* ── Core Animations ─────────────────────────── */
         @keyframes spin       { to { transform: rotate(360deg); } }
@@ -14651,6 +14655,15 @@ function SmartBusinessMgmt() {
         button { font-size: var(--app-font-size) !important; }
         input, textarea, select { font-size: calc(var(--app-font-size) + 1px) !important; font-weight: 700 !important; }
         h1,h2,h3,h4 { font-weight: 900 !important; font-size: calc(var(--app-font-size) + 4px) !important; }
+
+        /* 🔴 ফিক্স (৯ আগস্ট ২০২৬ — "ডিজিট সাইজ বড় হচ্ছে না" বাগ): উপরের গ্লোবাল
+           "span, div, p... !important" রুল সব ইনলাইন fontSize (যেমন neonNumStyle()-এর
+           fontSize:46) কে চাপা দিয়ে দিচ্ছিল, কারণ !important সবসময় ইনলাইন স্টাইলের
+           চেয়ে জেতে। এই ক্লাসটা নিচে (তাই CSS cascade-এ পরে) বসানো হলো, যাতে সমান
+           !important-এর মধ্যে source-order অনুযায়ী এটাই শেষ পর্যন্ত জেতে — KPI
+           কার্ডের বড় ডিজিট (neonNumStyle 46px) সহ যেকোনো জায়গায় সত্যিকারের বড় সাইজ
+           বজায় থাকবে, গ্লোবাল ফন্ট-সাইজ বুস্ট সেটিং যা-ই হোক না কেন। */
+        .kpi-value-lg { font-size: 22px !important; }
 
         /* ── Content z-index above mesh ─────────────── */
         header, main, nav { position: relative; z-index: 1; }
@@ -25041,7 +25054,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   </div>
                 );
               })() : (
-                <div style={{ ...neonNumStyle(DT.dark, 46), marginBottom:4, textAlign:"center" }}>{c.value}</div>
+                <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 22), marginBottom:4, textAlign:"center" }}>{c.value}</div>
               )}
               <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, textAlign:"center" }}>{c.label}</div>
               <div style={{ color:subColor, fontWeight:600, fontSize:10, textAlign:"center" }}>{c.sub}</div>
@@ -25105,7 +25118,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">{c.iconPath}</svg>
                 </div>
               </div>
-              <div style={{ ...neonNumStyle(DT.dark, 46), marginBottom:4, textAlign:"center" }}>{c.value}</div>
+              <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 22), marginBottom:4, textAlign:"center" }}>{c.value}</div>
               <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, textAlign:"center" }}>{c.label}</div>
               <div style={{ color:subColor, fontWeight:600, fontSize:10, textAlign:"center" }}>{c.sub}</div>
             </div>
