@@ -18870,16 +18870,34 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                   color: selCust?.id === c.id ? IS.priceText : IS.sub,
                   border: selCust?.id === c.id ? IS.priceBorder : IS.cardBorder,
                 }}>{c.serial}</div>
-                {/* Info */}
-                <div style={{ flex: 1, minWidth: 0 }}>
+                {/* Info — 🔁 (ইউজার-রিকোয়েস্টে ফিক্স) নাম ও মোবাইল এখন আলাদা আলাদা
+                    রাউন্ড কালারফুল পিলের মধ্যে দেখানো হচ্ছে, প্লেইন টেক্সট নয়। */}
+                <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
                   <div style={{
-                    color: selCust?.id === c.id ? IS.accent : IS.text,
-                    fontWeight: 700, fontSize: 13,
-                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                  }}>{c.name}</div>
-                  <div style={{ color: IS.sub, fontSize: 10, marginTop: 1 }}>{c.mobile}</div>
+                    display: "inline-flex", alignSelf: "flex-start", maxWidth: "100%",
+                    background: selCust?.id === c.id ? IS.accentSoft : `${IS.accent}14`,
+                    border: `1px solid ${IS.accent}40`,
+                    borderRadius: 20, padding: "3px 10px",
+                  }}>
+                    <span style={{
+                      color: selCust?.id === c.id ? IS.accent : IS.text,
+                      fontWeight: 800, fontSize: 12.5,
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    }}>{c.name}</span>
+                  </div>
+                  {c.mobile && (
+                    <div style={{
+                      display: "inline-flex", alignSelf: "flex-start", alignItems: "center", gap: 5,
+                      background: "#3b82f614", border: "1px solid #3b82f62a",
+                      borderRadius: 20, padding: "2px 8px 2px 6px",
+                    }}>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2.7" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                      <span style={{ color: IS.text, fontSize: 10.5, fontWeight: 800 }}>{c.mobile}</span>
+                    </div>
+                  )}
                 </div>
-                {/* Balance badge */}
+                {/* Balance badge — 🔁 (ইউজার-রিকোয়েস্টে ফিক্স) "পরিষ্কার" → "পরিশোধ",
+                    এবং এখন "বাকি" পিলের সাথে হুবহু একই স্টাইলে (border+shadow), শুধু সবুজ রঙে। */}
                 <div style={{ flexShrink: 0 }}>
                   {c.balance > 0
                     ? <div style={{
@@ -18888,10 +18906,10 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                         fontSize: 10, fontWeight: 800, boxShadow: IS.priceShadow, textShadow: IS.priceTextShadow,
                       }}>বাকি ৳{fmt(c.balance)}</div>
                     : <div style={{
-                        background: IS.accentSoft, border: `1px solid ${IS.accent}55`,
-                        color: IS.accent, borderRadius: IS.id === "t5" ? 10 : 4, padding: "3px 9px",
-                        fontSize: 10, fontWeight: 700,
-                      }}>✓ পরিষ্কার</div>
+                        background: "#16a34a", border: IS.priceBorder,
+                        color: "#fff", borderRadius: IS.id === "t5" ? 10 : 4, padding: "3px 9px",
+                        fontSize: 10, fontWeight: 800, boxShadow: IS.priceShadow, textShadow: IS.priceTextShadow,
+                      }}>✓ পরিশোধ</div>
                   }
                 </div>
               </div>
@@ -19811,20 +19829,10 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 background: IS.cardBg, "--qc-card-bg": IS.cardBg, border: IS.cardBorder, borderRadius: IS.id === "t5" ? (S.card?.borderRadius ?? 14) : 0,
                 boxShadow: IS.id === "t5" ? "none" : "none",
               }}>
-              {/* মোট খরচ — ইনভয়েস রিসিপ্ট পেজের মোট খরচ বারের সাথে হুবহু (কমলা সলিড বার) */}
-              <div style={{
-                  display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8,
-                  background: IS.accent, border: "1.5px solid #17171a", borderRadius: 10,
-                  padding: "9px 12px",
-                }}>
-                <span style={{ fontWeight: 800, fontSize: 13, color: "#fff" }}>মোট খরচ</span>
-                <span style={{
-                  fontWeight: 900, fontSize: 17, color: IS.accent, background: "#fff",
-                  borderRadius: 999, padding: "3px 14px",
-                }}>৳{fmt(total)}</span>
-              </div>
+              {/* 🔁 (ইউজার-রিকোয়েস্টে ফিক্স) "পরিশোধ পদ্ধতি" এখন "মোট খরচ" বারের উপরে —
+                  আগে নিচে ছিল, ইউজার অনুরোধে ক্রম পাল্টানো হয়েছে। */}
               {/* পরিশোধ পদ্ধতি */}
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, color: T.sub, marginBottom: (prevBalance > 0 || displayBakiAmt > 0) ? 8 : 0 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, color: T.sub, marginBottom: 8 }}>
                 <span>পরিশোধ পদ্ধতি</span>
                 <span style={{
                   color: "#fff", fontWeight:800, fontSize: 12.5,
@@ -19839,6 +19847,18 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                     : payType==="partial" ? `আংশিক — নগদ ৳${fmt(paidAmt)}`
                     : "নগদ পরিশোধ"}
                 </span>
+              </div>
+              {/* মোট খরচ — ইনভয়েস রিসিপ্ট পেজের মোট খরচ বারের সাথে হুবহু (কমলা সলিড বার) */}
+              <div style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: (prevBalance > 0 || displayBakiAmt > 0) ? 8 : 0,
+                  background: IS.accent, border: "1.5px solid #17171a", borderRadius: 10,
+                  padding: "9px 12px",
+                }}>
+                <span style={{ fontWeight: 800, fontSize: 13, color: "#fff" }}>মোট খরচ</span>
+                <span style={{
+                  fontWeight: 900, fontSize: 17, color: IS.accent, background: "#fff",
+                  borderRadius: 999, padding: "3px 14px",
+                }}>৳{fmt(total)}</span>
               </div>
               {/* পূর্বের বাকি — registered customer অথবা walk-in ফ্লো-তে বেছে নেওয়া পুরোনো কাস্টমার */}
               {((selCust && selCust.id !== "__walkin__" && selCust.id !== "__selfuse__") || walkInExistingCust) && prevBalance > 0 && (
@@ -20391,18 +20411,24 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                 ? <span className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>{c.unit}</span>
                 : <span style={{ fontSize:12, fontWeight:800, marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif", color:cAccent }}>{c.unit}</span>
             )}</div>
-            <div className={isOrderCard ? "kpi-value-lg" : undefined} style={{
-              color: isOrderCard ? "#000000" : labelColor,
-              fontWeight: 900,
-              fontSize: isOrderCard ? 24 : 12,
-              fontFamily: isOrderCard ? "'Noto Sans Bengali',sans-serif" : undefined,
-              letterSpacing: isOrderCard ? 0.2 : undefined,
-              lineHeight: isOrderCard ? 1 : undefined,
-              marginBottom:2, textAlign:"center"
-            }}>
-              {c.label}
-            </div>
-            <div style={{ color:subColor, fontWeight:800, fontSize:11.5, textAlign:"center" }}>{c.sub}</div>
+            {/* 🔁 (ইউজার-রিকোয়েস্টে ফিক্স) "বর্তমান স্টক/স্টক আউট/ক্রিটিক্যাল স্টক" কার্ডে
+                উপরের ডুপ্লিকেট bold লেবেল লাইন সরানো হয়েছে — নিচের sub লাইনেই একই তথ্য
+                আছে। শুধু "ক্রয় অর্ডার" কার্ডের বড় লেবেলটা রাখা হয়েছে (এটার কোনো আলাদা sub
+                নেই, "স্টক দেখে অর্ডার করুন" এখনো sub হিসেবেই দেখাচ্ছে)। */}
+            {isOrderCard && (
+              <div className="kpi-value-lg" style={{
+                color: "#000000",
+                fontWeight: 900,
+                fontSize: 24,
+                fontFamily: "'Noto Sans Bengali',sans-serif",
+                letterSpacing: 0.2,
+                lineHeight: 1,
+                marginBottom:4, textAlign:"center"
+              }}>
+                {c.label}
+              </div>
+            )}
+            <div style={{ color:subColor, fontWeight:800, fontSize:11.5, textAlign:"center", marginTop: isOrderCard ? 0 : 4 }}>{c.sub}</div>
           </div>
           );
         })}
@@ -20455,9 +20481,11 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                   </span>
                 )}
               </div>
-              <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), marginBottom:3, textAlign:"center" }
+              <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), marginBottom:4, textAlign:"center" }
               }>{expiredBatches.length}<span className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>টি ব্যাচ</span></div>
-              <div style={{ color: DT.dark?"#e2e8f0":expTtc.label, fontWeight:800, fontSize:11.5, marginBottom:2, textAlign:"center" }}>মেয়াদোত্তীর্ণ</div>
+              {/* 🔁 (ইউজার-রিকোয়েস্টে ফিক্স) "মেয়াদোত্তীর্ণ" লেবেল লাইন সরানো হয়েছে,
+                  sub লাইনেই একই তথ্য আছে। value-এর marginBottom 3→4 করা হয়েছে যাতে
+                  বাকি সব কার্ডের মতো কালো ভ্যালু থেকে sub-এর দূরত্ব একই থাকে। */}
               <div style={{ color: DT.dark?"#64748b":expTtc.sub, fontWeight:800, fontSize:11, textAlign:"center" }}>{expiredBatches.length>0?"মেয়াদোত্তীর্ণ(EXPIRED)":"কোনো মেয়াদোত্তীর্ণ নেই"}</div>
             </div>
 
@@ -20485,9 +20513,11 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                   </span>
                 )}
               </div>
-              <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), marginBottom:3, textAlign:"center" }
+              <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), marginBottom:4, textAlign:"center" }
               }>{nearExpiryBatches.length}<span className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>টি ব্যাচ</span></div>
-              <div style={{ color: DT.dark?"#e2e8f0":nearTtc.label, fontWeight:800, fontSize:11.5, marginBottom:2, textAlign:"center" }}>মেয়াদ শেষের কাছে</div>
+              {/* 🔁 (ইউজার-রিকোয়েস্টে ফিক্স) "মেয়াদ শেষের কাছে" লেবেল লাইন সরানো হয়েছে,
+                  sub লাইনেই একই তথ্য আছে। value-এর marginBottom 3→4 করা হয়েছে যাতে
+                  বাকি সব কার্ডের মতো দূরত্ব একই থাকে। */}
               <div style={{ color: DT.dark?"#64748b":nearTtc.sub, fontWeight:800, fontSize:11, textAlign:"center" }}>৩ মাসের মধ্যে মেয়াদ শেষ</div>
             </div>
           </div>
@@ -25143,7 +25173,10 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               })() : (
                 <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), marginBottom:4, textAlign:"center" }}>{c.value}</div>
               )}
-              <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, textAlign:"center" }}>{c.label}</div>
+              {/* 🔁 (ইউজার-রিকোয়েস্টে ফিক্স) কার্ডের উপরের ডুপ্লিকেট bold লেবেল লাইন
+                  ("আজকের বিক্রয়" ইত্যাদি) সরানো হয়েছে — নিচের sub লাইনেই একই তথ্য
+                  আছে। ভ্যালুর marginBottom:4 আছে, তাই সব কার্ডেই কালো ভ্যালু থেকে
+                  একই দূরত্বে sub টেক্সট বসছে। */}
               <div style={{ color:subColor, fontWeight:800, fontSize:11.5, textAlign:"center" }}>{c.sub}</div>
             </div>
             );
@@ -25209,7 +25242,8 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                 </div>
               </div>
               <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), marginBottom:4, textAlign:"center" }}>{c.value}</div>
-              <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, textAlign:"center" }}>{c.label}</div>
+              {/* 🔁 (ইউজার-রিকোয়েস্টে ফিক্স) "মোট বাকি" / "আজকের বাকি আদায়" কার্ডের
+                  উপরের ডুপ্লিকেট bold লেবেল লাইন সরানো হয়েছে — sub লাইনেই একই তথ্য আছে। */}
               <div style={{ color:subColor, fontWeight:800, fontSize:11.5, textAlign:"center" }}>{c.sub}</div>
             </div>
             );
@@ -25603,47 +25637,58 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
             return (
           <div key={c.id} className="qc-gradient-card"
             onClick={() => onOpenDetail(c.id)}
-            style={{ ...S.custCard, marginBottom: 8, position:"relative", overflow:"hidden", cursor:"pointer" }}>
+            style={{ ...S.custCard, padding:"9px 11px", marginBottom: 7, position:"relative", overflow:"hidden", cursor:"pointer" }}>
             {/* Dynamic background glow */}
             <div style={{ position:"absolute", top:-20, right:-20, width:100, height:100, borderRadius:"50%", background: c.balance > 0 ? "radial-gradient(circle,#ef444414 0%,transparent 70%)" : "radial-gradient(circle,#22c55e14 0%,transparent 70%)", pointerEvents:"none" }} />
-            {/* সিঙ্গেল রো: প্রিমিয়াম অ্যাভাটার + নাম/মোবাইল/ঠিকানা + বাকি ব্যাজ + শেভরন */}
-            <div style={{ display: "flex", alignItems: "center", gap: 11, position:"relative", zIndex:1 }}>
+            {/* সিঙ্গেল রো: প্রিমিয়াম অ্যাভাটার + নাম/মোবাইল/ঠিকানা (আলাদা কালারফুল পিলে) + বাকি/পরিশোধ ব্যাজ + শেভরন
+                🔁 (ইউজার-রিকোয়েস্টে রিডিজাইন) নাম ও ঠিকানাও এখন রাউন্ড কালারফুল পিলে, এবং
+                বাকি/পরিশোধ ব্যাজ ইনভয়েস কাস্টমার-সিলেকশন পেইজের পিলের সাথে হুবহু মিলিয়ে (একই
+                বর্ডার+হার্ড-শ্যাডো, শুধু রঙ ভিন্ন) — কার্ড আরও কমপ্যাক্ট (padding/gap কমানো হয়েছে)। */}
+            <div style={{ display: "flex", alignItems: "center", gap: 9, position:"relative", zIndex:1 }}>
               {/* Avatar — প্রিমিয়াম রিং সহ */}
               <div style={{
-                width:42, height:42, borderRadius:"50%", flexShrink:0, position:"relative",
+                width:38, height:38, borderRadius:"50%", flexShrink:0, position:"relative",
                 background: c.balance > 0 ? "linear-gradient(145deg,#b91c1c,#ef4444)" : "linear-gradient(145deg,#15803d,#22c55e)",
                 display:"flex", alignItems:"center", justifyContent:"center",
                 boxShadow: c.balance > 0 ? "0 0 0 3px #ef444422, 0 4px 12px #ef444455" : "0 0 0 3px #22c55e22, 0 4px 12px #22c55e55",
               }}>
-                <span style={{ color:"#fff", fontWeight:900, fontSize:15, letterSpacing:-0.3 }}>{c.serial}</span>
+                <span style={{ color:"#fff", fontWeight:900, fontSize:14, letterSpacing:-0.3 }}>{c.serial}</span>
               </div>
               {/* Info block */}
-              <div style={{ minWidth: 0, flex:1 }}>
-                <div style={{ display:"flex", alignItems:"center", gap:5, marginBottom:3 }}>
-                  <span style={{ color: T.text, fontWeight:900, fontSize:16, letterSpacing:0.1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+              <div style={{ minWidth: 0, flex:1, display:"flex", flexDirection:"column", gap:3 }}>
+                <div style={{
+                  display:"inline-flex", alignSelf:"flex-start", maxWidth:"100%",
+                  background:"#3b82f61c", border:"1px solid #3b82f640",
+                  borderRadius:20, padding:"2px 9px",
+                }}>
+                  <span style={{ color: T.text, fontWeight:800, fontSize:13, letterSpacing:0.1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
                     <HighlightText text={c.name} query={search} highlightColor="#3b82f6" />
                   </span>
                 </div>
                 {c.mobile && (
-                  <div style={{ display:"inline-flex", alignItems:"center", gap:5, background:"#3b82f614", border:"1px solid #3b82f62a", borderRadius:20, padding:"2px 8px 2px 6px", marginBottom: c.address ? 3 : 0 }}>
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2.7" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
-                    <span style={{ color: T.text, fontSize: 12.5, fontWeight: 800 }}>{c.mobile}</span>
+                  <div style={{ display:"inline-flex", alignSelf:"flex-start", alignItems:"center", gap:5, background:"#3b82f614", border:"1px solid #3b82f62a", borderRadius:20, padding:"2px 8px 2px 6px" }}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2.7" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                    <span style={{ color: T.text, fontSize: 11, fontWeight: 800 }}>{c.mobile}</span>
                   </div>
                 )}
                 {c.address && (
-                  <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={T.sub} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
-                    <span style={{ color: T.sub, fontSize: 11.5, fontWeight: 700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.address}</span>
+                  <div style={{ display:"inline-flex", alignSelf:"flex-start", alignItems:"center", gap:4, background:`${T.sub}18`, border:`1px solid ${T.sub}33`, borderRadius:20, padding:"2px 8px 2px 6px", maxWidth:"100%" }}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={T.sub} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                    <span style={{ color: T.sub, fontSize: 10.5, fontWeight: 700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.address}</span>
                   </div>
                 )}
               </div>
-              {/* Balance + chevron */}
-              <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 4, display:"flex", flexDirection:"column", alignItems:"flex-end", gap:5 }}>
-                <div>
-                  <div style={{ color: c.balance > 0 ? "#ef4444" : "#22c55e", fontWeight: 900, fontSize: 18, letterSpacing:-0.3, textShadow: `0 0 12px ${c.balance > 0 ? "#ef4444" : "#22c55e"}44` }}>৳{fmt(Math.abs(c.balance))}</div>
-                  <div style={{ background: c.balance > 0 ? "#ef444418" : "#22c55e18", color: c.balance > 0 ? "#f87171" : "#4ade80", fontSize: 10, fontWeight: 800, borderRadius:7, padding:"1px 7px", marginTop:3, border: `1px solid ${c.balance > 0 ? "#ef444433" : "#22c55e33"}` }}>
-                    {c.balance > 0 ? "বাকি আছে" : c.balance < 0 ? "অগ্রিম জমা আছে" : "✓ পরিশোধ"}
-                  </div>
+              {/* Balance + chevron — বাকি/পরিশোধ পিল এখন ইনভয়েস কাস্টমার-সিলেকশন পেইজের
+                  পিলের সাথে হুবহু (bg + 1px কালো/গ্রে বর্ডার + hard shadow), শুধু রঙ ভিন্ন */}
+              <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 2, display:"flex", flexDirection:"column", alignItems:"flex-end", gap:5 }}>
+                <div style={{
+                  background: c.balance > 0 ? (T.dark ? "#ff6a45" : "#ff5a36") : c.balance < 0 ? "#3b82f6" : "#16a34a",
+                  border: T.dark ? "1px solid #454b5a" : "1px solid #17171a",
+                  boxShadow: T.dark ? "3px 3px 0 #00000066" : "3px 3px 0 #17171a",
+                  color: "#fff", borderRadius: 10, padding: "3px 9px",
+                  fontSize: 11, fontWeight: 800, whiteSpace:"nowrap",
+                }}>
+                  {c.balance > 0 ? `বাকি ৳${fmt(c.balance)}` : c.balance < 0 ? `অগ্রিম ৳${fmt(Math.abs(c.balance))}` : "✓ পরিশোধ"}
                 </div>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#60a5fa88" strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
               </div>
@@ -25808,19 +25853,24 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
   return (
     <div style={S.page}>
       {/* Customer hero card — compact modern design */}
-      <div style={{ background: "linear-gradient(145deg,#0f172a,#1e293b,#0f1f3d)", borderRadius: 18, padding: "14px 16px 14px", marginBottom: 12, boxShadow: "0 6px 24px #00000055, 0 0 0 1px #60a5fa1a", position: "relative", overflow: "hidden" }}>
+      {/* Customer hero card — compact modern design
+          🔁 (ইউজার-রিকোয়েস্টে রিডিজাইন) নাম/মোবাইল/সিরিয়াল ব্যাজ/কল/WhatsApp বাটন সরানো
+          হয়েছে (এগুলো উপরের গ্রিন হেডারে আগে থেকেই আছে) — বাকি/পরিশোধ পিল এখন কার্ডের
+          একদম উপরে, মিডিল-এলাইন্ড, বড় ও কালারফুল। এডিট/ডিলিট বাটন বড় করা হয়েছে এবং
+          কার্ডটি আরও কমপ্যাক্ট করা হয়েছে। */}
+      <div style={{ background: "linear-gradient(145deg,#0f172a,#1e293b,#0f1f3d)", borderRadius: 16, padding: "12px 14px 12px", marginBottom: 12, boxShadow: "0 6px 24px #00000055, 0 0 0 1px #60a5fa1a", position: "relative", overflow: "hidden" }}>
         {/* Background shimmer */}
         <div style={{ position:"absolute", inset:0, background:"radial-gradient(ellipse at 20% 20%, #60a5fa0d 0%, transparent 55%), radial-gradient(ellipse at 80% 80%, #3b82f60d 0%, transparent 55%)", pointerEvents:"none" }} />
         {/* 🆕 এডিট/ডিলিট — তালিকা পেজ থেকে সরিয়ে এখানে আনা হয়েছে (ইউজার-রিকোয়েস্ট, ৯ আগস্ট ২০২৬) */}
         {canEdit && !deleteConfirming && (
-          <div style={{ position:"absolute", top:10, right:10, display:"flex", gap:6, zIndex:2 }}>
+          <div style={{ position:"absolute", top:10, right:10, display:"flex", gap:8, zIndex:2 }}>
             <button onClick={openEdit} title="এডিট করুন"
-              style={{ width:30, height:30, borderRadius:9, background:"rgba(14,165,233,0.16)", border:"1px solid rgba(14,165,233,0.4)", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+              style={{ width:40, height:40, borderRadius:11, background:"rgba(14,165,233,0.16)", border:"1px solid rgba(14,165,233,0.4)", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" }}>
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
             </button>
             <button onClick={() => setDeleteConfirming(true)} title="ডিলিট করুন"
-              style={{ width:30, height:30, borderRadius:9, background:"rgba(239,68,68,0.14)", border:"1px solid rgba(239,68,68,0.4)", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", color:"#f87171" }}>
-              <IcTrash />
+              style={{ width:40, height:40, borderRadius:11, background:"rgba(239,68,68,0.14)", border:"1px solid rgba(239,68,68,0.4)", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", color:"#f87171" }}>
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
             </button>
           </div>
         )}
@@ -25831,42 +25881,21 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
             <button onClick={() => setDeleteConfirming(false)} style={{ background:"rgba(255,255,255,0.12)", color:"#e5e7eb", border:"none", borderRadius:8, padding:"5px 10px", fontSize:11, fontWeight:800, cursor:"pointer" }}>না</button>
           </div>
         )}
-        {/* Single row: avatar + info + balance */}
-        <div style={{ display:"flex", alignItems:"center", gap:12, position:"relative", marginTop: canEdit ? 26 : 0 }}>
-          {/* Avatar */}
-          <div style={{ width:46, height:46, borderRadius:"50%", background:"linear-gradient(135deg,#3b82f6,#1d4ed8)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, boxShadow:"0 0 0 2px #60a5fa44, 0 4px 12px #00000044", position:"relative" }}>
-            <div style={{ position:"absolute", inset:0, borderRadius:"50%", border:"2px solid transparent", borderTopColor:"#60a5fa", animation:"spin 3s linear infinite" }} />
-            <span style={{ fontSize:16, fontWeight:900, color:"#fff" }}>{customers.findIndex(c => c.id === customer.id) + 1}</span>
+        {/* বাকি/পরিশোধ পিল — এখন কার্ডের উপরে, মিডিল-এলাইন্ড, বড়, কালারফুল */}
+        <div style={{ display:"flex", justifyContent:"center", position:"relative", marginTop: canEdit ? 44 : 4, marginBottom: 4 }}>
+          <div style={{
+              background: customer.balance > 0 ? "linear-gradient(135deg,#ef4444,#b91c1c)" : customer.balance < 0 ? "linear-gradient(135deg,#3b82f6,#1d4ed8)" : "linear-gradient(135deg,#22c55e,#15803d)",
+              border: `2px solid ${customer.balance > 0 ? "#fca5a5" : customer.balance < 0 ? "#93c5fd" : "#86efac"}55`,
+              boxShadow: `0 4px 18px ${customer.balance > 0 ? "#ef444455" : customer.balance < 0 ? "#3b82f655" : "#22c55e55"}`,
+              borderRadius: 18, padding: "10px 26px", textAlign:"center", minWidth: 150,
+            }}>
+            <div style={{ color:"#fff", fontSize:11.5, fontWeight:800, letterSpacing:0.5, marginBottom:3, opacity:0.92, textTransform:"uppercase" }}>
+              {customer.balance < 0 ? "অগ্রিম জমা আছে" : customer.balance > 0 ? "বাকী আছে" : "✓ পরিশোধ সম্পন্ন"}
+            </div>
+            {customer.balance !== 0 && (
+              <div style={{ color:"#fff", fontWeight:900, fontSize:26, lineHeight:1 }}>৳{fmt(Math.abs(customer.balance))}</div>
+            )}
           </div>
-          {/* Name + mobile */}
-          <div style={{ flex:1, minWidth:0 }}>
-            <div style={{ color:"#fff", fontWeight:900, fontSize:16, lineHeight:1.2, marginBottom:2, textShadow:"0 0 16px rgba(96,165,250,0.4)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{customer.name}</div>
-            {customer.mobile && <div style={{ color:"#93c5fd", fontSize:11, fontWeight:700 }}>
-              {customer.mobile}
-            </div>}
-          </div>
-          {/* Balance badge */}
-          <div style={{ background: customer.balance > 0 ? "linear-gradient(135deg,#7f1d1d55,#ef444433)" : "linear-gradient(135deg,#14532d55,#22c55e33)", border:`1.5px solid ${customer.balance > 0 ? "#ef444455" : "#22c55e55"}`, borderRadius:12, padding:"6px 10px", textAlign:"center", flexShrink:0 }}>
-            <div style={{ color: customer.balance > 0 ? "#fca5a5" : "#86efac", fontSize:9, fontWeight:700, letterSpacing:0.4, marginBottom:1 }}>{customer.balance < 0 ? "অগ্রিম" : "বাকী"}</div>
-            <div style={{ color: customer.balance > 0 ? "#ef4444" : "#22c55e", fontWeight:900, fontSize:18, lineHeight:1 }}>৳{fmt(Math.abs(customer.balance))}</div>
-          </div>
-        </div>
-        {/* Action buttons row — compact */}
-        <div style={{ display:"flex", gap:8, marginTop:12, position:"relative" }}>
-          {customer.mobile && (
-            <button onClick={handleCall}
-              style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"linear-gradient(135deg,#16a34a,#22c55e)", border:"none", borderRadius:12, padding:"9px 12px", cursor:"pointer", fontFamily:"inherit", boxShadow:"0 3px 12px #22c55e33" }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
-              <span style={{ color:"#fff", fontSize:12, fontWeight:800 }}>কল করুন</span>
-            </button>
-          )}
-          {customer.mobile && (
-            <button onClick={handleWhatsApp}
-              style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"linear-gradient(135deg,#128C7E,#25D366)", border:"none", borderRadius:12, padding:"9px 12px", cursor:"pointer", fontFamily:"inherit", boxShadow:"0 3px 12px #25D36633" }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="#fff"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
-              <span style={{ color:"#fff", fontSize:12, fontWeight:800 }}>WhatsApp</span>
-            </button>
-          )}
         </div>
         {/* ইনভয়েস পিকার — সরাসরি retail */}
           {showInvoicePicker && (() => { setShowInvoicePicker(false); onGoToInvoice(customer, "retail"); return null; })()}
@@ -26691,8 +26720,22 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
             )}
           </>
         )}
+        {/* 🔁 (ইউজার-রিকোয়েস্টে ফিক্স) "পরিশোধ পদ্ধতি" এখন "মোট খরচ" বারের উপরে —
+            আগে নিচে ছিল, ইউজার অনুরোধে ক্রম পাল্টানো হয়েছে। */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: IS.text, fontSize: 13, fontWeight: 700, marginBottom: 6 }}>
+          <span>পরিশোধ পদ্ধতি</span>
+          <span style={{
+            minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5,
+            background: inv.payType==="baki" ? "#dc2626" : inv.payType==="partial" ? "#ea580c" : "#16a34a",
+            border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px", whiteSpace:"nowrap",
+          }}>
+            {inv.payType === "baki" ? `বাকি ৳${fmt(inv.total)}`
+              : inv.payType === "partial" ? `আংশিক — নগদ ৳${fmt(inv.paidAmount || 0)}`
+              : "নগদ পরিশোধ"}
+          </span>
+        </div>
         <div style={{
-            display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6,
+            display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: inv.payType === "partial" ? 7 : 5,
             background: IS.accent, border: "1.5px solid #17171a", borderRadius: IS.id === "t5" ? 10 : 0,
             clipPath: IS.id === "t10" ? IS.clipSm : "none", padding: "9px 12px", position: "relative",
           }}>
@@ -26705,18 +26748,6 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
             fontWeight: 900, fontSize: 17, color: IS.accent, background: "#fff",
             borderRadius: 999, padding: "3px 14px",
           }}>৳{fmt(inv.total)}</span>
-        </div>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: IS.text, fontSize: 13, fontWeight: 700, marginBottom: inv.payType === "partial" ? 7 : 5 }}>
-          <span>পরিশোধ পদ্ধতি</span>
-          <span style={{
-            minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5,
-            background: inv.payType==="baki" ? "#dc2626" : inv.payType==="partial" ? "#ea580c" : "#16a34a",
-            border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px", whiteSpace:"nowrap",
-          }}>
-            {inv.payType === "baki" ? `বাকি ৳${fmt(inv.total)}`
-              : inv.payType === "partial" ? `আংশিক — নগদ ৳${fmt(inv.paidAmount || 0)}`
-              : "নগদ পরিশোধ"}
-          </span>
         </div>
         {inv.payType === "partial" && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, fontWeight: 700, color: IS.text, marginBottom: 7 }}>
