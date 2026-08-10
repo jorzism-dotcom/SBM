@@ -14990,6 +14990,8 @@ function SmartBusinessMgmt() {
               setModal={setModal}
               products={products} returns={returns} currentUser={currentUser} showToast={showToast}
               voidInvoice={voidInvoice} processReturn={processReturn}
+              setCustomers={setCustomers} setDeletedCustomers={setDeletedCustomers}
+              auditLog={auditLog} onBack={() => setDetailCId(null)}
             />
           </ErrorBoundary>
         )}
@@ -20283,7 +20285,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
     {
       label:"বর্তমান স্টক", value:allStock.length, unit:"টি পণ্য",
       idx:0,
-      sub:"স্টক আছে এমন পণ্য",
+      sub:"বর্তমান স্টক",
       iconPath: <><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></>,
       onClick:()=>openPage('all'),
     },
@@ -20300,7 +20302,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
     {
       label:"স্টক আউট", value:stockOut.length, unit:"টি পণ্য",
       idx:2,
-      sub:"স্টক শেষ হয়ে গেছে",
+      sub:"স্টক আউট",
       iconPath: <><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></>,
       onClick:()=>openPage('out'),
     },
@@ -20308,7 +20310,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
       // 🔁 আগে এই পজিশনে "ক্রয় অর্ডার" ছিল, এখন "ক্রিটিক্যাল স্টক" এসেছে গ্রিডের ৪র্থ (নিচের-ডান) ঘরে।
       label:"ক্রিটিক্যাল স্টক", value:criticalStock.length, unit:"টি পণ্য",
       idx:1,
-      sub:"সীমার কাছাকাছি স্টক",
+      sub:"ক্রিটিক্যাল স্টক",
       iconPath: <><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,
       onClick:()=>openPage('critical'),
     },
@@ -20400,7 +20402,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
             }}>
               {c.label}
             </div>
-            <div style={{ color:subColor, fontWeight:600, fontSize:10, textAlign:"center" }}>{c.sub}</div>
+            <div style={{ color:subColor, fontWeight:800, fontSize:11.5, textAlign:"center" }}>{c.sub}</div>
           </div>
           );
         })}
@@ -20456,7 +20458,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
               <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), marginBottom:3, textAlign:"center" }
               }>{expiredBatches.length}<span className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>টি ব্যাচ</span></div>
               <div style={{ color: DT.dark?"#e2e8f0":expTtc.label, fontWeight:800, fontSize:11.5, marginBottom:2, textAlign:"center" }}>মেয়াদোত্তীর্ণ</div>
-              <div style={{ color: DT.dark?"#64748b":expTtc.sub, fontSize:9.5, textAlign:"center" }}>{expiredBatches.length>0?"ক্লিক করে দেখুন":"কোনো মেয়াদোত্তীর্ণ নেই"}</div>
+              <div style={{ color: DT.dark?"#64748b":expTtc.sub, fontWeight:800, fontSize:11, textAlign:"center" }}>{expiredBatches.length>0?"মেয়াদোত্তীর্ণ(EXPIRED)":"কোনো মেয়াদোত্তীর্ণ নেই"}</div>
             </div>
 
             {/* মেয়াদ শেষের কাছাকাছি */}
@@ -20486,7 +20488,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
               <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), marginBottom:3, textAlign:"center" }
               }>{nearExpiryBatches.length}<span className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), display:"inline", width:"auto", marginLeft:4, fontFamily:"'Noto Sans Bengali',sans-serif" }}>টি ব্যাচ</span></div>
               <div style={{ color: DT.dark?"#e2e8f0":nearTtc.label, fontWeight:800, fontSize:11.5, marginBottom:2, textAlign:"center" }}>মেয়াদ শেষের কাছে</div>
-              <div style={{ color: DT.dark?"#64748b":nearTtc.sub, fontSize:9.5, textAlign:"center" }}>৩ মাসের মধ্যে মেয়াদ শেষ</div>
+              <div style={{ color: DT.dark?"#64748b":nearTtc.sub, fontWeight:800, fontSize:11, textAlign:"center" }}>৩ মাসের মধ্যে মেয়াদ শেষ</div>
             </div>
           </div>
         );
@@ -24625,7 +24627,9 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       return (
         <div style={S.page}>
           <button style={S.textBtn} onClick={() => setDashModal(null)}>← ড্যাশবোর্ডে ফিরুন</button>
-          <div style={{ color: T.text, fontWeight: 700, fontSize: 16, marginBottom: 10 }}>{dashModal.baseTitle || dashModal.title}</div>
+          {/* 🗑️ (৯ আগস্ট ২০২৬ — ইউজার-রিকোয়েস্টে ডিলিট) মোডাল টাইটেল হেডার সরানো হয়েছে —
+              dashModal.baseTitle/title এখনো PDF নামকরণ ও রিপোর্ট-টাইপ চেক (_isCashModal/
+              _isBakiModal ইত্যাদি)-এ ব্যবহৃত হচ্ছে, শুধু স্ক্রিনে দেখানো বন্ধ করা হয়েছে। */}
           {/* তারিখ রেঞ্জ সিলেক্টর */}
           <UnifiedDayMonthNav hook={dmRange} accentColor="#1fd15e" T={T} />
           {/* Admin-only: নগদ বিক্রয়ে মোট লাভ/লস banner */}
@@ -24939,7 +24943,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           <div style={{ position:"absolute", top:-40, right:-40, width:120, height:120, borderRadius:"50%", background: DT.dark ? `radial-gradient(circle, rgba(${DT.accentRgb},0.25),transparent 70%)` : "rgba(255,255,255,0.12)", pointerEvents:"none" }} />
           <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12, position:"relative" }}>
             <div style={{ width:30, height:30, borderRadius:9, background: DT.dark ? `linear-gradient(135deg, ${DT.accentColor}, ${T.accentDark||DT.accentColor})` : "rgba(255,255,255,0.22)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, boxShadow: DT.dark ? `0 4px 12px rgba(${DT.accentRgb},0.5)` : "none", flexShrink:0 }}>💰</div>
-            <span style={{ color: DT.dark ? "#fff" : "#fff", fontWeight:900, fontSize:13, letterSpacing:0.8 }}>ক্যাশ ড্রয়ার</span>
+            <span style={{ color: "#000000", fontWeight:900, fontSize:16, letterSpacing:0.8 }}>ক্যাশ ড্রয়ার</span>
             <button onClick={() => setCashModal("history")}
               style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:5, background: DT.dark ? `rgba(${DT.accentRgb},0.16)` : "rgba(255,255,255,0.18)", border: DT.dark ? `1px solid rgba(${DT.accentRgb},0.4)` : "1px solid rgba(255,255,255,0.35)", borderRadius:10, padding:"6px 12px", color:"#fff", fontSize:11.5, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
@@ -25010,21 +25014,21 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             {
               label:`${repLabel} বিক্রয়`, value:`৳${fmt(repData.total)}`,
               idx:0,
-              sub:`${repLabel} বিক্রয়ের ইনভয়েস`,
+              sub:`${repLabel} মোট বিক্রয়`,
               iconPath: <><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></>,
               onClick: () => setDashModal({ title:`${repLabel} বিক্রয়ের ইনভয়েস`, baseTitle:"বিক্রয়ের ইনভয়েস", type:"invoices", items:repData.invs, allItems: invoices.filter(i => !i.isSelfUse && i.status !== "voided") })
             },
             {
               label:`${repLabel} নগদ বিক্রয়`, value:`৳${fmt(repData.cashSale)}`,
               idx:1,
-              sub:`${repLabel} নগদ ইনভয়েস`,
+              sub:`${repLabel} নগদ বিক্রয়`,
               iconPath: <><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M12 12a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/><path d="M6 12h.01M18 12h.01"/></>,
               onClick: () => setDashModal({ title:`${repLabel} নগদ বিক্রয়ের ইনভয়েস`, baseTitle:"নগদ বিক্রয়ের ইনভয়েস", type:"invoices", items:repData.invs.filter(i => i.payType === "cash" || i.payType === "partial"), allItems: invoices.filter(i => !i.isSelfUse && i.status !== "voided" && (i.payType === "cash" || i.payType === "partial")) })
             },
             {
               label:`${repLabel} বাকি`, value:`৳${fmt(repData.baki)}`,
               idx:2,
-              sub:`${repLabel} বাকি ইনভয়েস`,
+              sub:`${repLabel} বাকি বিক্রয়`,
               iconPath: <><path d="M9 14l-4-4 4-4"/><path d="M5 10h11a4 4 0 0 1 0 8h-1"/></>,
               onClick: () => setDashModal({ title:`${repLabel} বাকির ইনভয়েস`, baseTitle:"বাকির ইনভয়েস", type:"invoices", items:repData.bakiInvs, allItems: invoices.filter(i => i.status !== "voided" && (i.payType === "baki" || (i.payType === "partial" && i.bakiAmount > 0))) })
             },
@@ -25039,7 +25043,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             {
               label:"নিজের ব্যবহার", value:`${repData.selfUseInvs.length}টি`,
               idx:4,
-              sub:`${repLabel} নিজের ব্যবহারের ইনভয়েস`,
+              sub:`${repLabel} নিজের ব্যবহার`,
               topNote: repData.selfUseCost > 0 ? `ক্রয়মূল্য: ৳${fmt(repData.selfUseCost)}` : null,
               onClick: () => setDashModal({ title:`${repLabel} নিজের ব্যবহারের ইনভয়েস`, baseTitle:"নিজের ব্যবহারের ইনভয়েস", type:"invoices", items:repData.selfUseInvs, allItems: invoices.filter(i => i.isSelfUse && i.status !== "voided") })
             },
@@ -25082,7 +25086,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                   {c.iconPath && <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={iconColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">{c.iconPath}</svg>}
                 </div>
                 {c.isProfit && (
-                  <div style={{ fontSize:9, fontWeight:800, color: DT.dark ? cAccent : "rgba(255,255,255,0.85)", letterSpacing:0.4, opacity:0.85 }}>আজকের নেট ফলাফল</div>
+                  <div style={{ fontSize:9, fontWeight:800, color: "#000000", letterSpacing:0.4, opacity:0.85 }}>আজকের নেট ফলাফল</div>
                 )}
               </div>
               {/* কার্ডের উপরে অতিরিক্ত তথ্য (যেমন: নিজের ব্যবহারের ক্রয়মূল্য) */}
@@ -25140,7 +25144,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
                 <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), marginBottom:4, textAlign:"center" }}>{c.value}</div>
               )}
               <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, textAlign:"center" }}>{c.label}</div>
-              <div style={{ color:subColor, fontWeight:600, fontSize:10, textAlign:"center" }}>{c.sub}</div>
+              <div style={{ color:subColor, fontWeight:800, fontSize:11.5, textAlign:"center" }}>{c.sub}</div>
             </div>
             );
           })}
@@ -25164,14 +25168,14 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             {
               label:"মোট বাকি", value:`৳${fmt(totalBaki)}`,
               idx:2,
-              sub:`${bakiCustomers.length}জন কাস্টমারের বাকি`,
+              sub:"ব্যাবসায় মোট বাকি",
               iconPath: <><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20"/><path d="M7 15h2"/><path d="M12 15h5"/></>,
               modal: { title:"বাকি আছে এমন কাস্টমার", type:"customer-breakdown", rows: bakiCustomers.map(c => { const cTxns = txnsByCustForBaki.get(c.id) || []; return { name:c.name, mobile:c.mobile, balance:c.balance, baki:cTxns.filter(t=>t.type==="baki").reduce((s,t)=>s+t.amount,0), joma:cTxns.filter(t=>t.type==="joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((s,t)=>s+t.amount,0) }; }).sort((a,b)=>b.balance-a.balance) },
             },
             {
               label:"আজকের বাকি আদায়", value:`৳${fmt(todayJoma)}`,
               idx:0,
-              sub:"আজকের বাকি আদায়ের রশিদ",
+              sub:"আজকের বাকি আদায়",
               iconPath: <><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></>,
               modal: { title:"আজকের বাকি আদায়ের রশিদ", type:"payment-receipts", items:todayPayInvs },
             },
@@ -25206,7 +25210,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               </div>
               <div className="kpi-value-lg" style={{ ...neonNumStyle(DT.dark, 24), marginBottom:4, textAlign:"center" }}>{c.value}</div>
               <div style={{ color:labelColor, fontWeight:800, fontSize:12, marginBottom:2, textAlign:"center" }}>{c.label}</div>
-              <div style={{ color:subColor, fontWeight:600, fontSize:10, textAlign:"center" }}>{c.sub}</div>
+              <div style={{ color:subColor, fontWeight:800, fontSize:11.5, textAlign:"center" }}>{c.sub}</div>
             </div>
             );
           })}
@@ -25578,10 +25582,6 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
       <div style={{
         overflowY: "auto",
         maxHeight: "calc(100dvh - 200px)",
-        borderRadius: 14,
-        border: `1px solid #3b82f633`,
-        background: "linear-gradient(135deg,#1e3a5f0d,#1e40af08)",
-        padding: "8px",
       }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {filtered.length === 0 && <div style={S.empty}>কোনো কাস্টমার পাওয়া যায়নি</div>}
@@ -25601,85 +25601,52 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
           itemContent={(idx, c) => {
             const rfm = rfmMap.get(c.id);
             return (
-          <div key={c.id} className="qc-gradient-card" style={{ ...S.custCard, marginBottom: 8, position:"relative", overflow:"hidden" }}>
+          <div key={c.id} className="qc-gradient-card"
+            onClick={() => onOpenDetail(c.id)}
+            style={{ ...S.custCard, marginBottom: 8, position:"relative", overflow:"hidden", cursor:"pointer" }}>
             {/* Dynamic background glow */}
-            <div style={{ position:"absolute", top:-20, right:-20, width:100, height:100, borderRadius:"50%", background: c.balance > 0 ? "radial-gradient(circle,#ef444412 0%,transparent 70%)" : "radial-gradient(circle,#22c55e12 0%,transparent 70%)", pointerEvents:"none" }} />
-            {/* Top row: clickable name+info block + balance */}
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, position:"relative", zIndex:1 }}>
-              <button
-                onClick={() => onOpenDetail(c.id)}
-                style={{ display: "flex", gap: 9, alignItems: "center", background: "none", border: "none", cursor: "pointer", textAlign: "left", padding: 0, flex: 1, minWidth: 0 }}>
-                <div style={{ ...S.avatar, width:36, height:36, borderRadius:11, fontSize:13, background: c.balance > 0 ? "linear-gradient(145deg,#b91c1c,#ef4444)" : "linear-gradient(145deg,#16a34a,#22c55e)", boxShadow: c.balance > 0 ? "0 3px 10px #ef444444, 0 0 0 2px #ef444422" : "0 3px 10px #22c55e44, 0 0 0 2px #22c55e22" }}>{c.serial}</div>
-                <div style={{ minWidth: 0, flex:1 }}>
-                  <div style={{ ...S.custName, fontSize:14, marginBottom: 1, display:"flex", alignItems:"center", gap:4 }}>
-                    <HighlightText text={c.name} query={search} highlightColor="#3b82f6" />
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
-                  </div>
-                  <div style={{ color: T.sub, fontSize: 12, fontWeight: 700, display:"flex", alignItems:"center", gap:4 }}>
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
-                    {c.mobile}
-                  </div>
-                  {c.address && <div style={{ color: T.sub, fontSize: 11, fontWeight: 600, marginTop:1 }}>📍 {c.address}</div>}
-                </div>
-              </button>
-              <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 6 }}>
-                <div style={{ color: c.balance > 0 ? "#ef4444" : "#22c55e", fontWeight: 900, fontSize: 18, letterSpacing:-0.3, textShadow: `0 0 12px ${c.balance > 0 ? "#ef4444" : "#22c55e"}44` }}>৳{fmt(Math.abs(c.balance))}</div>
-                <div style={{ background: c.balance > 0 ? "#ef444418" : "#22c55e18", color: c.balance > 0 ? "#f87171" : "#4ade80", fontSize: 10, fontWeight: 800, borderRadius:7, padding:"1px 7px", marginTop:3, border: `1px solid ${c.balance > 0 ? "#ef444433" : "#22c55e33"}` }}>
-                  {c.balance > 0 ? "বাকি আছে" : c.balance < 0 ? "অগ্রিম জমা আছে" : "✓ পরিশোধ"}
-                </div>
+            <div style={{ position:"absolute", top:-20, right:-20, width:100, height:100, borderRadius:"50%", background: c.balance > 0 ? "radial-gradient(circle,#ef444414 0%,transparent 70%)" : "radial-gradient(circle,#22c55e14 0%,transparent 70%)", pointerEvents:"none" }} />
+            {/* সিঙ্গেল রো: প্রিমিয়াম অ্যাভাটার + নাম/মোবাইল/ঠিকানা + বাকি ব্যাজ + শেভরন */}
+            <div style={{ display: "flex", alignItems: "center", gap: 11, position:"relative", zIndex:1 }}>
+              {/* Avatar — প্রিমিয়াম রিং সহ */}
+              <div style={{
+                width:42, height:42, borderRadius:"50%", flexShrink:0, position:"relative",
+                background: c.balance > 0 ? "linear-gradient(145deg,#b91c1c,#ef4444)" : "linear-gradient(145deg,#15803d,#22c55e)",
+                display:"flex", alignItems:"center", justifyContent:"center",
+                boxShadow: c.balance > 0 ? "0 0 0 3px #ef444422, 0 4px 12px #ef444455" : "0 0 0 3px #22c55e22, 0 4px 12px #22c55e55",
+              }}>
+                <span style={{ color:"#fff", fontWeight:900, fontSize:15, letterSpacing:-0.3 }}>{c.serial}</span>
               </div>
-            </div>
-            {/* Action row */}
-            <div style={{ display: "flex", alignItems: "center", gap: 5, position:"relative", zIndex:1 }}>
-              <button style={{
-                ...S.actionBtn, flex: 1, justifyContent: "center",
-                background: "linear-gradient(135deg,#1d4ed8,#3b82f6)",
-                color: "#ffffff",
-                border: "none",
-                fontSize: 12,
-                fontWeight: 800,
-                borderRadius: 10,
-                boxShadow: "0 3px 10px #3b82f644",
-                padding: "8px 6px",
-                letterSpacing: 0.2,
-              }}
-                onClick={() => onGoToInvoice(c)}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2.5" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                ইনভয়েস
-              </button>
-              {currentUser?.role !== "staff" && (
-              <button style={{
-                ...S.actionBtn, flex: 1, justifyContent: "center",
-                background: "linear-gradient(135deg,#16a34a,#22c55e)",
-                color: "#ffffff",
-                border: "none",
-                fontSize: 12,
-                fontWeight: 800,
-                borderRadius: 10,
-                boxShadow: "0 3px 10px #22c55e44",
-                padding: "8px 6px",
-                letterSpacing: 0.2,
-              }}
-                onClick={() => setModal({ type: "transaction", data: { ...c, _mode: "joma" } })}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-                জমা
-              </button>
-              )}
-              {currentUser?.role !== "staff" && (
-              <button style={{ ...S.actionBtn, background: "#0ea5e918", color: "#0ea5e9", padding: "8px 10px", border:"1px solid #0ea5e933", display:"flex", alignItems:"center", gap:3, fontSize:11, fontWeight:700, borderRadius:10 }}
-                onClick={() => { const f = { name: c.name, mobile: c.mobile, address: c.address || "" }; setForm(f); setEditId(c.id); setShowAdd(true); }}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-              </button>
-              )}
-              {currentUser?.role !== "staff" && (confirmId === c.id ? (
-                <>
-                  <button style={{ ...S.actionBtn, background: "#ef444422", color: "#ef4444", fontSize: 11, padding: "8px 8px", border:"1px solid #ef444433", borderRadius:10 }} onClick={() => confirmDelete(c.id)}>✓</button>
-                  <button style={{ ...S.actionBtn, background: T.bg, color: T.sub, fontSize: 11, padding: "8px 8px", borderRadius:10 }} onClick={() => setConfirmId(null)}>না</button>
-                </>
-              ) : (
-                <button style={{ ...S.actionBtn, background: "#ef444412", color: "#f87171", padding: "8px 10px", border:"1px solid #ef444422", borderRadius:10 }}
-                  onClick={() => requestDelete(c.id)}><IcTrash /></button>
-              ))}
+              {/* Info block */}
+              <div style={{ minWidth: 0, flex:1 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:5, marginBottom:3 }}>
+                  <span style={{ color: T.text, fontWeight:900, fontSize:16, letterSpacing:0.1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                    <HighlightText text={c.name} query={search} highlightColor="#3b82f6" />
+                  </span>
+                </div>
+                {c.mobile && (
+                  <div style={{ display:"inline-flex", alignItems:"center", gap:5, background:"#3b82f614", border:"1px solid #3b82f62a", borderRadius:20, padding:"2px 8px 2px 6px", marginBottom: c.address ? 3 : 0 }}>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2.7" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                    <span style={{ color: T.text, fontSize: 12.5, fontWeight: 800 }}>{c.mobile}</span>
+                  </div>
+                )}
+                {c.address && (
+                  <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={T.sub} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                    <span style={{ color: T.sub, fontSize: 11.5, fontWeight: 700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.address}</span>
+                  </div>
+                )}
+              </div>
+              {/* Balance + chevron */}
+              <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 4, display:"flex", flexDirection:"column", alignItems:"flex-end", gap:5 }}>
+                <div>
+                  <div style={{ color: c.balance > 0 ? "#ef4444" : "#22c55e", fontWeight: 900, fontSize: 18, letterSpacing:-0.3, textShadow: `0 0 12px ${c.balance > 0 ? "#ef4444" : "#22c55e"}44` }}>৳{fmt(Math.abs(c.balance))}</div>
+                  <div style={{ background: c.balance > 0 ? "#ef444418" : "#22c55e18", color: c.balance > 0 ? "#f87171" : "#4ade80", fontSize: 10, fontWeight: 800, borderRadius:7, padding:"1px 7px", marginTop:3, border: `1px solid ${c.balance > 0 ? "#ef444433" : "#22c55e33"}` }}>
+                    {c.balance > 0 ? "বাকি আছে" : c.balance < 0 ? "অগ্রিম জমা আছে" : "✓ পরিশোধ"}
+                  </div>
+                </div>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#60a5fa88" strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+              </div>
             </div>
           </div>
             );
@@ -25698,7 +25665,43 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
 const MemoCustomers = React.memo(Customers);
 
 // ── Customer Detail ────────────────────────────────────────────────────────────
-function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvoices, shopName = "SBM", onGoToInvoice, setModal, products = [], returns = [], currentUser, showToast, voidInvoice, processReturn }) {
+function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvoices, shopName = "SBM", onGoToInvoice, setModal, products = [], returns = [], currentUser, showToast, voidInvoice, processReturn, setCustomers, setDeletedCustomers, auditLog, onBack }) {
+  // 🆕 (৯ আগস্ট ২০২৬ — ইউজার-রিকোয়েস্টে রিলোকেশন) এডিট/ডিলিট এখন তালিকা পেজ থেকে
+  // সরিয়ে ডিটেইলস পেজে আনা হয়েছে — তালিকার কার্ড এখন শুধু নাম/মোবাইল/ঠিকানা দেখাবে,
+  // ইনভয়েস/জমা/এডিট/ডিলিট সব এই ডিটেইলস পেজেই।
+  const canEdit = !!setCustomers && currentUser?.role !== "staff";
+  const [editOpen, setEditOpen] = useState(false);
+  const [editForm, setEditForm] = useState({ name: customer?.name || "", mobile: customer?.mobile || "", address: customer?.address || "" });
+  const [deleteConfirming, setDeleteConfirming] = useState(false);
+  const openEdit = () => { setEditForm({ name: customer?.name || "", mobile: customer?.mobile || "", address: customer?.address || "" }); setEditOpen(true); };
+  const saveEdit = () => {
+    const name = editForm.name.trim();
+    const mobile = editForm.mobile.trim();
+    const address = editForm.address.trim();
+    if (!name) { showToast?.("নাম দিতে হবে", "#ef4444"); return; }
+    if (mobile) {
+      const dup = customers.find(c => c.mobile === mobile && c.id !== customer.id);
+      if (dup) { showToast?.(`এই মোবাইলে আরেকজন আছে: ${dup.name}`, "#f59e0b"); return; }
+    }
+    setCustomers(prev => prev.map(c => c.id === customer.id ? { ...c, name, mobile, address } : c));
+    showToast?.("তথ্য আপডেট হয়েছে");
+    setEditOpen(false);
+  };
+  const confirmDeleteCustomer = () => {
+    if ((customer?.balance || 0) > 0) {
+      showToast?.(`${customer.name}-এর ৳${fmtMoney(customer.balance)} বাকি আছে — আগে পরিশোধ করুন`, "#ef4444");
+      setDeleteConfirming(false);
+      return;
+    }
+    setDeletedCustomers?.(prev => [{ ...customer, _deletedAt: Date.now() }, ...prev]);
+    setCustomers(prev => prev.filter(x => x.id !== customer.id));
+    if (FSS.isReady()) FSS.deleteRecord("customers", customer.id);
+    showToast?.("কাস্টমার সরানো হয়েছে", "#f59e0b");
+    auditLog?.("CUSTOMER_DELETE", { customerId: customer.id, customerName: customer?.name || "অজানা", mobile: customer?.mobile || "" });
+    setDeleteConfirming(false);
+    onBack?.();
+  };
+  useBackHandler(editOpen, () => { setEditOpen(false); return true; });
   const [viewInv,          setViewInv]          = useState(null);
   const [viewPayInv,       setViewPayInv]       = useState(null);
   // 🆕 ফিক্স (৯ আগস্ট ২০২৬ — ইনভয়েস ডিটেইলস থেকে ফিরলে লেনদেন-তালিকার স্ক্রল টপে চলে
@@ -25808,8 +25811,28 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
       <div style={{ background: "linear-gradient(145deg,#0f172a,#1e293b,#0f1f3d)", borderRadius: 18, padding: "14px 16px 14px", marginBottom: 12, boxShadow: "0 6px 24px #00000055, 0 0 0 1px #60a5fa1a", position: "relative", overflow: "hidden" }}>
         {/* Background shimmer */}
         <div style={{ position:"absolute", inset:0, background:"radial-gradient(ellipse at 20% 20%, #60a5fa0d 0%, transparent 55%), radial-gradient(ellipse at 80% 80%, #3b82f60d 0%, transparent 55%)", pointerEvents:"none" }} />
+        {/* 🆕 এডিট/ডিলিট — তালিকা পেজ থেকে সরিয়ে এখানে আনা হয়েছে (ইউজার-রিকোয়েস্ট, ৯ আগস্ট ২০২৬) */}
+        {canEdit && !deleteConfirming && (
+          <div style={{ position:"absolute", top:10, right:10, display:"flex", gap:6, zIndex:2 }}>
+            <button onClick={openEdit} title="এডিট করুন"
+              style={{ width:30, height:30, borderRadius:9, background:"rgba(14,165,233,0.16)", border:"1px solid rgba(14,165,233,0.4)", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+            </button>
+            <button onClick={() => setDeleteConfirming(true)} title="ডিলিট করুন"
+              style={{ width:30, height:30, borderRadius:9, background:"rgba(239,68,68,0.14)", border:"1px solid rgba(239,68,68,0.4)", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", color:"#f87171" }}>
+              <IcTrash />
+            </button>
+          </div>
+        )}
+        {canEdit && deleteConfirming && (
+          <div style={{ position:"absolute", top:10, right:10, display:"flex", gap:6, zIndex:2, alignItems:"center" }}>
+            <span style={{ color:"#fca5a5", fontSize:11, fontWeight:800, marginRight:2 }}>মুছবেন?</span>
+            <button onClick={confirmDeleteCustomer} style={{ background:"#ef4444", color:"#fff", border:"none", borderRadius:8, padding:"5px 10px", fontSize:11, fontWeight:800, cursor:"pointer" }}>হ্যাঁ</button>
+            <button onClick={() => setDeleteConfirming(false)} style={{ background:"rgba(255,255,255,0.12)", color:"#e5e7eb", border:"none", borderRadius:8, padding:"5px 10px", fontSize:11, fontWeight:800, cursor:"pointer" }}>না</button>
+          </div>
+        )}
         {/* Single row: avatar + info + balance */}
-        <div style={{ display:"flex", alignItems:"center", gap:12, position:"relative" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:12, position:"relative", marginTop: canEdit ? 26 : 0 }}>
           {/* Avatar */}
           <div style={{ width:46, height:46, borderRadius:"50%", background:"linear-gradient(135deg,#3b82f6,#1d4ed8)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, boxShadow:"0 0 0 2px #60a5fa44, 0 4px 12px #00000044", position:"relative" }}>
             <div style={{ position:"absolute", inset:0, borderRadius:"50%", border:"2px solid transparent", borderTopColor:"#60a5fa", animation:"spin 3s linear infinite" }} />
@@ -25869,6 +25892,35 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
           </div>
         )}
       </div>
+
+      {/* 🆕 এডিট মডাল — Portal দিয়ে body-তে (ইউজার-রিকোয়েস্ট, ৯ আগস্ট ২০২৬) */}
+      {editOpen && ReactDOM.createPortal(
+        <div style={{ position:"fixed", inset:0, zIndex:99999, background:"rgba(0,0,0,0.6)", display:"flex", flexDirection:"column" }}
+          onClick={() => setEditOpen(false)}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ marginTop:"auto", background:T.bg, borderTopLeftRadius:20, borderTopRightRadius:20, maxHeight:"85vh", overflowY:"auto", padding:16, paddingBottom:"calc(env(safe-area-inset-bottom, 0px) + 16px)" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+              <div style={{ fontWeight:800, fontSize:15, color:T.text }}>কাস্টমারের তথ্য এডিট করুন</div>
+              <button onClick={() => setEditOpen(false)} style={{ background:"none", border:"none", color:T.sub, fontSize:20, cursor:"pointer", lineHeight:1 }}>✕</button>
+            </div>
+            <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>নাম <span style={{color:"#ef4444"}}>*</span></div>
+            <input value={editForm.name} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
+              style={{ ...S.input, marginBottom:10 }} />
+            <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>মোবাইল নম্বর</div>
+            <input type="tel" inputMode="numeric" maxLength={11}
+              value={editForm.mobile} onChange={e => setEditForm(f => ({ ...f, mobile: e.target.value.replace(/\D/g,"").slice(0,11) }))}
+              style={{ ...S.input, marginBottom:10 }} />
+            <div style={{ color: T.sub, fontSize:11, marginBottom:4 }}>ঠিকানা</div>
+            <input value={editForm.address} onChange={e => setEditForm(f => ({ ...f, address: e.target.value }))}
+              style={{ ...S.input, marginBottom:14 }} />
+            <div style={{ display:"flex", gap:8 }}>
+              <button style={{ ...S.cancelBtn, flex:1 }} onClick={() => setEditOpen(false)}>বাতিল</button>
+              <button style={{ ...S.saveBtn, flex:1 }} onClick={saveEdit}><IcCheck /> আপডেট করুন</button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
 
       {/* লেনদেনের ইতিহাস PDF বাটন */}
       <div style={{ background: "linear-gradient(145deg,#0c1a3d,#1a3a6e,#0d3060)", borderRadius: 18, padding: "16px 16px", marginBottom: 14, border: "1.5px solid #3b82f644", boxShadow: "0 6px 28px #0369a133, 0 0 0 1px #60a5fa22", position:"relative", overflow:"hidden" }}>
