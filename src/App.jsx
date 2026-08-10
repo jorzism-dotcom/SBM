@@ -18873,26 +18873,41 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 {/* Info — 🔁 (ইউজার-রিকোয়েস্টে ফিক্স) নাম ও মোবাইল এখন আলাদা আলাদা
                     রাউন্ড কালারফুল পিলের মধ্যে দেখানো হচ্ছে, প্লেইন টেক্সট নয়। */}
                 <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+                  {/* 🎨 (ইউজার-রিকোয়েস্ট) কাস্টমার লিস্ট পেজের সাথে হুবহু মিলিয়ে ডিপ কালারফুল
+                      পিল (সবুজ/বেগুনি/সোনালি) — নামের ফন্ট বড় ও বোল্ড */}
                   <div style={{
                     display: "inline-flex", alignSelf: "flex-start", maxWidth: "100%",
-                    background: selCust?.id === c.id ? IS.accentSoft : `${IS.accent}14`,
-                    border: `1px solid ${IS.accent}40`,
-                    borderRadius: 20, padding: "3px 10px",
+                    background: "linear-gradient(135deg,#15803d,#22c55e)", border: "1px solid #16a34a",
+                    boxShadow: "0 2px 8px #22c55e44",
+                    borderRadius: 20, padding: "3px 11px",
                   }}>
                     <span style={{
-                      color: selCust?.id === c.id ? IS.accent : IS.text,
-                      fontWeight: 800, fontSize: 12.5,
+                      color: "#fff",
+                      fontWeight: 900, fontSize: 15,
                       overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      textShadow: "0 1px 2px #00000033",
                     }}>{c.name}</span>
                   </div>
                   {c.mobile && (
                     <div style={{
                       display: "inline-flex", alignSelf: "flex-start", alignItems: "center", gap: 5,
-                      background: "#3b82f614", border: "1px solid #3b82f62a",
+                      background: "linear-gradient(135deg,#6d28d9,#8b5cf6)", border: "1px solid #7c3aed",
+                      boxShadow: "0 2px 8px #8b5cf644",
                       borderRadius: 20, padding: "2px 8px 2px 6px",
                     }}>
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2.7" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
-                      <span style={{ color: IS.text, fontSize: 10.5, fontWeight: 800 }}>{c.mobile}</span>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.7" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                      <span style={{ color: "#fff", fontSize: 10.5, fontWeight: 800, textShadow: "0 1px 2px #00000033" }}>{c.mobile}</span>
+                    </div>
+                  )}
+                  {c.address && (
+                    <div style={{
+                      display: "inline-flex", alignSelf: "flex-start", alignItems: "center", gap: 4,
+                      background: "linear-gradient(135deg,#b45309,#f59e0b)", border: "1px solid #d97706",
+                      boxShadow: "0 2px 8px #f59e0b44",
+                      borderRadius: 20, padding: "2px 8px 2px 6px", maxWidth: "100%",
+                    }}>
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                      <span style={{ color: "#fff", fontSize: 10.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textShadow: "0 1px 2px #00000033" }}>{c.address}</span>
                     </div>
                   )}
                 </div>
@@ -19432,12 +19447,20 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 background: IS.cardBg, "--qc-card-bg": IS.cardBg, border: IS.cardBorder, borderRadius: IS.id === "t5" ? (S.card?.borderRadius ?? 14) : 0,
                 boxShadow: IS.id === "t5" ? "none" : "none",
               }}>
-              <div style={{ textAlign: "center", marginBottom: 8 }}>
-                <span style={{ color: IS.accent, fontWeight: 900, fontSize: 14 }}>{isSelfUse ? "🏠 নিজের ব্যবহার (Personal Use)" : selCust?.name}</span>
-                <span style={{ color: IS.text, fontWeight: 800, fontSize: 13 }}>: </span>
-                <span style={{ color: "#16a34a", fontWeight: 800, fontSize: 13 }}>{items.filter(i=>i.qty>0).length}টি পণ্য</span>
-                <span style={{ color: IS.sub, fontWeight: 800, fontSize: 13 }}> · </span>
-                <span style={{ color: "#0ea5a4", fontWeight: 800, fontSize: 13 }}>{items.filter(i=>i.qty>0).reduce((a,b)=>a+b.qty,0)}টি আইটেম</span>
+              <div style={{ textAlign: "center", marginBottom: 8, display: "flex", justifyContent: "center" }}>
+                {/* 🎨 (ইউজার-রিকোয়েস্ট) পিলের মধ্যে গাড়ো হলুদ ব্যাকগ্রাউন্ড, ফন্ট বড় ও বোল্ড */}
+                <div style={{
+                  display: "inline-flex", alignItems: "center", flexWrap: "wrap", justifyContent: "center", gap: 4,
+                  background: "linear-gradient(135deg,#b45309,#d97706)", border: "1px solid #92400e",
+                  boxShadow: "0 3px 10px #d9770655",
+                  borderRadius: 20, padding: "6px 16px",
+                }}>
+                  <span style={{ color: "#fff", fontWeight: 900, fontSize: 16, textShadow: "0 1px 2px #00000044" }}>{isSelfUse ? "🏠 নিজের ব্যবহার (Personal Use)" : selCust?.name}</span>
+                  <span style={{ color: "#fff", fontWeight: 900, fontSize: 16 }}>: </span>
+                  <span style={{ color: "#fff", fontWeight: 900, fontSize: 16, textShadow: "0 1px 2px #00000044" }}>{items.filter(i=>i.qty>0).length}টি পণ্য</span>
+                  <span style={{ color: "#fff", fontWeight: 900, fontSize: 16 }}> · </span>
+                  <span style={{ color: "#fff", fontWeight: 900, fontSize: 16, textShadow: "0 1px 2px #00000044" }}>{items.filter(i=>i.qty>0).reduce((a,b)=>a+b.qty,0)}টি আইটেম</span>
+                </div>
               </div>
               {(() => {
                 const cartItems = items.filter(i => i.qty > 0);
@@ -25655,26 +25678,29 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
                 <span style={{ color:"#fff", fontWeight:900, fontSize:14, letterSpacing:-0.3 }}>{c.serial}</span>
               </div>
               {/* Info block */}
-              <div style={{ minWidth: 0, flex:1, display:"flex", flexDirection:"column", gap:3 }}>
+              <div style={{ minWidth: 0, flex:1, display:"flex", flexDirection:"column", gap:4 }}>
+                {/* 🎨 (ইউজার-রিকোয়েস্ট) নাম/মোবাইল/ঠিকানা পিল এখন ডিপ কালারফুল (সবুজ/বেগুনি/সোনালি),
+                    নামের ফন্ট আরও বড় ও বোল্ড */}
                 <div style={{
                   display:"inline-flex", alignSelf:"flex-start", maxWidth:"100%",
-                  background:"#3b82f61c", border:"1px solid #3b82f640",
-                  borderRadius:20, padding:"2px 9px",
+                  background:"linear-gradient(135deg,#15803d,#22c55e)", border:"1px solid #16a34a",
+                  boxShadow:"0 2px 8px #22c55e44",
+                  borderRadius:20, padding:"3px 11px",
                 }}>
-                  <span style={{ color: T.text, fontWeight:800, fontSize:13, letterSpacing:0.1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-                    <HighlightText text={c.name} query={search} highlightColor="#3b82f6" />
+                  <span style={{ color: "#fff", fontWeight:900, fontSize:15, letterSpacing:0.1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", textShadow:"0 1px 2px #00000033" }}>
+                    <HighlightText text={c.name} query={search} highlightColor="#fde047" />
                   </span>
                 </div>
                 {c.mobile && (
-                  <div style={{ display:"inline-flex", alignSelf:"flex-start", alignItems:"center", gap:5, background:"#3b82f614", border:"1px solid #3b82f62a", borderRadius:20, padding:"2px 8px 2px 6px" }}>
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2.7" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
-                    <span style={{ color: T.text, fontSize: 11, fontWeight: 800 }}>{c.mobile}</span>
+                  <div style={{ display:"inline-flex", alignSelf:"flex-start", alignItems:"center", gap:5, background:"linear-gradient(135deg,#6d28d9,#8b5cf6)", border:"1px solid #7c3aed", boxShadow:"0 2px 8px #8b5cf644", borderRadius:20, padding:"2px 8px 2px 6px" }}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.7" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                    <span style={{ color: "#fff", fontSize: 11, fontWeight: 800, textShadow:"0 1px 2px #00000033" }}>{c.mobile}</span>
                   </div>
                 )}
                 {c.address && (
-                  <div style={{ display:"inline-flex", alignSelf:"flex-start", alignItems:"center", gap:4, background:`${T.sub}18`, border:`1px solid ${T.sub}33`, borderRadius:20, padding:"2px 8px 2px 6px", maxWidth:"100%" }}>
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={T.sub} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
-                    <span style={{ color: T.sub, fontSize: 10.5, fontWeight: 700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.address}</span>
+                  <div style={{ display:"inline-flex", alignSelf:"flex-start", alignItems:"center", gap:4, background:"linear-gradient(135deg,#b45309,#f59e0b)", border:"1px solid #d97706", boxShadow:"0 2px 8px #f59e0b44", borderRadius:20, padding:"2px 8px 2px 6px", maxWidth:"100%" }}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                    <span style={{ color: "#fff", fontSize: 10.5, fontWeight: 700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", textShadow:"0 1px 2px #00000033" }}>{c.address}</span>
                   </div>
                 )}
               </div>
@@ -25881,19 +25907,20 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
             <button onClick={() => setDeleteConfirming(false)} style={{ background:"rgba(255,255,255,0.12)", color:"#e5e7eb", border:"none", borderRadius:8, padding:"5px 10px", fontSize:11, fontWeight:800, cursor:"pointer" }}>না</button>
           </div>
         )}
-        {/* বাকি/পরিশোধ পিল — এখন কার্ডের উপরে, মিডিল-এলাইন্ড, বড়, কালারফুল */}
-        <div style={{ display:"flex", justifyContent:"center", position:"relative", marginTop: canEdit ? 44 : 4, marginBottom: 4 }}>
+        {/* বাকি/পরিশোধ পিল — 🔁 (ইউজার-রিকোয়েস্ট, ১০ আগস্ট ২০২৬) কার্ডের আরও উপরে
+            (মার্জিন কমানো হয়েছে) এবং সাইজ ডাবল (প্যাডিং/মিনউইথ/ফন্ট সব ~২গুণ) */}
+        <div style={{ display:"flex", justifyContent:"center", position:"relative", marginTop: canEdit ? 40 : 2, marginBottom: 4 }}>
           <div style={{
               background: customer.balance > 0 ? "linear-gradient(135deg,#ef4444,#b91c1c)" : customer.balance < 0 ? "linear-gradient(135deg,#3b82f6,#1d4ed8)" : "linear-gradient(135deg,#22c55e,#15803d)",
-              border: `2px solid ${customer.balance > 0 ? "#fca5a5" : customer.balance < 0 ? "#93c5fd" : "#86efac"}55`,
-              boxShadow: `0 4px 18px ${customer.balance > 0 ? "#ef444455" : customer.balance < 0 ? "#3b82f655" : "#22c55e55"}`,
-              borderRadius: 18, padding: "10px 26px", textAlign:"center", minWidth: 150,
+              border: `3px solid ${customer.balance > 0 ? "#fca5a5" : customer.balance < 0 ? "#93c5fd" : "#86efac"}55`,
+              boxShadow: `0 8px 32px ${customer.balance > 0 ? "#ef444455" : customer.balance < 0 ? "#3b82f655" : "#22c55e55"}`,
+              borderRadius: 24, padding: "20px 48px", textAlign:"center", minWidth: 300,
             }}>
-            <div style={{ color:"#fff", fontSize:11.5, fontWeight:800, letterSpacing:0.5, marginBottom:3, opacity:0.92, textTransform:"uppercase" }}>
+            <div style={{ color:"#fff", fontSize:16, fontWeight:800, letterSpacing:0.7, marginBottom:6, opacity:0.92, textTransform:"uppercase" }}>
               {customer.balance < 0 ? "অগ্রিম জমা আছে" : customer.balance > 0 ? "বাকী আছে" : "✓ পরিশোধ সম্পন্ন"}
             </div>
             {customer.balance !== 0 && (
-              <div style={{ color:"#fff", fontWeight:900, fontSize:26, lineHeight:1 }}>৳{fmt(Math.abs(customer.balance))}</div>
+              <div style={{ color:"#fff", fontWeight:900, fontSize:48, lineHeight:1 }}>৳{fmt(Math.abs(customer.balance))}</div>
             )}
           </div>
         </div>
@@ -26609,10 +26636,38 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
           )}
         </div>
         <div style={S.dashed} />
-        <div style={{ fontSize: 12, color: IS.sub, display: "flex", flexDirection: "column", gap: 3, marginBottom: 10 }}>
-          <div><b style={{ color: IS.text }}>কাস্টমার:</b> {inv.customerName}</div>
-          <div><b style={{ color: IS.text }}>মোবাইল:</b> {inv.customerMobile}</div>
-          {customer?.address && <div><b style={{ color: IS.text }}>ঠিকানা:</b> {customer.address}</div>}
+        <div style={{ fontSize: 12, color: IS.sub, display: "flex", flexDirection: "column", gap: 4, marginBottom: 10 }}>
+          {/* 🎨 (ইউজার-রিকোয়েস্ট) কাস্টমার কার্ডের মতো হুবহু ডিপ কালারফুল পিল (সবুজ/বেগুনি/সোনালি) */}
+          <div style={{
+            display: "inline-flex", alignSelf: "flex-start", maxWidth: "100%",
+            background: "linear-gradient(135deg,#15803d,#22c55e)", border: "1px solid #16a34a",
+            boxShadow: "0 2px 8px #22c55e44",
+            borderRadius: 20, padding: "3px 11px",
+          }}>
+            <span style={{ color: "#fff", fontWeight: 900, fontSize: 15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textShadow: "0 1px 2px #00000033" }}>{inv.customerName}</span>
+          </div>
+          {inv.customerMobile && (
+            <div style={{
+              display: "inline-flex", alignSelf: "flex-start", alignItems: "center", gap: 5,
+              background: "linear-gradient(135deg,#6d28d9,#8b5cf6)", border: "1px solid #7c3aed",
+              boxShadow: "0 2px 8px #8b5cf644",
+              borderRadius: 20, padding: "2px 8px 2px 6px",
+            }}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.7" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+              <span style={{ color: "#fff", fontSize: 11, fontWeight: 800, textShadow: "0 1px 2px #00000033" }}>{inv.customerMobile}</span>
+            </div>
+          )}
+          {customer?.address && (
+            <div style={{
+              display: "inline-flex", alignSelf: "flex-start", alignItems: "center", gap: 4,
+              background: "linear-gradient(135deg,#b45309,#f59e0b)", border: "1px solid #d97706",
+              boxShadow: "0 2px 8px #f59e0b44",
+              borderRadius: 20, padding: "2px 8px 2px 6px", maxWidth: "100%",
+            }}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+              <span style={{ color: "#fff", fontSize: 10.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textShadow: "0 1px 2px #00000033" }}>{customer.address}</span>
+            </div>
+          )}
         </div>
         <div style={S.dashed} />
         <div style={{ display: "grid", gridTemplateColumns: "1fr 108px 92px", alignItems: "center", columnGap: 8, padding: "0 10px 6px", color: IS.sub, fontSize: 10.5, fontWeight: 800 }}>
