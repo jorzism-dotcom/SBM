@@ -14,6 +14,11 @@
 // synthetic dataset script (Node.js) আর App.jsx দুই জায়গা থেকেই ব্যবহারযোগ্য হয়।
 
 import { CapacitorSQLite, SQLiteConnection } from "@capacitor-community/sqlite";
+// src/logic.js পুরোপুরি pure/framework-agnostic — এখান থেকেই fixed GMT+6
+// dateKey লজিক আনা হচ্ছে, App.jsx-এর _dateKeyOf()/scripts/generate-synthetic-
+// dataset.mjs-এর bdDateKey()-এর সাথে ১০০% সিঙ্কড রাখতে (SQLITE_MIGRATION_LOG.md
+// এন্ট্রি ২-এ ধরা পড়া টাইমজোন বাগের ফিক্স)।
+import { _bdParts } from "../logic.js";
 
 // ── Feature flag ─────────────────────────────────────────────────────────
 // এই ফ্ল্যাগ বন্ধ থাকলে (ডিফল্ট) পুরো অ্যাপ আগের মতোই IndexedDB blob-array
@@ -132,17 +137,28 @@ function numOrNull(v) {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+// 🔴 ফিক্স (SQLITE_MIGRATION_LOG.md এন্ট্রি ২-এ flagged টাইমজোন বাগ): আগে এখানে
+// `new Date().toISOString().slice(0,10)` ব্যবহার হতো — সেটা UTC তারিখ দেয়,
+// বাংলাদেশ লোকাল (UTC+6) না। রাত ১২টা–ভোর ৬টা এই ৬ ঘণ্টায় date_key ভুল (আগের
+// দিনের) হয়ে যেত। এখন App.jsx-এর `_dateKeyOf()`-এর মতোই `_bdParts()`
+// (src/logic.js, fixed GMT+6) থেকে বের করা হচ্ছে — dual-write ফেজে দুই সিস্টেমে
+// "আজ"-এর সংজ্ঞা এখন ১০০% সিঙ্কড।
 function dateKeyFromTs(ts) {
   const d = ts ? new Date(ts) : new Date();
-  return d.toISOString().slice(0, 10);
+  const { y, m, day } = _bdParts(d);
+  return `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
-// normName(): App.jsx-এর normName() ফাংশনের সাথে সামঞ্জস্যপূর্ণ হতে হবে (একই
-// normalization যাতে দুই জায়গায় সার্চ রেজাল্ট না মেলার সমস্যা না হয়)।
-// ⚠️ TODO (Phase 1): App.jsx-এর আসল normName() ইমপ্লিমেন্টেশন এখানে কপি/ইমপোর্ট
-// করে বসাতে হবে — এই মুহূর্তে placeholder।
+// normName(): App.jsx-এর normName() ফাংশনের সাথে বাইট-বাই-বাইট সামঞ্জস্যপূর্ণ
+// (দেখুন src/App.jsx লাইন ~27194, ~27243 — দুই জায়গায় লোকাল ফাংশন হিসেবে
+// সংজ্ঞায়িত, module-level export নেই বলে সরাসরি import করা যায়নি, তাই এখানে
+// ঠিক একই implementation কপি করা হলো)।
+// 🔴 ফিক্স: আগের placeholder-এ `.replace(/\s+/g," ")` (একাধিক স্পেস → একটা
+// স্পেস) অংশটা মিসিং ছিল — ফলে "প্যারাসিটামল  ৫০০" (ডাবল স্পেস) দুই সিস্টেমে
+// আলাদাভাবে normalize হতো, FTS5 সার্চ রেজাল্ট IndexedDB path-এর সাথে না মেলার
+// ঝুঁকি ছিল। এখন App.jsx-এর সাথে identical।
 function normName(name) {
-  return (name ?? "").toString().trim().toLowerCase();
+  return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
 /**
