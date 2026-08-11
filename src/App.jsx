@@ -18873,43 +18873,30 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 {/* Info — 🔁 (ইউজার-রিকোয়েস্টে ফিক্স) নাম ও মোবাইল এখন আলাদা আলাদা
                     রাউন্ড কালারফুল পিলের মধ্যে দেখানো হচ্ছে, প্লেইন টেক্সট নয়। */}
                 <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
-                  {/* 🎨 (ইউজার-রিকোয়েস্ট) কাস্টমার লিস্ট পেজের সাথে হুবহু মিলিয়ে ডিপ কালারফুল
-                      পিল (সবুজ/বেগুনি/সোনালি) — নামের ফন্ট বড় ও বোল্ড */}
-                  <div style={{
-                    display: "inline-flex", alignSelf: "flex-start", maxWidth: "100%",
-                    background: "linear-gradient(135deg,#15803d,#22c55e)", border: "1px solid #16a34a",
-                    boxShadow: "0 2px 8px #22c55e44",
-                    borderRadius: 20, padding: "3px 11px",
-                  }}>
-                    <span style={{
-                      color: "#fff",
-                      fontWeight: 900, fontSize: 15,
+                  {/* 🎨 (ইউজার-রিকোয়েস্ট, ডিজাইন ১) মিনিমাল স্ট্যাক — কাস্টমার লিস্ট পেজের সাথে
+                      হুবহু মিলিয়ে, বাম পাশে সবুজ এক্সেন্ট বার, পিল-ব্যাকগ্রাউন্ড নেই */}
+                  <div style={{ borderLeft: "3px solid #16a34a", paddingLeft: 10, maxWidth: "100%" }}>
+                    <div style={{
+                      color: selCust?.id === c.id ? IS.accent : IS.text,
+                      fontWeight: 900, fontSize: 15.5,
                       overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                      textShadow: "0 1px 2px #00000033",
-                    }}>{c.name}</span>
+                    }}>{c.name}</div>
+                    <div style={{ marginTop: 3, fontSize: 12, color: IS.sub, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 5, maxWidth: "100%" }}>
+                      {c.mobile && (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontWeight: 700 }}>
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#0d7d4d" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                          {c.mobile}
+                        </span>
+                      )}
+                      {c.mobile && c.address && <span style={{ width: 3, height: 3, borderRadius: "50%", background: IS.sub, opacity: 0.5, flexShrink: 0 }} />}
+                      {c.address && (
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#b8862e" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                          {c.address}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  {c.mobile && (
-                    <div style={{
-                      display: "inline-flex", alignSelf: "flex-start", alignItems: "center", gap: 5,
-                      background: "linear-gradient(135deg,#6d28d9,#8b5cf6)", border: "1px solid #7c3aed",
-                      boxShadow: "0 2px 8px #8b5cf644",
-                      borderRadius: 20, padding: "2px 8px 2px 6px",
-                    }}>
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.7" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
-                      <span style={{ color: "#fff", fontSize: 10.5, fontWeight: 800, textShadow: "0 1px 2px #00000033" }}>{c.mobile}</span>
-                    </div>
-                  )}
-                  {c.address && (
-                    <div style={{
-                      display: "inline-flex", alignSelf: "flex-start", alignItems: "center", gap: 4,
-                      background: "linear-gradient(135deg,#b45309,#f59e0b)", border: "1px solid #d97706",
-                      boxShadow: "0 2px 8px #f59e0b44",
-                      borderRadius: 20, padding: "2px 8px 2px 6px", maxWidth: "100%",
-                    }}>
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
-                      <span style={{ color: "#fff", fontSize: 10.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textShadow: "0 1px 2px #00000033" }}>{c.address}</span>
-                    </div>
-                  )}
                 </div>
                 {/* Balance badge — 🔁 (ইউজার-রিকোয়েস্টে ফিক্স) "পরিষ্কার" → "পরিশোধ",
                     এবং এখন "বাকি" পিলের সাথে হুবহু একই স্টাইলে (border+shadow), শুধু সবুজ রঙে। */}
@@ -19425,7 +19412,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 disabled={items.filter(i=>i.qty>0).length === 0}
                 onClick={() => { if(items.filter(i=>i.qty>0).length === 0) return; setStep(3); }}>
                 <span style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:6, flexWrap:"wrap", fontSize: 13.5 }}>
-                  পরবর্তী → পেমেন্ট ({items.filter(i=>i.qty>0).length}টি) → মোট খরচ (৳{fmt(total)})
+                  পেমেন্ট করুন→ মোট পণ্য ({items.filter(i=>i.qty>0).length}টি) → মোট খরচ (৳{fmt(total)})
                 </span>
               </button>
             </div>
@@ -19448,18 +19435,18 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 boxShadow: IS.id === "t5" ? "none" : "none",
               }}>
               <div style={{ textAlign: "center", marginBottom: 8, display: "flex", justifyContent: "center" }}>
-                {/* 🎨 (ইউজার-রিকোয়েস্ট) পিলের মধ্যে গাড়ো হলুদ ব্যাকগ্রাউন্ড, ফন্ট বড় ও বোল্ড */}
+                {/* 🎨 (ইউজার-রিকোয়েস্ট) আইটেম-কাউন্ট বাদ, তিন রঙে টেক্সট (নাম=কালো, :=কমলা,
+                    "X টি পণ্য"=সাদা), ফন্ট আরও বড়-বোল্ড, ব্যাকগ্রাউন্ড এখন "Sol." ডোজেস-ফর্মের
+                    রঙে (সায়ান #22d3ee) */}
                 <div style={{
-                  display: "inline-flex", alignItems: "center", flexWrap: "wrap", justifyContent: "center", gap: 4,
-                  background: "linear-gradient(135deg,#b45309,#d97706)", border: "1px solid #92400e",
-                  boxShadow: "0 3px 10px #d9770655",
-                  borderRadius: 20, padding: "6px 16px",
+                  display: "inline-flex", alignItems: "center", flexWrap: "wrap", justifyContent: "center", gap: 6,
+                  background: "linear-gradient(135deg,#22d3ee,#0891b2)", border: "1px solid #0e7490",
+                  boxShadow: "0 3px 10px #22d3ee55",
+                  borderRadius: 20, padding: "7px 18px",
                 }}>
-                  <span style={{ color: "#fff", fontWeight: 900, fontSize: 16, textShadow: "0 1px 2px #00000044" }}>{isSelfUse ? "🏠 নিজের ব্যবহার (Personal Use)" : selCust?.name}</span>
-                  <span style={{ color: "#fff", fontWeight: 900, fontSize: 16 }}>: </span>
-                  <span style={{ color: "#fff", fontWeight: 900, fontSize: 16, textShadow: "0 1px 2px #00000044" }}>{items.filter(i=>i.qty>0).length}টি পণ্য</span>
-                  <span style={{ color: "#fff", fontWeight: 900, fontSize: 16 }}> · </span>
-                  <span style={{ color: "#fff", fontWeight: 900, fontSize: 16, textShadow: "0 1px 2px #00000044" }}>{items.filter(i=>i.qty>0).reduce((a,b)=>a+b.qty,0)}টি আইটেম</span>
+                  <span style={{ color: "#0a1a1e", fontWeight: 900, fontSize: 17 }}>{isSelfUse ? "🏠 নিজের ব্যবহার (Personal Use)" : selCust?.name}</span>
+                  <span style={{ color: "#f97316", fontWeight: 900, fontSize: 17 }}>:</span>
+                  <span style={{ color: "#fff", fontWeight: 900, fontSize: 17, textShadow: "0 1px 2px #00000044" }}>{items.filter(i=>i.qty>0).length}টি পণ্য</span>
                 </div>
               </div>
               {(() => {
@@ -19566,12 +19553,15 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                                   <span style={{ color: "#fff" }}>× ৳{fmt(item.price)}</span>
                                 </button>
                                 {/* 🆕 লেবেল একটু ছোট/বামে সরানো হয়েছে; বাটন ও ফিল্ড সমান সাইজ (৩৪px করে) — দুইটি মিলে উপরের qty×price পিলের প্রস্থের কাছাকাছি */}
-                                <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 3, marginLeft: -6 }} onClick={e => e.stopPropagation()}>
-                                  <span style={{ color: "#16a34a", fontSize: 8, fontWeight: 800, whiteSpace: "nowrap" }}>ডিসকাউন্ট:</span>
+                                {/* 🆕 (ইউজার-রিকোয়েস্ট) "ডিসকাউন্ট:" লেবেল আরও বামে সরানো হয়েছে, আর
+                                    টগল-বাটন + ইনপুট বক্স দুটির সাইজ বাড়িয়ে উপরের qty×price পিলের
+                                    প্রস্থের কাছাকাছি আনা হয়েছে (34px → 44px) */}
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 3, marginLeft: -16 }} onClick={e => e.stopPropagation()}>
+                                  <span style={{ color: "#16a34a", fontSize: 7.5, fontWeight: 800, whiteSpace: "nowrap" }}>ডিসকাউন্ট:</span>
                                   <button
                                     type="button"
                                     onClick={() => toggleItemDiscMode(item.productId)}
-                                    style={{ width: 34, background: "#16a34a", border: "1.5px solid #17171a", borderRadius: 7, padding: "2px 0", fontSize: 10, fontWeight: 900, color: "#fff", cursor: "pointer", fontFamily: "inherit", textAlign: "center" }}>
+                                    style={{ width: 44, background: "#16a34a", border: "1.5px solid #17171a", borderRadius: 7, padding: "2px 0", fontSize: 10, fontWeight: 900, color: "#fff", cursor: "pointer", fontFamily: "inherit", textAlign: "center" }}>
                                     {mode === "pct" ? "%" : "৳"}
                                   </button>
                                   {mode === "pct" ? (
@@ -19579,13 +19569,13 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                                       type="number" inputMode="decimal" placeholder="0"
                                       value={item.itemDiscount ? pctDisplay : ""}
                                       onChange={e => setItemDiscountPct(item.productId, e.target.value, lineSubtotal)}
-                                      style={{ width: 34, background: "#f0fdf4", border: "1.5px solid #16a34a", borderRadius: 7, padding: "2px 4px", fontSize: 10.5, fontWeight: 800, color: "#15803d", fontFamily: "inherit", textAlign: "center" }} />
+                                      style={{ width: 44, background: "#f0fdf4", border: "1.5px solid #16a34a", borderRadius: 7, padding: "2px 4px", fontSize: 10.5, fontWeight: 800, color: "#15803d", fontFamily: "inherit", textAlign: "center" }} />
                                   ) : (
                                     <input
                                       type="number" inputMode="numeric" placeholder="0"
                                       value={item.itemDiscount || ""}
                                       onChange={e => setItemDiscount(item.productId, e.target.value)}
-                                      style={{ width: 34, background: "#f0fdf4", border: "1.5px solid #16a34a", borderRadius: 7, padding: "2px 4px", fontSize: 10.5, fontWeight: 800, color: "#15803d", fontFamily: "inherit", textAlign: "center" }} />
+                                      style={{ width: 44, background: "#f0fdf4", border: "1.5px solid #16a34a", borderRadius: 7, padding: "2px 4px", fontSize: 10.5, fontWeight: 800, color: "#15803d", fontFamily: "inherit", textAlign: "center" }} />
                                   )}
                                 </div>
                               </div>
@@ -19934,7 +19924,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 }}
                 disabled={creating || license.isLocked || (!isSelfUse && payType==="partial" && !partialAmt) || (!isSelfUse && selCust?.id==="__walkin__" && walkInPayType==="partial" && !walkInPartialAmt) || (!isSelfUse && selCust?.id==="__walkin__" && (walkInPayType==="partial" || walkInPayType==="baki") && !walkInName.trim())}
                 onClick={createInvoice}>
-                {creating ? "তৈরি হচ্ছে..." : license.isLocked ? "🔒 সাবস্ক্রিপশন মেয়াদ শেষ" : <span style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>ইনভয়েস তৈরি করুন →</span>}
+                {creating ? "তৈরি হচ্ছে..." : license.isLocked ? "🔒 সাবস্ক্রিপশন মেয়াদ শেষ" : <span style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>ইনভয়েস তৈরি করুন → মোট খরচ (৳{fmt(total)})</span>}
               </button>
             </div>
           </div>
@@ -25097,6 +25087,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               label:"নিজের ব্যবহার", value:`${repData.selfUseInvs.length}টি`,
               idx:4,
               sub:`${repLabel} নিজের ব্যবহার`,
+              iconPath: <><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></>,
               topNote: repData.selfUseCost > 0 ? `ক্রয়মূল্য: ৳${fmt(repData.selfUseCost)}` : null,
               onClick: () => setDashModal({ title:`${repLabel} নিজের ব্যবহারের ইনভয়েস`, baseTitle:"নিজের ব্যবহারের ইনভয়েস", type:"invoices", items:repData.selfUseInvs, allItems: invoices.filter(i => i.isSelfUse && i.status !== "voided") })
             },
@@ -25679,30 +25670,28 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
               </div>
               {/* Info block */}
               <div style={{ minWidth: 0, flex:1, display:"flex", flexDirection:"column", gap:4 }}>
-                {/* 🎨 (ইউজার-রিকোয়েস্ট) নাম/মোবাইল/ঠিকানা পিল এখন ডিপ কালারফুল (সবুজ/বেগুনি/সোনালি),
-                    নামের ফন্ট আরও বড় ও বোল্ড */}
-                <div style={{
-                  display:"inline-flex", alignSelf:"flex-start", maxWidth:"100%",
-                  background:"linear-gradient(135deg,#15803d,#22c55e)", border:"1px solid #16a34a",
-                  boxShadow:"0 2px 8px #22c55e44",
-                  borderRadius:20, padding:"3px 11px",
-                }}>
-                  <span style={{ color: "#fff", fontWeight:900, fontSize:15, letterSpacing:0.1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", textShadow:"0 1px 2px #00000033" }}>
-                    <HighlightText text={c.name} query={search} highlightColor="#fde047" />
-                  </span>
+                {/* 🎨 (ইউজার-রিকোয়েস্ট, ডিজাইন ১) মিনিমাল স্ট্যাক — বাম পাশে সবুজ এক্সেন্ট বার,
+                    কোনো পিল-ব্যাকগ্রাউন্ড নেই। নাম বড়-বোল্ড, মোবাইল+ঠিকানা একলাইনে হালকা রঙে। */}
+                <div style={{ borderLeft:"3px solid #16a34a", paddingLeft:10 }}>
+                  <div style={{ fontWeight:900, fontSize:15.5, color:T.text, letterSpacing:0.1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                    <HighlightText text={c.name} query={search} highlightColor="#22c55e" />
+                  </div>
+                  <div style={{ marginTop:3, fontSize:12, color:T.sub, display:"flex", alignItems:"center", flexWrap:"wrap", gap:5, maxWidth:"100%" }}>
+                    {c.mobile && (
+                      <span style={{ display:"inline-flex", alignItems:"center", gap:4, fontWeight:700 }}>
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#0d7d4d" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                        {c.mobile}
+                      </span>
+                    )}
+                    {c.mobile && c.address && <span style={{ width:3, height:3, borderRadius:"50%", background:T.sub, opacity:0.5, flexShrink:0 }} />}
+                    {c.address && (
+                      <span style={{ display:"inline-flex", alignItems:"center", gap:4, fontWeight:700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", minWidth:0 }}>
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#b8862e" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                        {c.address}
+                      </span>
+                    )}
+                  </div>
                 </div>
-                {c.mobile && (
-                  <div style={{ display:"inline-flex", alignSelf:"flex-start", alignItems:"center", gap:5, background:"linear-gradient(135deg,#6d28d9,#8b5cf6)", border:"1px solid #7c3aed", boxShadow:"0 2px 8px #8b5cf644", borderRadius:20, padding:"2px 8px 2px 6px" }}>
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.7" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
-                    <span style={{ color: "#fff", fontSize: 11, fontWeight: 800, textShadow:"0 1px 2px #00000033" }}>{c.mobile}</span>
-                  </div>
-                )}
-                {c.address && (
-                  <div style={{ display:"inline-flex", alignSelf:"flex-start", alignItems:"center", gap:4, background:"linear-gradient(135deg,#b45309,#f59e0b)", border:"1px solid #d97706", boxShadow:"0 2px 8px #f59e0b44", borderRadius:20, padding:"2px 8px 2px 6px", maxWidth:"100%" }}>
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
-                    <span style={{ color: "#fff", fontSize: 10.5, fontWeight: 700, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", textShadow:"0 1px 2px #00000033" }}>{c.address}</span>
-                  </div>
-                )}
               </div>
               {/* Balance + chevron — বাকি/পরিশোধ পিল এখন ইনভয়েস কাস্টমার-সিলেকশন পেইজের
                   পিলের সাথে হুবহু (bg + 1px কালো/গ্রে বর্ডার + hard shadow), শুধু রঙ ভিন্ন */}
@@ -26637,37 +26626,26 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
         </div>
         <div style={S.dashed} />
         <div style={{ fontSize: 12, color: IS.sub, display: "flex", flexDirection: "column", gap: 4, marginBottom: 10 }}>
-          {/* 🎨 (ইউজার-রিকোয়েস্ট) কাস্টমার কার্ডের মতো হুবহু ডিপ কালারফুল পিল (সবুজ/বেগুনি/সোনালি) */}
-          <div style={{
-            display: "inline-flex", alignSelf: "flex-start", maxWidth: "100%",
-            background: "linear-gradient(135deg,#15803d,#22c55e)", border: "1px solid #16a34a",
-            boxShadow: "0 2px 8px #22c55e44",
-            borderRadius: 20, padding: "3px 11px",
-          }}>
-            <span style={{ color: "#fff", fontWeight: 900, fontSize: 15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textShadow: "0 1px 2px #00000033" }}>{inv.customerName}</span>
+          {/* 🎨 (ইউজার-রিকোয়েস্ট, ডিজাইন ১) মিনিমাল স্ট্যাক — বাম পাশে সবুজ এক্সেন্ট বার,
+              পিল-ব্যাকগ্রাউন্ড নেই, কাস্টমার লিস্ট/ইনভয়েস সিলেকশন পেইজের সাথে হুবহু মিলিয়ে */}
+          <div style={{ borderLeft: "3px solid #16a34a", paddingLeft: 10, maxWidth: "100%" }}>
+            <div style={{ color: IS.text, fontWeight: 900, fontSize: 15.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{inv.customerName}</div>
+            <div style={{ marginTop: 3, fontSize: 12, color: IS.sub, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 5, maxWidth: "100%" }}>
+              {inv.customerMobile && (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontWeight: 700 }}>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#0d7d4d" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                  {inv.customerMobile}
+                </span>
+              )}
+              {inv.customerMobile && customer?.address && <span style={{ width: 3, height: 3, borderRadius: "50%", background: IS.sub, opacity: 0.5, flexShrink: 0 }} />}
+              {customer?.address && (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#b8862e" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                  {customer.address}
+                </span>
+              )}
+            </div>
           </div>
-          {inv.customerMobile && (
-            <div style={{
-              display: "inline-flex", alignSelf: "flex-start", alignItems: "center", gap: 5,
-              background: "linear-gradient(135deg,#6d28d9,#8b5cf6)", border: "1px solid #7c3aed",
-              boxShadow: "0 2px 8px #8b5cf644",
-              borderRadius: 20, padding: "2px 8px 2px 6px",
-            }}>
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.7" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.29 6.29l.91-.91a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
-              <span style={{ color: "#fff", fontSize: 11, fontWeight: 800, textShadow: "0 1px 2px #00000033" }}>{inv.customerMobile}</span>
-            </div>
-          )}
-          {customer?.address && (
-            <div style={{
-              display: "inline-flex", alignSelf: "flex-start", alignItems: "center", gap: 4,
-              background: "linear-gradient(135deg,#b45309,#f59e0b)", border: "1px solid #d97706",
-              boxShadow: "0 2px 8px #f59e0b44",
-              borderRadius: 20, padding: "2px 8px 2px 6px", maxWidth: "100%",
-            }}>
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
-              <span style={{ color: "#fff", fontSize: 10.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textShadow: "0 1px 2px #00000033" }}>{customer.address}</span>
-            </div>
-          )}
         </div>
         <div style={S.dashed} />
         <div style={{ display: "grid", gridTemplateColumns: "1fr 108px 92px", alignItems: "center", columnGap: 8, padding: "0 10px 6px", color: IS.sub, fontSize: 10.5, fontWeight: 800 }}>
