@@ -604,21 +604,74 @@ function levenshteinDistance(a, b) {
   return prev[n];
 }
 
+// ─── smartMatch — সার্চ রেলিভেন্স স্কোরিং ───────────────────────────────────
+// 🔴 রুট-কজ ফিক্স (১১ আগস্ট ২০২৬, "সার্চ একুরেট না" বাগ): আগে এই ফাংশন মাত্র ৪টা
+// ধাপে স্কোর দিত (exact=3, startsWith=2, includes=1, fuzzy=0.5), আর
+// "startsWith" ধাপে "Na" লিখলে "Napa Rapid" আর "Navana" (কোম্পানির নাম) দুটোই
+// সমান স্কোর (2) পেত — কারণ প্রিফিক্স-ম্যাচ হলেই সমান নম্বর, প্রিফিক্সের পরের
+// অক্ষরটা শব্দের শেষ (স্পেস/বিরতি) নাকি মাঝখানে (যেমন "Napa-xin") তার কোনো
+// পার্থক্য করত না। ফলে "Napa" নামের পণ্য আর "Napaxin" নামের ভিন্ন পণ্য একই
+// স্কোরে টাই করত, আর টাই হলে কোনো সেকেন্ডারি সর্ট না থাকায় মূল অ্যারের
+// (যোগ করার) ক্রম অনুযায়ী এলোমেলোভাবে একটা আগে/পরে বসত — তাই একুরেট মনে
+// হতো না। এখন প্রিফিক্স-ম্যাচকে দুই ভাগে ভাগ করা হলো: "word-boundary prefix"
+// (যেমন "Napa " — পরের অক্ষর স্পেস/সংখ্যা/চিহ্ন) সবচেয়ে বেশি স্কোর পাবে,
+// আর "mid-word prefix" (যেমন "Napa" থেকে "Napaxin") তার চেয়ে কম। এছাড়া
+// "শব্দের মাঝে হুবহু-শব্দ ম্যাচ" (যেমন "Napa Rapid"-এ "rapid" খোঁজা) একটা
+// আলাদা মধ্যম-স্কোর পায়, শুধু substring-ম্যাচের চেয়ে বেশি প্রাসঙ্গিক ধরে।
 function smartMatch(text, query) {
-  if (!query || !text) return query ? 0 : 1;
+  if (!query) return 1;
+  if (!text) return 0;
   const t = text.toLowerCase();
   const q = query.toLowerCase().trim();
   if (!q) return 1;
-  if (t === q) return 3;
-  if (t.startsWith(q)) return 2;
-  if (t.includes(q)) return 1;
-  // fuzzy: all chars of q appear in t in order
+  if (t === q) return 100;
+  if (t.startsWith(q)) {
+    const nextChar = t[q.length];
+    const isWordBoundary = !nextChar || !/[a-z0-9]/i.test(nextChar);
+    return isWordBoundary ? 90 : 70; // "Napa " → 90, "Napa"+"xin" → 70
+  }
+  const esc = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (new RegExp("(^|[^a-z0-9])" + esc, "i").test(t)) return 50; // শব্দের শুরুতে (মাঝপথে) ম্যাচ, যেমন "Tab. Napa"-তে "Napa"
+  if (t.includes(q)) return 30; // যেকোনো জায়গায় substring
+  // fuzzy: সিকোয়েন্সে সব ক্যারেক্টার পাওয়া গেলে
   let ti = 0, qi = 0;
   while (ti < t.length && qi < q.length) {
     if (t[ti] === q[qi]) qi++;
     ti++;
   }
-  return qi === q.length ? 0.5 : 0;
+  return qi === q.length ? 5 : 0;
+}
+
+// 🆕 পণ্য-সার্চের জন্য ওয়েটেড স্কোর — শুধু নাম, সিরিয়াল, বারকোড দিয়ে ম্যাচ করে।
+// 🔴 (ইউজার-রিকোয়েস্ট) কোম্পানির নাম দিয়ে ম্যাচ করা বাদ দেওয়া হলো — এটা
+// থাকলে ভিন্ন পণ্য শুধু একই কোম্পানির হওয়ার কারণে সার্চ ফলাফলে চলে আসত
+// (যেমন "Na" লিখলে "Navana" কোম্পানির "Curafin" চলে আসত, যদিও পণ্যের নামে
+// "Na" নেই)।
+function productMatchScore(p, q) {
+  return Math.max(
+    smartMatch(p.name, q) * 1.0,
+    smartMatch(p.serialStr, q) * 0.95,
+    smartMatch(p.barcode || "", q) * 0.85,
+  );
+}
+
+// 🆕 সমান স্কোরের মধ্যে ধারাবাহিক (deterministic) ক্রম দিতে সেকেন্ডারি
+// টাই-ব্রেকার — ছোট/কাছের নাম আগে, তারপর বর্ণানুক্রমিক। এটা না থাকলে সমান
+// স্কোরের আইটেমগুলো মূল অ্যারের ক্রম অনুযায়ী এলোমেলোভাবে বসত।
+// 🆕 কাস্টমার-সার্চের জন্য ওয়েটেড স্কোর — নাম প্রথম প্রায়োরিটি, তারপর মোবাইল/সিরিয়াল
+function customerMatchScore(c, q) {
+  return Math.max(
+    smartMatch(c.name || "", q) * 1.0,
+    smartMatch(c.mobile || "", q) * 0.9,
+    smartMatch(c.serialStr || "", q) * 0.85,
+  );
+}
+
+function bySearchScore(a, b) {
+  if (b._score !== a._score) return b._score - a._score;
+  const an = (a.name || "").length, bn = (b.name || "").length;
+  if (an !== bn) return an - bn;
+  return (a.name || "").localeCompare(b.name || "");
 }
 
 // ─── HighlightText — query match এর অংশ highlight করে ──────────────────────
@@ -687,7 +740,7 @@ function SupplierPicker({ value, onChange, error, T, S, autoFocus, extraSupplier
     return allSuppliers
       .map(c => ({ c, s: smartMatch(c, q) }))
       .filter(x => x.s > 0)
-      .sort((a, b) => b.s - a.s)
+      .sort((a, b) => b.s - a.s || a.c.length - b.c.length || a.c.localeCompare(b.c))
       .slice(0, 30)
       .map(x => x.c);
   }, [query, allSuppliers]);
@@ -14648,21 +14701,32 @@ function SmartBusinessMgmt() {
         /* ── Safe Area ───────────────────────────────── */
         .safe-pb { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
-        /* ── Global Bold + Font Size Boost ──────────── */
+        /* ── Global Font Size (accessibility scale) ──────
+           🔴 সিস্টেমিক ফিক্স (১১ আগস্ট ২০২৬, "ফন্ট-সাইজ কিছুতেই বড় হয় না" বাগের
+           প্রকৃত রুট-কজ): নিচের রুলগুলোতে আগে !important ছিল, যেটা পুরো
+           অ্যাপের যেকোনো কম্পোনেন্টের ইচ্ছাকৃত ইনলাইন fontSize (কাস্টমার নাম,
+           KPI ডিজিট, ব্যালেন্স কার্ড ইত্যাদি — সব জায়গায়) জোর করে চাপা দিয়ে
+           দিত। ফলে ভবিষ্যতে যেখানেই fontSize পরিবর্তন করা হতো, সেটা কখনোই
+           দেখা যেত না, আর প্রতিবার আলাদা "boost" এসকেপ-হ্যাচ ক্লাস বানাতে
+           হতো (যেমন নিচের .kpi-value-lg / .cust-name-boost)। !important বাদ
+           দেওয়ায় এখন থেকে স্বাভাবিক CSS নিয়মেই কাজ করবে: ইনলাইন fontSize
+           দেওয়া এলিমেন্ট নিজের সাইজ ধরে রাখবে (ইনলাইন স্টাইল সবসময়
+           স্টাইলশিট রুলের চেয়ে প্রায়োরিটিতে এগিয়ে থাকে), আর যেসব টেক্সটে
+           ইনলাইন fontSize নেই সেগুলো এখনও ইউজারের "অ্যাপ ফন্ট সাইজ" সেটিং
+           অনুযায়ী ঠিকই স্কেল হবে। এখন থেকে যেকোনো জায়গায় fontSize বসালেই
+           সরাসরি কাজ করবে — আলাদা এসকেপ-হ্যাচ ক্লাসের আর দরকার নেই। */
         * { font-weight: 700; }
-        span, div, p, td, th, li, label { font-size: var(--app-font-size) !important; }
-        button { font-size: var(--app-font-size) !important; }
-        input, textarea, select { font-size: calc(var(--app-font-size) + 1px) !important; font-weight: 700 !important; }
-        h1,h2,h3,h4 { font-weight: 900 !important; font-size: calc(var(--app-font-size) + 4px) !important; }
+        span, div, p, td, th, li, label { font-size: var(--app-font-size); }
+        button { font-size: var(--app-font-size); }
+        input, textarea, select { font-size: calc(var(--app-font-size) + 1px); font-weight: 700; }
+        h1,h2,h3,h4 { font-weight: 900; font-size: calc(var(--app-font-size) + 4px); }
 
-        /* 🔴 ফিক্স (৯ আগস্ট ২০২৬ — "ডিজিট সাইজ বড় হচ্ছে না" বাগ): উপরের গ্লোবাল
-           "span, div, p... !important" রুল সব ইনলাইন fontSize (যেমন neonNumStyle()-এর
-           fontSize:46) কে চাপা দিয়ে দিচ্ছিল, কারণ !important সবসময় ইনলাইন স্টাইলের
-           চেয়ে জেতে। এই ক্লাসটা নিচে (তাই CSS cascade-এ পরে) বসানো হলো, যাতে সমান
-           !important-এর মধ্যে source-order অনুযায়ী এটাই শেষ পর্যন্ত জেতে — KPI
-           কার্ডের বড় ডিজিট (neonNumStyle 46px) সহ যেকোনো জায়গায় সত্যিকারের বড় সাইজ
-           বজায় থাকবে, গ্লোবাল ফন্ট-সাইজ বুস্ট সেটিং যা-ই হোক না কেন। */
+        /* নিচের এসকেপ-হ্যাচ ক্লাসগুলো আগের বাগের সময়কার — উপরের রুট-ফিক্সের পর
+           এগুলো আর প্রয়োজনীয় নয় কিন্তু কোথাও রেফারেন্স করা থাকায় নিরাপদে
+           রাখা হলো (কোনো ক্ষতি করে না, শুধু ব্যাকওয়ার্ড-কম্প্যাটিবিলিটি)। */
         .kpi-value-lg { font-size: 24px !important; }
+        .cust-name-boost { font-size: 31px !important; }
+        .cust-balance-amount-boost { font-size: 48px !important; }
 
         /* ── Content z-index above mesh ─────────────── */
         header, main, nav { position: relative; z-index: 1; }
@@ -17685,11 +17749,14 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     [customers]
   );
 
+  // 🔴 (ইউজার-রিকোয়েস্ট) আগে শুধু filter হতো, স্কোর অনুযায়ী সর্ট হতো না —
+  // তাই সবচেয়ে প্রাসঙ্গিক ম্যাচ উপরে না এসে মূল অ্যারের ক্রমে দেখাত।
   const filteredCustomers = useMemo(() =>
     custSearch
-      ? customersWithSerial.filter(c =>
-          (() => { const score = Math.max(smartMatch(c.name, custSearch), smartMatch(c.mobile, custSearch), smartMatch(c.serialStr, custSearch.trim())); return score > 0; })()
-        )
+      ? customersWithSerial
+          .map(c => ({ ...c, _score: customerMatchScore(c, custSearch) }))
+          .filter(c => c._score > 0)
+          .sort(bySearchScore)
       : customersWithSerial,
     [customersWithSerial, custSearch]
   );
@@ -17718,16 +17785,9 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     if (prodSearch) {
       const q = prodSearch.trim();
       ps = ps
-        .map(p => ({
-          ...p,
-          _score: Math.max(
-            smartMatch(p.name, q),
-            smartMatch(p.serialStr, q),
-            smartMatch(p.company || "", q)
-          )
-        }))
+        .map(p => ({ ...p, _score: productMatchScore(p, q) }))
         .filter(p => p._score > 0)
-        .sort((a, b) => b._score - a._score);
+        .sort(bySearchScore);
     } else {
       // সার্চ নেই — কমন পণ্য আগে, আনকমন পরে
       ps = [...ps].sort((a, b) => {
@@ -17786,18 +17846,23 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
 
   const walkInCustMatches = useMemo(() => {
     if (!walkInCustSearch.trim()) return [];
-    const q = walkInCustSearch.trim().toLowerCase();
-    return (customers || []).filter(c =>
-      (c.name || "").toLowerCase().includes(q) || (c.mobile || "").includes(q)
-    ).slice(0, 8);
+    const q = walkInCustSearch.trim();
+    return (customers || [])
+      .map(c => ({ ...c, _score: customerMatchScore(c, q) }))
+      .filter(c => c._score > 0)
+      .sort(bySearchScore)
+      .slice(0, 8);
   }, [customers, walkInCustSearch]);
 
   // 🆕 "পুরোনো কাস্টমার" মডালের জন্য পূর্ণ তালিকা (সার্চ করলে ফিল্টার, না করলে সব)
   const walkInModalCustList = useMemo(() => {
     const list = customers || [];
     if (!walkInCustSearch.trim()) return list;
-    const q = walkInCustSearch.trim().toLowerCase();
-    return list.filter(c => (c.name || "").toLowerCase().includes(q) || (c.mobile || "").includes(q));
+    const q = walkInCustSearch.trim();
+    return list
+      .map(c => ({ ...c, _score: customerMatchScore(c, q) }))
+      .filter(c => c._score > 0)
+      .sort(bySearchScore);
   }, [customers, walkInCustSearch]);
 
   const selectWalkInExistingCust = (c) => {
@@ -21515,9 +21580,9 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     [dashSupplierDueMap]
   );
   const cashPartyFiltered = useMemo(() => {
-    const q = cashParty.trim().toLowerCase();
+    const q = cashParty.trim();
     if (!q) return dashSupplierNames.slice(0, 20);
-    return dashSupplierNames.filter(n => n.toLowerCase().includes(q)).slice(0, 20);
+    return dashSupplierNames.filter(n => smartMatch(n, q) > 0).slice(0, 20);
   }, [cashParty, dashSupplierNames]);
   const cashPartyDue = cashType === "supplier" ? (dashSupplierDueMap[cashParty.trim()]?.due || 0) : 0;
 
@@ -22797,19 +22862,23 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
 
         {/* 🔍 পণ্য/সাপ্লায়ার সার্চ (অটো-সাজেস্ট সহ) — সাপ্লায়ার নাম মিললে সাপ্লায়ার কার্ড, পণ্যের নাম মিললে পণ্য দেখায় */}
         {(() => {
-          const q = supSearchQuery.trim().toLowerCase();
+          const q = supSearchQuery.trim();
           // সাপ্লায়ার নাম মিললে — সেই সাপ্লায়ারের কার্ড (পৃথক পণ্য নয়)
-          const supplierMatches = q.length === 0 ? [] : supplierList
-            .filter(sup => sup.name.toLowerCase().includes(q))
+          const supplierMatches = !q ? [] : supplierList
+            .map(sup => ({ ...sup, _score: smartMatch(sup.name, q) }))
+            .filter(s => s._score > 0)
+            .sort((a,b) => b._score - a._score || a.name.length - b.name.length || a.name.localeCompare(b.name))
             .slice(0, 8);
           const matchedSupplierNames = new Set(supplierMatches.map(s => s.name));
           // পণ্যের নাম মিললে — শুধু সেই পণ্যগুলো (যেসব সাপ্লায়ার আগে থেকেই কার্ড হিসেবে দেখানো হয়নি)
-          const productMatches = q.length === 0 ? [] : items
+          const productMatches = !q ? [] : items
+            .map(p => ({ ...p, _score: productMatchScore(p, q) }))
             .filter(p => {
+              if (p._score <= 0) return false;
               const supName = p.company || p.category || "অজ্ঞাত";
-              if (matchedSupplierNames.has(supName)) return false;
-              return (p.name || "").toLowerCase().includes(q);
+              return !matchedSupplierNames.has(supName);
             })
+            .sort(bySearchScore)
             .slice(0, 8);
           const showDropdown = supSearchFocused && q.length > 0;
           const goToSupplierOf = (p) => {
@@ -23190,13 +23259,13 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     const allSupplierNames = [...new Set(products.map(p => supplierOf(p)).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"bn"));
     // 🆕 কাস্টমার অর্ডার ফর্মের জন্য — পণ্যের নাম টাইপ করলে ক্যাটালগ থেকে সাজেশন, কাস্টমারের নাম টাইপ করলে বিদ্যমান কাস্টমার তালিকা থেকে সাজেশন
     const custOrderProductSuggestions = custOrderName.trim().length >= 2
-      ? products.map(p => ({ p, score: smartMatch(p.name, custOrderName.trim()) })).filter(x => x.score > 0).sort((a,b)=>b.score-a.score).slice(0,6)
+      ? products.map(p => ({ p, score: smartMatch(p.name, custOrderName.trim()) })).filter(x => x.score > 0).sort((a,b)=>b.score-a.score || a.p.name.length-b.p.name.length || a.p.name.localeCompare(b.p.name)).slice(0,6)
       : [];
     const custOrderCustomerSuggestions = custOrderCustomerName.trim().length >= 1
-      ? (customers||[]).map(c => ({ c, score: smartMatch(c.name||"", custOrderCustomerName.trim()) })).filter(x => x.score > 0).sort((a,b)=>b.score-a.score).slice(0,6)
+      ? (customers||[]).map(c => ({ c, score: smartMatch(c.name||"", custOrderCustomerName.trim()) })).filter(x => x.score > 0).sort((a,b)=>b.score-a.score || (a.c.name||"").length-(b.c.name||"").length || (a.c.name||"").localeCompare(b.c.name||"")).slice(0,6)
       : [];
     const custOrderSupplierSuggestions = custOrderSupplier.trim().length >= 1
-      ? allSupplierNames.filter(s => s.toLowerCase().includes(custOrderSupplier.trim().toLowerCase())).slice(0,8)
+      ? allSupplierNames.map(s => ({ s, score: smartMatch(s, custOrderSupplier.trim()) })).filter(x => x.score > 0).sort((a,b)=>b.score-a.score || a.s.length-b.s.length || a.s.localeCompare(b.s)).slice(0,8).map(x=>x.s)
       : allSupplierNames.slice(0,8);
     // কাস্টমার অর্ডার ফর্ম রিসেট — শুধু পণ্য/সাপ্লায়ার/পরিমাণ/টাকার ফিল্ড খালি হয়, কাস্টমারের নাম-ফোন
     // থেকে যায় (একই কাস্টমারের একাধিক পণ্য দ্রুত যোগ করার জন্য)
@@ -23209,14 +23278,14 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     };
     // টাইপ করা টেক্সটের সাথে মিলে এমন সাপ্লায়ার সাজেশন (২ অক্ষর থেকে শুরু) — সাপ্লায়ার সিলেক্ট করা না থাকলেই শুধু দেখানো হয়
     const poSupplierSuggestions = (!poSupplierSelected && poSupplierQuery.trim().length >= 2)
-      ? allSupplierNames.filter(s => s.toLowerCase().includes(poSupplierQuery.trim().toLowerCase())).slice(0, 8)
+      ? allSupplierNames.map(s => ({ s, score: smartMatch(s, poSupplierQuery.trim()) })).filter(x => x.score > 0).sort((a,b)=>b.score-a.score || a.s.length-b.s.length || a.s.localeCompare(b.s)).slice(0, 8).map(x=>x.s)
       : [];
     // সাপ্লায়ার সিলেক্ট করা থাকলে শুধু তার পণ্য, এবং সার্চবারে যা লেখা আছে তা দিয়ে পণ্যের নাম ফিল্টার হয় —
     // ফলে সাপ্লায়ার সিলেক্ট করার পরও সার্চবার খালি হয়ে যায় এবং পণ্যের নাম দিয়ে আলাদাভাবে খোঁজা যায়
-    const poNameQuery = poSupplierQuery.trim().toLowerCase();
+    const poNameQuery = poSupplierQuery.trim();
     const poFilteredProducts = allProductsSorted
       .filter(p => !poSupplierSelected || supplierOf(p) === poSupplierSelected)
-      .filter(p => !poNameQuery || (p.name||"").toLowerCase().includes(poNameQuery));
+      .filter(p => !poNameQuery || smartMatch(p.name||"", poNameQuery) > 0);
 
     // 🆕 একবার কনফার্মে একটাই ইউনিফাইড রেকর্ড (সাপ্লায়ার-গ্রুপড নয়) — প্রতিটি আইটেমে নিজস্ব সাপ্লায়ার সংরক্ষিত থাকে।
     // 🆕 দিনে একাধিকবার "কনফার্ম" করলেও আলাদা আলাদা রেকর্ড তৈরি হয় না — আজকের জন্য আগে থেকে
@@ -25548,10 +25617,11 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
   const bySearch = useMemo(() => {
     const q = deferredSearch.trim();
     if (!q) return withSerial;
-    return withSerial.filter(c => {
-      const score = Math.max(smartMatch(c.name, q), smartMatch(c.mobile, q), smartMatch(c.serialStr, q));
-      return score > 0;
-    });
+    // 🔴 (ইউজার-রিকোয়েস্ট) আগে শুধু filter হতো, স্কোর অনুযায়ী সর্ট হতো না
+    return withSerial
+      .map(c => ({ ...c, _score: customerMatchScore(c, q) }))
+      .filter(c => c._score > 0)
+      .sort(bySearchScore);
   }, [withSerial, deferredSearch]);
   const filteredCustomers = useMemo(() => (
     segFilter === "all" ? bySearch
@@ -25674,8 +25744,9 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
                 {/* 🎨 (ইউজার-রিকোয়েস্ট, ডিজাইন ১) মিনিমাল স্ট্যাক — বাম পাশে সবুজ এক্সেন্ট বার,
                     কোনো পিল-ব্যাকগ্রাউন্ড নেই। নাম বড়-বোল্ড, মোবাইল+ঠিকানা একলাইনে হালকা রঙে। */}
                 <div style={{ borderLeft:"3px solid #16a34a", paddingLeft:10 }}>
-                  {/* 🆕 (ইউজার-রিকোয়েস্ট) নামের ফন্ট সাইজ দ্বিগুণ (15.5→31px) */}
-                  <div style={{ fontWeight:900, fontSize:31, color:T.text, letterSpacing:0.1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                  {/* 🆕 (ইউজার-রিকোয়েস্ট) নামের ফন্ট সাইজ দ্বিগুণ — className দিয়ে গ্লোবাল
+                      !important ফন্ট-সাইজ রুল বাইপাস করা হলো (দেখুন 🔴 ফিক্স নোট, লাইন ~14658) */}
+                  <div className="cust-name-boost" style={{ fontWeight:900, color:T.text, letterSpacing:0.1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
                     <HighlightText text={c.name} query={search} highlightColor="#22c55e" />
                   </div>
                   <div style={{ marginTop:3, fontSize:12, color:T.sub, display:"flex", alignItems:"center", flexWrap:"wrap", gap:5, maxWidth:"100%" }}>
@@ -26961,17 +27032,9 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       });
     } else {
       result = base
-        .map(p => ({
-          ...p,
-          _score: Math.max(
-            smartMatch(p.name, q),
-            smartMatch(p.serialStr, q),
-            smartMatch(p.company || "", q),
-            smartMatch(p.barcode || "", q)
-          )
-        }))
+        .map(p => ({ ...p, _score: productMatchScore(p, q) }))
         .filter(p => p._score > 0)
-        .sort((a, b) => b._score - a._score);
+        .sort(bySearchScore);
     }
     // 🔴 ফিক্স (সিরিয়াল ব্রেক — ভিজ্যুয়াল): এই badge নম্বর আগে মূল products
     // অ্যারের পজিশন থেকে আসত (productsWithSerialAll), কিন্তু কমন/আনকমন
@@ -27054,7 +27117,10 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   }, [peSelProdForBatch]);
   const peFilteredProds = useMemo(() => (
     peForm.productSearch
-      ? products.filter(p => p.name.toLowerCase().includes(peForm.productSearch.toLowerCase()) || (p.unit||"").includes(peForm.productSearch))
+      ? products
+          .map(p => ({ ...p, _score: productMatchScore(p, peForm.productSearch.trim()) }))
+          .filter(p => p._score > 0)
+          .sort(bySearchScore)
       : products
   ), [products, peForm.productSearch]);
   const peNextBatchLabel = useMemo(() => (
@@ -29530,8 +29596,8 @@ function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
   // ── Filtered suppliers ─────────────────────────────────────────────────────
   const filteredSuppliers = useMemo(() => {
     if (!search.trim()) return suppliers;
-    const q = search.toLowerCase();
-    return suppliers.filter(s => s.name.toLowerCase().includes(q));
+    const q = search.trim();
+    return suppliers.filter(s => smartMatch(s.name, q) > 0);
   }, [suppliers, search]);
 
   // ── Selected supplier data ─────────────────────────────────────────────────
@@ -29999,9 +30065,13 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
   const ihShiftMonth = (delta) => setIhMonth(prev => { const [y,m] = (prev || monthKeyNow).split("-").map(Number); const d = new Date(y,(m-1)+delta,1); return _monthKeyOf(d); });
 
   const ihCustSuggestions = React.useMemo(() => {
-    const q = ihCustText.trim().toLowerCase();
+    const q = ihCustText.trim();
     if (!q || ihCustId) return [];
-    return (customers||[]).filter(c => (c.name||"").toLowerCase().includes(q)).slice(0, 8);
+    return (customers||[])
+      .map(c => ({ ...c, _score: customerMatchScore(c, q) }))
+      .filter(c => c._score > 0)
+      .sort(bySearchScore)
+      .slice(0, 8);
   }, [ihCustText, ihCustId, customers]);
 
   // 🔴 ফিক্স: আগে সরাসরি Firestore কুয়েরি (ইন্টারনেট লাগত) — এখন লাইভ invoices
@@ -33151,9 +33221,12 @@ function StaffMgmtModule({ T, S, currentUser, users = [], setUsers, showToast, r
   };
 
   const staffList = users.filter(u => u.role === "staff");
-  const q = search.trim().toLowerCase();
+  const q = search.trim();
   const filtered = q
-    ? staffList.filter(u => (u.name||"").toLowerCase().includes(q) || (u.username||"").toLowerCase().includes(q))
+    ? staffList
+        .map(u => ({ ...u, _score: Math.max(smartMatch(u.name||"", q), smartMatch(u.username||"", q) * 0.9) }))
+        .filter(u => u._score > 0)
+        .sort((a,b) => b._score - a._score || (a.name||"").length - (b.name||"").length || (a.name||"").localeCompare(b.name||""))
     : staffList;
 
   const activeTempCount = staffList.filter(u => (u.tempPermissions||[]).some(p => p.key === "purchase_entry" && new Date(p.expiresAt) > new Date())).length;
