@@ -18878,7 +18878,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                   <div style={{ borderLeft: "3px solid #16a34a", paddingLeft: 10, maxWidth: "100%" }}>
                     <div style={{
                       color: selCust?.id === c.id ? IS.accent : IS.text,
-                      fontWeight: 900, fontSize: 15.5,
+                      fontWeight: 900, fontSize: 31,
                       overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                     }}>{c.name}</div>
                     <div style={{ marginTop: 3, fontSize: 12, color: IS.sub, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 5, maxWidth: "100%" }}>
@@ -19842,10 +19842,21 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                 background: IS.cardBg, "--qc-card-bg": IS.cardBg, border: IS.cardBorder, borderRadius: IS.id === "t5" ? (S.card?.borderRadius ?? 14) : 0,
                 boxShadow: IS.id === "t5" ? "none" : "none",
               }}>
-              {/* 🔁 (ইউজার-রিকোয়েস্টে ফিক্স) "পরিশোধ পদ্ধতি" এখন "মোট খরচ" বারের উপরে —
-                  আগে নিচে ছিল, ইউজার অনুরোধে ক্রম পাল্টানো হয়েছে। */}
+              {/* 🔁 (ইউজার-রিকোয়েস্ট, ১১ আগস্ট ২০২৬) "পরিশোধ পদ্ধতি" এখন "মোট খরচ" বারের পরে */}
+              {/* মোট খরচ — ইনভয়েস রিসিপ্ট পেজের মোট খরচ বারের সাথে হুবহু (কমলা সলিড বার) */}
+              <div style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8,
+                  background: IS.accent, border: "1.5px solid #17171a", borderRadius: 10,
+                  padding: "9px 12px",
+                }}>
+                <span style={{ fontWeight: 800, fontSize: 13, color: "#fff" }}>মোট খরচ</span>
+                <span style={{
+                  fontWeight: 900, fontSize: 17, color: IS.accent, background: "#fff",
+                  borderRadius: 999, padding: "3px 14px",
+                }}>৳{fmt(total)}</span>
+              </div>
               {/* পরিশোধ পদ্ধতি */}
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, color: T.sub, marginBottom: 8 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, color: T.sub, marginBottom: (prevBalance > 0 || displayBakiAmt > 0) ? 8 : 0 }}>
                 <span>পরিশোধ পদ্ধতি</span>
                 <span style={{
                   color: "#fff", fontWeight:800, fontSize: 12.5,
@@ -19861,18 +19872,13 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                     : "নগদ পরিশোধ"}
                 </span>
               </div>
-              {/* মোট খরচ — ইনভয়েস রিসিপ্ট পেজের মোট খরচ বারের সাথে হুবহু (কমলা সলিড বার) */}
-              <div style={{
-                  display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: (prevBalance > 0 || displayBakiAmt > 0) ? 8 : 0,
-                  background: IS.accent, border: "1.5px solid #17171a", borderRadius: 10,
-                  padding: "9px 12px",
-                }}>
-                <span style={{ fontWeight: 800, fontSize: 13, color: "#fff" }}>মোট খরচ</span>
-                <span style={{
-                  fontWeight: 900, fontSize: 17, color: IS.accent, background: "#fff",
-                  borderRadius: 999, padding: "3px 14px",
-                }}>৳{fmt(total)}</span>
-              </div>
+              {/* আজকের বাকি — এই ইনভয়েসের বাকি অংশ (পূর্বের ইউজার-রিকোয়েস্টে "এখনকার বাকি" থেকে রিনেম) */}
+              {displayBakiAmt > 0 && payType === "partial" && (
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, color: T.sub, marginBottom: 8 }}>
+                  <span>আজকের বাকি</span>
+                  <span style={{ color:"#fff", fontWeight:800, fontSize: 12.5, background:"#f43f5e", border: "1.5px solid #17171a", borderRadius: 999, padding: "3px 12px" }}>৳{fmt(displayBakiAmt)}</span>
+                </div>
+              )}
               {/* পূর্বের বাকি — registered customer অথবা walk-in ফ্লো-তে বেছে নেওয়া পুরোনো কাস্টমার */}
               {((selCust && selCust.id !== "__walkin__" && selCust.id !== "__selfuse__") || walkInExistingCust) && prevBalance > 0 && (
                 <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", fontSize:13, color: T.sub, marginBottom:8 }}>
@@ -24984,14 +24990,9 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
         }}>
           {/* decorative glow */}
           <div style={{ position:"absolute", top:-40, right:-40, width:120, height:120, borderRadius:"50%", background: DT.dark ? `radial-gradient(circle, rgba(${DT.accentRgb},0.25),transparent 70%)` : "rgba(255,255,255,0.12)", pointerEvents:"none" }} />
-          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:12, position:"relative" }}>
-            <div style={{ width:30, height:30, borderRadius:9, background: DT.dark ? `linear-gradient(135deg, ${DT.accentColor}, ${T.accentDark||DT.accentColor})` : "rgba(255,255,255,0.22)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, boxShadow: DT.dark ? `0 4px 12px rgba(${DT.accentRgb},0.5)` : "none", flexShrink:0 }}>💰</div>
-            <span style={{ color: "#000000", fontWeight:900, fontSize:16, letterSpacing:0.8 }}>ক্যাশ ড্রয়ার</span>
-            <button onClick={() => setCashModal("history")}
-              style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:5, background: DT.dark ? `rgba(${DT.accentRgb},0.16)` : "rgba(255,255,255,0.18)", border: DT.dark ? `1px solid rgba(${DT.accentRgb},0.4)` : "1px solid rgba(255,255,255,0.35)", borderRadius:10, padding:"6px 12px", color:"#fff", fontSize:11.5, fontWeight:800, cursor:"pointer", fontFamily:"inherit" }}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
-              হিস্ট্রি
-            </button>
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"center", gap:9, marginBottom:12, position:"relative" }}>
+            <div style={{ width:34, height:34, borderRadius:10, background: DT.dark ? `linear-gradient(135deg, ${DT.accentColor}, ${T.accentDark||DT.accentColor})` : "rgba(255,255,255,0.22)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:17, boxShadow: DT.dark ? `0 4px 12px rgba(${DT.accentRgb},0.5)` : "none", flexShrink:0 }}>💰</div>
+            <span style={{ color: "#000000", fontWeight:900, fontSize:19, letterSpacing:0.8 }}>ক্যাশ ড্রয়ার</span>
           </div>
           {/* 🆕 আজকের ক্যাশ ড্রয়ার — এডমিন/স্টাফ সবাই দেখতে পাবে; ক্লিক করলে
               যোগ/বিয়োগ ব্রেকডাউন + দিন/মাস হিস্ট্রি পেজ খোলে */}
@@ -25004,7 +25005,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           }}>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <span style={{ fontSize:18 }}>🏦</span>
-              <span style={{ color: DT.dark ? "#cbd5e1" : "#fff", fontSize:12.5, fontWeight:800 }}>আজকের ক্যাশ ড্রয়ার</span>
+              <span style={{ color: "#000000", fontSize:12.5, fontWeight:800 }}>আজকের ক্যাশ ড্রয়ার</span>
             </div>
             <div style={{ display:"flex", alignItems:"center", gap:6 }}>
               <span className="kpi-value-lg" style={neonNumStyle(DT.dark, 24)}>৳{fmt(todayCashDrawerNow)}</span>
@@ -25673,7 +25674,8 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
                 {/* 🎨 (ইউজার-রিকোয়েস্ট, ডিজাইন ১) মিনিমাল স্ট্যাক — বাম পাশে সবুজ এক্সেন্ট বার,
                     কোনো পিল-ব্যাকগ্রাউন্ড নেই। নাম বড়-বোল্ড, মোবাইল+ঠিকানা একলাইনে হালকা রঙে। */}
                 <div style={{ borderLeft:"3px solid #16a34a", paddingLeft:10 }}>
-                  <div style={{ fontWeight:900, fontSize:15.5, color:T.text, letterSpacing:0.1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                  {/* 🆕 (ইউজার-রিকোয়েস্ট) নামের ফন্ট সাইজ দ্বিগুণ (15.5→31px) */}
+                  <div style={{ fontWeight:900, fontSize:31, color:T.text, letterSpacing:0.1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
                     <HighlightText text={c.name} query={search} highlightColor="#22c55e" />
                   </div>
                   <div style={{ marginTop:3, fontSize:12, color:T.sub, display:"flex", alignItems:"center", flexWrap:"wrap", gap:5, maxWidth:"100%" }}>
@@ -25896,14 +25898,14 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
             <button onClick={() => setDeleteConfirming(false)} style={{ background:"rgba(255,255,255,0.12)", color:"#e5e7eb", border:"none", borderRadius:8, padding:"5px 10px", fontSize:11, fontWeight:800, cursor:"pointer" }}>না</button>
           </div>
         )}
-        {/* বাকি/পরিশোধ পিল — 🔁 (ইউজার-রিকোয়েস্ট, ১০ আগস্ট ২০২৬) কার্ডের আরও উপরে
-            (মার্জিন কমানো হয়েছে) এবং সাইজ ডাবল (প্যাডিং/মিনউইথ/ফন্ট সব ~২গুণ) */}
-        <div style={{ display:"flex", justifyContent:"center", position:"relative", marginTop: canEdit ? 40 : 2, marginBottom: 4 }}>
+        {/* বাকি/পরিশোধ পিল — 🔁 (ইউজার-রিকোয়েস্ট, ১১ আগস্ট ২০২৬) কার্ডের আরও উপরে
+            (~০.৫ ইঞ্চি/৪৮px আরও উপরে) এবং ডানে-বামে আরও চওড়া (padding/minWidth বাড়ানো হয়েছে) */}
+        <div style={{ display:"flex", justifyContent:"center", position:"relative", marginTop: canEdit ? -8 : -46, marginBottom: 4 }}>
           <div style={{
               background: customer.balance > 0 ? "linear-gradient(135deg,#ef4444,#b91c1c)" : customer.balance < 0 ? "linear-gradient(135deg,#3b82f6,#1d4ed8)" : "linear-gradient(135deg,#22c55e,#15803d)",
               border: `3px solid ${customer.balance > 0 ? "#fca5a5" : customer.balance < 0 ? "#93c5fd" : "#86efac"}55`,
               boxShadow: `0 8px 32px ${customer.balance > 0 ? "#ef444455" : customer.balance < 0 ? "#3b82f655" : "#22c55e55"}`,
-              borderRadius: 24, padding: "20px 48px", textAlign:"center", minWidth: 300,
+              borderRadius: 24, padding: "20px 72px", textAlign:"center", minWidth: 360,
             }}>
             <div style={{ color:"#fff", fontSize:16, fontWeight:800, letterSpacing:0.7, marginBottom:6, opacity:0.92, textTransform:"uppercase" }}>
               {customer.balance < 0 ? "অগ্রিম জমা আছে" : customer.balance > 0 ? "বাকী আছে" : "✓ পরিশোধ সম্পন্ন"}
@@ -26582,12 +26584,12 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
         <div class="info-row"><span class="info-label">মোট খরচ:</span><span class="info-val" style="font-size:18px;font-weight:800;">৳${fmtMoney(inv.total||0)}</span></div>
         ${inv.payType==="partial"?`
           <div class="info-row"><span class="info-label">নগদ পেয়েছি:</span><span class="info-val" style="color:#22c55e;">৳${fmtMoney(inv.paidAmount||0)}</span></div>
-          <div class="info-row"><span class="info-label">এই বাকি:</span><span class="info-val" style="color:#ef4444;">৳${fmtMoney(inv.bakiAmount||0)}</span></div>
+          <div class="info-row"><span class="info-label">আজকের বাকি:</span><span class="info-val" style="color:#ef4444;">৳${fmtMoney(inv.bakiAmount||0)}</span></div>
         `:""}
         <div class="info-row"><span class="info-label">পরিশোধ পদ্ধতি:</span><span class="info-val">${inv.payType==="baki"?"বাকি":inv.payType==="partial"?"আংশিক":"নগদ"}</span></div>
         ${(inv.payType !== "cash" || (inv.prevBalance||0) > 0) ? `
         <div class="info-row" style="border-top:1px dashed #ccc;padding-top:8px;margin-top:8px;"><span class="info-label" style="color:#f59e0b;font-weight:700;">পূর্বের বাকি:</span><span class="info-val" style="color:#f59e0b;font-weight:700;">৳${fmtMoney(inv.prevBalance||0)}</span></div>
-        <div class="info-row"><span class="info-label" style="color:#ef4444;font-weight:800;">বর্তমান বাকি:</span><span class="info-val" style="color:#ef4444;font-size:16px;font-weight:800;">৳${fmtMoney((inv.prevBalance||0)+(inv.bakiAmount||0)-(inv.overpayAmount||0))}</span></div>
+        <div class="info-row"><span class="info-label" style="color:#ef4444;font-weight:800;">মোট বাকি:</span><span class="info-val" style="color:#ef4444;font-size:16px;font-weight:800;">৳${fmtMoney((inv.prevBalance||0)+(inv.bakiAmount||0)-(inv.overpayAmount||0))}</span></div>
         ` : ""}
         ${inv.note?`<div class="info-row"><span class="info-label">নোট:</span><span class="info-val">${inv.note}</span></div>`:""}
       </div>`;
@@ -26629,7 +26631,7 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
           {/* 🎨 (ইউজার-রিকোয়েস্ট, ডিজাইন ১) মিনিমাল স্ট্যাক — বাম পাশে সবুজ এক্সেন্ট বার,
               পিল-ব্যাকগ্রাউন্ড নেই, কাস্টমার লিস্ট/ইনভয়েস সিলেকশন পেইজের সাথে হুবহু মিলিয়ে */}
           <div style={{ borderLeft: "3px solid #16a34a", paddingLeft: 10, maxWidth: "100%" }}>
-            <div style={{ color: IS.text, fontWeight: 900, fontSize: 15.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{inv.customerName}</div>
+            <div style={{ color: IS.text, fontWeight: 900, fontSize: 31, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{inv.customerName}</div>
             <div style={{ marginTop: 3, fontSize: 12, color: IS.sub, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 5, maxWidth: "100%" }}>
               {inv.customerMobile && (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontWeight: 700 }}>
@@ -26753,22 +26755,10 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
             )}
           </>
         )}
-        {/* 🔁 (ইউজার-রিকোয়েস্টে ফিক্স) "পরিশোধ পদ্ধতি" এখন "মোট খরচ" বারের উপরে —
-            আগে নিচে ছিল, ইউজার অনুরোধে ক্রম পাল্টানো হয়েছে। */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: IS.text, fontSize: 13, fontWeight: 700, marginBottom: 6 }}>
-          <span>পরিশোধ পদ্ধতি</span>
-          <span style={{
-            minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5,
-            background: inv.payType==="baki" ? "#dc2626" : inv.payType==="partial" ? "#ea580c" : "#16a34a",
-            border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px", whiteSpace:"nowrap",
-          }}>
-            {inv.payType === "baki" ? `বাকি ৳${fmt(inv.total)}`
-              : inv.payType === "partial" ? `আংশিক — নগদ ৳${fmt(inv.paidAmount || 0)}`
-              : "নগদ পরিশোধ"}
-          </span>
-        </div>
+        {/* 🔁 (ইউজার-রিকোয়েস্ট, ১১ আগস্ট ২০২৬) "পরিশোধ পদ্ধতি" এখন "মোট খরচ" বারের পরে —
+            আগে উপরে ছিল, ইউজার অনুরোধে আবার ক্রম পাল্টানো হয়েছে। */}
         <div style={{
-            display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: inv.payType === "partial" ? 7 : 5,
+            display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5,
             background: IS.accent, border: "1.5px solid #17171a", borderRadius: IS.id === "t5" ? 10 : 0,
             clipPath: IS.id === "t10" ? IS.clipSm : "none", padding: "9px 12px", position: "relative",
           }}>
@@ -26782,9 +26772,22 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
             borderRadius: 999, padding: "3px 14px",
           }}>৳{fmt(inv.total)}</span>
         </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: IS.text, fontSize: 13, fontWeight: 700, marginBottom: inv.payType === "partial" ? 7 : 5 }}>
+          <span>পরিশোধ পদ্ধতি</span>
+          <span style={{
+            minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5,
+            background: inv.payType==="baki" ? "#dc2626" : inv.payType==="partial" ? "#ea580c" : "#16a34a",
+            border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px", whiteSpace:"nowrap",
+          }}>
+            {inv.payType === "baki" ? `বাকি ৳${fmt(inv.total)}`
+              : inv.payType === "partial" ? `আংশিক — নগদ ৳${fmt(inv.paidAmount || 0)}`
+              : "নগদ পরিশোধ"}
+          </span>
+        </div>
         {inv.payType === "partial" && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, fontWeight: 700, color: IS.text, marginBottom: 7 }}>
-            <span>এখনকার বাকি</span>
+            {/* 🔁 (ইউজার-রিকোয়েস্ট) "এখনকার বাকি" → "আজকের বাকি" */}
+            <span>আজকের বাকি</span>
             <span style={{ minWidth:92, textAlign:"center", display:"inline-block", color:"#fff", fontWeight:800, fontSize:12.5, background:"#f43f5e", border:"1.5px solid #17171a", borderRadius:999, padding:"3px 10px" }}>৳{fmt(inv.bakiAmount || 0)}</span>
           </div>
         )}
@@ -26796,7 +26799,8 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
             </div>
             <div style={{ borderTop: `1px dashed ${T.border}`, marginTop: 8, marginBottom: 8 }} />
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "#fff", fontSize: 15, fontWeight: 900, padding: "9px 12px", background: "#dc2626", borderRadius: IS.id === "t5" ? 10 : 0, border: "1.5px solid #17171a", boxShadow: "none" }}>
-              <span>বর্তমান বাকি</span>
+              {/* 🔁 (ইউজার-রিকোয়েস্ট) "বর্তমান বাকি" → "মোট বাকি" */}
+              <span>মোট বাকি</span>
               <span style={{ background: "#fff", color: "#dc2626", borderRadius: 999, padding: "3px 14px", fontSize: 17 }}>৳{fmt((inv.prevBalance || 0) + (inv.bakiAmount || 0) - (inv.overpayAmount || 0))}</span>
             </div>
           </>
@@ -26829,10 +26833,10 @@ function InvoiceReceipt({ T, S, inv, customer, type = "buyer", returns = [] }) {
               ${(inv.extraCharge||0) > 0 ? `<div class="info"><span>অতিরিক্ত চার্জ:</span><span>+ ৳${fmtMoney(inv.extraCharge||0)}</span></div>` : ""}
               <div class="info total"><span>মোট খরচ:</span><span>৳${fmtMoney(inv.total||0)}</span></div>
               <div class="info"><span>পরিশোধ পদ্ধতি:</span><span>${inv.payType==="baki"?"বাকি":inv.payType==="partial"?`আংশিক — নগদ ৳${fmtMoney(inv.paidAmount||0)}`:"নগদ"}</span></div>
-              ${inv.payType==="partial" ? `<div class="info"><span>এখনকার বাকি:</span><span>৳${fmtMoney(inv.bakiAmount||0)}</span></div>` : ""}
+              ${inv.payType==="partial" ? `<div class="info"><span>আজকের বাকি:</span><span>৳${fmtMoney(inv.bakiAmount||0)}</span></div>` : ""}
               ${(inv.payType === "baki" || inv.payType === "partial" || (inv.prevBalance||0) > 0) ? `
               <div class="info"><span>পূর্বের বাকি:</span><span>৳${fmtMoney(inv.prevBalance||0)}</span></div>
-              <div class="info"><span>বর্তমান বাকি:</span><span>৳${fmtMoney((inv.prevBalance||0)+(inv.bakiAmount||0)-(inv.overpayAmount||0))}</span></div>` : ""}`;
+              <div class="info"><span>মোট বাকি:</span><span>৳${fmtMoney((inv.prevBalance||0)+(inv.bakiAmount||0)-(inv.overpayAmount||0))}</span></div>` : ""}`;
             printThermalDirect(content, shopName, `${isBuyer?"ক্রেতার":"বিক্রেতার"} ইনভয়েস`);
           }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/></svg>
