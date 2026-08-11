@@ -1,0 +1,243 @@
+// ─── src/db/DataStore.js ────────────────────────────────────────────────────
+// SBM SQLite abstraction layer (Phase 0)।
+//
+// ⚠️ এই মুহূর্তে App.jsx-এর কোনো কোড এই ফাইল import/কল করে না। এটা একটা
+// স্ট্যান্ডঅ্যালোন মডিউল — dual-write ওয়্যারিং (Phase 1) শুরু হলে তখন App.jsx-এর
+// setProducts/setCustomers/setInvoices-এর পাশে এই মডিউলের upsert() কল যোগ হবে।
+//
+// ডিজাইন সিদ্ধান্ত (SQLITE_MIGRATION_LOG.md-এর সিদ্ধান্ত অনুযায়ী):
+//   ১. প্রতি business type-এর জন্য আলাদা DB ফাইল (pharmacy.db, veterinary.db...)
+//   ২. FTS5 দিয়ে products/customers নাম সার্চ
+//   ৩. Firebase নেই — এটা একমুখী local migration (IndexedDB blob → SQLite)
+//
+// এই ফাইল ইচ্ছাকৃতভাবে framework-agnostic — কোনো React import নেই, যাতে
+// synthetic dataset script (Node.js) আর App.jsx দুই জায়গা থেকেই ব্যবহারযোগ্য হয়।
+
+import { CapacitorSQLite, SQLiteConnection } from "@capacitor-community/sqlite";
+
+// ── Feature flag ─────────────────────────────────────────────────────────
+// এই ফ্ল্যাগ বন্ধ থাকলে (ডিফল্ট) পুরো অ্যাপ আগের মতোই IndexedDB blob-array
+// দিয়ে চলবে — DataStore-এর কোনো ফাংশন কল না করাই App.jsx-এর নিজের দায়িত্ব,
+// এই ফাইল শুধু একটা on/off পড়ার হেল্পার দিচ্ছে।
+const FLAG_KEY = "sbm_use_sqlite_store";
+
+export function isSqliteEnabled() {
+  try {
+    return localStorage.getItem(FLAG_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setSqliteEnabled(v) {
+  try {
+    localStorage.setItem(FLAG_KEY, v ? "1" : "0");
+  } catch {}
+}
+
+// ── Connection cache — প্রতি business type-এর জন্য আলাদা DB, একবার খুলে রাখি ──
+const sqlite = new SQLiteConnection(CapacitorSQLite);
+const _dbCache = new Map(); // businessType -> SQLiteDBConnection
+
+let _schemaSql = null; // schema.sql-এর কনটেন্ট lazy-load হয়ে এখানে ক্যাশ হবে
+
+async function loadSchemaSql() {
+  if (_schemaSql) return _schemaSql;
+  // Vite ?raw import — schema.sql-কে প্লেইন স্ট্রিং হিসেবে বান্ডেল করবে
+  const mod = await import("./schema.sql?raw");
+  _schemaSql = mod.default;
+  return _schemaSql;
+}
+
+/**
+ * নির্দিষ্ট business type-এর DB কানেকশন খোলে (না থাকলে তৈরি করে + স্কিমা রান করে)।
+ * @param {string} businessType - যেমন "pharmacy", "veterinary", "semen"
+ * @returns {Promise<import("@capacitor-community/sqlite").SQLiteDBConnection>}
+ */
+export async function getDb(businessType) {
+  if (!businessType) throw new Error("getDb(): businessType আবশ্যক");
+  if (_dbCache.has(businessType)) return _dbCache.get(businessType);
+
+  const dbName = `sbm_${businessType}`; // ফাইল হবে sbm_pharmacy SQLite.db ইত্যাদি
+  const isConn = (await sqlite.isConnection(dbName, false)).result;
+  const consistent = (await sqlite.checkConnectionsConsistency()).result;
+
+  const db =
+    consistent && isConn
+      ? await sqlite.retrieveConnection(dbName, false)
+      : await sqlite.createConnection(dbName, false, "no-encryption", 1, false);
+
+  await db.open();
+
+  const schema = await loadSchemaSql();
+  // schema.sql-এ multiple statements আছে — execute() মাল্টি-স্টেটমেন্ট সাপোর্ট করে
+  await db.execute(schema);
+
+  _dbCache.set(businessType, db);
+  return db;
+}
+
+export async function closeDb(businessType) {
+  if (!_dbCache.has(businessType)) return;
+  await sqlite.closeConnection(`sbm_${businessType}`, false);
+  _dbCache.delete(businessType);
+}
+
+// ── Generic CRUD হেল্পার ─────────────────────────────────────────────────
+// store: "products" | "customers" | "invoices"
+// প্রতিটা রেকর্ডের "hot fields" আলাদা, বাকিটা JSON — কলাম ম্যাপিং নিচে।
+
+const HOT_FIELDS = {
+  products: {
+    columns: ["id", "name", "name_norm", "barcode", "stock", "cost_price", "price", "updated_at", "deleted"],
+    extract: (p) => [
+      String(p.id),
+      p.name ?? "",
+      normName(p.name),
+      p.barcode ?? null,
+      numOrNull(p.stock),
+      numOrNull(p.costPrice),
+      numOrNull(p.price),
+      p.updatedAt ?? Date.now(),
+      p.deleted ? 1 : 0,
+    ],
+  },
+  customers: {
+    columns: ["id", "name", "name_norm", "mobile", "balance", "updated_at", "deleted"],
+    extract: (c) => [
+      String(c.id),
+      c.name ?? "",
+      normName(c.name),
+      c.mobile ?? null,
+      numOrNull(c.balance),
+      c.updatedAt ?? Date.now(),
+      c.deleted ? 1 : 0,
+    ],
+  },
+  invoices: {
+    columns: ["id", "invoice_no", "date_key", "customer_id", "status", "total", "created_at"],
+    extract: (inv) => [
+      String(inv.id),
+      inv.invoiceNo ?? null,
+      inv.dateKey ?? dateKeyFromTs(inv.createdAt),
+      inv.customerId ? String(inv.customerId) : null,
+      inv.status ?? "active",
+      numOrNull(inv.total),
+      inv.createdAt ?? Date.now(),
+    ],
+  },
+};
+
+function numOrNull(v) {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+function dateKeyFromTs(ts) {
+  const d = ts ? new Date(ts) : new Date();
+  return d.toISOString().slice(0, 10);
+}
+
+// normName(): App.jsx-এর normName() ফাংশনের সাথে সামঞ্জস্যপূর্ণ হতে হবে (একই
+// normalization যাতে দুই জায়গায় সার্চ রেজাল্ট না মেলার সমস্যা না হয়)।
+// ⚠️ TODO (Phase 1): App.jsx-এর আসল normName() ইমপ্লিমেন্টেশন এখানে কপি/ইমপোর্ট
+// করে বসাতে হবে — এই মুহূর্তে placeholder।
+function normName(name) {
+  return (name ?? "").toString().trim().toLowerCase();
+}
+
+/**
+ * একটা রেকর্ড insert/replace করে (upsert)। dual-write ফেজে App.jsx-এর
+ * setProducts/setCustomers/setInvoices-এর পাশাপাশি এটা কল হবে।
+ */
+export async function upsert(businessType, store, record) {
+  const def = HOT_FIELDS[store];
+  if (!def) throw new Error(`upsert(): অজানা store "${store}"`);
+  const db = await getDb(businessType);
+  const cols = def.columns;
+  const placeholders = cols.map(() => "?").join(", ");
+  const sql = `INSERT OR REPLACE INTO ${store} (${cols.join(", ")}, data) VALUES (${placeholders}, ?)`;
+  const values = [...def.extract(record), JSON.stringify(record)];
+  await db.run(sql, values);
+}
+
+/** একসাথে অনেকগুলো রেকর্ড upsert — backfill migration-এর সময় ব্যবহার হবে। */
+export async function upsertMany(businessType, store, records) {
+  const def = HOT_FIELDS[store];
+  if (!def) throw new Error(`upsertMany(): অজানা store "${store}"`);
+  const db = await getDb(businessType);
+  const cols = def.columns;
+  const placeholders = `(${cols.map(() => "?").join(", ")}, ?)`;
+  const set = records.map((r) => ({
+    statement: `INSERT OR REPLACE INTO ${store} (${cols.join(", ")}, data) VALUES ${placeholders}`,
+    values: [...def.extract(r), JSON.stringify(r)],
+  }));
+  // executeSet — একটা transaction-এ multiple parameterized statement, বড় ব্যাচের জন্য
+  await db.executeSet(set);
+}
+
+export async function getById(businessType, store, id) {
+  const db = await getDb(businessType);
+  const res = await db.query(`SELECT data FROM ${store} WHERE id = ?`, [String(id)]);
+  const row = res.values?.[0];
+  return row ? JSON.parse(row.data) : null;
+}
+
+export async function remove(businessType, store, id) {
+  const db = await getDb(businessType);
+  await db.run(`DELETE FROM ${store} WHERE id = ?`, [String(id)]);
+}
+
+/**
+ * পেজিনেটেড কোয়েরি — Virtuoso-র endReached-এ কল হওয়ার জন্য।
+ * @param {object} opts { where, params, orderBy, limit, offset }
+ */
+export async function queryPage(businessType, store, opts = {}) {
+  const { where = "1=1", params = [], orderBy = "updated_at DESC", limit = 50, offset = 0 } = opts;
+  const db = await getDb(businessType);
+  const sql = `SELECT data FROM ${store} WHERE ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`;
+  const res = await db.query(sql, [...params, limit, offset]);
+  return (res.values || []).map((r) => JSON.parse(r.data));
+}
+
+/** FTS5 সার্চ — প্রোডাক্ট/কাস্টমার নাম দিয়ে খোঁজার জন্য। */
+export async function searchFts(businessType, store, term, limit = 30) {
+  if (!["products", "customers"].includes(store)) {
+    throw new Error(`searchFts(): "${store}"-এর জন্য FTS টেবিল নেই`);
+  }
+  const db = await getDb(businessType);
+  const ftsTable = `${store}_fts`;
+  const sql = `
+    SELECT t.data FROM ${store} t
+    JOIN ${ftsTable} f ON f.id = t.id
+    WHERE ${ftsTable} MATCH ?
+    LIMIT ?
+  `;
+  // FTS5 MATCH-এর জন্য prefix সার্চ (যেমন "নাপা" লিখলেই "নাপা এক্সটেন্ড" মিলবে)
+  const matchTerm = `${term.trim()}*`;
+  const res = await db.query(sql, [matchTerm, limit]);
+  return (res.values || []).map((r) => JSON.parse(r.data));
+}
+
+/** Dashboard aggregate — পুরো অ্যারে লোড না করে সরাসরি SQL SUM/COUNT। */
+export async function aggregate(businessType, store, { select, where = "1=1", params = [] }) {
+  const db = await getDb(businessType);
+  const sql = `SELECT ${select} FROM ${store} WHERE ${where}`;
+  const res = await db.query(sql, params);
+  return res.values?.[0] || null;
+}
+
+// ── উদাহরণ ব্যবহার (Phase 1-এ App.jsx-এ যেভাবে বসবে, রেফারেন্সের জন্য) ──────
+//
+// import { upsert, queryPage, searchFts, aggregate, isSqliteEnabled } from "./db/DataStore";
+//
+// // dual-write (Phase 1):
+// const newInv = { ...invoice, id: uid() };
+// setInvoices(prev => [...prev, newInv]);              // পুরনো path (অপরিবর্তিত)
+// if (isSqliteEnabled()) await upsert(businessType, "invoices", newInv); // নতুন path (সাইলেন্ট, extra)
+//
+// // dashboard "আজকের বিক্রি" (Phase 4):
+// const { total } = await aggregate(businessType, "invoices", {
+//   select: "SUM(total) as total",
+//   where: "date_key = ? AND status != 'voided'",
+//   params: [todayEn()],
+// });
