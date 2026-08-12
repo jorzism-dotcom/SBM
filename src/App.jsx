@@ -38,7 +38,7 @@ import {
 // তৈরি DataStore abstraction layer। isSqliteEnabled() ফ্ল্যাগ ডিফল্ট বন্ধ, তাই
 // এই import নিজে থেকে কোনো আচরণ পাল্টায় না — শুধু নিচের debouncedSave effect-
 // গুলোতে diff-based upsert/remove যোগ হয়েছে (দেখুন সেখানকার কমেন্ট)।
-import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate } from "./db/DataStore.js";
+import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState } from "./db/DataStore.js";
 // 🔴 ফিক্স (Firestore read-quota — ২৫ জুলাই ২০২৬): "ফুল চেকাপ চালান" বাটন
 // (runSyncDiagnostics) stockMovements/txns/cashLogs/users-এর সম্পূর্ণ
 // আনউইন্ডোড getDocs() করে (কোনো date-window/limit ছাড়াই পুরো কালেকশন read) —
@@ -34659,6 +34659,10 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
   const [lastBackfill, setLastBackfill] = useState(null); // null | { at, counts, error }
   const [verifying, setVerifying] = useState(false);
   const [verifyResult, setVerifyResult] = useState(null); // null | { products:{db,arr}, customers:{...}, invoices:{...} }
+  // 🔁 Resumable migration (Phase 2, এন্ট্রি ১১) — _migration_state টেবিল-ভিত্তিক ব্যাচড ব্যাকফিল
+  const [resumableRunning, setResumableRunning] = useState(null); // null | "products" | "customers" | "invoices" — কোনটা চলছে
+  const [resumableProgress, setResumableProgress] = useState({}); // { products: {migrated,total}, ... }
+  const [migrationStates, setMigrationStates] = useState(null); // null | রো-অ্যারে (_migration_state টেবিলের বর্তমান কনটেন্ট)
 
   const runBackfill = async () => {
     setBackfilling(true);
@@ -34709,6 +34713,51 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
       showToast?.("❌ ভেরিফাই ব্যর্থ: " + String(e?.message || e), "#ef4444");
     } finally {
       setVerifying(false);
+    }
+  };
+
+  // 🔁 নির্দিষ্ট store (products/customers/invoices) resumable migration শুরু/resume করে
+  const runResumable = async (store) => {
+    const sourceMap = { products, customers, invoices };
+    const records = sourceMap[store] || [];
+    setResumableRunning(store);
+    setResumableProgress((prev) => ({ ...prev, [store]: { migrated: 0, total: records.length } }));
+    try {
+      const result = await migrateStoreResumable(businessType, store, records, {
+        batchSize: 500,
+        yieldMs: 0,
+        onProgress: (p) => setResumableProgress((prev) => ({ ...prev, [store]: p })),
+      });
+      showToast?.(
+        result.alreadyDone
+          ? `✅ ${store}: আগেই সম্পন্ন ছিল (${result.migrated}/${result.total})`
+          : `✅ ${store}: রিজিউমেবল মাইগ্রেশন সম্পন্ন (${result.migrated}/${result.total})`
+      );
+    } catch (e) {
+      showToast?.(`❌ ${store} মাইগ্রেশন ব্যর্থ: ` + String(e?.message || e), "#ef4444");
+    } finally {
+      setResumableRunning(null);
+      refreshMigrationStates();
+    }
+  };
+
+  const refreshMigrationStates = async () => {
+    try {
+      const states = await getAllMigrationStates(businessType);
+      setMigrationStates(states);
+    } catch (e) {
+      showToast?.("❌ migration state পড়া ব্যর্থ: " + String(e?.message || e), "#ef4444");
+    }
+  };
+
+  const runResetMigrationState = async (store) => {
+    if (!window.confirm(`"${store}"-এর migration progress রিসেট করবেন? পরের বার আবার প্রথম থেকে শুরু হবে (ডেটা মুছবে না, শুধু progress-ট্র্যাকিং রিসেট হবে)।`)) return;
+    try {
+      await resetMigrationState(businessType, store);
+      showToast?.(`🔄 ${store}-এর migration progress রিসেট হয়েছে`);
+      refreshMigrationStates();
+    } catch (e) {
+      showToast?.("❌ রিসেট ব্যর্থ: " + String(e?.message || e), "#ef4444");
     }
   };
 
@@ -34783,6 +34832,71 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
               })}
             </div>
           )}
+
+          {/* 🔁 Resumable migration (Phase 2, এন্ট্রি ১১) — বড় স্কেলে মাঝপথে অ্যাপ বন্ধ হলেও
+              _migration_state টেবিল দিয়ে প্রগ্রেস ট্র্যাক করে, resume করলে প্রথম থেকে না শুরু করে
+              ঠিক যেখানে থেমেছিল সেখান থেকে চালায়। উপরের "চালু + ব্যাকফিল" বাটনের মতোই কাজ করে
+              দেখতে, কিন্তু এটা ব্যাচে ব্যাচে (৫০০ রেকর্ড) লেখে আর resumable। */}
+          <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px dashed ${T.border}` }}>
+            <div style={{ color: T.text, fontWeight: 700, fontSize: 13, marginBottom: 6 }}>
+              🔁 Resumable migration (Phase 2 — ব্যাচড + progress-ট্র্যাকড)
+            </div>
+            <div style={{ color: T.sub, fontSize: 11, marginBottom: 10, lineHeight: 1.6 }}>
+              ব্যাচে ব্যাচে (৫০০ রেকর্ড/ব্যাচ) লেখে, প্রতি ব্যাচের পর progress সেভ করে — মাঝপথে অ্যাপ
+              বন্ধ হলে আবার চাপলে ঠিক যেখানে থেমেছিল সেখান থেকেই চলবে, প্রথম থেকে না।
+            </div>
+
+            {["products", "customers", "invoices"].map((store) => {
+              const p = resumableProgress[store];
+              const running = resumableRunning === store;
+              const dbState = migrationStates?.find((s) => s.store_name === store);
+              return (
+                <div key={store} style={{ marginBottom: 10, background: T.bg, borderRadius: 10, padding: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: T.text }}>{store}</div>
+                    <div style={{ fontSize: 10.5, color: T.sub }}>
+                      {dbState ? `স্ট্যাটাস: ${dbState.status} (${dbState.migrated_rows}/${dbState.total_source_rows ?? "?"})` : "স্ট্যাটাস: অজানা (নিচে রিফ্রেশ চাপুন)"}
+                    </div>
+                  </div>
+                  {p && (
+                    <div style={{ fontSize: 11, color: p.done ? "#22c55e" : T.text, marginBottom: 6 }}>
+                      {p.done ? "✅" : "⏳"} {p.migrated}/{p.total}
+                      {p.total ? ` (${Math.round((p.migrated / p.total) * 100)}%)` : ""}
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      onClick={() => runResumable(store)}
+                      disabled={running || resumableRunning}
+                      style={{
+                        flex: 1, padding: "7px 0", borderRadius: 8, border: "1.5px solid #8b5cf6",
+                        background: "rgba(139,92,246,0.12)", color: "#8b5cf6", fontWeight: 700, fontSize: 11.5,
+                        cursor: running || resumableRunning ? "default" : "pointer",
+                      }}
+                    >
+                      {running ? "চলছে..." : "শুরু/রিজিউম করুন"}
+                    </button>
+                    <button
+                      onClick={() => runResetMigrationState(store)}
+                      disabled={running || resumableRunning}
+                      style={{
+                        padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${T.border}`,
+                        background: "transparent", color: T.sub, fontWeight: 600, fontSize: 11.5,
+                        cursor: running || resumableRunning ? "default" : "pointer",
+                      }}
+                    >
+                      রিসেট
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+
+            <button onClick={refreshMigrationStates} style={{
+              width: "100%", padding: "8px 0", borderRadius: 8, border: `1.5px solid ${T.border}`,
+              background: "transparent", color: T.text, fontWeight: 600, fontSize: 11.5, cursor: "pointer",
+            }}>🔄 migration state রিফ্রেশ করুন</button>
+          </div>
 
           <div style={{ marginTop: 12, fontSize: 10.5, color: T.sub, lineHeight: 1.7 }}>
             ⚠️ dual-write চালু থাকলেও পুরনো IndexedDB blob-array-ই একমাত্র সোর্স-অফ-ট্রুথ থাকে (App-এর
