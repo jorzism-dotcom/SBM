@@ -34759,6 +34759,18 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
     }
   };
 
+  // এন্ট্রি ১৩ ফিক্স: আগে migrationStates শুধু ম্যানুয়াল রিফ্রেশ/রান-এর পরই লোড হতো —
+  // অ্যাপ background থেকে kill হয়ে আবার খোলার পর (React state পুরো রিসেট হয়ে
+  // যায়, useState(null)-এ ফিরে যায়) এই কার্ড খুললে সব store "স্ট্যাটাস: অজানা"
+  // দেখাত, যদিও SQLite ফাইলে আসল progress (যেমন 2000/2235) ঠিকই সেভ ছিল —
+  // রিজিউম চাপলে ওখান থেকেই ঠিকমতো চলত, কিন্তু UI-তে সেটা দেখানোর আগে বিভ্রান্তিকর
+  // লাগত (মনে হতো ০ থেকে শুরু হচ্ছে)। এখন কার্ড মাউন্ট হওয়ামাত্রই (businessType
+  // change-এও) DB থেকে আসল state পড়ে দেখানো হয়, ম্যানুয়াল রিফ্রেশ ছাড়াই।
+  useEffect(() => {
+    refreshMigrationStates();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [businessType]);
+
   const runResetMigrationState = async (store) => {
     if (!window.confirm(`"${store}"-এর migration progress রিসেট করবেন? পরের বার আবার প্রথম থেকে শুরু হবে (ডেটা মুছবে না, শুধু progress-ট্র্যাকিং রিসেট হবে)।`)) return;
     try {
