@@ -34,6 +34,11 @@ import {
   hashString, hashRecord, hashCollection, buildContentHashes,
   diffChangedFields, effectiveTs, mergeCollection, hasAnyBackupRecords,
 } from "./sync.js";
+// 🆕 SQLite dual-write (Phase 1, SQLITE_MIGRATION_LOG.md এন্ট্রি ৬) — Phase 0-এ
+// তৈরি DataStore abstraction layer। isSqliteEnabled() ফ্ল্যাগ ডিফল্ট বন্ধ, তাই
+// এই import নিজে থেকে কোনো আচরণ পাল্টায় না — শুধু নিচের debouncedSave effect-
+// গুলোতে diff-based upsert/remove যোগ হয়েছে (দেখুন সেখানকার কমেন্ট)।
+import { upsertMany, remove as dsRemove, isSqliteEnabled } from "./db/DataStore.js";
 // 🔴 ফিক্স (Firestore read-quota — ২৫ জুলাই ২০২৬): "ফুল চেকাপ চালান" বাটন
 // (runSyncDiagnostics) stockMovements/txns/cashLogs/users-এর সম্পূর্ণ
 // আনউইন্ডোড getDocs() করে (কোনো date-window/limit ছাড়াই পুরো কালেকশন read) —
@@ -6014,6 +6019,56 @@ function debouncedSave(key, val, delay = 1500) {
   save(key, val); // fallback: immediate save (safe)
 }
 // ছোট ডেটার (settings, auth) জন্য immediate save থাকে — শুধু বড় ডেটায় debounce
+
+// ── Phase 1: SQLite dual-write diff হেল্পার (SQLITE_MIGRATION_LOG.md এন্ট্রি ৬) ──
+// লক্ষ্য: App.jsx-এর ৪৬টা setProducts/setCustomers/setInvoices কল-সাইট আলাদা
+// আলাদা করে ইন্সট্রুমেন্ট না করে, একটাই single-point-of-truth ব্যবহার করা — এই
+// অ্যারেগুলো যেভাবেই বদলাক না কেন (যেকোনো কল-সাইট থেকে), শেষমেশ সবসময় নিচের
+// debouncedSave effect-গুলো (SmartBusinessMgmt-এ, [products]/[customers]/
+// [invoices] dependency) ফায়ার হয় — তাই dual-write সেখানেই বসানো হয়েছে, কোনো
+// কল-সাইট মিস হওয়ার ঝুঁকি নেই।
+//
+// diffById(prevMap, currentArr): প্রেভিয়াস স্ন্যাপশট (id → object reference)-এর
+// সাথে বর্তমান অ্যারে তুলনা করে শুধু বদলানো/নতুন রেকর্ড রিটার্ন করে — React-এর
+// setXxx(prev => prev.map(...)) প্যাটার্নে অপরিবর্তিত আইটেমের object reference
+// অক্ষত থাকে বলে এই রেফারেন্স-ইকুয়ালিটি চেক সস্তা (কোনো deep-compare/JSON.
+// stringify লাগে না) এবং ১ কোটি স্কেলেও প্রতি এফেক্টে O(n) রেফারেন্স তুলনা ছাড়া
+// কিছুই করে না। removedIds = প্রেভিয়াসে ছিল, এখন অ্যারে থেকে সম্পূর্ণ বাদ পড়েছে
+// (হার্ড-ডিলিট, যেমন deletedProducts-এ সরানো)।
+function diffById(prevMap, currentArr) {
+  const changed = [];
+  const nextMap = new Map();
+  for (const item of (currentArr || [])) {
+    if (!item || item.id == null) continue;
+    const key = String(item.id);
+    nextMap.set(key, item);
+    if (prevMap.get(key) !== item) changed.push(item);
+  }
+  const removedIds = [];
+  for (const key of prevMap.keys()) {
+    if (!nextMap.has(key)) removedIds.push(key);
+  }
+  return { changed, removedIds, nextMap };
+}
+
+// dualWriteSqlite(): উপরের diffById() দিয়ে বদলানো/সরানো রেকর্ড বের করে, তারপর
+// isSqliteEnabled() হলেই (ডিফল্ট বন্ধ) DataStore.upsertMany()/remove() কল করে —
+// সম্পূর্ণ fire-and-forget, কোনো await/throw মূল state-update path-কে ছোঁয় না।
+// যেকোনো ব্যর্থতা (যেমন Capacitor SQLite প্লাগিন এখনো ওয়্যার্ড না, বা কোনো
+// ডিভাইস-স্পেসিফিক এরর) সাইলেন্টলি ধরা পড়ে — পুরনো IndexedDB blob-array path-ই
+// এখনো একমাত্র সোর্স-অফ-ট্রুথ, SQLite শুধু ছায়া-লেখা (shadow write), dual-write
+// ফেজ শেষ না হওয়া পর্যন্ত।
+function dualWriteSqlite(businessType, store, prevMapRef, currentArr) {
+  if (!isSqliteEnabled()) return;
+  const { changed, removedIds, nextMap } = diffById(prevMapRef.current, currentArr);
+  prevMapRef.current = nextMap;
+  if (changed.length) {
+    upsertMany(businessType, store, changed).catch(() => {});
+  }
+  removedIds.forEach((id) => {
+    dsRemove(businessType, store, id).catch(() => {});
+  });
+}
 
 // ─── Password Hashing (Web Crypto API) ───────────────────────────────────────
 async function hashPassword(plain) {
@@ -12068,10 +12123,20 @@ function SmartBusinessMgmt() {
   // কোনো কারণ নেই — critical safety logic ইচ্ছাকৃতভাবে আলাদা রাখা হয়েছে।
   useStaffPermissionGuard(fssReady, loaded, setCurrentUser, setUsers);
 
+  // 🆕 SQLite dual-write (Phase 1) — প্রতিটা businessType/স্টোরের জন্য প্রেভিয়াস
+  // id→object স্ন্যাপশট, dualWriteSqlite()-এর diffById()-এর জন্য (দেখুন উপরের
+  // module-level কমেন্ট)। businessType বদলালে (Business Switcher) স্বাভাবিকভাবেই
+  // customers/products/invoices state-ও নতুন করে লোড হয় (আলাদা LK() key), তাই
+  // এই ref রিসেট করারও দরকার নেই — diffById() নতুন অ্যারের সব আইটেমকেই "changed"
+  // হিসেবে ধরবে (প্রেভিয়াস ম্যাপে না থাকায়), যা সঠিক আচরণ (নতুন business-এর
+  // সব রেকর্ডই সেই business-এর SQLite DB ফাইলে upsert হওয়া উচিত)।
+  const _dsCustomersRef = useRef(new Map());
+  const _dsProductsRef  = useRef(new Map());
+  const _dsInvoicesRef  = useRef(new Map());
 
-  useEffect(() => { if (loaded) { debouncedSave(LK(SK.customers), customers, 1500); setBackupNeeded(true); } }, [customers, loaded]);
-  useEffect(() => { if (loaded) { debouncedSave(LK(SK.products),  products,  1500); setBackupNeeded(true); } }, [products, loaded]);
-  useEffect(() => { if (loaded) { debouncedSave(LK(SK.invoices),  invoices,  1500); setBackupNeeded(true); } }, [invoices, loaded]);
+  useEffect(() => { if (loaded) { debouncedSave(LK(SK.customers), customers, 1500); setBackupNeeded(true); dualWriteSqlite(businessType, "customers", _dsCustomersRef, customers); } }, [customers, loaded]);
+  useEffect(() => { if (loaded) { debouncedSave(LK(SK.products),  products,  1500); setBackupNeeded(true); dualWriteSqlite(businessType, "products",  _dsProductsRef,  products);  } }, [products, loaded]);
+  useEffect(() => { if (loaded) { debouncedSave(LK(SK.invoices),  invoices,  1500); setBackupNeeded(true); dualWriteSqlite(businessType, "invoices",  _dsInvoicesRef,  invoices);  } }, [invoices, loaded]);
   useEffect(() => { if (loaded) { debouncedSave(LK(SK.txns),      txns,      2000); setBackupNeeded(true); } }, [txns, loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.smsLog), smsLog, 2000); }, [smsLog, loaded]);
   useEffect(() => { if (loaded) save(SK.users,     users);     }, [users, loaded]);
