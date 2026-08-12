@@ -74,9 +74,22 @@ export async function getDb(businessType) {
 
   await db.open();
 
+  // 🔴 ফিক্স (real-device টেস্টে ধরা পড়া বাগ, স্ক্রিনশট: "Queries cannot be
+  // performed using execSQL(), use query() instead."): schema.sql-এর
+  // `PRAGMA journal_mode = WAL;` Android-এ execSQL()-এর জন্য অবৈধ, কারণ এটা
+  // journal mode-এর নতুন ভ্যালু রিটার্ন করে (query-টাইপ statement হিসেবে গণ্য
+  // হয়), আর @capacitor-community/sqlite-এর execute() শুধু non-query DDL/DML
+  // (CREATE TABLE, INSERT ইত্যাদি) চালানোর জন্য। তাই এখন সব PRAGMA লাইন
+  // schema.sql থেকে আলাদা করে db.query() দিয়ে (এক এক করে) চালানো হচ্ছে, আর
+  // বাকি স্কিমা (CREATE TABLE/INDEX/TRIGGER) আগের মতোই db.execute()-এ।
   const schema = await loadSchemaSql();
+  const pragmaLines = schema.match(/^\s*PRAGMA\s[^;]*;/gim) || [];
+  const restOfSchema = schema.replace(/^\s*PRAGMA\s[^;]*;/gim, "");
+  for (const pragma of pragmaLines) {
+    await db.query(pragma.trim());
+  }
   // schema.sql-এ multiple statements আছে — execute() মাল্টি-স্টেটমেন্ট সাপোর্ট করে
-  await db.execute(schema);
+  await db.execute(restOfSchema);
 
   _dbCache.set(businessType, db);
   return db;
