@@ -38,7 +38,7 @@ import {
 // তৈরি DataStore abstraction layer। isSqliteEnabled() ফ্ল্যাগ ডিফল্ট বন্ধ, তাই
 // এই import নিজে থেকে কোনো আচরণ পাল্টায় না — শুধু নিচের debouncedSave effect-
 // গুলোতে diff-based upsert/remove যোগ হয়েছে (দেখুন সেখানকার কমেন্ট)।
-import { upsertMany, remove as dsRemove, isSqliteEnabled } from "./db/DataStore.js";
+import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate } from "./db/DataStore.js";
 // 🔴 ফিক্স (Firestore read-quota — ২৫ জুলাই ২০২৬): "ফুল চেকাপ চালান" বাটন
 // (runSyncDiagnostics) stockMovements/txns/cashLogs/users-এর সম্পূর্ণ
 // আনউইন্ডোড getDocs() করে (কোনো date-window/limit ছাড়াই পুরো কালেকশন read) —
@@ -34373,11 +34373,28 @@ async function downloadAndInstallApk(url, version, onProgress) {
 // প্রকাশিত থাকলে সেই একই কার্ডের ভেতরেই (নিচে একটা ডিভাইডারের পর) আপডেট
 // বিবরণ ও ইনস্টল বাটন দেখা যায়। আপডেট-চেক সম্পূর্ণ নীরব — কোনো popup/toast/
 // badge-on-open নেই, দোকানদার নিজে Settings-এ এলে তবেই দেখবেন।
-function AppVersionCard({ T, S }) {
+function AppVersionCard({ T, S, onSecretTap }) {
   const [info, setInfo]             = React.useState(null); // নতুন ভার্সন থাকলে তথ্য, নাহলে null
   const [downloading, setDownloading] = React.useState(false);
   const [progress, setProgress]       = React.useState(0);
   const [status, setStatus]           = React.useState("");
+  // 🔓 হিডেন ডেভেলপার-প্যানেল আনলক গেসচার (Firebase/admin.html সরানোর পর পুরনো
+  // DevPanelFlag/checkSubscription() মেকানিজম মৃত কোড হয়ে গিয়েছিল — অ্যাপ এখন
+  // পুরো অফলাইন, কোনো কেন্দ্রীয় সার্ভার নেই যা এই ফ্ল্যাগ রিমোটলি সেট করবে।
+  // তাই পুরনো (admin.html-এরও আগের) প্যাটার্নে ফেরত: ভার্সন নাম্বারে ৭ বার ট্যাপ
+  // করলে আনলক হয় — Android-এর "ডেভেলপার অপশন" আনলকের মতোই পরিচিত gesture)।
+  const tapCountRef = React.useRef(0);
+  const tapTimerRef = React.useRef(null);
+  const handleVersionTap = () => {
+    tapCountRef.current += 1;
+    if (tapTimerRef.current) clearTimeout(tapTimerRef.current);
+    tapTimerRef.current = setTimeout(() => { tapCountRef.current = 0; }, 2500); // ২.৫সে-এর মধ্যে পরপর ট্যাপ না করলে কাউন্ট রিসেট
+    if (tapCountRef.current >= 7) {
+      tapCountRef.current = 0;
+      clearTimeout(tapTimerRef.current);
+      onSecretTap?.();
+    }
+  };
 
   React.useEffect(() => {
     // 🔴 এই "নীরব আপডেট চেক" আগে কেন্দ্রীয় protik-aa991 প্রজেক্টের
@@ -34423,7 +34440,7 @@ function AppVersionCard({ T, S }) {
           <div style={{ color: T.sub, fontSize: 11, marginTop: 4 }}>Smart Business Management (SBM)</div>
         </div>
         <div style={{ textAlign: "right" }}>
-          <div style={{ color: info ? "#22d3ee" : "#f97316", fontWeight: 900, fontSize: 18, letterSpacing: 1 }}>{APP_VERSION}</div>
+          <div onClick={handleVersionTap} style={{ color: info ? "#22d3ee" : "#f97316", fontWeight: 900, fontSize: 18, letterSpacing: 1, cursor: "pointer", userSelect: "none" }}>{APP_VERSION}</div>
           <div style={{ color: T.sub, fontSize: 11, marginTop: 2 }}>Build: {APP_BUILD}</div>
         </div>
       </div>
@@ -34624,6 +34641,160 @@ function BackupDiagnosticsCard({ T, S, expanded, onToggle }) {
   );
 }
 
+// ── 🧪 SQLite মাইগ্রেশন — Phase 1 dev/সাপোর্ট প্যানেল ─────────────────────────
+// (SQLITE_MIGRATION_LOG.md এন্ট্রি ৬-এর "যা এখনো বাকি" #১-এর ফিক্স)। BackupDiagnosticsCard-এর
+// একই collapsible-card প্যাটার্ন। গার্ড: Settings_-এর devPanelUnlocked state (AppVersionCard-এ
+// ভার্সন নাম্বারে ৭ বার ট্যাপ করলে আনলক হয়, localStorage-এ persist) — দোকানদারের হাতে সহজলভ্য
+// self-service না রেখে ইচ্ছাকৃতভাবে হিডেন। (পুরনো DevPanelFlag/checkSubscription()-ভিত্তিক
+// admin.html-controlled গার্ড Firebase সরানোর পর মৃত কোড হয়ে গিয়েছিল — অ্যাপ পুরো অফলাইন হওয়ায়
+// কোনো কেন্দ্রীয় সার্ভার নেই যা রিমোটলি এই ফ্ল্যাগ সেট করতে পারে, তাই ট্যাপ-গেসচারে ফেরত যাওয়া হলো।) এখান থেকে:
+//   ১. sbm_use_sqlite_store ফ্ল্যাগ টগল করা যায় (আগে শুধু ম্যানুয়ালি localStorage সেট করা যেত)
+//   ২. চালু করার সাথে সাথেই ম্যানুয়াল ফুল-ব্যাকফিল চালানো হয় (dualWriteSqlite() স্বাভাবিকভাবে
+//      শুধু পরের কোনো products/customers/invoices পরিবর্তনে ট্রিগার হতো — টেস্ট শপে সাথে সাথে
+//      ফলাফল দেখার জন্য এখানে সরাসরি upsertMany() কল করা হচ্ছে)
+//   ৩. SQLite-এর row-count বনাম IndexedDB অ্যারের length মিলিয়ে দ্রুত sanity-check
+function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products, customers, invoices, showToast }) {
+  const [enabled, setEnabled] = useState(() => isSqliteEnabled());
+  const [backfilling, setBackfilling] = useState(false);
+  const [lastBackfill, setLastBackfill] = useState(null); // null | { at, counts, error }
+  const [verifying, setVerifying] = useState(false);
+  const [verifyResult, setVerifyResult] = useState(null); // null | { products:{db,arr}, customers:{...}, invoices:{...} }
+
+  const runBackfill = async () => {
+    setBackfilling(true);
+    try {
+      const counts = {};
+      if (products?.length)  { await upsertMany(businessType, "products",  products);  counts.products  = products.length; }
+      if (customers?.length) { await upsertMany(businessType, "customers", customers); counts.customers = customers.length; }
+      if (invoices?.length)  { await upsertMany(businessType, "invoices",  invoices);  counts.invoices  = invoices.length; }
+      setLastBackfill({ at: Date.now(), counts, error: null });
+      showToast?.("✅ SQLite ব্যাকফিল সম্পন্ন");
+    } catch (e) {
+      setLastBackfill({ at: Date.now(), counts: null, error: String(e?.message || e) });
+      showToast?.("❌ SQLite ব্যাকফিল ব্যর্থ — নিচে ডিটেইল দেখুন", "#ef4444");
+    } finally {
+      setBackfilling(false);
+    }
+  };
+
+  const handleToggleClick = () => {
+    if (!enabled) {
+      if (!window.confirm(
+        "⚠️ SQLite dual-write চালু করলে এই দোকানের বর্তমান সব products/customers/invoices SQLite-এ ব্যাকফিল হবে (একবারে, ব্যাকগ্রাউন্ডে fire-and-forget)। পুরনো IndexedDB path অপরিবর্তিত/সোর্স-অফ-ট্রুথ থাকবে। এগোতে চান?"
+      )) return;
+      setSqliteEnabled(true);
+      setEnabled(true);
+      runBackfill();
+    } else {
+      setSqliteEnabled(false);
+      setEnabled(false);
+      showToast?.("SQLite dual-write বন্ধ করা হয়েছে (IndexedDB-ই একমাত্র সোর্স এখন)");
+    }
+  };
+
+  const runVerify = async () => {
+    setVerifying(true);
+    try {
+      const [p, c, i] = await Promise.all([
+        dsAggregate(businessType, "products",  { select: "COUNT(*) as n" }),
+        dsAggregate(businessType, "customers", { select: "COUNT(*) as n" }),
+        dsAggregate(businessType, "invoices",  { select: "COUNT(*) as n" }),
+      ]);
+      setVerifyResult({
+        products:  { db: p?.n ?? 0, arr: products?.length  || 0 },
+        customers: { db: c?.n ?? 0, arr: customers?.length || 0 },
+        invoices:  { db: i?.n ?? 0, arr: invoices?.length  || 0 },
+      });
+    } catch (e) {
+      showToast?.("❌ ভেরিফাই ব্যর্থ: " + String(e?.message || e), "#ef4444");
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  return (
+    <div className="qc-gradient-card" style={{ ...S.card, marginTop: 14, border: "1.5px solid #8b5cf655" }}>
+      <div onClick={onToggle} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", userSelect: "none" }}>
+        <div>
+          <div style={{ color: T.text, fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}>
+            🧪 SQLite মাইগ্রেশন (Phase 1 — dual-write টেস্ট)
+          </div>
+          <div style={{ color: T.sub, fontSize: 11.5, marginTop: 4 }}>
+            ফ্ল্যাগ টগল, ব্যাকফিল, ভেরিফাই — শুধু ডেভেলপার/সাপোর্টের জন্য
+          </div>
+        </div>
+        <div style={{ color: T.sub, fontSize: 18, transform: expanded ? "rotate(180deg)" : "none" }}>▾</div>
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ background: T.bg, borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 12, color: T.text }}>
+            <div>বর্তমান অবস্থা: <b style={{ color: enabled ? "#22c55e" : "#ef4444" }}>{enabled ? "চালু (SQLite dual-write সক্রিয়)" : "বন্ধ (শুধু IndexedDB, ডিফল্ট)"}</b></div>
+            <div style={{ marginTop: 4, color: T.sub }}>businessType: <b>{businessType}</b> · products: <b>{products?.length || 0}</b> · customers: <b>{customers?.length || 0}</b> · invoices: <b>{invoices?.length || 0}</b></div>
+          </div>
+
+          <button
+            onClick={handleToggleClick}
+            disabled={backfilling}
+            style={{
+              width: "100%", padding: "10px 0", borderRadius: 10,
+              border: `1.5px solid ${enabled ? "#ef4444" : "#8b5cf6"}`,
+              background: enabled ? "rgba(239,68,68,0.12)" : "rgba(139,92,246,0.12)",
+              color: enabled ? "#ef4444" : "#8b5cf6", fontWeight: 700, fontSize: 12.5,
+              cursor: backfilling ? "default" : "pointer", marginBottom: 10,
+            }}
+          >
+            {backfilling ? "ব্যাকফিল হচ্ছে..." : enabled ? "🔴 SQLite dual-write বন্ধ করুন" : "🟣 SQLite dual-write চালু + ব্যাকফিল করুন"}
+          </button>
+
+          {enabled && !backfilling && (
+            <button onClick={runBackfill} style={{
+              width: "100%", padding: "9px 0", borderRadius: 10, border: `1.5px solid ${T.border}`,
+              background: "transparent", color: T.text, fontWeight: 600, fontSize: 12,
+              cursor: "pointer", marginBottom: 10,
+            }}>🔄 ম্যানুয়ালি আবার ব্যাকফিল চালান</button>
+          )}
+
+          {lastBackfill && (
+            <div style={{ fontSize: 11.5, color: lastBackfill.error ? "#ef4444" : T.sub, marginBottom: 10, lineHeight: 1.7 }}>
+              {lastBackfill.error
+                ? `❌ ব্যাকফিল এরর (${new Date(lastBackfill.at).toLocaleTimeString("bn-BD")}): ${lastBackfill.error}`
+                : `✅ ব্যাকফিল সম্পন্ন (${new Date(lastBackfill.at).toLocaleTimeString("bn-BD")}) — products: ${lastBackfill.counts?.products ?? 0}, customers: ${lastBackfill.counts?.customers ?? 0}, invoices: ${lastBackfill.counts?.invoices ?? 0}`}
+            </div>
+          )}
+
+          <button onClick={runVerify} disabled={verifying} style={{
+            width: "100%", padding: "10px 0", borderRadius: 10, border: `1.5px solid ${T.border}`,
+            background: "transparent", color: T.text, fontWeight: 700, fontSize: 12.5,
+            cursor: verifying ? "default" : "pointer",
+          }}>{verifying ? "চেক করা হচ্ছে..." : "🔍 SQLite vs IndexedDB রো-কাউন্ট ভেরিফাই করুন"}</button>
+
+          {verifyResult && (
+            <div style={{ background: T.bg, borderRadius: 10, padding: 12, marginTop: 10, fontSize: 11.5, lineHeight: 1.9, color: T.text }}>
+              {["products", "customers", "invoices"].map(k => {
+                const r = verifyResult[k];
+                const match = r.db === r.arr;
+                return (
+                  <div key={k}>
+                    {k}: SQLite <b>{r.db}</b> vs IndexedDB অ্যারে <b>{r.arr}</b>{" "}
+                    <span style={{ color: match ? "#22c55e" : "#f59e0b" }}>{match ? "✓ মিলেছে" : "⚠️ ভিন্ন"}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div style={{ marginTop: 12, fontSize: 10.5, color: T.sub, lineHeight: 1.7 }}>
+            ⚠️ dual-write চালু থাকলেও পুরনো IndexedDB blob-array-ই একমাত্র সোর্স-অফ-ট্রুথ থাকে (App-এর
+            পড়া/দেখানো ডেটা অপরিবর্তিত) — SQLite এখন শুধু ছায়া-লেখা (shadow write) হচ্ছে। এই কার্ডের
+            মূল লক্ষ্য: বাজেট Android ফোনে বড় ব্যাচ ব্যাকফিল কেমন পারফর্ম করে সেটা বাস্তব ডিভাইসে যাচাই করা।
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Settings_({ T, S, shopName,
  setShopName, businessType = "pharmacy", setBusinessType, businessTypeLocked = false, setBusinessTypeLocked, enabledBusinessTypes = [], users, setUsers, currentUser, setCurrentUser, showToast, customers, setCustomers, products, setProducts, invoices, setInvoices, txns, setTxns, smsLog, setSmsLog, sendSMS, darkMode, setDarkMode, activeTheme, setActiveTheme, fontSize, setFontSize, deletedCustomers, setDeletedCustomers, deletedProducts = [], setDeletedProducts, smsGateway, setSmsGateway, btConnected, btDevice, onConnectBluetooth, onDisconnectBluetooth, paymentInvoices, setPaymentInvoices, purchaseOrders = [], setPurchaseOrders, stockMovements = [], setStockMovements, lastAutoBackup, lastLocalBackup, lastDriveBackup, setLastDriveBackup, lastSnapshotBackup, driveStatus, backupNeeded, backupFailStreak, lastBackupError, restoreTestAt, restoreTestOk, restoreTestDetail, restoreTestFailStreak, onRunRestoreTest, performDriveBackup, buildBackupData, buildManualBackupData, manualBackupSetters, setBackupNeeded, performMasterSync, masterSyncStatus, masterSyncDetail, lastMasterSync, autoMasterSyncEnabled, setAutoMasterSyncEnabled, googleDriveToken, setGoogleDriveToken, anthropicKey, setAnthropicKey, smsTemplates, setSmsTemplates, autoBackupEnabled, setAutoBackupEnabled, firebaseConfig, setFirebaseConfig, firebaseEnabled, setFirebaseEnabled, setAuthSession, devContact, setDevContact, masterResetHash, setMasterResetHash, activeDevices = [], setActiveDevices, recoveryPhone, setRecoveryPhone, recoveryPinHash, setRecoveryPinHash, cashLogs = [], setCashLogs, suppliers = [], setSuppliers, expenses = [], setExpenses, returns = [], setReturns, quotations = [], setQuotations, supplierPayments = [], setSupplierPayments, auditLogs = [], setAuditLogs, hasPerm, fssReady = false, pendingConflicts = [],
  // 🔴 ফিক্স (৬ আগস্ট ২০২৬ — ESLint no-undef, বিল্ড ব্রেক করছিল): নিচে
@@ -34635,6 +34806,20 @@ function Settings_({ T, S, shopName,
   const [editName,    setEditName]    = useState(false);
   const [nameInput,   setNameInput]   = useState(shopName);
   const [showDiagExpanded, setShowDiagExpanded] = useState(false); // 🧪 অস্থায়ী ডায়াগনস্টিকস প্যানেল
+  const [showSqliteMigration, setShowSqliteMigration] = useState(false); // 🧪 SQLite মাইগ্রেশন (Phase 1 dev প্যানেল)
+  // 🔓 হিডেন dev-প্যানেল আনলক — AppVersionCard-এ ভার্সন নাম্বারে ৭ বার ট্যাপ করলে
+  // সেট হয় (নিচে দেখুন)। localStorage-এ persist করা হয় যাতে একবার আনলক করলে
+  // প্রতিবার আবার ৭-বার ট্যাপ করতে না হয় — ঠিক অফলাইন-friendly, কোনো সার্ভার/
+  // admin.html লাগে না (আগের DevPanelFlag/checkSubscription() মেকানিজম Firebase
+  // সরানোর পর মৃত কোড হয়ে গিয়েছিল, এটাই তার প্রতিস্থাপন)।
+  const [devPanelUnlocked, setDevPanelUnlocked] = useState(() => {
+    try { return localStorage.getItem("sbm_dev_panel_unlocked") === "1"; } catch { return false; }
+  });
+  const unlockDevPanel = () => {
+    try { localStorage.setItem("sbm_dev_panel_unlocked", "1"); } catch {}
+    setDevPanelUnlocked(true);
+    showToast?.("🔓 ডেভেলপার প্যানেল আনলক হয়েছে");
+  };
   const [showRecoveryExpanded, setShowRecoveryExpanded] = useState(false);
   const [showGateway, setShowGateway] = useState(false);
   const [showKey, setShowKey] = useState(false);             // 🔴 ফিক্স: আগে Claude AI কার্ডের IIFE-এর ভেতরে declare করা ছিল
@@ -35009,6 +35194,7 @@ function Settings_({ T, S, shopName,
   useBackHandler(showSmsSection,   () => { setShowSmsSection(false);  return true; });
   useBackHandler(showBinExpanded,  () => { setShowBinExpanded(false); return true; });
   useBackHandler(showDiagExpanded, () => { setShowDiagExpanded(false); return true; });
+  useBackHandler(showSqliteMigration, () => { setShowSqliteMigration(false); return true; });
   useBackHandler(showPinChange && pinStep > 1, () => { setPinStep(s => Math.max(1, s - 1)); return true; });
   useBackHandler(showPinChange && pinStep === 1 && !pinForgotMode, () => { setShowPinChange(false); return true; });
   useBackHandler(showAdminPinChange && adminPinMode !== adminPinEntryMode, () => { setAdminPinMode(adminPinEntryMode); setAdminPinErr(""); return true; });
@@ -36140,6 +36326,21 @@ onChange={()=>{}} />
       {/* 🧪 অস্থায়ী ব্যাকআপ/রিফ্রেশ ডায়াগনস্টিকস — রুট-কজ কনফার্ম হলে সরিয়ে ফেলা যাবে */}
       <BackupDiagnosticsCard T={T} S={S} expanded={showDiagExpanded} onToggle={() => setShowDiagExpanded(v => !v)} />
 
+      {/* 🧪 SQLite মাইগ্রেশন (Phase 1) — শুধু devPanelUnlocked (ভার্সন নাম্বারে ৭ ট্যাপ, উপরে দেখুন)
+          হলে দেখা যায়, দোকানদারের হাতে সহজলভ্য self-service না রেখে ইচ্ছাকৃতভাবে হিডেন রাখা হয়েছে */}
+      {devPanelUnlocked && (
+        <SqliteMigrationCard
+          T={T} S={S}
+          expanded={showSqliteMigration}
+          onToggle={() => setShowSqliteMigration(v => !v)}
+          businessType={businessType}
+          products={products}
+          customers={customers}
+          invoices={invoices}
+          showToast={showToast}
+        />
+      )}
+
       {/* ⑧ Recycle Bin */}
       {(() => {
         const totalBin = deletedCustomers.length + deletedProducts.length;
@@ -36653,7 +36854,7 @@ onChange={()=>{}} />
 
       {/* অ্যাপ ভার্সন কার্ড — বর্তমান ভার্সন সবসময় দেখায়, নতুন ভার্সন প্রকাশিত
           থাকলে এই একই কার্ডের ভেতরেই (নীরবে, কোনো popup ছাড়া) আপডেট দেখা যাবে */}
-      <AppVersionCard T={T} S={S} />
+      <AppVersionCard T={T} S={S} onSecretTap={unlockDevPanel} />
 
 
       <button style={{ ...S.cancelBtn, width: "100%", padding: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
