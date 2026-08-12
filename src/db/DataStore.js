@@ -101,6 +101,19 @@ export async function closeDb(businessType) {
   _dbCache.delete(businessType);
 }
 
+/**
+ * SQLite-কে টেবিল/ইনডেক্সের সাম্প্রতিক ডেটা-ডিস্ট্রিবিউশন সম্পর্কে জানায়, যাতে
+ * query planner সঠিক ইনডেক্স বেছে নেয় (এন্ট্রি ২-এ ধরা পড়া বাগ: বড় backfill-এর
+ * পর ANALYZE না চালালে SQLite ভুল ইনডেক্স বেছে নিতে পারে, dashboard আবার ধীর
+ * হয়ে যেতে পারে)। হালকা, দ্রুত অপারেশন — পুরো backfill শেষে একবার চালালেই যথেষ্ট,
+ * প্রতি ব্যাচে চালানোর দরকার নেই।
+ * @param {string} businessType
+ */
+export async function analyzeDb(businessType) {
+  const db = await getDb(businessType);
+  await db.execute(`ANALYZE;`);
+}
+
 // ── Generic CRUD হেল্পার ─────────────────────────────────────────────────
 // store: "products" | "customers" | "invoices"
 // প্রতিটা রেকর্ডের "hot fields" আলাদা, বাকিটা JSON — কলাম ম্যাপিং নিচে।
@@ -423,8 +436,25 @@ export async function migrateStoreResumable(businessType, store, sourceRecords, 
 
   state = { ...state, migrated_rows: migratedSoFar, status: "done", completed_at: Date.now() };
   await upsertMigrationState(db, state);
+  // এন্ট্রি ১৫: backfill সত্যিই এইমাত্র শেষ হলে (already-done শর্টসার্কিট না) একবার
+  // ANALYZE চালানো হচ্ছে, যাতে dashboard-এর covering index (এন্ট্রি ২/entry-fix
+  // idx_invoices_dashboard) নতুন ডেটার সাথে সঠিকভাবে ব্যবহৃত হয়। ব্যর্থ হলেও
+  // migration নিজে ব্যর্থ ধরা হচ্ছে না — ANALYZE শুধু অপ্টিমাইজেশন, ক্রিটিকাল না।
+  // এন্ট্রি ১৬ ফিক্স: এই ফাইল framework-agnostic (কোনো React import নেই, ফাইলের
+  // শুরুতেই বলা আছে), তাই এখান থেকে সরাসরি showToast() কল করা যায় না। তার বদলে
+  // ফলাফল রিটার্ন-অবজেক্টে (analyzeOk) জানানো হচ্ছে — App.jsx (যার showToast আছে)
+  // এটা পড়ে ব্যবহারকারীকে toast দেখাবে।
+  let analyzeOk = true;
+  let analyzeError = null;
+  try {
+    await analyzeDb(businessType);
+  } catch (e) {
+    analyzeOk = false;
+    analyzeError = e?.message || String(e);
+    console.warn(`ANALYZE ব্যর্থ (${store}):`, analyzeError);
+  }
   onProgress?.({ done: true, migrated: migratedSoFar, total: totalRows });
-  return { alreadyDone: false, migrated: migratedSoFar, total: totalRows };
+  return { alreadyDone: false, migrated: migratedSoFar, total: totalRows, analyzeOk, analyzeError };
 }
 
 // ── উদাহরণ ব্যবহার (Phase 1-এ App.jsx-এ যেভাবে বসবে, রেফারেন্সের জন্য) ──────
