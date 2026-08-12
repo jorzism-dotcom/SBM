@@ -36,24 +36,22 @@ CREATE INDEX IF NOT EXISTS idx_products_updated   ON products(updated_at);
 CREATE INDEX IF NOT EXISTS idx_products_deleted   ON products(deleted);
 
 -- FTS5 ভার্চুয়াল টেবিল — প্রোডাক্ট নাম সার্চ (বাংলা/ইংরেজি, কাছাকাছি-বানান সহনশীল)
+-- 🔴 ফিক্স (real-device টেস্টে ধরা পড়া ২য় বাগ — এন্ট্রি ৯ দেখুন): আগে এখানে
+-- external-content mode (`content='products', content_rowid='rowid'`) + সিঙ্ক
+-- ট্রিগার (products_ai/ad/au) ব্যবহার হতো। কিন্তু (ক) @capacitor-community/sqlite
+-- Android bridge-এর SQL statement-splitter BEGIN...END-এর ভেতরে ২+ স্টেটমেন্ট
+-- থাকা ট্রিগার (products_au) ভুলভাবে ভেঙে ফেলে ("incomplete input" এরর), আর
+-- (খ) upsert()/upsertMany() যেহেতু TEXT PRIMARY KEY-তে `INSERT OR REPLACE`
+-- ব্যবহার করে — SQLite-এ এটা আসলে DELETE+INSERT (rowid বদলে যায়), তাই
+-- products_au (AFTER UPDATE) ট্রিগার আদৌ ফায়ারই হতো না এই write-path-এ, আর
+-- content_rowid sync থিওরিগতভাবেই ভঙ্গুর ছিল। এখন standalone FTS5 (কোনো
+-- content=/content_rowid= নেই, id দিয়ে ম্যাচ করে) — DataStore.js-এর upsert()/
+-- upsertMany()/remove()-এ সরাসরি JS থেকে delete+insert করে সিঙ্ক রাখা হয়,
+-- কোনো SQL trigger লাগে না।
 CREATE VIRTUAL TABLE IF NOT EXISTS products_fts USING fts5(
   id UNINDEXED,
-  name,
-  content='products',
-  content_rowid='rowid'
+  name
 );
-
--- মূল টেবিল বদলালে FTS ইনডেক্স সিঙ্কে রাখার ট্রিগার (SQLite FTS5 external-content প্যাটার্ন)
-CREATE TRIGGER IF NOT EXISTS products_ai AFTER INSERT ON products BEGIN
-  INSERT INTO products_fts(rowid, id, name) VALUES (new.rowid, new.id, new.name);
-END;
-CREATE TRIGGER IF NOT EXISTS products_ad AFTER DELETE ON products BEGIN
-  INSERT INTO products_fts(products_fts, rowid, id, name) VALUES ('delete', old.rowid, old.id, old.name);
-END;
-CREATE TRIGGER IF NOT EXISTS products_au AFTER UPDATE ON products BEGIN
-  INSERT INTO products_fts(products_fts, rowid, id, name) VALUES ('delete', old.rowid, old.id, old.name);
-  INSERT INTO products_fts(rowid, id, name) VALUES (new.rowid, new.id, new.name);
-END;
 
 -- ── customers ────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS customers (
@@ -71,23 +69,12 @@ CREATE INDEX IF NOT EXISTS idx_customers_name_norm  ON customers(name_norm);
 CREATE INDEX IF NOT EXISTS idx_customers_updated    ON customers(updated_at);
 CREATE INDEX IF NOT EXISTS idx_customers_deleted    ON customers(deleted);
 
+-- FTS5 (customers) — একই কারণে standalone (কোনো content=/content_rowid=/trigger নেই), দেখুন products_fts-এর কমেন্ট
 CREATE VIRTUAL TABLE IF NOT EXISTS customers_fts USING fts5(
   id UNINDEXED,
   name,
-  mobile,
-  content='customers',
-  content_rowid='rowid'
+  mobile
 );
-CREATE TRIGGER IF NOT EXISTS customers_ai AFTER INSERT ON customers BEGIN
-  INSERT INTO customers_fts(rowid, id, name, mobile) VALUES (new.rowid, new.id, new.name, new.mobile);
-END;
-CREATE TRIGGER IF NOT EXISTS customers_ad AFTER DELETE ON customers BEGIN
-  INSERT INTO customers_fts(customers_fts, rowid, id, name, mobile) VALUES ('delete', old.rowid, old.id, old.name, old.mobile);
-END;
-CREATE TRIGGER IF NOT EXISTS customers_au AFTER UPDATE ON customers BEGIN
-  INSERT INTO customers_fts(customers_fts, rowid, id, name, mobile) VALUES ('delete', old.rowid, old.id, old.name, old.mobile);
-  INSERT INTO customers_fts(rowid, id, name, mobile) VALUES (new.rowid, new.id, new.name, new.mobile);
-END;
 
 -- ── invoices ─────────────────────────────────────────────────────────────
 -- নোট: এখানে FTS দরকার নেই (ইনভয়েস নাম্বার/কাস্টমার দিয়ে খোঁজা হয়, ফ্রি-টেক্সট সার্চ না)।

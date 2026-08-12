@@ -174,6 +174,46 @@ function normName(name) {
   return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+// products/customers-এর জন্য FTS সিঙ্ক দরকার, invoices-এর জন্য না (দেখুন schema.sql-এর কমেন্ট — এন্ট্রি ৯)
+const FTS_STORES = {
+  products: { cols: ["name"], extract: (r) => [r.name ?? ""] },
+  customers: { cols: ["name", "mobile"], extract: (r) => [r.name ?? "", r.mobile ?? ""] },
+};
+
+/** একটা রেকর্ডের FTS ইনডেক্স এন্ট্রি রিফ্রেশ করে (delete + insert, id দিয়ে ম্যাচ) — trigger-এর বদলে। */
+async function syncFtsRow(db, store, record) {
+  const def = FTS_STORES[store];
+  if (!def) return; // invoices ইত্যাদির জন্য FTS নেই
+  const ftsTable = `${store}_fts`;
+  const id = String(record.id);
+  await db.run(`DELETE FROM ${ftsTable} WHERE id = ?`, [id]);
+  const cols = def.cols;
+  const placeholders = cols.map(() => "?").join(", ");
+  await db.run(
+    `INSERT INTO ${ftsTable} (id, ${cols.join(", ")}) VALUES (?, ${placeholders})`,
+    [id, ...def.extract(record)]
+  );
+}
+
+/** ব্যাচে একাধিক রেকর্ডের FTS এন্ট্রি রিফ্রেশ — upsertMany()-এর সাথে ব্যবহারের জন্য। */
+function buildFtsStatements(store, records) {
+  const def = FTS_STORES[store];
+  if (!def) return [];
+  const ftsTable = `${store}_fts`;
+  const cols = def.cols;
+  const placeholders = cols.map(() => "?").join(", ");
+  const statements = [];
+  for (const r of records) {
+    const id = String(r.id);
+    statements.push({ statement: `DELETE FROM ${ftsTable} WHERE id = ?`, values: [id] });
+    statements.push({
+      statement: `INSERT INTO ${ftsTable} (id, ${cols.join(", ")}) VALUES (?, ${placeholders})`,
+      values: [id, ...def.extract(r)],
+    });
+  }
+  return statements;
+}
+
 /**
  * একটা রেকর্ড insert/replace করে (upsert)। dual-write ফেজে App.jsx-এর
  * setProducts/setCustomers/setInvoices-এর পাশাপাশি এটা কল হবে।
@@ -187,6 +227,8 @@ export async function upsert(businessType, store, record) {
   const sql = `INSERT OR REPLACE INTO ${store} (${cols.join(", ")}, data) VALUES (${placeholders}, ?)`;
   const values = [...def.extract(record), JSON.stringify(record)];
   await db.run(sql, values);
+  // 🔴 এন্ট্রি ৯: আগে এটা SQL trigger দিয়ে হতো, এখন JS থেকে ম্যানুয়ালি (দেখুন schema.sql-এর কমেন্ট)
+  await syncFtsRow(db, store, record);
 }
 
 /** একসাথে অনেকগুলো রেকর্ড upsert — backfill migration-এর সময় ব্যবহার হবে। */
@@ -200,6 +242,8 @@ export async function upsertMany(businessType, store, records) {
     statement: `INSERT OR REPLACE INTO ${store} (${cols.join(", ")}, data) VALUES ${placeholders}`,
     values: [...def.extract(r), JSON.stringify(r)],
   }));
+  // 🔴 এন্ট্রি ৯: FTS সিঙ্ক (delete+insert per record) একই ব্যাচ-transaction-এ যোগ করা হচ্ছে
+  set.push(...buildFtsStatements(store, records));
   // executeSet — একটা transaction-এ multiple parameterized statement, বড় ব্যাচের জন্য
   await db.executeSet(set);
 }
@@ -214,6 +258,10 @@ export async function getById(businessType, store, id) {
 export async function remove(businessType, store, id) {
   const db = await getDb(businessType);
   await db.run(`DELETE FROM ${store} WHERE id = ?`, [String(id)]);
+  // 🔴 এন্ট্রি ৯: আগে ON DELETE trigger দিয়ে হতো, এখন সরাসরি
+  if (FTS_STORES[store]) {
+    await db.run(`DELETE FROM ${store}_fts WHERE id = ?`, [String(id)]);
+  }
 }
 
 /**
