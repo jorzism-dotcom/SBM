@@ -25,6 +25,49 @@
 
 ## এন্ট্রি লগ
 
+### [এন্ট্রি ১১] — Phase 2: Resumable migration runner (`_migration_state` টেবিল, ব্যাচড ব্যাকফিল)
+
+**কেন**: এন্ট্রি ৯/১০-এর "যা এখনো বাকি" #১ — এন্ট্রি ৬-৭-এর dev-প্যানেল ম্যানুয়াল ব্যাকফিল সবসময় *পুরো* অ্যারে একবারে `upsertMany()` দিয়ে পাঠায়। আপনার নিজের দোকানে (২২৩৫ প্রোডাক্ট) এটা সমস্যা করেনি, কিন্তু ৫০০ দোকানের মধ্যে বড় স্কেলের দোকানে (লাখ-কোটি রেকর্ড) মাঝপথে অ্যাপ বন্ধ/kill হলে — কোনো progress-ট্র্যাকিং না থাকায় — আবার পুরো ব্যাকফিল প্রথম থেকে শুরু করতে হতো। schema.sql-এর `_migration_state` টেবিল (Phase 0 থেকেই সংজ্ঞায়িত ছিল, এতদিন অব্যবহৃত) এখন কাজে লাগানো হলো।
+
+**কী করা হলো**:
+- `DataStore.js`-এ নতুন `migrateStoreResumable(businessType, store, sourceRecords, opts)` — উৎস অ্যারে `id` দিয়ে সর্ট করে একটা স্থিতিশীল/ডিটারমিনিস্টিক ক্রম বানায় (resumability-র জন্য জরুরি — insertion-order-এর উপর নির্ভর করলে রান থেকে রানে "কোথা থেকে চালিয়ে যেতে হবে" অস্পষ্ট হয়ে যেত), তারপর `_migration_state`-এ সেভ থাকা `last_migrated_id` অনুযায়ী ঠিক পরের রেকর্ড থেকে শুরু করে, ৫০০-রেকর্ডের ব্যাচে (কনফিগারযোগ্য) `upsertMany()` কল করে — প্রতি ব্যাচের পর `_migration_state` (migrated_rows, last_migrated_id, status) আপডেট হয়।
+- সাপোর্টিং ফাংশন: `getAllMigrationStates()` (dev প্যানেলে progress দেখানোর জন্য), `resetMigrationState()` (নির্দিষ্ট store-এর progress রিসেট করে জোর করে আবার প্রথম থেকে শুরুর জন্য)।
+- `SqliteMigrationCard`-এ (App.jsx) একটা নতুন "🔁 Resumable migration" সেকশন — products/customers/invoices প্রতিটার জন্য আলাদা progress bar, "শুরু/রিজিউম করুন" আর "রিসেট" বাটন, আর সব store-এর `_migration_state` রিফ্রেশ করে দেখার বাটন।
+
+**যাচাই**: এবার শুধু syntax-check না, সম্পূর্ণ **ফাংশনাল সিমুলেশন** `node:sqlite`-এ চালানো হয়েছে (DataStore.js-এর ঠিক একই অ্যালগরিদম re-implement করে, কারণ `@capacitor-community/sqlite` sandbox-এ নেই) — ২৩০০-রেকর্ডের সিন্থেটিক ডেটাসেটে ৪টা সিনারিও টেস্ট করা হয়েছে:
+1. **সিমুলেটেড ক্র্যাশ**: ২ ব্যাচ (১০০০ রেকর্ড) পর ইচ্ছাকৃতভাবে লুপ বন্ধ করে দেওয়া হয়েছে — `_migration_state`-এ সঠিকভাবে `migrated_rows=1000, status='in_progress', last_migrated_id='p00999'` সেভ হয়েছে কনফার্ম করা হয়েছে।
+2. **Resume**: আবার একই ফাংশন কল করে — বাকি ১৩০০ রেকর্ড ঠিক যেখান থেকে থেমেছিল সেখান থেকে শুরু হয়ে সম্পূর্ণ হয়েছে, শেষে মূল টেবিলে ও FTS টেবিলে দুটোতেই ঠিক ২৩০০ রো (কোনো ডুপ্লিকেট/মিসিং না) কনফার্ম করা হয়েছে।
+3. **Already-done**: সম্পূর্ণ হওয়ার পর আবার কল করলে `alreadyDone: true` রিটার্ন করে কোনো নতুন write ছাড়াই কনফার্ম করা হয়েছে।
+4. **Force restart**: `force: true` দিয়ে আবার পুরো migration চালিয়ে — `INSERT OR REPLACE`-এর কারণে row-count এখনো ঠিক ২৩০০-ই আছে (ডুপ্লিকেট হয়নি) কনফার্ম করা হয়েছে।
+
+`App.jsx`/`DataStore.js` দুটোই Babel `transformSync()`-এ সিনট্যাক্স-ওকে, নতুন import/export মিলেছে (grep দিয়ে কনফার্ম)।
+
+**ঝুঁকি**: কম — নতুন কোড শুধু dev প্যানেলের নতুন সেকশন থেকে ম্যানুয়ালি ট্রিগার হয়, বিদ্যমান dual-write (`dualWriteSqlite()`)/live effect-flow অপরিবর্তিত। schema.sql ছোঁয়া হয়নি (টেবিল আগে থেকেই ছিল)।
+
+**⚠️ সীমাবদ্ধতা**: alogরিদম-লেভেলে (resumability logic) পুরোপুরি ভ্যালিডেট করা হয়েছে `node:sqlite`-এ, কিন্তু আসল Capacitor প্লাগইনের `executeSet()`-এর transaction-behavior (batch-এর মাঝে সত্যিকারের app-kill হলে partial-batch commit/rollback ঠিক কেমন আচরণ করে) শুধু real-device টেস্টেই পুরোপুরি কনফার্ম হবে।
+
+**যা এখনো বাকি**:
+- [ ] Real-device-এ resumable migration টেস্ট — বিশেষভাবে "মাঝপথে সত্যিই অ্যাপ force-close করে resume করা" (সিমুলেটেড না, real app kill)
+- [ ] backfill/migration শেষে `ANALYZE` চালানো এখনো কোথাও কোড করা হয়নি
+- [ ] Phase 3 (read-path cutover): এখনো App.jsx সব রিড IndexedDB থেকেই করছে, SQLite শুধু shadow-write। migration সম্পূর্ণ ও যাচাই-নিশ্চিত হওয়ার পরই এই ধাপ শুরু হবে
+- [ ] Phase 4 (reconciliation/ongoing verification), Phase 5 (পুরনো IndexedDB কোড অপসারণ) — এখনো অনেক দূরে
+
+---
+
+### [এন্ট্রি ১০] — Real-device Phase 1 টেস্ট ফলাফল (এন্ট্রি ৮-৯ ফিক্সের পর) — ✅ সফল
+
+আপনার নিজের ফার্মেসি দোকানে (businessType: pharmacy, products: 2233 → 2235, customers: 17, invoices: 627) real-device-এ dev প্যানেল দিয়ে সরাসরি টেস্ট করা হয়েছে (স্ক্রিনশট শেয়ার করা হয়েছে) — এন্ট্রি ৮ (PRAGMA ফিক্স) আর এন্ট্রি ৯ (FTS trigger ফিক্স) দুটোরই বাস্তব-ডিভাইস কনফার্মেশন:
+
+1. **পূর্ণ ব্যাকফিল**: প্রথমবার dual-write চালু করে — ✅ "ব্যাকফিল সম্পন্ন — products: 2233, customers: 17, invoices: 627" — কোনো এরর ছাড়া।
+2. **Row-count ভেরিফাই**: SQLite vs IndexedDB — products/customers/invoices তিনটাতেই ✓ মিলেছে।
+3. **Live/automatic dual-write** (এন্ট্রি ৬-এর `dualWriteSqlite()` effect): অ্যাপে সরাসরি একটা নতুন প্রোডাক্ট যোগ করার পর (dev প্যানেলে ফিরে **ম্যানুয়াল ব্যাকফিল না চেপেই**) — products কাউন্ট নিজে থেকেই 2234 → 2235-এ আপডেট হয়ে SQLite-এ দেখা গেছে, IndexedDB-এর সাথে মিলেছে। এটাই সবচেয়ে গুরুত্বপূর্ণ কনফার্মেশন — dual-write শুধু ম্যানুয়াল বাটনে না, স্বাভাবিক ব্যবহারেও ঠিকমতো চলছে।
+
+**উল্লেখযোগ্য পার্শ্ব-পর্যবেক্ষণ (অ্যাকশন লাগবে না, শুধু নোট)**: প্রথম টেস্টের সময় app data clear করা হয়েছিল (এন্ট্রি ৯-এর পরামর্শ অনুযায়ী, সম্ভাব্য আধা-তৈরি স্কিমা এড়াতে) — এতে লোকাল Google Drive OAuth সেশন লগ-আউট হয়ে গেছে (স্ক্রিনশটে "OFF" দেখা গেছে)। এটা প্রত্যাশিত পার্শ্ব-প্রতিক্রিয়া, ডেটা-লস না — শুধু আবার "Connect" চেপে লগইন করলেই ঠিক হয়ে যাবে।
+
+**উপসংহার**: Phase 1 (dual-write) core mechanism — schema init, FTS sync, ব্যাচ ব্যাকফিল, row-count ভেরিফিকেশন, আর live incremental write — সবগুলোই এখন real-device-এ কনফার্মড কাজ করছে একটা আসল প্রোডাকশন দোকানের ডেটাসেটে।
+
+---
+
 ### [এন্ট্রি ৯] — ২য় real-device বাগ ফিক্স: FTS5 trigger "incomplete input" এরর (root-cause fix, শুধু patch না)
 
 **কেন**: এন্ট্রি ৮-এর ফিক্সসহ আবার real-device-এ ব্যাকফিল টেস্ট করার পর PRAGMA এরর চলে গেছে, কিন্তু নতুন এরর ধরা পড়ল — এবারও প্রথম চেষ্টাতেই।
