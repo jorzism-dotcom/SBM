@@ -303,6 +303,130 @@ export async function aggregate(businessType, store, { select, where = "1=1", pa
   return res.values?.[0] || null;
 }
 
+// ── Phase 2: Resumable migration runner ─────────────────────────────────────
+// (SQLITE_MIGRATION_LOG.md এন্ট্রি ৯-এর "যা এখনো বাকি" #১ — schema.sql-এর
+// `_migration_state` টেবিল (Phase 0 থেকেই সংজ্ঞায়িত ছিল, এতদিন ব্যবহার হয়নি)
+// এখন আসলে ব্যবহার হচ্ছে। এন্ট্রি ৬-৭-এর dev-প্যানেল ম্যানুয়াল ব্যাকফিল
+// (`upsertMany()` একবারে পুরো অ্যারে) ছোট দোকানে (হাজার-খানেক রেকর্ড) ঠিক আছে,
+// কিন্তু বড় দোকানে (লাখ-কোটি রেকর্ড) মাঝপথে অ্যাপ বন্ধ/kill হলে প্রগ্রেস হারিয়ে
+// যেত — আবার প্রথম থেকে শুরু করতে হতো। এই ফাংশন ব্যাচে ব্যাচে (ডিফল্ট ৫০০ রেকর্ড)
+// লেখে, প্রতি ব্যাচের পর `_migration_state`-এ progress persist করে, তাই resume
+// করা গেলে ঠিক যেখানে থেমেছিল সেখান থেকেই চলবে।
+
+const MIGRATION_BATCH_SIZE = 500; // বাজেট Android ফোনে এক ব্যাচে এর বেশি না — মেমরি/জ্যাঙ্ক কম রাখতে
+
+async function getMigrationState(db, store) {
+  const res = await db.query(`SELECT * FROM _migration_state WHERE store_name = ?`, [store]);
+  return res.values?.[0] || null;
+}
+
+async function upsertMigrationState(db, state) {
+  await db.run(
+    `INSERT OR REPLACE INTO _migration_state
+       (store_name, total_source_rows, migrated_rows, last_migrated_id, status, started_at, completed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      state.store_name,
+      state.total_source_rows ?? null,
+      state.migrated_rows ?? 0,
+      state.last_migrated_id ?? null,
+      state.status ?? "pending",
+      state.started_at ?? null,
+      state.completed_at ?? null,
+    ]
+  );
+}
+
+/** সব store-এর migration state একসাথে পড়া — dev প্যানেলে progress দেখানোর জন্য। */
+export async function getAllMigrationStates(businessType) {
+  const db = await getDb(businessType);
+  const res = await db.query(`SELECT * FROM _migration_state`);
+  return res.values || [];
+}
+
+/** নির্দিষ্ট store-এর migration state পুরোপুরি রিসেট (force restart) — dev প্যানেলের রিসেট বাটনের জন্য। */
+export async function resetMigrationState(businessType, store) {
+  const db = await getDb(businessType);
+  await db.run(`DELETE FROM _migration_state WHERE store_name = ?`, [store]);
+}
+
+/**
+ * ব্যাচে ব্যাচে, resumable migration — মাঝপথে অ্যাপ বন্ধ হলে পরের কলে ঠিক যেখানে
+ * থেমেছিল সেখান থেকেই আবার শুরু হবে (`_migration_state.last_migrated_id` অনুযায়ী)।
+ *
+ * @param {string} businessType
+ * @param {"products"|"customers"|"invoices"} store
+ * @param {Array} sourceRecords - IndexedDB থেকে আসা পুরো অ্যারে (App.jsx-এর products/customers/invoices state)
+ * @param {object} [opts]
+ * @param {number} [opts.batchSize=500]
+ * @param {(p:{done:boolean, migrated:number, total:number}) => void} [opts.onProgress]
+ * @param {boolean} [opts.force=false] - true হলে আগের progress উপেক্ষা করে ০ থেকে আবার শুরু করে
+ * @param {number} [opts.yieldMs=0] - প্রতি ব্যাচের পর UI থ্রেডকে এত মিলিসেকেন্ড "শ্বাস নেওয়ার" সময় দেয় (বাজেট ফোনে jank কমাতে)
+ * @returns {Promise<{alreadyDone:boolean, migrated:number, total:number}>}
+ */
+export async function migrateStoreResumable(businessType, store, sourceRecords, opts = {}) {
+  const { batchSize = MIGRATION_BATCH_SIZE, onProgress, force = false, yieldMs = 0 } = opts;
+  if (!HOT_FIELDS[store]) throw new Error(`migrateStoreResumable(): অজানা store "${store}"`);
+  const db = await getDb(businessType);
+
+  // id দিয়ে ডিটারমিনিস্টিক ক্রম — resumability-র মূল ভিত্তি। উৎস অ্যারের
+  // insertion-order-এর উপর নির্ভর করলে রান থেকে রানে "last_migrated_id-এর পরে
+  // কোনটা" পাল্টে যেতে পারত (যেমন IndexedDB লোড অর্ডার বদলালে), তাই sort করে
+  // একটা স্থিতিশীল ক্রম বানানো হচ্ছে।
+  const sorted = [...sourceRecords].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  const totalRows = sorted.length;
+
+  let state = force ? null : await getMigrationState(db, store);
+  if (!state) {
+    state = {
+      store_name: store, total_source_rows: totalRows, migrated_rows: 0,
+      last_migrated_id: null, status: "pending", started_at: null, completed_at: null,
+    };
+    await upsertMigrationState(db, state);
+  }
+
+  if (state.status === "done" && !force) {
+    onProgress?.({ done: true, migrated: state.migrated_rows, total: state.total_source_rows });
+    return { alreadyDone: true, migrated: state.migrated_rows, total: state.total_source_rows };
+  }
+
+  // resumability: last_migrated_id-এর ঠিক পরের রেকর্ড থেকে শুরু (আগের ব্যাচগুলো
+  // আবার না চালিয়ে, মাঝপথে বন্ধ হওয়ার আগের প্রগ্রেস অক্ষত রেখে)
+  let startIdx = 0;
+  if (state.last_migrated_id) {
+    const idx = sorted.findIndex((r) => String(r.id) === state.last_migrated_id);
+    startIdx = idx >= 0 ? idx + 1 : 0;
+  }
+
+  if (state.status === "pending" || force) {
+    state = { ...state, status: "in_progress", started_at: state.started_at || Date.now(), total_source_rows: totalRows };
+    await upsertMigrationState(db, state);
+  }
+
+  let migratedSoFar = state.migrated_rows || 0;
+
+  for (let i = startIdx; i < sorted.length; i += batchSize) {
+    const batch = sorted.slice(i, i + batchSize);
+    if (batch.length === 0) break;
+    // upsertMany() ইতিমধ্যে FTS সিঙ্কও একই transaction-এ করে দেয় (এন্ট্রি ৯)
+    await upsertMany(businessType, store, batch);
+    migratedSoFar += batch.length;
+    const lastId = String(batch[batch.length - 1].id);
+    state = {
+      store_name: store, total_source_rows: totalRows, migrated_rows: migratedSoFar,
+      last_migrated_id: lastId, status: "in_progress", started_at: state.started_at, completed_at: null,
+    };
+    await upsertMigrationState(db, state);
+    onProgress?.({ done: false, migrated: migratedSoFar, total: totalRows });
+    if (yieldMs > 0) await new Promise((r) => setTimeout(r, yieldMs));
+  }
+
+  state = { ...state, migrated_rows: migratedSoFar, status: "done", completed_at: Date.now() };
+  await upsertMigrationState(db, state);
+  onProgress?.({ done: true, migrated: migratedSoFar, total: totalRows });
+  return { alreadyDone: false, migrated: migratedSoFar, total: totalRows };
+}
+
 // ── উদাহরণ ব্যবহার (Phase 1-এ App.jsx-এ যেভাবে বসবে, রেফারেন্সের জন্য) ──────
 //
 // import { upsert, queryPage, searchFts, aggregate, isSqliteEnabled } from "./db/DataStore";
