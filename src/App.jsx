@@ -38,7 +38,7 @@ import {
 // তৈরি DataStore abstraction layer। isSqliteEnabled() ফ্ল্যাগ ডিফল্ট বন্ধ, তাই
 // এই import নিজে থেকে কোনো আচরণ পাল্টায় না — শুধু নিচের debouncedSave effect-
 // গুলোতে diff-based upsert/remove যোগ হয়েছে (দেখুন সেখানকার কমেন্ট)।
-import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState } from "./db/DataStore.js";
+import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb } from "./db/DataStore.js";
 // 🔴 ফিক্স (Firestore read-quota — ২৫ জুলাই ২০২৬): "ফুল চেকাপ চালান" বাটন
 // (runSyncDiagnostics) stockMovements/txns/cashLogs/users-এর সম্পূর্ণ
 // আনউইন্ডোড getDocs() করে (কোনো date-window/limit ছাড়াই পুরো কালেকশন read) —
@@ -34663,6 +34663,7 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
   const [resumableRunning, setResumableRunning] = useState(null); // null | "products" | "customers" | "invoices" — কোনটা চলছে
   const [resumableProgress, setResumableProgress] = useState({}); // { products: {migrated,total}, ... }
   const [migrationStates, setMigrationStates] = useState(null); // null | রো-অ্যারে (_migration_state টেবিলের বর্তমান কনটেন্ট)
+  const [analyzeRunning, setAnalyzeRunning] = useState(false); // এন্ট্রি ১৫: ম্যানুয়াল ANALYZE বাটনের লোডিং স্টেট
 
   const runBackfill = async () => {
     setBackfilling(true);
@@ -34721,7 +34722,16 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
     const sourceMap = { products, customers, invoices };
     const records = sourceMap[store] || [];
     setResumableRunning(store);
-    setResumableProgress((prev) => ({ ...prev, [store]: { migrated: 0, total: records.length } }));
+    // এন্ট্রি ১৪ ফিক্স: আগে এখানে সবসময় { migrated: 0, ... } দিয়ে progress line
+    // রিসেট করা হতো — resume করার সময়ও (যেমন DB-তে আগে থেকেই 500/2235 ছিল)
+    // "শুরু/রিজিউম" চাপার সাথে সাথে মুহূর্তের জন্য "0/2235 (0%)" দেখাত, যা দেখতে
+    // মনে হতো processing আবার শূন্য থেকে শুরু হচ্ছে — যদিও ভেতরে ভেতরে
+    // migrateStoreResumable() ঠিক 501 থেকেই resume করত (এটা শুধু initial UI
+    // flash-এর ভুল, প্রসেসিং লজিকের না)। এখন আগে থেকে জানা migrated_rows
+    // (dbState, যেটা mount-এ ও রিফ্রেশে লোড হয়) থেকে progress line শুরু হয়।
+    const dbState = migrationStates?.find((s) => s.store_name === store);
+    const knownMigrated = dbState?.status === "in_progress" ? (dbState.migrated_rows || 0) : 0;
+    setResumableProgress((prev) => ({ ...prev, [store]: { migrated: knownMigrated, total: records.length } }));
     try {
       const result = await migrateStoreResumable(businessType, store, records, {
         batchSize: 500,
@@ -34742,6 +34752,14 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
           ? `✅ ${store}: আগেই সম্পন্ন ছিল (${result.migrated}/${result.total})`
           : `✅ ${store}: রিজিউমেবল মাইগ্রেশন সম্পন্ন (${result.migrated}/${result.total})`
       );
+      // এন্ট্রি ১৬: backfill এইমাত্র সম্পূর্ণ হলে (alreadyDone না) ভেতরে ভেতরে
+      // স্বয়ংক্রিয় ANALYZE চলে (এন্ট্রি ১৫) — আগে এটার ফলাফল কোথাও দেখানো হতো না
+      // (শুধু console.warn ব্যর্থ হলে)। এখন সেই ফলাফল আলাদা toast-এ দেখানো হচ্ছে।
+      if (!result.alreadyDone && result.analyzeOk === false) {
+        showToast?.(`⚠️ ${store}: ব্যাকফিল সফল হলেও ANALYZE ব্যর্থ হয়েছে — নিচের "ANALYZE চালান (ম্যানুয়াল)" বাটনে চেষ্টা করুন। (${result.analyzeError || ""})`, "#f59e0b");
+      } else if (!result.alreadyDone && result.analyzeOk === true) {
+        showToast?.(`📊 ${store}: ANALYZE-ও স্বয়ংক্রিয়ভাবে সম্পন্ন হয়েছে`);
+      }
     } catch (e) {
       showToast?.(`❌ ${store} মাইগ্রেশন ব্যর্থ: ` + String(e?.message || e), "#ef4444");
     } finally {
@@ -34782,6 +34800,18 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
       refreshMigrationStates();
     } catch (e) {
       showToast?.("❌ রিসেট ব্যর্থ: " + String(e?.message || e), "#ef4444");
+    }
+  };
+
+  const runAnalyze = async () => {
+    setAnalyzeRunning(true);
+    try {
+      await analyzeDb(businessType);
+      showToast?.("📊 ANALYZE সম্পন্ন — SQLite-এর ইনডেক্স স্ট্যাটিস্টিক্স রিফ্রেশ হয়েছে");
+    } catch (e) {
+      showToast?.("❌ ANALYZE ব্যর্থ: " + String(e?.message || e), "#ef4444");
+    } finally {
+      setAnalyzeRunning(false);
     }
   };
 
@@ -34920,6 +34950,18 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
               width: "100%", padding: "8px 0", borderRadius: 8, border: `1.5px solid ${T.border}`,
               background: "transparent", color: T.text, fontWeight: 600, fontSize: 11.5, cursor: "pointer",
             }}>🔄 migration state রিফ্রেশ করুন</button>
+
+            {/* এন্ট্রি ১৫/১৬: এন্ট্রি ২-এ ধরা পড়া বাগ (বড় backfill-এর পর ANALYZE না
+                চালালে dashboard ধীরে ধীরে ধীর হয়ে যায়) — এখন backfill শেষ হলে
+                স্বয়ংক্রিয়ভাবে ANALYZE চলে (migrateStoreResumable-এর ভেতরে) আর
+                সফল/ব্যর্থ দুই অবস্থাতেই toast দেখানো হয় (runResumable()-এ)।
+                ম্যানুয়াল বাটনও রাখা হলো — অনেকদিন পর ডেটা অনেক বেড়ে গেলে বা কোনো
+                কারণে স্বয়ংক্রিয় ANALYZE ব্যর্থ হলে হাতে চালানোর জন্য। */}
+            <button onClick={runAnalyze} disabled={analyzeRunning} style={{
+              width: "100%", padding: "8px 0", borderRadius: 8, border: `1.5px solid ${T.border}`,
+              background: "transparent", color: analyzeRunning ? T.sub : T.text, fontWeight: 600,
+              fontSize: 11.5, cursor: analyzeRunning ? "default" : "pointer", marginTop: 8,
+            }}>{analyzeRunning ? "⏳ ANALYZE চলছে..." : "📊 ANALYZE চালান (ম্যানুয়াল)"}</button>
           </div>
 
           <div style={{ marginTop: 12, fontSize: 10.5, color: T.sub, lineHeight: 1.7 }}>
