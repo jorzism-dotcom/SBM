@@ -34726,7 +34726,16 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
       const result = await migrateStoreResumable(businessType, store, records, {
         batchSize: 500,
         yieldMs: 0,
-        onProgress: (p) => setResumableProgress((prev) => ({ ...prev, [store]: p })),
+        // এন্ট্রি ১২ ফিক্স: আগে migrationStates (উপরের "স্ট্যাটাস: ..." লাইন) শুধু
+        // পুরো রান শেষ হওয়ার পর (finally-তে) রিফ্রেশ হতো — ফলে রান চলাকালীন
+        // progress bar (নিচের ✅/⏳ লাইন) আর status লাইন সিঙ্কে থাকত না, এবং
+        // reset-এর পর নতুন করে শুরু করলে status লাইন "অজানা" দেখাতে থাকত যতক্ষণ
+        // না পুরো রান শেষ হয় — done থেকে হঠাৎ "চলছে/অজানা"-তে ফিরে যাওয়ার মতো
+        // দেখাত, যদিও ডেটা ঠিকই ছিল। এখন প্রতি ব্যাচের পর status লাইনও রিফ্রেশ হয়।
+        onProgress: (p) => {
+          setResumableProgress((prev) => ({ ...prev, [store]: p }));
+          refreshMigrationStates();
+        },
       });
       showToast?.(
         result.alreadyDone
@@ -34754,6 +34763,9 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
     if (!window.confirm(`"${store}"-এর migration progress রিসেট করবেন? পরের বার আবার প্রথম থেকে শুরু হবে (ডেটা মুছবে না, শুধু progress-ট্র্যাকিং রিসেট হবে)।`)) return;
     try {
       await resetMigrationState(businessType, store);
+      // এন্ট্রি ১২: রিসেটের পরও পুরনো ✅ progress line (যেমন "2235/2235") রয়ে
+      // যেত UI-তে যদিও DB-এর স্ট্যাটাস মুছে গেছে — দুই লাইন সাঙ্ঘর্ষিক দেখাত।
+      setResumableProgress((prev) => ({ ...prev, [store]: undefined }));
       showToast?.(`🔄 ${store}-এর migration progress রিসেট হয়েছে`);
       refreshMigrationStates();
     } catch (e) {
