@@ -25,6 +25,33 @@
 
 ## এন্ট্রি লগ
 
+### [এন্ট্রি ৯] — ২য় real-device বাগ ফিক্স: FTS5 trigger "incomplete input" এরর (root-cause fix, শুধু patch না)
+
+**কেন**: এন্ট্রি ৮-এর ফিক্সসহ আবার real-device-এ ব্যাকফিল টেস্ট করার পর PRAGMA এরর চলে গেছে, কিন্তু নতুন এরর ধরা পড়ল — এবারও প্রথম চেষ্টাতেই।
+
+**এরর (স্ক্রিনশটে)**: `Execute: incomplete input: CREATE TRIGGER IF NOT EXISTS products_au AFTER UPDATE ON products BEGIN INSERT INTO products_fts(products_fts, rowid, id, name) VALUES ('delete', old.rowid, old.id, old.name);` — statement-টা `END;`-এর আগেই কাটা।
+
+**রুট কজ (দুটো আলাদা সমস্যা একসাথে)**:
+1. **প্লাগইনের statement-splitter বাগ**: `@capacitor-community/sqlite`-এর Android bridge multi-statement SQL টেক্সট চালানোর সময় প্রতিটা `;` দিয়ে টুকরো করে, কিন্তু `CREATE TRIGGER ... BEGIN ... END;`-এর ভেতরের `;`-গুলো বুঝতে পারে না। `products_ai`/`products_ad` ট্রিগারে ভেতরে মাত্র ১টা statement ছিল বলে কাকতালীয়ভাবে চলে গেছে, কিন্তু `products_au`-এ ২টা statement (delete + insert) থাকায় ঠিক প্রথম `;`-এ কেটে গেছে — এটাই এরর মেসেজে দেখা "incomplete input"।
+2. **একটা গভীর ডিজাইন-ত্রুটি, যেটা প্লাগইন-বাগ ফিক্স করলেও থেকে যেত**: `upsert()`/`upsertMany()` সবসময় `INSERT OR REPLACE` ব্যবহার করে, আর `id` কলাম `TEXT PRIMARY KEY` (rowid-alias না, কারণ `INTEGER PRIMARY KEY` না) — তাই SQLite-এ PK-conflict হলে `INSERT OR REPLACE` আসলে ভেতরে ভেতরে পুরনো row **DELETE করে নতুন INSERT** করে, real `UPDATE` না। ফলে `products_au` (AFTER **UPDATE**) ট্রিগার আদৌ এই write-path-এ কখনো ফায়ারই হতো না — আর প্রতিটা replace-এ rowid বদলে যেত, যা `content_rowid='rowid'`-নির্ভর FTS5 external-content সিঙ্ককে থিওরিগতভাবেই ভঙ্গুর করে তুলেছিল। মানে শুধু প্লাগইন-বাগ প্যাচ করলেও ভবিষ্যতে সাইলেন্ট FTS-desync ধরা পড়ত।
+
+**কী করা হলো (root-cause fix)**: SQL trigger-নির্ভর FTS5 sync সম্পূর্ণ সরিয়ে ফেলা হয়েছে —
+- `schema.sql`: `products_fts`/`customers_fts` এখন **standalone FTS5** টেবিল (`content=`/`content_rowid=` নেই), আর ৬টা ট্রিগারই (`products_ai/ad/au`, `customers_ai/ad/au`) মুছে ফেলা হয়েছে।
+- `DataStore.js`: নতুন `syncFtsRow()` (একক upsert) আর `buildFtsStatements()` (ব্যাচ upsert) ফাংশন — `id` দিয়ে ম্যাচ করে সরাসরি `DELETE FROM ..._fts WHERE id=?` + `INSERT INTO ..._fts (...)`, কোনো rowid/trigger নির্ভরতা ছাড়াই। `upsert()`, `upsertMany()` (একই ব্যাচ-transaction-এ), আর `remove()` — তিনটাতেই এখন এই ম্যানুয়াল সিঙ্ক কল হয়। `searchFts()`-এর কোয়েরি (`JOIN ..._fts ON f.id = t.id`) অপরিবর্তিত রাখা গেছে, কারণ standalone FTS5-তেও `id` কলাম দিয়ে জয়েন কাজ করে।
+
+**যাচাই**: Node-এর `node:sqlite`-এ পুরো ফ্লো ফাংশনালি টেস্ট করা হয়েছে — (ক) নতুন schema (trigger ছাড়া) ক্লিন execute হয়েছে, (খ) upsert + FTS sync simulation করে বাংলা টেক্সট (প্যারাসিটামল) সার্চ করে সঠিক রেকর্ড পাওয়া গেছে, (গ) একই `id`-তে দ্বিতীয়বার upsert করে FTS-এ ডুপ্লিকেট রো হয়নি কিনা কনফার্ম করা হয়েছে (count=1), (ঘ) remove()-এর পর FTS row সত্যিই মুছে গেছে কিনা কনফার্ম করা হয়েছে (count=0)। `DataStore.js` ও `App.jsx` (অপরিবর্তিত) দুটোই Babel `transformSync()`-এ সিনট্যাক্স-ওকে।
+
+**ঝুঁকি**: কম-মাঝারি — এটা এন্ট্রি ৭-এর প্যাটার্নের চেয়ে বড় পরিবর্তন (schema + লজিক দুটোই), কিন্তু এখনো শুধু dev-প্যানেল-ট্রিগারড ব্যাকফিলে সীমাবদ্ধ, কোনো দোকানে লাইভ প্রভাব নেই। **আগের যেকোনো টেস্ট শপে যদি ইতিমধ্যে dual-write একবার চালু করে থাকেন (এন্ট্রি ৮-এর ফিক্সের পর), সেই SQLite DB ফাইলে হয়তো আংশিক/ভাঙা স্কিমা তৈরি হয়ে থেকে গেছে** (schema execute মাঝপথে ব্যর্থ হয়েছিল) — তাই এই ফিক্সের পর প্রথমবার ব্যাকফিল চালানোর আগে সেই টেস্ট শপের SQLite DB ফাইলটা মুছে/রিসেট করে নেওয়া নিরাপদ (নিচে দেখুন)।
+
+**⚠️ পরবর্তী টেস্টের আগে করণীয়**: যদি আগের এরর স্ক্রিনশটের সময় dual-write একবার "চালু" অবস্থায় গিয়ে থেকে থাকে, সেই ডিভাইসের `sbm_pharmacy`/`sbm_<businessType>` SQLite DB ফাইলে আংশিক স্কিমা থাকতে পারে (যেমন `products_au` ট্রিগার তৈরি না হয়েই বাকি সব টেবিল/ইনডেক্স তৈরি হয়ে গেছে)। যেহেতু এই এন্ট্রিতে schema.sql-এর trigger অংশটাই সম্পূর্ণ সরানো হয়েছে, `CREATE TABLE IF NOT EXISTS`/`CREATE INDEX IF NOT EXISTS` idempotent হওয়ায় পরের বার app খুললে এমনিতেই ঠিক হয়ে যাওয়ার কথা — কিন্তু পুরনো `products_fts`/`customers_fts` যদি আগের (external-content) সংজ্ঞা দিয়ে already তৈরি হয়ে থেকে থাকে, `CREATE VIRTUAL TABLE IF NOT EXISTS` নতুন সংজ্ঞা প্রয়োগ করবে না (already exists ধরে স্কিপ করবে)। এই এজ-কেস এড়াতে টেস্ট শপে dev প্যানেলে গিয়ে একবার dual-write বন্ধ করে অ্যাপ থেকে ওই ডিভাইসের SQLite DB ফাইল মুছে (বা অ্যাপ ডেটা ক্লিয়ার করে, IndexedDB অক্ষত থাকবে যেহেতু এখনো ওটাই sole source-of-truth) আবার তাজা backfill চালানো সবচেয়ে নিরাপদ।
+
+**যা এখনো বাকি**:
+- [ ] উপরের ক্লিন-স্লেট নোট মাথায় রেখে আবার real-device-এ ব্যাকফিল টেস্ট
+- [ ] Migration backfill runner/resumability (`_migration_state` টেবিল) — এখনো লেখা হয়নি
+- [ ] backfill শেষে `ANALYZE` চালানো এখনো কোথাও কোড করা হয়নি
+
+---
+
 ### [এন্ট্রি ৮] — ফার্স্ট real-device টেস্টে ধরা পড়া বাগ ফিক্স: PRAGMA execSQL() এরর (`src/db/DataStore.js`)
 
 **কেন**: এন্ট্রি ৭-এর হিডেন dev প্যানেল দিয়ে আপনি প্রথমবার real-device-এ (আপনার নিজের ফার্মেসি দোকান, ২২৩৩ প্রোডাক্ট/১৭ কাস্টমার/৬৫৭ ইনভয়েস) "SQLite dual-write চালু + ব্যাকফিল" টেস্ট করেছেন — ঠিক যা করতে বলা হয়েছিল, আর তাতেই একটা রিয়েল বাগ ধরা পড়ল (স্ক্রিনশট শেয়ার করার জন্য ধন্যবাদ, এটাই টেস্ট প্যানেলের আসল উদ্দেশ্য)।
