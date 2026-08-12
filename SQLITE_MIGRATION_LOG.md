@@ -25,6 +25,33 @@
 
 ## এন্ট্রি লগ
 
+### [এন্ট্রি ৮] — ফার্স্ট real-device টেস্টে ধরা পড়া বাগ ফিক্স: PRAGMA execSQL() এরর (`src/db/DataStore.js`)
+
+**কেন**: এন্ট্রি ৭-এর হিডেন dev প্যানেল দিয়ে আপনি প্রথমবার real-device-এ (আপনার নিজের ফার্মেসি দোকান, ২২৩৩ প্রোডাক্ট/১৭ কাস্টমার/৬৫৭ ইনভয়েস) "SQLite dual-write চালু + ব্যাকফিল" টেস্ট করেছেন — ঠিক যা করতে বলা হয়েছিল, আর তাতেই একটা রিয়েল বাগ ধরা পড়ল (স্ক্রিনশট শেয়ার করার জন্য ধন্যবাদ, এটাই টেস্ট প্যানেলের আসল উদ্দেশ্য)।
+
+**এরর (স্ক্রিনশটে)**: `Execute: unknown error: Queries cannot be performed using execSQL(), use query() instead.`
+
+**রুট কজ**: `schema.sql`-এর প্রথম লাইনগুলো —
+```sql
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
+PRAGMA synchronous = NORMAL;
+```
+— `getDb()`-এ পুরো schema.sql একসাথে `db.execute()` দিয়ে চালানো হচ্ছিল। কিন্তু Android-এ `PRAGMA journal_mode = WAL` statement-টা journal mode-এর নতুন ভ্যালু **রিটার্ন করে** (একটা রেজাল্ট রো), যেটাকে Android-এর `SQLiteDatabase.execSQL()` "query" হিসেবে গণ্য করে প্রত্যাখ্যান করে — `@capacitor-community/sqlite`-এর `execute()` শুধু non-query DDL/DML (CREATE TABLE, INSERT ইত্যাদি)-এর জন্য, PRAGMA-র জন্য না।
+
+**কী করা হলো**: `getDb()`-এ schema লোড করার পর একটা regex (`/^\s*PRAGMA\s[^;]*;/gim`) দিয়ে সব PRAGMA লাইন schema টেক্সট থেকে আলাদা করা হয়েছে — সেগুলো এখন একে একে `db.query()` দিয়ে চালানো হচ্ছে (query() যেকোনো ধরনের statement, রেজাল্ট রিটার্ন করুক বা না করুক, সাপোর্ট করে)। বাকি স্কিমা (CREATE TABLE/INDEX/VIRTUAL TABLE/TRIGGER, কোনো PRAGMA ছাড়া) আগের মতোই `db.execute()`-এ যায়। `schema.sql` ফাইল নিজে অপরিবর্তিত — শুধু `DataStore.js`-এ কীভাবে এটা রান করা হচ্ছে সেটা বদলেছে।
+
+**যাচাই**: regex split + উভয় অংশের বৈধতা Node-এর বিল্ট-ইন `node:sqlite`-এর `DatabaseSync`-এ ফাংশনালি টেস্ট করা হয়েছে — ৩টা PRAGMA ঠিকভাবে আলাদা হয়েছে, বাকি স্কিমায় কোনো PRAGMA অবশিষ্ট নেই (regex দিয়ে কনফার্ম), আর দুই অংশই আলাদাভাবে এরর ছাড়া execute হয়েছে। `DataStore.js` পুরোটা Babel `transformSync()`-এ সিনট্যাক্স-ভ্যালিডেট করা হয়েছে (`SYNTAX OK`)। **⚠️ সীমাবদ্ধতা**: এই regex-ভিত্তিক ফিক্সটা `node:sqlite`-এ (যেটা Capacitor-community/sqlite-এর মতোই SQLite ব্যবহার করে) যাচাই করা হয়েছে, কিন্তু আসল Capacitor প্লাগইনের `db.query()`/`db.execute()`-এর নির্দিষ্ট আচরণ (Android-এ) শুধু real-device টেস্টেই পুরোপুরি কনফার্ম হবে — এটাই এখন পরের ধাপ।
+
+**ঝুঁকি**: কম — শুধু `DataStore.js`-এর `getDb()` ফাংশনের schema-execution লজিক বদলেছে, `schema.sql`/App.jsx/অন্য কোনো ফাইল ছোঁয়া হয়নি। যেহেতু এই কোড এখনো শুধু dev প্যানেল থেকে (৭-ট্যাপ আনলক) manually ট্রিগার হয়, প্রোডাকশনের কোনো দোকানে এখনো প্রভাব নেই।
+
+**যা এখনো বাকি**:
+- [ ] এই ফিক্সসহ আবার real-device-এ ব্যাকফিল টেস্ট করা — এবার সফল হওয়ার কথা, তারপর "ভেরিফাই" বাটনে চেপে SQLite row-count IndexedDB-এর সাথে মিলছে কিনা দেখা
+- [ ] Migration backfill runner/resumability (`_migration_state` টেবিল) — এখনো লেখা হয়নি
+- [ ] backfill শেষে `ANALYZE` চালানো এখনো কোথাও কোড করা হয়নি
+
+---
+
 ### [এন্ট্রি ৭] — হিডেন dev/সাপোর্ট Settings প্যানেল: SQLite ফ্ল্যাগ টগল + ম্যানুয়াল ব্যাকফিল + ভেরিফাই
 
 **কেন**: এন্ট্রি ৬-এর "যা এখনো বাকি" #১ — এতদিন `sbm_use_sqlite_store` ফ্ল্যাগ চালু করতে হলে ম্যানুয়ালি `localStorage.setItem(...)` করতে হতো (কোনো UI ছিল না), যা টেস্ট শপে বাস্তবিক real-device যাচাই (বাকি #২) শুরু করার আগে একটা ব্লকার ছিল।
