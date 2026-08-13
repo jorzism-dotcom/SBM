@@ -23,7 +23,134 @@
 
 ---
 
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ২৪-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**টার্গেট স্কেল**: ১,০০,০০০ প্রোডাক্ট · ১০,০০০ কাস্টমার · ১,০০,০০,০০০ (১ কোটি) ইনভয়েস — বর্তমান টেস্ট শপের ডেটা (২২৩৬/১৭/৬৩০) এই লক্ষ্যের তুলনায় প্রায় নগণ্য, তাই "এখন সমস্যা হচ্ছে না" কোনো নির্ভরযোগ্য সংকেত না।
+
+### ✅ সম্পূর্ণ ও real-device ভেরিফায়েড
+Schema+FTS5 · dual-write (shadow) · resumable batch backfill · row-count verify টুল · ANALYZE (auto+manual) · BD timezone ফিক্স · normName() সিঙ্ক · হাইব্রিড সার্চ (৪ কল-সাইট) · getState() write-through Map (৭ কল-সাইট) · processReturn() রিটার্ন ফ্লো।
+
+### ✅ এই সেশনে (এন্ট্রি ২৪) কোড-সম্পূর্ণ, sandbox-ভেরিফায়েড — real-device টেস্ট বাকি
+1. **Boot-time full invoice backfill সরানো হয়েছে** — App.jsx-এর boot sequence এখন কখনো পুরো invoice history state-এ আনে না, স্থায়ীভাবে ৬-মাস windowed থাকে (archiveOldInvoices()-এর কাটঅফের সাথে সিঙ্কড)।
+2. **`queryPage()` এখন keyset pagination** — `id` tiebreaker + নতুন কম্পোজিট ইনডেক্স। sandbox-এ সঠিকতা (কোনো skip/duplicate নেই) ও ১ কোটি স্কেলে গতি (~৩× দ্রুত গভীর পেজে) দুটোই যাচাই হয়েছে।
+3. **১ কোটি স্কেল বেঞ্চমার্ক** — একবার সম্পূর্ণ চলেছে (ফলাফল নিচে এন্ট্রি ২৪-এ), কিন্তু DB ফাইল-সাইজ মাপার বাগ (আগেও একবার ধরা পড়েছিল, entry ৪) আসলে zip-এ রয়ে গিয়েছিল বলে "0.0 MB" দেখাচ্ছিল — সেটা এই সেশনেই আবার ফিক্স হয়েছে, কিন্তু ফিক্সের পর রি-রান **সম্পূর্ণ হয়নি** (ইউজার সেশন থামিয়েছেন, ~৩ মিনিট ৪১ সেকেন্ড ইনভয়েস-ইনসার্টের মধ্যে ছিল)। **পরের সেশনের প্রথম কাজ**: শুধু রি-রান করে সঠিক DB ফাইল-সাইজ কনফার্ম করা (অন্য কোনো নাম্বার বদলানোর কথা না, শুধু সাইজ রিপোর্টিং ফিক্স)।
+
+### 🔴 ব্লকার — বাকি
+- (Boot backfill ও queryPage() সমাধান হয়ে গেছে উপরে — কোনো নতুন কোড-লেভেল ব্লকার এই মুহূর্তে চিহ্নিত নেই)
+- **Real-device যাচাই এখনো বাকি** — dev flag চালু করে real device-এ boot টাইম/মেমরি ব্যবহার (৬-মাস windowed invoices দিয়ে) আর keyset pagination উভয়ই sandbox-এর বাইরে কখনো টেস্ট হয়নি।
+- DB ফাইল-সাইজ রিপোর্টিং বাগ-ফিক্সড বেঞ্চমার্ক রি-রান (উপরে #৩ দ্রষ্টব্য)।
+
+### 🟡 দরকারি, ব্লকার না
+4. Read-path cutover — স্কোপড প্রস্তাব: শুধু pagination/historical browsing SQLite থেকে read করবে, POS/dashboard হিসাব-নিকাশ এখনো IndexedDB-ভিত্তিক লজিকেই থাকবে (কম ঝুঁকি)। এখনো ডিজাইন হয়নি। **নোট**: queryPage() এখন keyset-এ প্রস্তুত থাকলেও App.jsx-এর কোনো real UI কল-সাইট এখনো এটা কল করে না (এখনো শুধু DataStore.js-এর ভেতরের ফাংশন, wire করা হয়নি) — এই কাটওভার-ই সেই wiring-এর কাজ।
+5. ১৬টা Virtuoso লিস্টের মধ্যে invoices ও products-কে async pagination দিতে হবে (stale-response/sequence-token guard সহ)। customers (টার্গেট ১০ হাজার) মেমোরিতেই থাকতে পারে, pagination লাগবে না।
+6. Scientist-স্টাইল shadow-compare (Phase ৭) — এখনো ডিজাইন হয়নি, শুধু নাম উল্লেখ ছিল।
+7. `FTS_NARROW_THRESHOLD = 5000` (App.jsx লাইন ৫২) — ১ লাখ প্রোডাক্ট টার্গেটে এই থ্রেশহোল্ড এখনো ঠিক আছে কিনা রিভিজিট করা দরকার।
+
+### 🟢 কম জরুরি
+8. customers/invoices resumable migration আলাদাভাবে টেস্ট (ঐচ্ছিক, একই কোড-পাথ ব্যবহার করে)
+9. একাধিক শপে টেস্ট (এখনো শুধু ১টা টেস্ট শপ)
+10. `capacitor-google-auth` RC ভার্সন (এন্ট্রি ২০) real-device কনফার্ম
+
+### প্রস্তাবিত অর্ডার
+🔴-এর তিনটা আগে (একে অপরের উপর নির্ভরশীল — pagination ঠিক না করে boot backfill ফিক্স করলেও লিস্ট UI-তে একই সমস্যা থেকে যাবে) → তারপর ৪-৫-৬-৭ একটা করে আলাদা সেশনে।
+
+---
+
 ## এন্ট্রি লগ
+
+### [এন্ট্রি ২৪] — ব্লকার #১ (boot backfill) ও #২ (queryPage keyset) ফিক্স + ১ কোটি স্কেল বেঞ্চমার্ক (আংশিক — ফাইল-সাইজ রি-রান বাকি)
+
+**১) Boot-time full invoice backfill সরানো (App.jsx, ~লাইন ১১৩৪৪-১১৪০৪)**:
+- আগে: প্রথমে ৯০ দিনের windowed state (দ্রুত প্রথম রেন্ডার), তারপর `setTimeout(0)`-এ পুরো `allInvoicesForBoot` দিয়ে `_patch({ invoices: ... })` — এই দ্বিতীয় ধাপটাই ব্লকার ছিল, কারণ চূড়ান্ত অবস্থা ছিল "সব ইনভয়েস মেমোরিতে"।
+- এখন: সেই `setTimeout` ব্লকটা সম্পূর্ণ সরিয়ে ফেলা হলো। Window ৯০ দিন থেকে **৬ মাসে** বদলানো হয়েছে — কারণ এই ফাইলেই আগে থেকে থাকা `archiveOldInvoices()` effect (লাইন ~১২০০৫) ৬ মাসের বেশি পুরনো ইনভয়েস স্বয়ংক্রিয়ভাবে state থেকে সরিয়ে `InvoiceArchive` (IndexedDB)-এ রাখে। দুটো কাটঅফ এখন identical, তাই বুটের ঠিক পরের state আর "স্টেডি-স্টেট" (archiveOldInvoices চলার পরের) state — এই দুটো এক এবং অভিন্ন, কোনো মধ্যবর্তী গ্যাপ নেই।
+- ৬ মাসের বেশি পুরনো ইনভয়েসের জন্য on-demand লুকআপ **নতুন করে বানাতে হয়নি** — `InvoiceArchive.getById()`/`.findByQuery()`/`.queryPage()` আগে থেকেই বিদ্যমান ছিল (ReturnModule.searchInvoice, কাস্টমার হিস্ট্রি, void history কল-সাইটে ব্যবহৃত), কারণ ৬ মাসের বেশি পুরনো ডেটা এমনিতেও কিছুক্ষণ পরই state থেকে সরে যেত (archiveOldInvoices চলার পর) — শুধু বুটের ঠিক-পরের মুহূর্তে (আগে সাময়িকভাবে "সব মেমোরিতে" যেত, এখন যায় না) একই নিয়ম মেনে চলছে।
+- ⚠️ **সততার সাথে নোট**: এই সেশনে App.jsx-এর প্রতিটা কল-সাইট যাচাই করা হয়নি যে "live invoices state"-নির্ভর প্রতিটা স্ক্রিন InvoiceArchive fallback ঠিকমতো ব্যবহার করছে কিনা। Real-device টেস্টে বিশেষভাবে "৬ মাসের বেশি পুরনো ইনভয়েস খোঁজা/দেখা" প্রতিটা স্ক্রিনে (ইনভয়েস হিস্ট্রি, কাস্টমার ডিটেইল, রিটার্ন, ভয়েড হিস্ট্রি) যাচাই করা উচিত।
+
+**২) `queryPage()` — OFFSET থেকে keyset pagination (DataStore.js)**:
+- নতুন সিগনেচার: `queryPage(businessType, store, { where, params, sortColumn, sortDir, limit, cursor })` — `cursor` হলো আগের পেজের শেষ রো-র `{ sortValue, id }`, প্রথম পেজে `null`। রিটার্ন করে `{ rows, nextCursor, hasMore }`।
+- `id`-কে সব জায়গায় tiebreaker হিসেবে যোগ করা হয়েছে (`ORDER BY sortColumn DESC, id DESC`, WHERE-এ `(sortColumn < ? OR (sortColumn = ? AND id < ?))`) — sortColumn-এ ডুপ্লিকেট ভ্যালু (একই মিলিসেকেন্ডে একাধিক রেকর্ড) থাকলেও কোনো রো স্কিপ/রিপিট হয় না।
+- 🔴 **বাগ ধরা পড়ল ও ফিক্স হলো (রিরাইট করার সময়ই)**: আগের ডিফল্ট `orderBy = "updated_at DESC"` invoices টেবিলে ভুল ছিল — সেই টেবিলে `updated_at` কলামই নেই (শুধু `created_at`)। কখনো লাইভ কল-সাইট না থাকায় এই বাগ আগে ধরাই পড়েনি। এখন `DEFAULT_SORT_COLUMN` ম্যাপ দিয়ে store-ভিত্তিক সঠিক ডিফল্ট (products/customers → `updated_at`, invoices → `created_at`)।
+- `schema.sql`-এ ৩টা নতুন কম্পোজিট ইনডেক্স যোগ হলো: `idx_products_updated_id`, `idx_customers_updated_id`, `idx_invoices_created_id` — যাতে keyset-এর `(sortColumn, id)` কম্পোজিট প্রেডিকেট একটাই covering-index seek-এ সমাধান হয়।
+- **সঠিকতা যাচাই (sandbox, standalone script, zip-এ নেই — শুধু এই সেশনে চালানো)**: ৫০০০ রো, ইচ্ছাকৃত ডুপ্লিকেট sort-value (প্রতি ৭ রো-তে একটা গ্রুপ) দিয়ে পুরো পেজিনেশন লুপ চালিয়ে দেখা হয়েছে — ১০১টা পেজে ঠিক ৫০০০টা ইউনিক রো, কোনো skip/duplicate/misorder নেই।
+- ⚠️ **এখনো wire করা হয়নি**: App.jsx-এর কোনো real UI কল-সাইট (Virtuoso endReached ইত্যাদি) এখনো নতুন `queryPage()` কল করে না — এটা এখনো শুধু DataStore.js-এর ভেতরের প্রস্তুত ফাংশন, "🟡 #৪ Read-path cutover"/"#৫ Virtuoso pagination" কাজের সময় wire হবে।
+
+**৩) ১ কোটি স্কেল ফুল বেঞ্চমার্ক**:
+- `scripts/generate-synthetic-dataset.mjs`-এ নতুন সেকশন যোগ হলো — OFFSET (offset=৫০ লাখ, deep page) বনাম keyset পেজিনেশনের সরাসরি তুলনা।
+- 🔴 **বাগ পুনরায় ধরা পড়ল**: DB ফাইল-সাইজ মাপার ফাংশন (`readFileSyncSize`) এন্ট্রি ৪-এ আগে একবার `statSync()`-এ ফিক্স হয়েছিল বলে লগে লেখা ছিল, কিন্তু **এই সেশনে আপলোড করা zip-এ পুরনো `readFileSync(p).length` ভার্সনই ছিল** (সম্ভবত সেই ফিক্স কোনো কারণে zip-এ অন্তর্ভুক্ত হয়নি বা কোনো পুরনো zip থেকে re-pack হয়েছিল)। ১ কোটি স্কেলের প্রথম রানে এই বাগের কারণে "DB ফাইল সাইজ: 0.0 MB" রিপোর্ট হয়েছে। এই সেশনেই আবার `statSync()`-এ ফিক্স করা হলো, সাথে কমেন্টে ব্যাখ্যা যোগ করা হলো যাতে ভবিষ্যতে এই রিগ্রেশন দ্রুত ধরা পড়ে।
+- **প্রথম রানের ফলাফল (bug-fix-এর আগে, ১ লাখ প্রোডাক্ট / ১০ হাজার কাস্টমার / ১ কোটি ইনভয়েস)**:
+
+| অপারেশন | সময় |
+|---|---|
+| প্রোডাক্ট ইনসার্ট (১ লাখ) | ~১০৫৪ms |
+| কাস্টমার ইনসার্ট (১০ হাজার) | ~৭১ms |
+| **ইনভয়েস ইনসার্ট (১ কোটি)** | **~৯৭৩,৯২৬ms (~১৬ মিনিট ১৪ সেকেন্ড)** — এন্ট্রি ৪/৫-এর ~১৫-২২ মিনিট রেঞ্জের সাথে সামঞ্জস্যপূর্ণ |
+| DB ফাইল সাইজ | ❌ 0.0 MB (bug — উপরে দেখুন, এখন ফিক্সড) |
+| প্রোডাক্ট নাম সার্চ (LIKE) | ৪.৭ms |
+| প্রোডাক্ট নাম সার্চ (FTS5) | ১.৬ms |
+| কাস্টমার লুকআপ (মোবাইল) | ০.৮ms |
+| আজকের ইনভয়েস লিস্ট (৫০ পেজ) | ৩১৪.৭ms |
+| Dashboard SUM(total) aggregate | ০.৯ms |
+| নির্দিষ্ট কাস্টমারের হিস্ট্রি | ২.১ms |
+| **OFFSET পেজিনেশন** (offset=৫০ লাখ, LIMIT ৫০) | ৮৬৯.২ms |
+| **Keyset পেজিনেশন** (একই গভীরতা, LIMIT ৫০) | ২৯১.৯ms |
+| **⚡ keyset speedup** | **~৩.০× দ্রুত** |
+
+- **ফাইল-সাইজ বাগ ফিক্সের পর দ্বিতীয় রান শুরু করা হয়েছিল কিন্তু সম্পূর্ণ হয়নি** — ইউজার সেশন থামিয়েছেন (~৩ মিনিট ৪১ সেকেন্ড ইনভয়েস-ইনসার্টের মাঝপথে, আনুমানিক ~২০-২৫% সম্পূর্ণ)। বাকি সব নাম্বার (ইনসার্ট/কোয়েরি/পেজিনেশন টাইমিং) বদলানোর কথা না (কোনো লজিক বদলায়নি, শুধু সাইজ-রিপোর্টিং ফাংশন), তাই উপরের টেবিলের সব নাম্বারই ভরসাযোগ্য — শুধু DB ফাইল সাইজটাই এখনো অজানা।
+
+**⚠️ নতুন উদ্বেগের বিষয় (পরের সেশনে)**: "আজকের ইনভয়েস লিস্ট" কোয়েরি (৩১৪.৭ms) এন্ট্রি ৫-এর dashboard-aggregate ফিক্সের (৮৯৮২ms → ১.৪ms) তুলনায় এখনো অনেক ধীর — সন্দেহ, `date_key` ইনডেক্স আজকের ~৫৫০০ রো (১ কোটি ÷ ১৮২৫ দিন) নিয়ে আসছে তারপর `ORDER BY created_at DESC LIMIT 50` করছে (in-memory sort, কারণ `idx_invoices_date_key` শুধু `date_key`-এর উপর, `created_at` না)। একটা কম্পোজিট `(date_key, created_at)` ইনডেক্স যোগ করলে এটা ঠিক হতে পারে — পরের সেশনে যাচাই করা উচিত।
+
+**যাচাই**: `npx eslint 'src/**/*.{js,jsx}'` → 0 errors, 550 warnings (আগের এন্ট্রির সমান)। `npm test` (120), `test:fuzz` (৯), `test:golden-master` (৭) সব ✅। `npm run build` সফল (✓ built in ~১৫.৫s, কোনো নতুন এরর — শুধু আগে থেকে থাকা chunk-size ওয়ার্নিং, নতুন কিছু ভাঙেনি)।
+
+**যা এখনো বাকি**:
+- [ ] ফাইল-সাইজ বাগ-ফিক্সড ১ কোটি স্কেল বেঞ্চমার্ক রি-রান (~১৬ মিনিট, উপরে ৩) — শুধু DB ফাইল সাইজ কনফার্ম করতে
+- [ ] Real device-এ dev flag দিয়ে boot memory/time যাচাই (৬-মাস windowed invoices)
+- [ ] `queryPage()` কে আসল UI কল-সাইটে wire করা (Read-path cutover, #৪-৫)
+- [ ] "আজকের ইনভয়েস লিস্ট" কোয়েরি স্লোনেস (৩১৪.৭ms) — কম্পোজিট ইনডেক্স যোগ করে রিভিজিট
+- [ ] Phase ৬ (list/pagination UX), Phase ৭ (Dashboard Scientist pattern) — অপরিবর্তিত, এখনো ডিজাইন হয়নি
+
+---
+
+### [এন্ট্রি ২২] — Phase ৫ সম্পূর্ণ (getState()-সিঙ্কড write-through Map, ৭টা রিয়েল কল-সাইট); Phase ৬-৭ সম্পর্কে সৎ স্কোপ-নোট
+
+**⚠️ প্রথমেই একটা সংখ্যা-গরমিল ধরা পড়েছে**: এন্ট্রি ১৮/২০-এ "বাকি ~৯৭টা" বলা হয়েছিল, কিন্তু এই সেশনে আসল কোডে গ্রেপ করে (`getState().products.find`, `getState().customers.find`, `getState().invoices.find`) পাওয়া গেছে মাত্র **৭টা** রিয়েল কল-সাইট (একটা মিল ছিল আসলে কমেন্ট, কোড না)। "৯৭" সংখ্যাটা সম্ভবত একটা আগের সেশনের ব্যাপক অনুমান ছিল (হয়তো সব ধরনের `.find(id)` প্যাটার্ন গুনে, যার বড় অংশ THEME_PRESETS/users/expenses/allCategories-এর মতো এই মাইগ্রেশনের স্কোপের বাইরের জিনিস) — এই সেশনে actual grep-count দিয়ে ভুল ধরা পড়ল ও ঠিক করা হলো।
+
+**যা করা হলো (Phase ৫ সম্পূর্ণ)**:
+- Store definition-এ (`useAppStore = create(...)`) নতুন তিনটা ফিল্ড: `productsById`, `customersById`, `invoicesById` (খালি `Map()` দিয়ে ইনিশিয়ালাইজড)।
+- Store তৈরির ঠিক পরে `useAppStore.subscribe(selector, listener, {fireImmediately:true})` (৩টা — products/customers/invoices প্রতিটার জন্য) — যখনই সেই array বদলায় (`set()` বা `patch()` যেভাবেই বদলাক, দুটোই একই zustand internal `set` কল করে), নতুন `id → record` Map রিবিল্ড হয়ে store-এ ফিরে বসে।
+- 🔴 **কেন এটা getState().find()-এর নিরাপদ প্রতিস্থাপন**: এই Map render-cycle-এর বাইরে, subscription-চালিত — তাই `useAppStore.getState().productsById` সবসময় সর্বশেষ কমিটেড state প্রতিফলিত করে, ঠিক `getState().products.find()`-এর মতোই fresh, কিন্তু O(1)। আগের এন্ট্রি ১৮-এর useMemo-ভিত্তিক Map (render-time snapshot) থেকে এটা আলাদা — সেটা এই getState() কল-সাইটগুলোর জন্য যথেষ্ট ছিল না, এই নতুন subscription-ভিত্তিক Map-ই সেই gap পূরণ করলো।
+- ৭টা কল-সাইট রিওয়্যার করা হলো: `processReturn()`-এর `freshInv`/`localP`/`freshP` (৩ জায়গা, লাইন ~13518-14011), walk-in customer balance lookup (২ জায়গা, ~18444-18476), POS return flow-এর `freshP` (~18487)। প্রতিটাতে `.find(x => x.id === Y)` → `.get(String(Y))`, ID-কে `String()`-এ wrap করা হয়েছে (Map key হিসেবে productsById-এর বিদ্যমান কনভেনশন অনুসরণ করে)।
+- `ViewerDashboardScreen`-এর পুরনো comment (লাইন ~16892) আপডেট করা হলো যাতে ভুল না বোঝায় — সেখানকার local useMemo Map ভিন্ন জিনিস (component-local, store-independent), আর store-level `productsById` এখন এই gap সমাধান করেছে সেটা স্পষ্ট করা হলো।
+
+**যাচাই**: `npx eslint 'src/**/*.{js,jsx}'` → 0 errors (550 warnings, entry ২০-এর সমান — নতুন কোনো warning আসেনি)। `npm test` (১২০), `test:fuzz` (৯), `test:golden-master` (৭) সব ✅। `npm run build` সফল।
+
+**⚠️ এখনো বাকি — real device টেস্ট**: sandbox-এ এই Map সবসময়-ফ্রেশ কিনা যাচাই করা যায় না (rapid concurrent action, race condition এড়ানো হচ্ছে কিনা)। Real device-এ দ্রুত পরপর একাধিক return/sale করে দেখা উচিত ডেটা কখনো stale দেখাচ্ছে কিনা।
+
+**Phase ৬ ও ৭ নিয়ে সৎ কথা (এই সেশনে করা হয়নি, এবং এক বসায় করাটা যুক্তিসঙ্গত না)**:
+- **Phase ৬ (list/pagination)**: এটা Phase ৪-৫-এর মতো "existing behavior-এর নিচে নতুন infra বসানো" না — এটা synchronous array-slice রেন্ডারিং থেকে SQLite-এর async `queryPage()`-এ পুরো আর্কিটেকচার বদল (নতুন loading state, race handling, scroll-position/UX ডিজাইন লাগবে)। এটা এন্ট্রি ১৮-এও এই কারণেই স্কিপ করা হয়েছিল। কোন লিস্ট (products/customers/invoices) আগে, pagination-এর UX কেমন হবে (infinite scroll vs page button), আর loading-state হ্যান্ডলিং কীভাবে — এগুলো আগে ঠিক করে নেওয়া দরকার একটা আলাদা ফোকাসড সেশনে।
+- **Phase ৭ (Dashboard Scientist pattern)**: shadow-compare ইনফ্রা (SQLite রেজাল্ট vs IndexedDB রেজাল্ট রানটাইমে তুলনা করে mismatch লগ করা) — এখনো ডিজাইনই করা হয়নি এই thread-এ, শুধু নাম উল্লেখ ছিল। কোন মেট্রিক/query compare হবে, mismatch পেলে কী করবে (silent log vs alert) — এসব প্রথমে ঠিক করা দরকার।
+
+**এই সেশনে না করার কারণ**: eternal rule অনুযায়ী প্রতিটা ধাপ আলাদাভাবে verify করে এগোনো — Phase ৬/৭ একসাথে চাপিয়ে দিলে ঠিক যে ধরনের স্কোপ-মিসম্যাচ বাগ এন্ট্রি ১৯-এ হয়েছিল, সেই ঝুঁকি অনেক বেড়ে যায় (৫০০ দোকানের লাইভ প্রোডাক্ট)। Phase ৫ ছোট, well-defined, এবং সম্পূর্ণ ভেরিফায়েবল ছিল বলেই এক সেশনে করা নিরাপদ মনে হয়েছে।
+
+---
+
+### [এন্ট্রি ২১] — Real device ম্যানুয়াল টেস্ট সম্পন্ন: backfill + সার্চ + রিটার্ন (সবচেয়ে বড় unverified গ্যাপ ক্লোজড)
+
+**যা টেস্ট করা হলো (real device, dev panel দিয়ে ফ্ল্যাগ চালু করে, টেস্ট ফার্মেসি শপে)**:
+- **Backfill**: products 2235/2235, customers 17/17, invoices 627/627 — সব ১০০% done।
+- **Row-count ভেরিফিকেশন**: SQLite vs IndexedDB — products, customers, invoices তিনটাই মিলেছে (backfill-পরবর্তী স্ন্যাপশটে 2236/2236, 17/17, 629/629)।
+- **হাইব্রিড সার্চ**: ইউজার কনফার্ম করেছেন সার্চ কাজ করছে (কোন কল-সাইট নির্দিষ্ট করে বলা হয়নি)।
+- **`processReturn()` রিটার্ন ফ্লো**: নতুন ইনভয়েস (INV-000630, Walk-in Customer, ৩টি পণ্য) তৈরি করে ১টি পণ্য রিটার্ন করা হলো। ইনভয়েস কার্ডে "১টি পণ্য ফেরত হয়েছে" ব্যাজ সঠিকভাবে দেখাচ্ছে। রিটার্নের **পরে** আবার row-count ভেরিফাই করা হলো — SQLite vs IndexedDB এখনো ১০০% মিলছে (products 2236/2236, customers 17/17, invoices 630/630) — অর্থাৎ `productsById` write-through Map-ভিত্তিক রিটার্ন পাথ dual-write-এ কোনো ডেটা-মিসম্যাচ তৈরি করেনি।
+- **ANALYZE**: ম্যানুয়ালি রান করা হয়েছে, ইনডেক্স স্ট্যাটিস্টিক্স রিফ্রেশড।
+
+**ঝুঁকি**: শূন্য নতুন কোড — এটা শুধু ভেরিফিকেশন। কোনো এরর/ক্র্যাশ/মিসম্যাচ পাওয়া যায়নি।
+
+**যা এখনো বাকি**:
+- [ ] Phase ৫ — বাকি ~৯৭টা transaction-critical `.find(id)` কল-সাইট (getState()-ভিত্তিক, আলাদা write-through mechanism দরকার)
+- [ ] Phase ৬ (list/pagination), Phase ৭ (Dashboard Scientist pattern)
+- [ ] ১ কোটি স্কেলের ফুল বেঞ্চমার্ক এখনো বাকি (১০ লাখ পর্যন্তই করা হয়েছে)
+- [ ] একাধিক শপে (test শপের বাইরে) এখনো টেস্ট করা হয়নি
+
+---
 
 ### [এন্ট্রি ২০] — dependency-conflict ফিক্স + Phase ৪ বাকি ৩টা কল-সাইট (হাইব্রিড সার্চ সম্পূর্ণ)
 
