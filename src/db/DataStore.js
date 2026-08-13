@@ -421,11 +421,20 @@ export async function queryPage(businessType, store, opts = {}) {
     // keyset predicate: (sortColumn, id) < (cursorVal, cursorId) [DESC-এ; ASC-এ >]
     // — sortColumn সমান হলে id দিয়ে টাইব্রেক করা হচ্ছে যাতে ডুপ্লিকেট
     // sortColumn ভ্যালুর গ্রুপে কোনো রো স্কিপ/রিপিট না হয়।
+    //
+    // 🔴 ফিক্স (এই সেশনে ধরা পড়েছে, বেঞ্চমার্ক রি-রানের সময়): আগে এই কন্ডিশন
+    // `sortColumn < ? OR (sortColumn = ? AND id < ?)` আকারে OR দিয়ে লেখা ছিল।
+    // EXPLAIN QUERY PLAN দেখায় SQLite এই OR-প্যাটার্নকে ইনডেক্স SEEK-এ অপ্টিমাইজ
+    // করতে পারে না — পুরো ইনডেক্স SCAN করে প্রতিটা রো-তে OR শর্ত চেক করে, যা
+    // ঠিক OFFSET-এর মতোই ধীর (বরং বেশি, extra OR evaluation overhead-এর কারণে)।
+    // ১০ লাখ ইনভয়েস স্কেলে বাস্তব বেঞ্চমার্কে ধরা পড়েছে: OR-ভার্সন ~২০ms, নিচের
+    // row-value ভার্সন ~0.4ms (SQLite ৩.১৫+ থেকে সমর্থিত `(a, b) < (x, y)` টাপল
+    // তুলনা, EXPLAIN QUERY PLAN-এ "SEARCH ... USING INDEX" দেখায়, "SCAN" না)।
     sql = `SELECT data, ${sortColumn} AS _sort_val, id AS _id FROM ${store}
-           WHERE (${where}) AND (${sortColumn} ${cmp} ? OR (${sortColumn} = ? AND id ${cmp} ?))
+           WHERE (${where}) AND (${sortColumn}, id) ${cmp} (?, ?)
            ORDER BY ${sortColumn} ${dir}, id ${dir}
            LIMIT ?`;
-    sqlParams = [...params, cursor.sortValue, cursor.sortValue, String(cursor.id), limit];
+    sqlParams = [...params, cursor.sortValue, String(cursor.id), limit];
   } else {
     sql = `SELECT data, ${sortColumn} AS _sort_val, id AS _id FROM ${store}
            WHERE ${where}
