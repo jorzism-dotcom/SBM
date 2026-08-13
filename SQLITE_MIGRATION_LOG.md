@@ -25,6 +25,45 @@
 
 ## এন্ট্রি লগ
 
+### [এন্ট্রি ২০] — dependency-conflict ফিক্স + Phase ৪ বাকি ৩টা কল-সাইট (হাইব্রিড সার্চ সম্পূর্ণ)
+
+**১) `npm install` dependency-conflict ফিক্স**:
+- সমস্যা: `@codetrix-studio/capacitor-google-auth@3.3.6`-এর peer dependency `@capacitor/core@^5.0.0`, কিন্তু প্রজেক্টের বাকি সব `@capacitor/*` প্যাকেজ `^6.2.0` — `npm install` (কোনো flag ছাড়া) ERESOLVE এরর দিয়ে ব্যর্থ হতো।
+- ফিক্স: `@codetrix-studio/capacitor-google-auth` আপডেট `3.3.6` → `3.4.0-rc.4` (npm registry-তে peerDependencies চেক করে কনফার্ম করা হয়েছে — এই ভার্সন `@capacitor/core@^6.0.0` চায়, যেটা প্রজেক্টের সাথে মেলে)।
+- ⚠️ **সততার সাথে নোট**: এটা একটা **release-candidate** ভার্সন (স্টেবল `3.4.0` না, প্যাকেজের নিজস্ব npm history-তে এখনো `-rc.4`-ই সর্বশেষ ট্যাগ)। ফাংশনালিটি (Google sign-in) real device-এ টেস্ট করে দেখা উচিত deploy করার আগে যদি এই ফিচার সক্রিয়ভাবে ব্যবহৃত হয়।
+- যাচাই: `rm -rf node_modules package-lock.json && npm install` কোনো `--force`/`--legacy-peer-deps` ছাড়াই ক্লিন সম্পন্ন হয়েছে।
+
+**২) Phase ৪ (হাইব্রিড সার্চ) — বাকি ৩টা কল-সাইট**:
+- `Products` কম্পোনেন্ট — `filteredAll` (মূল পণ্য লিস্ট সার্চ) ও `peFilteredProds` (ক্রয় এন্ট্রি ফর্ম সার্চ) — দুটোর জন্য আলাদা candidate state (`prodListFtsIds`/`peFtsIds`), কারণ দুটোর query-উৎস আলাদা (`deferredSearch` বনাম `peForm.productSearch`), একসাথে খোলা থাকলে একটার candidate আরেকটাকে প্রভাবিত না করে সেজন্য।
+- `Dashboard` কম্পোনেন্ট — সাপ্লায়ার-লিস্ট মডালের পণ্য-সার্চ (IIFE-এর ভেতরে)। 🔴 **গুরুত্বপূর্ণ ডিজাইন-সিদ্ধান্ত**: এই সার্চ UI একটা conditionally-rendered IIFE-তে (`{(() => {...})()}`) থাকায় সেখানে সরাসরি `useState`/`useEffect` বসালে **rules-of-hooks ভাঙত** (মডাল খোলা/বন্ধ হওয়ার সাথে hook-count বদলে যেত, যেটা React রানটাইম এরর দেয়)। তাই state/effect `Dashboard`-এর top-level-এ (সবসময় unconditionally কল হয়) বসানো হয়েছে, IIFE শুধু ফলাফল পড়ে — নতুন hook কল করে না।
+- 🔴 **বাগ এড়ানো (এন্ট্রি ১৯-এর মতো আরেকটা স্কোপ-সমস্যা প্রায় হতেই যাচ্ছিল)**: `FTS_NARROW_THRESHOLD` আগে শুধু `SmartInvoiceBuilder`-এর ভেতরে component-local const ছিল — নতুন কল-সাইট দুটো (Products, Dashboard) আলাদা কম্পোনেন্ট হওয়ায় এটা রেফারেন্স করতে পারত না। কোড লেখার সময়ই এটা ধরে **module-level কনস্ট্যান্টে তুলে আনা হয়েছে** (মান অপরিবর্তিত, ৫০০০), `SmartInvoiceBuilder`-এর লোকাল কপি সরিয়ে ফেলা হয়েছে যাতে duplicate/shadow না হয়।
+- এখন `productMatchScore()`-এর সবগুলো (৪টা) কল-সাইটই হাইব্রিড প্যাটার্নে ওয়্যার্ড — Phase ৪ সম্পূর্ণ।
+
+**যাচাই**: `npx eslint 'src/**/*.{js,jsx}'` → 0 errors (550 warnings, নতুন কোনো no-undef আসেনি)। `npm test` (120), `test:fuzz`, `test:golden-master` (7) সব ✅। `npm run build` সফল। থ্রেশহোল্ড (৫০০০) সব জায়গায় একই এবং আপনার বর্তমান স্কেলের (২০০০-এর কম) উপরে, তাই **আচরণ এখনো সম্পূর্ণ অপরিবর্তিত** — শুধু ইনফ্রাস্ট্রাকচার প্রস্তুত।
+
+**যা এখনো বাকি (অপরিবর্তিত অবস্থায়)**:
+- [ ] Real device-এ dev panel দিয়ে ফ্ল্যাগ চালু করে backfill + সার্চ + রিটার্ন ম্যানুয়ালি টেস্ট — sandbox-এ এখনো করা যায়নি, এটা এখনো সবচেয়ে বড় unverified গ্যাপ
+- [ ] Phase ৫ — বাকি ~৯৭টা transaction-critical `.find(id)` (getState()-ভিত্তিক)
+- [ ] Phase ৬ (list/pagination), Phase ৭ (Dashboard Scientist pattern)
+
+---
+
+### [এন্ট্রি ১৯] — বাগ-ফিক্স: CI build fail (`productsById is not defined`) — Phase ৫-এর স্কোপ মিসম্যাচ
+
+**সমস্যা (GitHub Actions run #678, screenshots থেকে রিপোর্ট করা)**: ESLint `no-undef` — 2টা এরর, `'productsById' is not defined` (`src/App.jsx`), build exit code 1।
+
+**রুট কজ**: এন্ট্রি ১৮-এ Phase ৫ (write-through Map) যোগ করার সময় `productsById`/`customersById` `useMemo` **ভুলবশত শুধু `ViewerDashboardScreen`-এ** (viewer-mode কম্পোনেন্ট, লাইন ~16811) ডিফাইন হয়েছিল। কিন্তু এটা যেখানে আসলে ব্যবহার হচ্ছে — `processReturn()` (লাইন 13932, 14134) — সেটা সম্পূর্ণ ভিন্ন, top-level কম্পোনেন্ট `SmartBusinessMgmt()`-এর ভেতরে (আসল App)। দুটো আলাদা ফাংশন-স্কোপ হওয়ায় `processReturn` থেকে `productsById` দেখা যাচ্ছিল না — কোড কপি করার সময় দুই কম্পোনেন্ট গুলিয়ে ফেলা হয়েছিল, sandbox-এ Babel syntax-check pass করলেও (syntax ভুল ছিল না, শুধু স্কোপ ভুল) real ESLint (`no-undef` rule) এটা ধরত, যেটা sandbox টেস্টিং-এ চালানো হয়নি।
+
+**ফিক্স**: `SmartBusinessMgmt()`-এর ভেতরে, যেখানে `products = useAppStore(s => s.products)` ইতিমধ্যে আছে (লাইন ~10862), সেখানেই একই `productsById = useMemo(...)` যোগ করা হলো — যাতে `processReturn()` ঠিক স্কোপ থেকেই এটা পড়ে। আচরণ অপরিবর্তিত, শুধু স্কোপ ঠিক করা হয়েছে, নতুন লজিক যোগ হয়নি। `ViewerDashboardScreen`-এর কপি স্পর্শ করা হয়নি (এখন সেখানে `productsById` unused — শুধু warning, error না, ব্লক করে না)।
+
+**যাচাই**: `npx eslint 'src/**/*.{js,jsx}'` → **0 errors** (550 warnings, আগে ছিল 2 errors/551 warnings) → exit code 0। `npm test` (120), `npm run test:fuzz`, `npm run test:golden-master` (7) সব ✅। `npm run build` সফল।
+
+**শিক্ষা (পরবর্তী সেশনের জন্য)**: sandbox-এ শুধু Babel syntax-check বা `npm test`/`build` চালানো যথেষ্ট না — `no-undef`-জাতীয় স্কোপ বাগ ধরতে হলে আসল `npm run lint` (ESLint) সবসময় প্রতিটা কল-সাইট ওয়্যারিং-এর পর চালাতে হবে, শুধু "syntax ওকে" বলে সন্তুষ্ট হওয়া যাবে না।
+
+**ঝুঁকি**: শূন্য — এটা শুধু আগে থেকে-ভাঙা একটা বিল্ড ঠিক করা, নতুন কোনো read-path বা transaction লজিক বদলায়নি।
+
+---
+
 ### [এন্ট্রি ১৮] — Phase ৪-৬ শুরু (হাইব্রিড সার্চ, write-through Map; Phase ৬ ইচ্ছাকৃতভাবে স্কিপড)
 
 **Phase ৪ (হাইব্রিড সার্চ) — একটা কল-সাইট (প্রোডাক্ট গ্রিড সার্চ, `filteredProducts`)**:
