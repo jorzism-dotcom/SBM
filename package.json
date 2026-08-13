@@ -12,6 +12,7 @@
     "test": "node tests/logic-tests.mjs && node tests/schema-tests.mjs && node tests/integration-tests.mjs && node tests/sync-tests.mjs",
     "test:coverage": "c8 --reporter=text --reporter=html --include=src/logic.js -- node tests/logic-tests.mjs",
     "test:fuzz": "node tests/logic-fuzz.mjs",
+    "test:golden-master": "node tests/golden-master.mjs",
     "test:mutation": "stryker run",
     "prepare": "husky"
   },

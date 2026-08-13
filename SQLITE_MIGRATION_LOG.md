@@ -25,6 +25,53 @@
 
 ## এন্ট্রি লগ
 
+### [এন্ট্রি ১৮] — Phase ৪-৬ শুরু (হাইব্রিড সার্চ, write-through Map; Phase ৬ ইচ্ছাকৃতভাবে স্কিপড)
+
+**Phase ৪ (হাইব্রিড সার্চ) — একটা কল-সাইট (প্রোডাক্ট গ্রিড সার্চ, `filteredProducts`)**:
+- `DataStore.js`-এ `hybridSearchCandidateIds()` — FTS5 দিয়ে candidate id সেট বের করে।
+- 🔴 **ডিজাইন-সিদ্ধান্ত পুনর্বিবেচনা**: আগে এন্ট্রি/আলোচনায় ভাবা হয়েছিল candidate narrowing সবসময় চালু থাকবে, কিন্তু কোড দেখে confirm হলো — FTS5 শুধু prefix/token ম্যাচ করে, `productMatchScore()`-এর ফাজি/বারকোড-সাবস্ট্রিং ম্যাচ না। তাই candidate pool দিয়ে narrow করলে ভ্যালিড ম্যাচ বাদ পড়ার ঝুঁকি (কোয়ালিটি রিগ্রেশন)। **সিদ্ধান্ত**: `FTS_NARROW_THRESHOLD = 5000` — এর নিচে (আমাদের ৩ দোকানের বর্তমান স্কেল) narrowing সম্পূর্ণ বন্ধ, পুরনো ফুল-array `productMatchScore()`-ই চলে (আচরণ ১০০% অপরিবর্তিত)। ভবিষ্যতে ডেটা অনেক বড় হলেই এই path সক্রিয় হবে।
+- debounced (150ms) `useEffect` candidate fetch করে, ব্যর্থ হলে সাইলেন্টলি `null` (ফুল-array ফলব্যাক)।
+- **বাকি ৩টা `productMatchScore()` কল-সাইট** (কাস্টমার সার্চ, POS দুটো জায়গা) এই সেশনে ছোঁয়া হয়নি — একই প্যাটার্নে পরের সেশনে যোগ করা যাবে।
+
+**Phase ৫ (write-through Map) — infra + ১টা প্রুফ-অফ-কনসেপ্ট কল-সাইট**:
+- `productsById`/`customersById` — `useMemo`-ভিত্তিক id→record Map (products/customers array বদলালেই রিকম্পিউট, React-নিজস্ব মেমোাইজেশন, ম্যানুয়াল ref/effect বুককিপিং নেই)।
+- ওয়্যার করা হলো: `processReturn()`-এর `localP` লুকআপ (line ~13924) — এটা render-time closure `products`-থেকে সরাসরি `.find()` করত, তাই Map দিয়ে সরাসরি প্রতিস্থাপন নিরাপদ (একই ডেটা সোর্স, শুধু O(1))।
+- 🔴 **স্পষ্ট সীমা**: বাকি ~৯৭টা `.find(id)` কল-সাইটের বড় অংশ `useAppStore.getState().products.find(...)` প্যাটার্নে — এগুলো ইচ্ছাকৃতভাবে **ছোঁয়া হয়নি**, কারণ এই render-time Map সবসময়-ফ্রেশ না (getState() ঠিক এই কারণেই ব্যবহৃত হয়, race-condition এড়াতে)। এই ক্লাসের কল-সাইটের জন্য আলাদা (getState()-সিঙ্কড) write-through mechanism দরকার — এটা আলাদা, বড়, ঝুঁকিপূর্ণ কাজ, তাড়াহুড়ো করে এই সেশনে করা হয়নি।
+
+**Phase ৬ (list/pagination) — ইচ্ছাকৃতভাবে স্কিপড এই সেশনে**:
+- Virtuoso-র sync `useMemo`/array-slice থেকে SQLite `queryPage()`-এ যাওয়া মানে synchronous থেকে async রেন্ডারিং-এ যাওয়া (loading state, race handling নতুন করে ডিজাইন করা লাগবে) — এটা Phase ৪-৫-এর চেয়ে গুণগতভাবে ভিন্ন/বড় ঝুঁকির কাজ। এই সেশনে শুরু করা হয়নি, পরের একটা ডেডিকেটেড সেশনে আলাদাভাবে করা উচিত (নিজের দোকানে টেস্টের সময়সহ)।
+
+**যাচাই**: `npm test` (১২০) ✅, `test:fuzz` ✅, `test:golden-master` (৭) ✅, `npm run build` ✅। প্রোডাক্ট সার্চ, কাস্টমার রিটার্ন ফ্লো — real-device-এ ম্যানুয়ালি চেক করা এখনো বাকি (sandbox-এ Capacitor/SQLite bridge চলে না)।
+
+**পরের ধাপ**: Phase ৬ (list/pagination, আলাদা সেশনে) → Phase ৭ (Dashboard/useKpiStats, Scientist pattern) → Phase ৮-৯ (নিজের দোকানে টেস্ট, রোলআউট)।
+
+---
+
+### [এন্ট্রি ১৭] — Phase ১-৩ শুরু (foundation টেবিল + Repository লেয়ার + golden-master test)
+
+**প্রেক্ষাপট**: `PHASE_3_4_5_FINAL_PLAN_v2.md` (নতুন, প্রজেক্ট রুটে) অনুযায়ী কাজ শুরু। প্ল্যানে ১১টা ধাপ — এই সেশনে প্রথম ৩টা।
+
+**Phase ১ (foundation টেবিল, sync-ready)**:
+- `schema.sql`-এ ২টা নতুন টেবিল: `feature_flags` (key/value/updated_at/device_id) ও `events` (append-only log — entity_type/entity_id/op/payload/device_id/ts/synced)।
+- `DataStore.js`: `getEventDeviceId()` (localStorage-ভিত্তিক synchronous, লাইসেন্স deviceId থেকে ইচ্ছাকৃতভাবে আলাদা), `mirrorFlagToSqlite()`, `logEventsMany()`, `getUnsyncedEvents()`/`markEventsSynced()` (ভবিষ্যৎ sync-এর জন্য, এখনো কোথাও কল হচ্ছে না)।
+- `isSqliteEnabled()`/`setSqliteEnabled()` **ইচ্ছাকৃতভাবে অপরিবর্তিত** (এখনো synchronous localStorage) — `dualWriteSqlite()`-এর সিঙ্ক্রোনাস কনট্র্যাক্ট ভাঙা যাবে না বলে। শুধু SqliteMigrationCard-এর টগলে `mirrorFlagToSqlite()` fire-and-forget কল যোগ হয়েছে।
+- `App.jsx`-এর `dualWriteSqlite()`-এ প্রতিটা upsert/remove-এর পাশে `logEventsMany()` কল যোগ (fire-and-forget, মূল write-path অস্পৃষ্ট)।
+
+**Phase ২ (Repository লেয়ার)**:
+- নতুন `src/db/Repository.js` — `getCustomerById()`, `getProductById()`, `getInvoiceById()` (এখনো ভেতরে plain array, আচরণ অপরিবর্তিত)।
+- প্রুফ-অফ-কনসেপ্ট হিসেবে ২টা কল-সাইট ওয়্যার করা হয়েছে (`detailCust` — মূল App() আর viewer-mode কম্পোনেন্ট দুটোতেই) — এগুলো আগে চিহ্নিত "pure-display lookup" জায়গার একটা।
+- **বাকি**: বাকি ~৯৮টা `.find(id)` কল-সাইট (বেশিরভাগ transaction-critical, `useAppStore.getState()` প্যাটার্নে) এখনো ওয়্যার করা হয়নি — সেগুলো Phase ৫ (write-through Map)-এর কাজ, ইচ্ছাকৃতভাবে এই সেশনে ছোঁয়া হয়নি (race-condition ঝুঁকি এড়াতে আগে Map-ইনফ্রা লাগবে)।
+
+**Phase ৩ (টেস্ট ইনফ্রাস্ট্রাকচার)**:
+- 🔍 **আবিষ্কার**: property-based testing (`fast-check`) ইতিমধ্যেই আছে — `tests/logic-fuzz.mjs` (calcInvoiceTotal, calcCashDrawer, restoreBatchQty, isBatchExpired, getSortedActiveBatches, computeSupplierDueMap-এ, প্রতিটা ১০০০ random রান)। কোনো আগের এন্ট্রিতে এটা উল্লেখ পাইনি, কিন্তু কোডে বিদ্যমান ও পাস করছে। তাই নতুন করে বানানো হয়নি — শুধু কনফার্ম করা হলো এখনো কাজ করছে (`npm run test:fuzz` — সব পাস)।
+- নতুন `tests/golden-master.mjs` + `npm run test:golden-master`। **সীমাবদ্ধতা সৎভাবে বলা দরকার**: `@capacitor-community/sqlite` native bridge-নির্ভর, তাই plain Node.js CI-তে আসল SQLite connection খোলা যায় না — mock/stub ব্যবহার করা হয়নি (মিথ্যা নিরাপত্তাবোধ এড়াতে)। তাই এই টেস্ট `DataStore.js`-এর pure transformation ফাংশন (`normName`, `dateKeyFromTs` — দুটোই এখন export করা হয়েছে টেস্টযোগ্যতার জন্য) সেই নির্দিষ্ট known-good input/output-এর বিপরীতে pin করে, বিশেষত এন্ট্রি ২ (BD টাইমজোন বাউন্ডারি) আর এন্ট্রি ৯ (ডাবল-স্পেস normalize)-এর বাগ আবার সাইলেন্টলি না ফেরার গ্যারান্টি হিসেবে। **আসল array-vs-SQLite রিয়েল-ডেটা রিকনসিলিয়েশন এখনো শুধু dev panel দিয়ে ডিভাইসেই সম্ভব** — Phase ৭ (Scientist pattern shadow-compare) চালু হলে এটা রানটাইমেও স্বয়ংক্রিয় হবে।
+
+**যাচাই**: `npm test` (৭২+১৪+১০+২৪ = ১২০ কেস) ✅, `npm run test:fuzz` ✅, `npm run test:golden-master` (৭ কেস) ✅, `npm run build` ✅। কোনো ফাংশনাল টেস্ট SQLite native bridge লাগে এমন কিছুতে (Phase ০-১-এর মতোই) করা যায়নি — real-device-এ dev panel দিয়ে ফ্ল্যাগ চালু করে backfill+verify করে দেখা দরকার।
+
+**পরের ধাপ**: প্ল্যানের Phase ৪ (হাইব্রিড সার্চ কাটওভার) — FTS5 candidate pool + আসল `productMatchScore()` দিয়ে র‍্যাংক।
+
+---
+
 ### [এন্ট্রি ১৬] — স্বয়ংক্রিয় ANALYZE-এর ফলাফলে toast যোগ (আগে সাইলেন্ট ছিল)
 
 **সমস্যা**: এন্ট্রি ১৫-এ স্বয়ংক্রিয় ANALYZE যোগ হয়েছিল, কিন্তু `migrateStoreResumable()` (`src/db/DataStore.js`) ইচ্ছাকৃতভাবে framework-agnostic — এই ফাইলে কোনো React import নেই (ফাইলের একদম শুরুতেই এই ডিজাইন সিদ্ধান্ত লেখা আছে, Node.js সিন্থেটিক-ডেটাসেট স্ক্রিপ্ট থেকেও ব্যবহারযোগ্য রাখতে)। তাই এখান থেকে সরাসরি `showToast()` কল করা যায় না — ANALYZE ব্যর্থ হলে শুধু `console.warn` হতো, ব্যবহারকারী কিছুই দেখতেন না।
