@@ -17,7 +17,7 @@
 //   node scripts/generate-synthetic-dataset.mjs --products=100000 --customers=10000 --invoices=10000000
 
 import { DatabaseSync } from "node:sqlite";
-import { readFileSync, unlinkSync, existsSync } from "node:fs";
+import { readFileSync, unlinkSync, existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -157,9 +157,42 @@ timeIt(`নির্দিষ্ট কাস্টমারের ইনভয�
   `).all("c1");
 });
 
+// ── কোয়েরি টেস্ট: পেজিনেশন — OFFSET (পুরনো) বনাম keyset (নতুন, ব্লকার #২ ফিক্স) ──
+// দুটোই একই "গভীর পেজ" (মাঝামাঝি কোথাও, শুরু থেকে না) সিমুলেট করে — এটাই আসল
+// পার্থক্য দেখায়, কারণ প্রথম কয়েকটা পেজে OFFSET আর keyset প্রায় সমান দ্রুত।
+{
+  const DEEP_OFFSET = Math.floor(N_INVOICES * 0.5); // ডেটাসেটের মাঝামাঝি একটা পেজ
+  console.log(`\n── পেজিনেশন বেঞ্চমার্ক (গভীর পেজ, OFFSET ${DEEP_OFFSET.toLocaleString()} বনাম keyset) ──`);
+
+  const { ms: offsetMs } = timeIt(`OFFSET পেজিনেশন (offset=${DEEP_OFFSET.toLocaleString()}, LIMIT 50)`, () => {
+    return db.prepare(`SELECT * FROM invoices ORDER BY created_at DESC, id DESC LIMIT 50 OFFSET ?`).all(DEEP_OFFSET);
+  });
+
+  // keyset cursor বানাতে আগে সেই একই পজিশনের (created_at, id) জোড়াটা বের করা হচ্ছে
+  // (বাস্তবে এটা আগের পেজের শেষ রো থেকেই পাওয়া যেত, এখানে শুধু বেঞ্চমার্কের জন্য সিমুলেট করা হলো)
+  const cursorRow = db.prepare(`SELECT created_at, id FROM invoices ORDER BY created_at DESC, id DESC LIMIT 1 OFFSET ?`).get(DEEP_OFFSET - 1);
+  const { ms: keysetMs } = timeIt(`Keyset পেজিনেশন (একই গভীরতা, LIMIT 50)`, () => {
+    return db.prepare(`
+      SELECT * FROM invoices
+      WHERE (created_at < ? OR (created_at = ? AND id < ?))
+      ORDER BY created_at DESC, id DESC LIMIT 50
+    `).all(cursorRow.created_at, cursorRow.created_at, cursorRow.id);
+  });
+
+  const speedup = offsetMs / keysetMs;
+  console.log(`⚡ keyset প্রায় ${speedup.toFixed(1)}× দ্রুত (গভীর পেজে)`);
+}
+
 db.close();
 console.log(`\n✅ শেষ — DB ফাইল: ${DB_PATH} (ম্যানুয়ালি চেক করতে চাইলে sqlite3 CLI দিয়ে খুলুন, শেষে ডিলিট করে দিতে পারেন)`);
 
 function readFileSyncSize(p) {
-  try { return readFileSync(p).length; } catch { return 0; }
+  // 🔴 ফিক্স (এই সেশনে পুনরায় ধরা পড়েছে — SQLITE_MIGRATION_LOG.md এন্ট্রি ৪-এ আগে
+  // একবার ফিক্স হয়েছিল বলে লেখা ছিল, কিন্তু আসল আপলোড করা zip-এ readFileSync()-ভিত্তিক
+  // পুরনো/বাগযুক্ত ভার্সনই ছিল — সম্ভবত সেই ফিক্স কোনো কারণে zip-এ অন্তর্ভুক্ত হয়নি)।
+  // readFileSync(p).length পুরো ফাইল RAM-এ Buffer করে লোড করার চেষ্টা করে — ১ কোটি
+  // ইনভয়েস স্কেলে (কয়েক GB DB ফাইল) silently ব্যর্থ হয়ে catch ব্লকে পড়ে "0.0 MB"
+  // রিপোর্ট করেছিল (এই সেশনের বেঞ্চমার্ক রানেই আবার দেখা গেছে)। statSync().size
+  // ফাইল কনটেন্ট লোড না করে শুধু ফাইলসিস্টেম মেটাডেটা পড়ে — নির্ভরযোগ্য, যেকোনো সাইজে।
+  try { return statSync(p).size; } catch { return 0; }
 }
