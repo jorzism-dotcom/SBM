@@ -361,16 +361,87 @@ export async function remove(businessType, store, id) {
   }
 }
 
+// store-ভিত্তিক ডিফল্ট sort কলাম — HOT_FIELDS-এ যা আসলে আছে তার সাথে মিলিয়ে
+// (invoices-এ "updated_at" কলামই নেই, শুধু "created_at" — আগের OFFSET-ভিত্তিক
+// queryPage()-এর ডিফল্ট "updated_at DESC" invoices-এ কখনো কল হলে ভুল/এরর দিত,
+// কিন্তু এখনো কোথাও লাইভ কল-সাইট না থাকায় এই বাগ ধরাই পড়েনি — keyset রিরাইটের
+// সাথেই ঠিক করা হলো)।
+const DEFAULT_SORT_COLUMN = {
+  products: "updated_at",
+  customers: "updated_at",
+  invoices: "created_at",
+};
+
 /**
- * পেজিনেটেড কোয়েরি — Virtuoso-র endReached-এ কল হওয়ার জন্য।
- * @param {object} opts { where, params, orderBy, limit, offset }
+ * পেজিনেটেড কোয়েরি — keyset (seek) pagination, OFFSET না।
+ *
+ * 🔴 কেন OFFSET-এর বদলে keyset (SQLITE_MIGRATION_LOG.md ব্লকার #২): SQLite-এ
+ * `OFFSET N` মানে ইঞ্জিন প্রথমে N-টা রো স্ক্যান করে **ফেলে দেয়**, তারপর পরের
+ * LIMIT-টা রিটার্ন করে — বড় N (যেমন ১ কোটি ইনভয়েসের মাঝামাঝি একটা পেজ)-এ এই
+ * "স্ক্যান-অ্যান্ড-ডিসকার্ড" কাজটাই ধীর হয়ে যায় (রিসার্চ অনুযায়ী keyset-এর তুলনায়
+ * ~১৫০× পর্যন্ত ধীর)। Keyset pagination-এ বদলে প্রতিটা পেজের "কার্সার" হলো আগের
+ * পেজের শেষ রো-র (sortColumn, id) জোড়া — পরের পেজ সরাসরি ইনডেক্স-সিক (`WHERE
+ * (sortColumn, id) < (cursorVal, cursorId)`) দিয়ে শুরু হয়, কোনো রো ফেলে দেওয়ার
+ * দরকার হয় না, তাই পেজ যত গভীরেই হোক গতি প্রায় স্থির থাকে।
+ *
+ * `id`-কে tiebreaker হিসেবে যোগ করা জরুরি কারণ sortColumn (updated_at/created_at)
+ * -এ ডুপ্লিকেট ভ্যালু থাকতে পারে (একই মিলিসেকেন্ডে একাধিক রেকর্ড) — শুধু
+ * sortColumn দিয়ে কার্সার বানালে সেই ডুপ্লিকেট-ভ্যালু গ্রুপের মাঝখানে রো
+ * স্কিপ/রিপিট হয়ে যেতে পারত। (sortColumn, id) কম্পোজিট অর্ডার সবসময় ইউনিক
+ * ও ডিটারমিনিস্টিক, তাই কোনো রো মিস/ডুপ্লিকেট হয় না।
+ *
+ * @param {string} businessType
+ * @param {"products"|"customers"|"invoices"} store
+ * @param {object} opts
+ * @param {string} [opts.where="1=1"] - WHERE ক্লজ (params-এর সাথে মিলিয়ে)
+ * @param {Array} [opts.params=[]]
+ * @param {string} [opts.sortColumn] - ডিফল্ট store অনুযায়ী DEFAULT_SORT_COLUMN থেকে
+ * @param {"ASC"|"DESC"} [opts.sortDir="DESC"]
+ * @param {number} [opts.limit=50]
+ * @param {{sortValue:*, id:string}|null} [opts.cursor=null] - আগের পেজের nextCursor,
+ *   প্রথম পেজে null/undefined দিন
+ * @returns {Promise<{rows:Array, nextCursor:{sortValue:*, id:string}|null, hasMore:boolean}>}
  */
 export async function queryPage(businessType, store, opts = {}) {
-  const { where = "1=1", params = [], orderBy = "updated_at DESC", limit = 50, offset = 0 } = opts;
+  const {
+    where = "1=1",
+    params = [],
+    sortColumn = DEFAULT_SORT_COLUMN[store] || "id",
+    sortDir = "DESC",
+    limit = 50,
+    cursor = null,
+  } = opts;
   const db = await getDb(businessType);
-  const sql = `SELECT data FROM ${store} WHERE ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`;
-  const res = await db.query(sql, [...params, limit, offset]);
-  return (res.values || []).map((r) => JSON.parse(r.data));
+  const dir = String(sortDir).toUpperCase() === "ASC" ? "ASC" : "DESC";
+  const cmp = dir === "DESC" ? "<" : ">";
+
+  let sql;
+  let sqlParams;
+  if (cursor && cursor.sortValue !== undefined && cursor.sortValue !== null && cursor.id != null) {
+    // keyset predicate: (sortColumn, id) < (cursorVal, cursorId) [DESC-এ; ASC-এ >]
+    // — sortColumn সমান হলে id দিয়ে টাইব্রেক করা হচ্ছে যাতে ডুপ্লিকেট
+    // sortColumn ভ্যালুর গ্রুপে কোনো রো স্কিপ/রিপিট না হয়।
+    sql = `SELECT data, ${sortColumn} AS _sort_val, id AS _id FROM ${store}
+           WHERE (${where}) AND (${sortColumn} ${cmp} ? OR (${sortColumn} = ? AND id ${cmp} ?))
+           ORDER BY ${sortColumn} ${dir}, id ${dir}
+           LIMIT ?`;
+    sqlParams = [...params, cursor.sortValue, cursor.sortValue, String(cursor.id), limit];
+  } else {
+    sql = `SELECT data, ${sortColumn} AS _sort_val, id AS _id FROM ${store}
+           WHERE ${where}
+           ORDER BY ${sortColumn} ${dir}, id ${dir}
+           LIMIT ?`;
+    sqlParams = [...params, limit];
+  }
+
+  const res = await db.query(sql, sqlParams);
+  const rawRows = res.values || [];
+  const rows = rawRows.map((r) => JSON.parse(r.data));
+  const last = rawRows[rawRows.length - 1];
+  // পুরো limit ভরে গেলে তবেই ধরে নেওয়া হয় আরও রো থাকতে পারে (ঠিক limit-এর কম
+  // এলে নিশ্চিতভাবেই এটাই শেষ পেজ — আলাদা COUNT(*) কল লাগে না)
+  const nextCursor = rawRows.length === limit && last ? { sortValue: last._sort_val, id: last._id } : null;
+  return { rows, nextCursor, hasMore: !!nextCursor };
 }
 
 /** FTS5 সার্চ — প্রোডাক্ট/কাস্টমার নাম দিয়ে খোঁজার জন্য। */
@@ -564,6 +635,12 @@ export async function migrateStoreResumable(businessType, store, sourceRecords, 
 // const newInv = { ...invoice, id: uid() };
 // setInvoices(prev => [...prev, newInv]);              // পুরনো path (অপরিবর্তিত)
 // if (isSqliteEnabled()) await upsert(businessType, "invoices", newInv); // নতুন path (সাইলেন্ট, extra)
+//
+// // Virtuoso endReached() — keyset pagination (Phase ৬, এখনো wire করা হয়নি):
+// const { rows, nextCursor, hasMore } = await queryPage(businessType, "invoices", {
+//   sortColumn: "created_at", sortDir: "DESC", limit: 50, cursor: myCursorState, // প্রথম পেজে cursor: null
+// });
+// setMyCursorState(nextCursor); // পরের endReached()-এ এটাই পাঠাতে হবে
 //
 // // dashboard "আজকের বিক্রি" (Phase 4):
 // const { total } = await aggregate(businessType, "invoices", {

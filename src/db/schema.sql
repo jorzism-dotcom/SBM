@@ -34,6 +34,11 @@ CREATE INDEX IF NOT EXISTS idx_products_name_norm ON products(name_norm);
 CREATE INDEX IF NOT EXISTS idx_products_barcode   ON products(barcode);
 CREATE INDEX IF NOT EXISTS idx_products_updated   ON products(updated_at);
 CREATE INDEX IF NOT EXISTS idx_products_deleted   ON products(deleted);
+-- 🆕 keyset pagination কম্পোজিট ইনডেক্স (DataStore.js queryPage(), ব্লকার #২ ফিক্স) —
+-- (sortColumn, id) দুটো কলামই একসাথে ইনডেক্সে থাকায় "WHERE (updated_at, id) < (?, ?)
+-- ORDER BY updated_at DESC, id DESC LIMIT N" কোয়েরি single covering-index seek-এ
+-- সমাধান হয়, কোনো row ফেলে দেওয়ার (OFFSET-এর মতো) দরকার হয় না।
+CREATE INDEX IF NOT EXISTS idx_products_updated_id ON products(updated_at, id);
 
 -- FTS5 ভার্চুয়াল টেবিল — প্রোডাক্ট নাম সার্চ (বাংলা/ইংরেজি, কাছাকাছি-বানান সহনশীল)
 -- 🔴 ফিক্স (real-device টেস্টে ধরা পড়া ২য় বাগ — এন্ট্রি ৯ দেখুন): আগে এখানে
@@ -68,6 +73,8 @@ CREATE INDEX IF NOT EXISTS idx_customers_mobile     ON customers(mobile);
 CREATE INDEX IF NOT EXISTS idx_customers_name_norm  ON customers(name_norm);
 CREATE INDEX IF NOT EXISTS idx_customers_updated    ON customers(updated_at);
 CREATE INDEX IF NOT EXISTS idx_customers_deleted    ON customers(deleted);
+-- 🆕 keyset pagination কম্পোজিট ইনডেক্স — products-এর ব্যাখ্যা দ্রষ্টব্য
+CREATE INDEX IF NOT EXISTS idx_customers_updated_id ON customers(updated_at, id);
 
 -- FTS5 (customers) — একই কারণে standalone (কোনো content=/content_rowid=/trigger নেই), দেখুন products_fts-এর কমেন্ট
 CREATE VIRTUAL TABLE IF NOT EXISTS customers_fts USING fts5(
@@ -98,6 +105,10 @@ CREATE INDEX IF NOT EXISTS idx_invoices_cust_date   ON invoices(customer_id, dat
 -- total-ও ইনডেক্সে থাকায় মূল টেবিলে row lookup ছাড়াই শুধু ইনডেক্স থেকে aggregate বের হয়
 -- (১ কোটি স্কেলে বেঞ্চমার্কে ৮,৯৮২ms থেকে ১.৪ms — ~৬,৪০০ গুণ দ্রুত)
 CREATE INDEX IF NOT EXISTS idx_invoices_dashboard   ON invoices(date_key, status, total);
+-- 🆕 keyset pagination কম্পোজিট ইনডেক্স — invoices-এর ডিফল্ট sort কলাম created_at
+-- (products/customers-এর মতো updated_at না — invoices টেবিলে সেই কলামই নেই), দেখুন
+-- DataStore.js DEFAULT_SORT_COLUMN আর queryPage()-এর কমেন্ট।
+CREATE INDEX IF NOT EXISTS idx_invoices_created_id  ON invoices(created_at, id);
 
 -- ── migration মেটাডেটা (কোন blob key কতদূর ব্যাকফিল হয়েছে, resumability-র জন্য) ──
 CREATE TABLE IF NOT EXISTS _migration_state (
