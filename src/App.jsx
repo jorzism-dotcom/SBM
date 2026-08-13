@@ -38,7 +38,12 @@ import {
 // তৈরি DataStore abstraction layer। isSqliteEnabled() ফ্ল্যাগ ডিফল্ট বন্ধ, তাই
 // এই import নিজে থেকে কোনো আচরণ পাল্টায় না — শুধু নিচের debouncedSave effect-
 // গুলোতে diff-based upsert/remove যোগ হয়েছে (দেখুন সেখানকার কমেন্ট)।
-import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb } from "./db/DataStore.js";
+import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite } from "./db/DataStore.js";
+// 🆕 Repository লেয়ার (Phase ২, PHASE_3_4_5_FINAL_PLAN_v2.md) — এখনো array-ভিত্তিক,
+// শুধু ইন্টারফেস। প্রথম ওয়্যার্ড কল-সাইট: detailCust (নিচে)।
+import { getCustomerById } from "./db/Repository.js";
+// 🆕 Phase ৪ (হাইব্রিড সার্চ) — শুধু বড় ডেটাসেটে candidate-narrowing চালু হবে (নিচে দেখুন FTS_NARROW_THRESHOLD)
+import { hybridSearchCandidateIds } from "./db/DataStore.js";
 // 🔴 ফিক্স (Firestore read-quota — ২৫ জুলাই ২০২৬): "ফুল চেকাপ চালান" বাটন
 // (runSyncDiagnostics) stockMovements/txns/cashLogs/users-এর সম্পূর্ণ
 // আনউইন্ডোড getDocs() করে (কোনো date-window/limit ছাড়াই পুরো কালেকশন read) —
@@ -6058,6 +6063,10 @@ function diffById(prevMap, currentArr) {
 // ডিভাইস-স্পেসিফিক এরর) সাইলেন্টলি ধরা পড়ে — পুরনো IndexedDB blob-array path-ই
 // এখনো একমাত্র সোর্স-অফ-ট্রুথ, SQLite শুধু ছায়া-লেখা (shadow write), dual-write
 // ফেজ শেষ না হওয়া পর্যন্ত।
+// entity_type নাম store ("products"/"customers"/"invoices") থেকে events টেবিলের
+// entity_type ("product"/"customer"/"invoice") কনভেনশনে — schema.sql-এর কমেন্ট দ্রষ্টব্য
+const STORE_TO_ENTITY_TYPE = { products: "product", customers: "customer", invoices: "invoice" };
+
 function dualWriteSqlite(businessType, store, prevMapRef, currentArr) {
   if (!isSqliteEnabled()) return;
   const { changed, removedIds, nextMap } = diffById(prevMapRef.current, currentArr);
@@ -6068,6 +6077,16 @@ function dualWriteSqlite(businessType, store, prevMapRef, currentArr) {
   removedIds.forEach((id) => {
     dsRemove(businessType, store, id).catch(() => {});
   });
+  // 🆕 Phase ১ (foundation, PHASE_3_4_5_FINAL_PLAN_v2.md): lightweight event log —
+  // dual-write-এর ঠিক পাশে, সম্পূর্ণ fire-and-forget, মূল write-path অস্পৃষ্ট।
+  if (changed.length || removedIds.length) {
+    const entityType = STORE_TO_ENTITY_TYPE[store] || store;
+    const entries = [
+      ...changed.map((r) => ({ entityId: r.id, op: "upsert", payload: { updatedAt: r.updatedAt ?? r.createdAt ?? null } })),
+      ...removedIds.map((id) => ({ entityId: id, op: "delete", payload: null })),
+    ];
+    logEventsMany(businessType, entityType, entries).catch(() => {});
+  }
 }
 
 // ─── Password Hashing (Web Crypto API) ───────────────────────────────────────
@@ -13907,7 +13926,10 @@ function SmartBusinessMgmt() {
     if (qty > maxReturnable) { showToast(`সর্বোচ্চ ${maxReturnable} ${item.unit || "পিস"} ফেরত নেওয়া যাবে`, "#ef4444"); throw new Error("qty-exceeds-max"); }
 
     const reason = (reasonInput || "").trim();
-    const localP = products.find(p => p.id === productId);
+    // 🆕 Phase ৫ (write-through Map) — আগে products.find(p=>p.id===productId), একই
+    // ডেটা সোর্স (এই render-এর products ক্লোজার), শুধু O(1)। নিচেই freshP আলাদাভাবে
+    // getState() দিয়ে ফ্রেশ read করে actual mutation-এর ঠিক আগে — সেটা অপরিবর্তিত।
+    const localP = productsById.get(String(productId));
 
     const isOffline = typeof navigator !== "undefined" && navigator.onLine === false;
     let stockResult = null;
@@ -14109,7 +14131,7 @@ function SmartBusinessMgmt() {
     });
 
     showToast(`✅ ${qty} ${item.unit || "পিস"} ফেরত নেওয়া হয়েছে${mode === "baki" ? " ও বাকি সমন্বয় হয়েছে" : ""}`, "#22c55e");
-  }, [products, customers, returns, setProducts, setStockMovements, setCustomers, addTxn, setCashLogs, setReturns, showToast, currentUser, auditLog]);
+  }, [productsById, customers, returns, setProducts, setStockMovements, setCustomers, addTxn, setCashLogs, setReturns, showToast, currentUser, auditLog]);
 
   const connectBluetooth = useCallback(async () => {
     await BT.init();
@@ -14518,7 +14540,8 @@ function SmartBusinessMgmt() {
   );
 
   const showDetail = tab === "customers" && detailCId;
-  const detailCust = showDetail ? customers.find(c => c.id === detailCId) : null;
+  // 🆕 Repository লেয়ারের মধ্য দিয়ে (Phase ২) — আচরণ অপরিবর্তিত (এখনো array.find()-ই ভেতরে), শুধু ইন্টারফেস
+  const detailCust = showDetail ? getCustomerById(customers, detailCId) : null;
 
   // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ১): salon-এ "products" স্ক্রিনের হেডার "সার্ভিস তালিকা" —
   // বাকি সব businessType-এর জন্য আগের মতোই "ওষুধ তালিকা" (আচরণ অপরিবর্তিত)।
@@ -16774,6 +16797,19 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
   // এই ডিভাইসের কোনো এডিট কখনো sync হওয়ার সুযোগই নেই।
   const [customers, setCustomers] = useState(() => data?.customers || []);
   const [products, setProducts]   = useState(() => data?.products  || []);
+  // 🆕 Phase ৫ (write-through Map, PHASE_3_4_5_FINAL_PLAN_v2.md) — useMemo-ভিত্তিক
+  // id→record ম্যাপ, শুধু products/customers/invoices array বদলালেই রিকম্পিউট হয়
+  // (React-এর নিজস্ব মেমোাইজেশন, কোনো ম্যানুয়াল ref/effect বুককিপিং লাগে না — তাই
+  // stale/race-condition-ঝুঁকি নেই)। ⚠️ এটা শুধু সেই কল-সাইটগুলোর জন্য নিরাপদ
+  // প্রতিস্থাপন যেগুলো এই render-এর ক্লোজার `products`/`customers` থেকে সরাসরি
+  // .find() করে (যেমন processReturn()-এর `localP`)। যেগুলো ইচ্ছাকৃতভাবে
+  // `useAppStore.getState().products.find(...)` ব্যবহার করে (transaction-এর
+  // মধ্যে সবচেয়ে ফ্রেশ state পড়ার জন্য, race-condition এড়াতে) — সেগুলোতে এই Map
+  // ব্যবহার করা যাবে না, কারণ এই Map render-time snapshot, getState()-এর মতো
+  // সবসময়-ফ্রেশ না। সেই ক্লাসের কল-সাইট আলাদা (আরও জটিল) write-through
+  // mechanism দরকার, এই সেশনে ইচ্ছাকৃতভাবে ছোঁয়া হয়নি — দেখুন migration log।
+  const productsById  = useMemo(() => new Map(products.map(p => [String(p.id), p])),   [products]);
+  const customersById = useMemo(() => new Map(customers.map(c => [String(c.id), c])), [customers]);
   const [purchaseOrders,  setPurchaseOrders]  = useState(() => data?.purchaseOrders  || []);
   const [stockMovements,  setStockMovements]  = useState(() => data?.stockMovements  || []);
   const [cashLogs,        setCashLogs]        = useState(() => data?.cashLogs        || []);
@@ -16849,7 +16885,8 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
   const [detailCId, setDetailCId] = useState(null);
   const [txModal, setTxModal] = useState(null);
   const showDetail = vTab === "customers" && !!detailCId;
-  const detailCust = showDetail ? customers.find(c => c.id === detailCId) : null;
+  // 🆕 Repository লেয়ারের মধ্য দিয়ে (Phase ২) — আচরণ অপরিবর্তিত, শুধু ইন্টারফেস
+  const detailCust = showDetail ? getCustomerById(customers, detailCId) : null;
   const detailTxns = useMemo(() => detailCId ? txns.filter(t => t.customerId === detailCId) : [], [txns, detailCId]);
   const detailPaymentInvoices = useMemo(() => detailCId ? paymentInvoices.filter(p => p.customerId === detailCId) : [], [paymentInvoices, detailCId]);
 
@@ -17766,6 +17803,13 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
   const [items,      setItems]      = useState([]);
   const [catFilter,  setCatFilter]  = useState("সব");
   const [prodSearch, setProdSearch] = useState("");
+  // 🆕 Phase ৪ (হাইব্রিড সার্চ, PHASE_3_4_5_FINAL_PLAN_v2.md) — FTS5 candidate-id
+  // ক্যাশ, শুধু বড় ডেটাসেটে (>FTS_NARROW_THRESHOLD) ব্যবহৃত হবে (নিচের useEffect
+  // দেখুন)। ছোট ডেটাসেটে (আমাদের ৩ দোকানের বর্তমান স্কেল) এই state সবসময় null-ই
+  // থাকবে, filteredProducts useMemo পুরনো ফুল-array logic-ই চালাবে — আচরণ
+  // অপরিবর্তিত।
+  const [ftsCandidateIds, setFtsCandidateIds]   = useState(null); // Set<string>|null
+  const [ftsCandidateQuery, setFtsCandidateQuery] = useState(""); // staleness guard — কোন query-র জন্য candidate তৈরি হয়েছে
   const [prodPage,   setProdPage]   = useState(1); // Invoice Step2 product pagination
   const [payType,    setPayType]    = useState("cash");
   const [partialAmt, setPartialAmt] = useState("");
@@ -17836,6 +17880,25 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     [products]
   );
 
+  // 🆕 Phase ৪ (হাইব্রিড সার্চ) — শুধু বড় ডেটাসেটে narrowing চালু। এই থ্রেশহোল্ডের
+  // নিচে productMatchScore()-এর ফাজি/বারকোড ম্যাচ কোয়ালিটি হারানোর ঝুঁকি নেওয়ার
+  // মতো কোনো বাস্তব পারফরম্যান্স-লাভ নেই (দেখুন DataStore.js-এর কমেন্ট)।
+  const FTS_NARROW_THRESHOLD = 5000;
+  useEffect(() => {
+    const q = prodSearch.trim();
+    if (!q || !isSqliteEnabled() || productsWithSerial.length <= FTS_NARROW_THRESHOLD) {
+      setFtsCandidateIds(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      hybridSearchCandidateIds(businessType, "products", q, 300)
+        .then((ids) => { if (!cancelled) { setFtsCandidateIds(ids); setFtsCandidateQuery(q); } })
+        .catch(() => { if (!cancelled) setFtsCandidateIds(null); }); // ব্যর্থ হলে সাইলেন্টলি ফুল-array ফলব্যাক
+    }, 150); // debounce — প্রতি কি-স্ট্রোকে না
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [prodSearch, businessType, productsWithSerial.length]);
+
   // 🔴 ফিক্স: স্টক-শূন্য/মেয়াদ-উত্তীর্ণ পণ্য আগে গ্রিড থেকে পুরোপুরি বাদ যেত — এখন
   // সেগুলো দেখাবে (grey/disabled অবস্থায়) কিন্তু সবসময় লিস্টের শেষে sort হবে।
   const isProductUnavailable = (p) => p.productType !== "service" && p.stock !== undefined && getSellableStock(p) <= 0;
@@ -17849,7 +17912,14 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     }
     if (prodSearch) {
       const q = prodSearch.trim();
-      ps = ps
+      // 🆕 Phase ৪ (হাইব্রিড সার্চ) — candidate ready + query মিলছে + threshold পার
+      // হলেই narrow করা হবে, নাহলে আগের মতোই পুরো array-তে productMatchScore()।
+      // narrow করলেও স্কোরিং/র‍্যাংকিং একই productMatchScore() দিয়েই হয় — শুধু
+      // input pool ছোট, ফলাফলের মান একই থাকার কথা যদি FTS5 candidate pool-এ
+      // আসল ম্যাচ বাদ না পড়ে (এই কারণেই ছোট ডেটাসেটে এই path বন্ধ রাখা হয়েছে)।
+      const useNarrowing = ftsCandidateIds && ftsCandidateQuery === q;
+      const pool = useNarrowing ? ps.filter(p => ftsCandidateIds.has(String(p.id))) : ps;
+      ps = pool
         .map(p => ({ ...p, _score: productMatchScore(p, q) }))
         .filter(p => p._score > 0)
         .sort(bySearchScore);
@@ -17864,7 +17934,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     // স্টক-আউট/মেয়াদ-উত্তীর্ণ পণ্য সবসময় লিস্টের শেষে — বাকি অর্ডার (স্কোর/কমন-আনকমন) অক্ষুণ্ণ রেখে
     ps = [...ps].sort((a, b) => (isProductUnavailable(a) ? 1 : 0) - (isProductUnavailable(b) ? 1 : 0));
     return ps;
-  }, [productsWithSerial, catFilter, prodSearch]);
+  }, [productsWithSerial, catFilter, prodSearch, ftsCandidateIds, ftsCandidateQuery]);
 
   // C1 fix: Invoice Step2 product pagination (৫০টি করে)
   // VirtuosoGrid ব্যবহার হচ্ছে — pagination ও pagedProducts সরানো হয়েছে
@@ -34689,10 +34759,12 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
       )) return;
       setSqliteEnabled(true);
       setEnabled(true);
+      mirrorFlagToSqlite(businessType, "sbm_use_sqlite_store", "1").catch(() => {}); // 🆕 Phase ১: sync-ready mirror
       runBackfill();
     } else {
       setSqliteEnabled(false);
       setEnabled(false);
+      mirrorFlagToSqlite(businessType, "sbm_use_sqlite_store", "0").catch(() => {}); // 🆕 Phase ১: sync-ready mirror
       showToast?.("SQLite dual-write বন্ধ করা হয়েছে (IndexedDB-ই একমাত্র সোর্স এখন)");
     }
   };
