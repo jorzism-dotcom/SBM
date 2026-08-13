@@ -42,8 +42,14 @@ import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggr
 // 🆕 Repository লেয়ার (Phase ২, PHASE_3_4_5_FINAL_PLAN_v2.md) — এখনো array-ভিত্তিক,
 // শুধু ইন্টারফেস। প্রথম ওয়্যার্ড কল-সাইট: detailCust (নিচে)।
 import { getCustomerById } from "./db/Repository.js";
-// 🆕 Phase ৪ (হাইব্রিড সার্চ) — শুধু বড় ডেটাসেটে candidate-narrowing চালু হবে (নিচে দেখুন FTS_NARROW_THRESHOLD)
+// 🆕 Phase ৪ (হাইব্রিড সার্চ) — শুধু বড় ডেটাসেটে candidate-narrowing চালু হবে
 import { hybridSearchCandidateIds } from "./db/DataStore.js";
+// 🆕 [বাগ-ফিক্স, migration log এন্ট্রি ২০] আগে এটা SmartInvoiceBuilder-এর ভেতরে
+// component-local const হিসেবে ডিফাইন করা ছিল — বাকি productMatchScore() কল-সাইট
+// (Dashboard, Products) আলাদা কম্পোনেন্ট হওয়ায় এটা রেফারেন্স করতে পারত না (ঠিক
+// productsById-এর মতোই স্কোপ-বাগ হতো)। তাই module-level-এ তুলে আনা হলো, যাতে সব
+// কম্পোনেন্ট একই থ্রেশহোল্ড শেয়ার করে — মান/আচরণ অপরিবর্তিত (৫০০০)।
+const FTS_NARROW_THRESHOLD = 5000;
 // 🔴 ফিক্স (Firestore read-quota — ২৫ জুলাই ২০২৬): "ফুল চেকাপ চালান" বাটন
 // (runSyncDiagnostics) stockMovements/txns/cashLogs/users-এর সম্পূর্ণ
 // আনউইন্ডোড getDocs() করে (কোনো date-window/limit ছাড়াই পুরো কালেকশন read) —
@@ -10860,6 +10866,14 @@ function SmartBusinessMgmt() {
   // Group A: Core business data
   const customers        = useAppStore(s => s.customers);
   const products         = useAppStore(s => s.products);
+  // 🆕 [বাগ-ফিক্স, বিল্ড #678] Phase ৫ (write-through Map, PHASE_3_4_5_FINAL_PLAN_v2.md)
+  // — এই Map আগে ভুলে শুধু ViewerDashboardScreen কম্পোনেন্টে ডিফাইন হয়েছিল, কিন্তু
+  // processReturn() (এই কম্পোনেন্ট SmartBusinessMgmt-এর ভেতরে) সেটা রেফারেন্স করছিল —
+  // দুই কম্পোনেন্ট আলাদা স্কোপ হওয়ায় ESLint no-undef error + build fail (ESLint লগ:
+  // "'productsById' is not defined", src/App.jsx দুই জায়গায়)। এখানে SmartBusinessMgmt-এর
+  // নিজস্ব products ক্লোজার থেকে একই useMemo-ভিত্তিক Map বানানো হলো, যাতে processReturn()
+  // ঠিক স্কোপ থেকেই এটা পড়ে। আচরণ অপরিবর্তিত (শুধু স্কোপ ফিক্স, নতুন লজিক না)।
+  const productsById     = useMemo(() => new Map(products.map(p => [String(p.id), p])), [products]);
   const invoices         = useAppStore(s => s.invoices);
   const txns             = useAppStore(s => s.txns);
   const suppliers        = useAppStore(s => s.suppliers);
@@ -17880,10 +17894,9 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     [products]
   );
 
-  // 🆕 Phase ৪ (হাইব্রিড সার্চ) — শুধু বড় ডেটাসেটে narrowing চালু। এই থ্রেশহোল্ডের
-  // নিচে productMatchScore()-এর ফাজি/বারকোড ম্যাচ কোয়ালিটি হারানোর ঝুঁকি নেওয়ার
-  // মতো কোনো বাস্তব পারফরম্যান্স-লাভ নেই (দেখুন DataStore.js-এর কমেন্ট)।
-  const FTS_NARROW_THRESHOLD = 5000;
+  // 🆕 Phase ৪ (হাইব্রিড সার্চ) — শুধু বড় ডেটাসেটে narrowing চালু। FTS_NARROW_THRESHOLD
+  // এখন module-level (উপরে import-এর কাছে) — এই থ্রেশহোল্ডের নিচে productMatchScore()-এর
+  // ফাজি/বারকোড ম্যাচ কোয়ালিটি হারানোর ঝুঁকি নেওয়ার মতো কোনো বাস্তব পারফরম্যান্স-লাভ নেই।
   useEffect(() => {
     const q = prodSearch.trim();
     if (!q || !isSqliteEnabled() || productsWithSerial.length <= FTS_NARROW_THRESHOLD) {
@@ -21545,6 +21558,26 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   // 🔍 সাপ্লায়ার তালিকা পেজে পণ্য/সাপ্লায়ার অটো-সাজেস্ট সার্চ
   const [supSearchQuery, setSupSearchQuery] = useState("");
   const [supSearchFocused, setSupSearchFocused] = useState(false);
+  // 🆕 Phase ৪ (হাইব্রিড সার্চ, migration log এন্ট্রি ২০) — সাপ্লায়ার-লিস্ট পেজের পণ্য-সার্চ
+  // (নিচে supplier-list modal-এর ভেতরের IIFE-তে productMatchScore() কল)। এই hook এখানে,
+  // Dashboard-এর top-level-এ রাখা হয়েছে — IIFE-এর ভেতরে conditionally-called useState/
+  // useEffect বসালে rules-of-hooks ভাঙত (মডাল খোলা/বন্ধ হলে hook-count বদলে যেত)।
+  const [supFtsIds, setSupFtsIds]   = useState(null);
+  const [supFtsQuery, setSupFtsQuery] = useState("");
+  useEffect(() => {
+    const q = supSearchQuery.trim();
+    if (!q || !isSqliteEnabled() || products.length <= FTS_NARROW_THRESHOLD) {
+      setSupFtsIds(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      hybridSearchCandidateIds(businessType, "products", q, 300)
+        .then((ids) => { if (!cancelled) { setSupFtsIds(ids); setSupFtsQuery(q); } })
+        .catch(() => { if (!cancelled) setSupFtsIds(null); });
+    }, 150);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [supSearchQuery, businessType, products.length]);
   // 🔴 ফিক্স: touchscreen-এ দ্রুত ডাবল-ট্যাপ করলে (বা কোনো কারণে দুইবার ইভেন্ট
   // fire করলে) removeExpiredBatch() দুইবার চলে একই ব্যাচের জন্য দুইটা আলাদা
   // stockMovement (source: "expired_removal") রেকর্ড তৈরি করে ফেলত — ফলে
@@ -23006,7 +23039,10 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             .slice(0, 8);
           const matchedSupplierNames = new Set(supplierMatches.map(s => s.name));
           // পণ্যের নাম মিললে — শুধু সেই পণ্যগুলো (যেসব সাপ্লায়ার আগে থেকেই কার্ড হিসেবে দেখানো হয়নি)
-          const productMatches = !q ? [] : items
+          // 🆕 Phase ৪ — candidate ready + query মিলছে + threshold পার হলেই narrow করা হবে।
+          const useSupNarrowing = q && supFtsIds && supFtsQuery === q;
+          const supPool = useSupNarrowing ? items.filter(p => supFtsIds.has(String(p.id))) : items;
+          const productMatches = !q ? [] : supPool
             .map(p => ({ ...p, _score: productMatchScore(p, q) }))
             .filter(p => {
               if (p._score <= 0) return false;
@@ -27153,6 +27189,27 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const knownCustomDosageForms = useMemo(() => getKnownCustomDosageForms(products), [products]);
 
 
+  // 🆕 Phase ৪ (হাইব্রিড সার্চ) — SmartInvoiceBuilder-এর filteredProducts-এ ব্যবহৃত একই
+  // প্যাটার্ন (দেখুন migration log এন্ট্রি ১৮/২০)। ছোট ডেটাসেটে (FTS_NARROW_THRESHOLD-এর
+  // নিচে) সম্পূর্ণ নিষ্ক্রিয় — আচরণ অপরিবর্তিত। এই state এই কম্পোনেন্টের নিজস্ব
+  // (Products-এর ভেতরে, filteredAll-এর query উৎস deferredSearch)।
+  const [prodListFtsIds, setProdListFtsIds]     = useState(null);
+  const [prodListFtsQuery, setProdListFtsQuery] = useState("");
+  useEffect(() => {
+    const q = (deferredSearch || "").trim();
+    if (!q || q.startsWith("__") || !isSqliteEnabled() || productsWithSerialAll.length <= FTS_NARROW_THRESHOLD) {
+      setProdListFtsIds(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      hybridSearchCandidateIds(businessType, "products", q, 300)
+        .then((ids) => { if (!cancelled) { setProdListFtsIds(ids); setProdListFtsQuery(q); } })
+        .catch(() => { if (!cancelled) setProdListFtsIds(null); }); // ব্যর্থ হলে সাইলেন্টলি ফুল-array ফলব্যাক
+    }, 150);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [deferredSearch, businessType, productsWithSerialAll.length]);
+
   const filteredAll = useMemo(() => {
     const q = (deferredSearch || "").trim();
     let base = productsWithSerialAll;
@@ -27166,7 +27223,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
         return da - db;
       });
     } else {
-      result = base
+      // 🆕 Phase ৪ — candidate ready + query মিলছে + threshold পার হলেই narrow করা
+      // হবে, নাহলে আগের মতোই পুরো array-তে productMatchScore()।
+      const useNarrowing = prodListFtsIds && prodListFtsQuery === q;
+      const pool = useNarrowing ? base.filter(p => prodListFtsIds.has(String(p.id))) : base;
+      result = pool
         .map(p => ({ ...p, _score: productMatchScore(p, q) }))
         .filter(p => p._score > 0)
         .sort(bySearchScore);
@@ -27180,7 +27241,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     // অন্য জায়গার আসল serial রেফারেন্স প্রভাবিত হয় না — এটা শুধু এই ভিউয়ের
     // ডিসপ্লে নম্বর।)
     return result.map((p, i) => ({ ...p, serial: i + 1, serialStr: String(i + 1) }));
-  }, [productsWithSerialAll, deferredSearch, demandFilter]);
+  }, [productsWithSerialAll, deferredSearch, demandFilter, prodListFtsIds, prodListFtsQuery]);
 
   // ── FIFO active-batch map — প্রোডাক্ট লিস্টের ব্যাচ ব্যাজ দেখানোর জন্য (prodBatchMap fix) ──
   const prodBatchMap = useMemo(() => {
@@ -27250,14 +27311,36 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     if (!latest?.batchNo) return null;
     return { label: latest.batchNo, isFree: !!latest.isFreeStock, expiryDate: latest.expiryDate || "" };
   }, [peSelProdForBatch]);
-  const peFilteredProds = useMemo(() => (
-    peForm.productSearch
-      ? products
-          .map(p => ({ ...p, _score: productMatchScore(p, peForm.productSearch.trim()) }))
-          .filter(p => p._score > 0)
-          .sort(bySearchScore)
-      : products
-  ), [products, peForm.productSearch]);
+  // 🆕 Phase ৪ (হাইব্রিড সার্চ) — ক্রয় এন্ট্রি ফর্মের পণ্য-সার্চের জন্য আলাদা candidate
+  // state (filteredAll-এর prodListFtsIds থেকে আলাদা রাখা হয়েছে, কারণ দুটোর query
+  // উৎস আলাদা — একসাথে খোলা থাকলে একটার candidate আরেকটাকে প্রভাবিত করবে না)।
+  const [peFtsIds, setPeFtsIds]     = useState(null);
+  const [peFtsQuery, setPeFtsQuery] = useState("");
+  useEffect(() => {
+    const q = (peForm.productSearch || "").trim();
+    if (!q || !isSqliteEnabled() || products.length <= FTS_NARROW_THRESHOLD) {
+      setPeFtsIds(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      hybridSearchCandidateIds(businessType, "products", q, 300)
+        .then((ids) => { if (!cancelled) { setPeFtsIds(ids); setPeFtsQuery(q); } })
+        .catch(() => { if (!cancelled) setPeFtsIds(null); });
+    }, 150);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [peForm.productSearch, businessType, products.length]);
+
+  const peFilteredProds = useMemo(() => {
+    const q = (peForm.productSearch || "").trim();
+    if (!q) return products;
+    const useNarrowing = peFtsIds && peFtsQuery === q;
+    const pool = useNarrowing ? products.filter(p => peFtsIds.has(String(p.id))) : products;
+    return pool
+      .map(p => ({ ...p, _score: productMatchScore(p, q) }))
+      .filter(p => p._score > 0)
+      .sort(bySearchScore);
+  }, [products, peForm.productSearch, peFtsIds, peFtsQuery]);
   const peNextBatchLabel = useMemo(() => (
     peForm.productId ? calcNextBatch(peForm.productId, products, purchaseOrders) : "—"
   ), [peForm.productId, products, purchaseOrders]);
