@@ -107,5 +107,40 @@ CREATE TABLE IF NOT EXISTS _migration_state (
   last_migrated_id    TEXT,              -- resumability: এখান থেকে পরের ব্যাচ শুরু হবে
   status              TEXT NOT NULL DEFAULT 'pending',  -- pending | in_progress | verified | done
   started_at          INTEGER,
-  completed_at        INTEGER
+  completed_at          INTEGER
 );
+
+-- ── Phase 3,4,5 প্ল্যানের Phase ১ (foundation): feature_flags ─────────────────
+-- localStorage-এর বদলে ফ্ল্যাগ SQLite-এ রাখার কারণ: ভবিষ্যতে multi-device sync
+-- চালু হলে বাকি সব টেবিলের মতো এই টেবিলও events-log দিয়ে সিঙ্ক করা যাবে,
+-- আলাদা কোনো "flag sync সিস্টেম" বানাতে হবে না। আপাতত DataStore.js-এর
+-- isSqliteEnabled()/setSqliteEnabled() এখনো synchronous localStorage-ই পড়ে
+-- (zero risk, আচরণ অপরিবর্তিত) — এই টেবিলে শুধু mirror (fire-and-forget) হয়,
+-- যাতে future sync-এর ভিত্তি প্রস্তুত থাকে। দেখুন PHASE_3_4_5_FINAL_PLAN_v2.md।
+CREATE TABLE IF NOT EXISTS feature_flags (
+  key         TEXT PRIMARY KEY,
+  value       TEXT,
+  updated_at  INTEGER,
+  device_id   TEXT
+);
+
+-- ── events (lightweight append-only log) ─────────────────────────────────────
+-- পূর্ণাঙ্গ CDC/Kafka-স্টাইল pipeline না (৩ দোকানের single-device স্কেলে অপ্রয়োজনীয়
+-- জটিলতা) — শুধু "কী বদলেছে" তার একটা লগ, দুটো কাজে ব্যবহৃত হবে:
+--   ১. এখন: reconciliation/golden-master টেস্টে "কোন রেকর্ড কবে বদলেছে" দ্রুত বের
+--      করা, পুরো array রিপ্লে না করে।
+--   ২. ভবিষ্যতে: multi-device sync চালু হলে synced=0 রো-গুলো exchange/apply করাই
+--      হবে মূল sync mechanism (CRDT-জাতীয় ভারী কিছু বানাতে হবে না)।
+CREATE TABLE IF NOT EXISTS events (
+  id           TEXT PRIMARY KEY,
+  entity_type  TEXT NOT NULL,     -- 'product' | 'customer' | 'invoice'
+  entity_id    TEXT NOT NULL,
+  op           TEXT NOT NULL,     -- 'upsert' | 'delete' | 'reconcile_mismatch'
+  payload      TEXT,              -- JSON (upsert/delete: সংক্ষিপ্ত সামারি; reconcile_mismatch: diff details)
+  device_id    TEXT,
+  ts           INTEGER NOT NULL,
+  synced       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_events_synced ON events(synced);
+CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_events_ts     ON events(ts);

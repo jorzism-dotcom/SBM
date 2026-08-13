@@ -40,6 +40,84 @@ export function setSqliteEnabled(v) {
   } catch {}
 }
 
+// ── Phase ১ (foundation, sync-ready): event device id ───────────────────────
+// লাইসেন্স সিস্টেমের deviceId (getOrCreateLicenseDeviceId, async + IndexedDB,
+// অ্যাপ রিসেট করলে ইচ্ছাকৃতভাবে বদলে যায়) থেকে ইচ্ছাকৃতভাবে আলাদা — event log-এর
+// জন্য শুধু একটা স্থিতিশীল synchronous ট্যাগ দরকার, লাইসেন্স-সিকিউরিটির কড়াকড়ি না।
+const EVENT_DEVICE_ID_KEY = "sbm_event_device_id";
+
+function getEventDeviceId() {
+  try {
+    let id = localStorage.getItem(EVENT_DEVICE_ID_KEY);
+    if (id) return id;
+    id = (crypto?.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`).replace(/-/g, "").slice(0, 12);
+    localStorage.setItem(EVENT_DEVICE_ID_KEY, id);
+    return id;
+  } catch {
+    return "unknown-device";
+  }
+}
+
+// ── Phase ১ (foundation): feature_flags মিরর ────────────────────────────────
+// isSqliteEnabled()/setSqliteEnabled() ইচ্ছাকৃতভাবে এখনো synchronous
+// localStorage-ই পড়ে/লেখে (dualWriteSqlite() fire-and-forget কল সাইটে সরাসরি,
+// await ছাড়া কল হয় — সেই সিঙ্ক্রোনাস কনট্র্যাক্ট ভাঙা যাবে না)। এই ফাংশনটা
+// শুধু SQLite feature_flags টেবিলে একটা কপি (mirror) রাখে, ব্যর্থ হলেও নীরবে —
+// ভবিষ্যতে multi-device sync-এর ভিত্তি, এখন কোনো read path এই টেবিল থেকে পড়ে না।
+export async function mirrorFlagToSqlite(businessType, key, value) {
+  try {
+    const db = await getDb(businessType);
+    await db.run(
+      `INSERT OR REPLACE INTO feature_flags (key, value, updated_at, device_id) VALUES (?, ?, ?, ?)`,
+      [key, String(value), Date.now(), getEventDeviceId()]
+    );
+  } catch {
+    // সাইলেন্ট — flag mirror ব্যর্থ হলেও localStorage-ভিত্তিক আসল ফ্ল্যাগ অপ্রভাবিত
+  }
+}
+
+// ── Phase ১ (foundation): lightweight event log ─────────────────────────────
+// dualWriteSqlite()-এর diffById()-এর ঠিক পাশে বসে — যা upsert/remove হচ্ছে তারই
+// একটা সংক্ষিপ্ত রেকর্ড। সম্পূর্ণ fire-and-forget, প্রধান write-path কখনো ব্লক/থ্রো করে না।
+export async function logEventsMany(businessType, entityType, entries) {
+  // entries: [{ entityId, op, payload }]
+  if (!entries || !entries.length) return;
+  try {
+    const db = await getDb(businessType);
+    const deviceId = getEventDeviceId();
+    const now = Date.now();
+    const set = entries.map((e) => ({
+      statement: `INSERT OR REPLACE INTO events (id, entity_type, entity_id, op, payload, device_id, ts, synced) VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+      values: [
+        `${entityType}:${e.entityId}:${now}:${Math.random().toString(36).slice(2, 8)}`,
+        entityType,
+        String(e.entityId),
+        e.op,
+        e.payload != null ? JSON.stringify(e.payload) : null,
+        deviceId,
+        now,
+      ],
+    }));
+    await db.executeSet(set);
+  } catch {
+    // সাইলেন্ট — event log ব্যর্থ হলেও dual-write/আসল ডেটা-পাথ অপ্রভাবিত (shadow feature)
+  }
+}
+
+/** ভবিষ্যৎ multi-device sync-এর জন্য — এখনো কোথাও কল হচ্ছে না, রেফারেন্সের জন্য রাখা। */
+export async function getUnsyncedEvents(businessType, limit = 500) {
+  const db = await getDb(businessType);
+  const res = await db.query(`SELECT * FROM events WHERE synced = 0 ORDER BY ts ASC LIMIT ?`, [limit]);
+  return res.values || [];
+}
+
+export async function markEventsSynced(businessType, ids) {
+  if (!ids || !ids.length) return;
+  const db = await getDb(businessType);
+  const set = ids.map((id) => ({ statement: `UPDATE events SET synced = 1 WHERE id = ?`, values: [id] }));
+  await db.executeSet(set);
+}
+
 // ── Connection cache — প্রতি business type-এর জন্য আলাদা DB, একবার খুলে রাখি ──
 const sqlite = new SQLiteConnection(CapacitorSQLite);
 const _dbCache = new Map(); // businessType -> SQLiteDBConnection
@@ -169,7 +247,10 @@ function numOrNull(v) {
 // দিনের) হয়ে যেত। এখন App.jsx-এর `_dateKeyOf()`-এর মতোই `_bdParts()`
 // (src/logic.js, fixed GMT+6) থেকে বের করা হচ্ছে — dual-write ফেজে দুই সিস্টেমে
 // "আজ"-এর সংজ্ঞা এখন ১০০% সিঙ্কড।
-function dateKeyFromTs(ts) {
+// টেস্টযোগ্যতার জন্য export (Phase ৩ golden-master, PHASE_3_4_5_FINAL_PLAN_v2.md) —
+// এন্ট্রি ২-এ ধরা পড়া টাইমজোন বাগ (BD মধ্যরাত-ভোর ৬টা বাউন্ডারি) আবার যেন
+// silent regression না হয়ে ফেরে, সেটা এখন tests/golden-master.mjs-এ pin করা।
+export function dateKeyFromTs(ts) {
   const d = ts ? new Date(ts) : new Date();
   const { y, m, day } = _bdParts(d);
   return `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
@@ -183,7 +264,10 @@ function dateKeyFromTs(ts) {
 // স্পেস) অংশটা মিসিং ছিল — ফলে "প্যারাসিটামল  ৫০০" (ডাবল স্পেস) দুই সিস্টেমে
 // আলাদাভাবে normalize হতো, FTS5 সার্চ রেজাল্ট IndexedDB path-এর সাথে না মেলার
 // ঝুঁকি ছিল। এখন App.jsx-এর সাথে identical।
-function normName(name) {
+// টেস্টযোগ্যতার জন্য export (Phase ৩ golden-master) — App.jsx-এর normName()-এর
+// সাথে বাইট-বাই-বাইট সামঞ্জস্যপূর্ণ থাকতে হবে (উপরের কমেন্ট দ্রষ্টব্য), নাহলে FTS5
+// সার্চ রেজাল্ট IndexedDB path-এর সাথে না মেলার ঝুঁকি (আগে একবার ধরা পড়েছিল)।
+export function normName(name) {
   return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
@@ -306,6 +390,21 @@ export async function searchFts(businessType, store, term, limit = 30) {
   const matchTerm = `${term.trim()}*`;
   const res = await db.query(sql, [matchTerm, limit]);
   return (res.values || []).map((r) => JSON.parse(r.data));
+}
+
+// ── Phase ৪ (হাইব্রিড সার্চ, PHASE_3_4_5_FINAL_PLAN_v2.md) ──────────────────
+// 🔴 গুরুত্বপূর্ণ ডিজাইন-সিদ্ধান্ত: FTS5 দিয়ে candidate pool narrow করা শুধুমাত্র
+// productMatchScore()-এর চেয়ে কোয়ালিটিতে সমান-বা-ভালো তখনই যখন ডেটাসেট বড়
+// (FTS5 শুধু prefix/token ম্যাচ করে — ফাজি/বারকোড-সাবস্ট্রিং ম্যাচ productMatchScore()
+// যা করে সেটা করে না, তাই candidate pool-এ না থাকা কোনো ভ্যালিড ম্যাচ বাদ পড়ে
+// যাওয়ার ঝুঁকি আছে)। ৩ দোকানের বর্তমান স্কেলে (হাজার-দুয়েক রেকর্ড) এই ঝুঁকি
+// নেওয়ার মতো কোনো বাস্তব লাভ নেই — তাই এই ফাংশন শুধু export করা হলো (রেডি,
+// টেস্টেবল), কিন্তু কল-সাইটে (App.jsx) একটা size-threshold গেটের পেছনে —
+// ছোট ডেটাসেটে সবসময় পুরনো ফুল-array productMatchScore()-ই চলবে (আচরণ
+// অপরিবর্তিত), শুধু ডেটা অনেক বড় হয়ে গেলে (>৫০০০ রেকর্ড) narrowing চালু হবে।
+export async function hybridSearchCandidateIds(businessType, store, term, limit = 300) {
+  const rows = await searchFts(businessType, store, term, limit);
+  return new Set(rows.map((r) => String(r.id)));
 }
 
 /** Dashboard aggregate — পুরো অ্যারে লোড না করে সরাসরি SQL SUM/COUNT। */
