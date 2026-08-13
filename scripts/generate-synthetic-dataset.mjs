@@ -117,7 +117,12 @@ timeIt(`ইনভয়েস ইনসার্ট (${N_INVOICES.toLocaleString
   db.exec("COMMIT");
 });
 
-console.log(`\nDB ফাইল সাইজ: ${(readFileSyncSize(DB_PATH) / (1024 * 1024)).toFixed(1)} MB\n`);
+// 🔴 ফিক্স (এই সেশনে ধরা পড়েছে): আগে এখানেই সাইজ মাপা হতো, কিন্তু WAL মোডে
+// আনচেকপয়েন্টেড ডেটা .db-wal ফাইলে থাকে, মূল .db ফাইলে না — তাই মূল ফাইলের সাইজ
+// কম দেখাত। এখন wal_checkpoint(TRUNCATE) দিয়ে সব ডেটা মূল ফাইলে মার্জ করে, তারপর
+// মাপা হচ্ছে (WAL ফাইলও সাইজে যোগ করে দিচ্ছি যাতে db.close() এর আগে মাপলেও সঠিক হয়)।
+db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+console.log(`\nDB ফাইল সাইজ (checkpoint-এর পর): ${(readFileSyncSize(DB_PATH) / (1024 * 1024)).toFixed(1)} MB\n`);
 console.log(`── কোয়েরি বেঞ্চমার্ক ──`);
 
 // ── কোয়েরি টেস্ট: প্রোডাক্ট নাম LIKE সার্চ ──────────────────────────────────
@@ -171,12 +176,16 @@ timeIt(`নির্দিষ্ট কাস্টমারের ইনভয�
   // keyset cursor বানাতে আগে সেই একই পজিশনের (created_at, id) জোড়াটা বের করা হচ্ছে
   // (বাস্তবে এটা আগের পেজের শেষ রো থেকেই পাওয়া যেত, এখানে শুধু বেঞ্চমার্কের জন্য সিমুলেট করা হলো)
   const cursorRow = db.prepare(`SELECT created_at, id FROM invoices ORDER BY created_at DESC, id DESC LIMIT 1 OFFSET ?`).get(DEEP_OFFSET - 1);
+  // 🔴 ফিক্স: আগে এখানে OR-ভিত্তিক কন্ডিশন ছিল (`created_at < ? OR (created_at = ? AND id < ?)`),
+  // যা DataStore.js-এর queryPage()-এর মতোই SQLite-কে ইনডেক্স SEEK না করে পুরো SCAN করতে বাধ্য
+  // করত (EXPLAIN QUERY PLAN-এ ধরা পড়েছে) — ফলে "keyset" আসলে OFFSET-এর চেয়ে ধীর মাপা হচ্ছিল।
+  // row-value tuple comparison (SQLite 3.15+) ব্যবহার করে এখন এটা সত্যিকারের ইনডেক্স SEEK করে।
   const { ms: keysetMs } = timeIt(`Keyset পেজিনেশন (একই গভীরতা, LIMIT 50)`, () => {
     return db.prepare(`
       SELECT * FROM invoices
-      WHERE (created_at < ? OR (created_at = ? AND id < ?))
+      WHERE (created_at, id) < (?, ?)
       ORDER BY created_at DESC, id DESC LIMIT 50
-    `).all(cursorRow.created_at, cursorRow.created_at, cursorRow.id);
+    `).all(cursorRow.created_at, cursorRow.id);
   });
 
   const speedup = offsetMs / keysetMs;
@@ -184,6 +193,7 @@ timeIt(`নির্দিষ্ট কাস্টমারের ইনভয�
 }
 
 db.close();
+console.log(`DB ফাইল সাইজ (close()-এর পরও, sanity check): ${(readFileSyncSize(DB_PATH) / (1024 * 1024)).toFixed(1)} MB`);
 console.log(`\n✅ শেষ — DB ফাইল: ${DB_PATH} (ম্যানুয়ালি চেক করতে চাইলে sqlite3 CLI দিয়ে খুলুন, শেষে ডিলিট করে দিতে পারেন)`);
 
 function readFileSyncSize(p) {
