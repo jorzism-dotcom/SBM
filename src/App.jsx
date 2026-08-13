@@ -14653,10 +14653,24 @@ function SmartBusinessMgmt() {
             linear-gradient(135deg, #a78bfa 0%, #a78bfa 25%, #3b82f6 25%, #3b82f6 50%, #84cc16 50%, #84cc16 75%, #f97316 75%, #f97316 100%) border-box !important;
         }
 
-        /* ── Font Size CSS Variable ─────────────────── */
-        :root { --app-font-size: ${fontSize}px; --toast-bottom: calc(88px + env(safe-area-inset-bottom, 0px)); }
+        /* ── Font Size CSS Variable ───────────────────
+           🔴 সিস্টেমিক ফিক্স, ধাপ ২ (১৩ আগস্ট ২০২৬) — আগের ফিক্সে (১১ আগস্ট) শুধু
+           !important বাদ দেওয়া হয়েছিল, কিন্তু তাতে অন্য সমস্যা তৈরি হয়েছিল:
+           App.jsx-এ ~১৯৫৬টি জায়গায় হার্ডকোডেড লিটারাল fontSize (fontSize:12,
+           fontSize:24 ইত্যাদি — প্রতিটা কম্পোনেন্টের নিজস্ব ডিজাইন-সাইজ) থাকায়,
+           Settings-এর "Font Size" স্লাইডার সেই ~১৯৫৬টা জায়গায় কোনো প্রভাবই
+           ফেলছিল না (ইনলাইন স্টাইল সবসময় স্টাইলশিটের চেয়ে জেতে) — শুধু যেসব
+           টেক্সটে ইনলাইন সাইজ নেই সেখানেই কাজ করত।
+           সঠিক সমাধান: প্রতিটা হার্ডকোডেড fontSize আলাদাভাবে ঠিক করার বদলে,
+           CSS zoom দিয়ে পুরো অ্যাপকেই স্কেল করা (Capacitor/Android WebView-এ
+           পুরোপুরি সাপোর্টেড, transform:scale-এর মতো position:fixed এলিমেন্ট
+           ভেঙে যায় না)। এতে প্রতিটা এলিমেন্টের নিজস্ব সাইজ/অনুপাত (হায়ারার্কি)
+           অক্ষত থাকে, শুধু ইউজারের সেটিং অনুযায়ী গোটা UI ছোট/বড় হয় —
+           আক্ষরিক zoom in/out-এর মতো। এখন থেকে নতুন কোনো fontSize বসালেও
+           আলাদা কিছু করার দরকার নেই, zoom স্বয়ংক্রিয়ভাবে সেটাও স্কেল করবে। */
+        :root { --app-font-size: ${fontSize}px; --app-zoom: ${(fontSize / 15).toFixed(4)}; --toast-bottom: calc(88px + env(safe-area-inset-bottom, 0px)); }
         @media (max-height: 600px) { :root { --toast-bottom: 72px; } }
-        @media (max-width: 360px) { div,span,p { font-size: clamp(12px, var(--app-font-size), 18px) !important; } }
+        html { zoom: var(--app-zoom, 1); }
 
         /* ── Performance: GPU compositing ────────────── */
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -14689,9 +14703,12 @@ function SmartBusinessMgmt() {
         }
 
         /* ── সব লেখা বড়, বোল্ড, মডার্ন ────────────── */
+        /* 🔴 (১৩ আগস্ট ২০২৬) font-size রুল সরানো হলো — এখন পুরো স্কেলিং
+           html { zoom: var(--app-zoom) } দিয়ে হয় (উপরে দেখুন), এই রুলগুলো
+           রাখলে var(--app-font-size) অংশ আবার আলাদাভাবে সাইজ বদলে দিত আর
+           zoom-এর সাথে মিলে ডাবল-স্কেলিং হতো। */
         * { font-weight: 700 !important; }
-        div, span, p, li, td, th, label { font-size: var(--app-font-size); letter-spacing: 0.1px; }
-        h1, h2, h3 { font-size: calc(var(--app-font-size) + 3px) !important; }
+        div, span, p, li, td, th, label { letter-spacing: 0.1px; }
         
         /* ═══ বাংলা IME — Ultimate Fix (Avro + Ridmik + Gboard) ═══════════════
            Android WebView-এ Bengali smooth করার সব CSS trick একসাথে         */
@@ -14716,7 +14733,11 @@ function SmartBusinessMgmt() {
           /* Bengali font — অবশ্যই এই order-এ */
           font-family: 'Noto Sans Bengali', 'Hind Siliguri', 'Kalpurush', sans-serif !important;
           font-weight: 700 !important;
-          font-size: calc(var(--app-font-size, 15px) + 1px) !important;
+          /* 🔴 (১৩ আগস্ট ২০২৬) var(--app-font-size) বাদ — এখন zoom দিয়ে পুরো
+             অ্যাপ স্কেল হয়, তাই এখানে স্থির ডিফল্ট সাইজ রাখা হলো (zoom
+             নিজেই এটাকে user-এর সেটিং অনুযায়ী বড়/ছোট করবে); var() রাখলে
+             ডাবল-স্কেলিং হতো। */
+          font-size: 16px !important;
 
           /* Touch — tap করলে zoom না হয়, highlight না দেখায় */
           -webkit-tap-highlight-color: transparent;
@@ -14816,12 +14837,18 @@ function SmartBusinessMgmt() {
            স্টাইলশিট রুলের চেয়ে প্রায়োরিটিতে এগিয়ে থাকে), আর যেসব টেক্সটে
            ইনলাইন fontSize নেই সেগুলো এখনও ইউজারের "অ্যাপ ফন্ট সাইজ" সেটিং
            অনুযায়ী ঠিকই স্কেল হবে। এখন থেকে যেকোনো জায়গায় fontSize বসালেই
-           সরাসরি কাজ করবে — আলাদা এসকেপ-হ্যাচ ক্লাসের আর দরকার নেই। */
+           সরাসরি কাজ করবে — আলাদা এসকেপ-হ্যাচ ক্লাসের আর দরকার নেই।
+
+           🔴 আপডেট (১৩ আগস্ট ২০২৬, ধাপ ২): উপরের ব্যাখ্যাটা তখনকার — কিন্তু
+           বাস্তবে ~১৯৫৬টা হার্ডকোডেড ইনলাইন fontSize থাকায় Settings-এর ফন্ট
+           সাইজ স্লাইডার প্রায় কোনো কাজেই আসছিল না। এখন var(--app-font-size)
+           ভিত্তিক font-size রুলগুলো সরিয়ে html { zoom: var(--app-zoom) }
+           দিয়ে পুরো অ্যাপ একসাথে স্কেল করা হচ্ছে (উপরে ":root" ব্লক দেখুন),
+           যা হার্ডকোডেড আর ডাইনামিক — দুই ধরনের সাইজেই সমানভাবে কাজ করে। */
         * { font-weight: 700; }
-        span, div, p, td, th, li, label { font-size: var(--app-font-size); }
-        button { font-size: var(--app-font-size); }
-        input, textarea, select { font-size: calc(var(--app-font-size) + 1px); font-weight: 700; }
-        h1,h2,h3,h4 { font-weight: 900; font-size: calc(var(--app-font-size) + 4px); }
+        button { font-weight: 700; }
+        input, textarea, select { font-weight: 700; }
+        h1,h2,h3,h4 { font-weight: 900; }
 
         /* নিচের এসকেপ-হ্যাচ ক্লাসগুলো আগের বাগের সময়কার — উপরের রুট-ফিক্সের পর
            এগুলো আর প্রয়োজনীয় নয় কিন্তু কোথাও রেফারেন্স করা থাকায় নিরাপদে
