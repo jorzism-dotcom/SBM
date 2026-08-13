@@ -224,6 +224,13 @@ const useAppStore = create(subscribeWithSelector((set) => ({
   customers:         [],
   products:          [],
   invoices:          [],
+  // 🆕 Phase ৫ (write-through Map, getState()-সিঙ্কড) — নিচে subscribeWithSelector
+  // দিয়ে products/customers/invoices বদলালেই স্বয়ংক্রিয় রিবিল্ড হয় (set()/patch()
+  // দুটোর মাধ্যমেই বদলালেও ধরবে, কারণ এটা action-এর ভেতরে না বসিয়ে বাইরে থেকে
+  // subscribe করা — কোনো নির্দিষ্ট write-path-এর উপর নির্ভরশীল না)।
+  productsById:      new Map(),
+  customersById:     new Map(),
+  invoicesById:      new Map(),
   txns:              [],
   smsLog:            [],
   users:             [],
@@ -350,6 +357,31 @@ const useAppStore = create(subscribeWithSelector((set) => ({
   // batch update
   patch: (obj) => set(obj),
 })));
+
+// 🆕 Phase ৫ — getState()-সিঙ্কড write-through Map। subscribeWithSelector দিয়ে
+// products/customers/invoices array বদলালেই (set() বা patch() যেভাবেই বদলাক না
+// কেন) নতুন Map রিবিল্ড হয়ে store-এ ফিরে বসে। এটা render-cycle-এর বাইরে, তাই
+// useAppStore.getState().productsById.get(id) সবসময়-ফ্রেশ (getState() ঠিক এই
+// গ্যারান্টির জন্যই আগে ব্যবহার হতো, .find() দিয়ে) — কিন্তু এখন O(1)।
+// ⚠️ eternal rule অনুযায়ী নোট: এই তিনটা subscribe শুধুমাত্র নিজ নিজ selector
+// (products/customers/invoices) বদলালেই ফায়ার করে (subscribeWithSelector-এর
+// কাজই এটা), productsById/customersById/invoicesById নিজে সেট করাটা নতুন করে
+// products/customers/invoices বদলায় না — তাই ইনফিনিট লুপের ঝুঁকি নেই।
+useAppStore.subscribe(
+  (s) => s.products,
+  (products) => { useAppStore.getState().set("productsById", new Map(products.map(p => [String(p.id), p]))); },
+  { fireImmediately: true }
+);
+useAppStore.subscribe(
+  (s) => s.customers,
+  (customers) => { useAppStore.getState().set("customersById", new Map(customers.map(c => [String(c.id), c]))); },
+  { fireImmediately: true }
+);
+useAppStore.subscribe(
+  (s) => s.invoices,
+  (invoices) => { useAppStore.getState().set("invoicesById", new Map(invoices.map(i => [String(i.id), i]))); },
+  { fireImmediately: true }
+);
 
 // ── Fix 5: ErrorBoundary — প্রতিটি tab crash isolate করে ──────────────────────
 class ErrorBoundary extends React.Component {
@@ -11309,17 +11341,41 @@ function SmartBusinessMgmt() {
       const firebaseOn  = fbOn ?? false;
       if (firebaseCfg && firebaseOn) { FB.init(firebaseCfg); FSS.init(firebaseCfg); }
 
-      // ── #৭ বুট-টাইম পারফরম্যান্স — ইনভয়েস প্রোগ্রেসিভ হাইড্রেশন ──────────────
-      // ১,০০,০০০+ ইনভয়েস থাকলে পুরো অ্যারে প্রথম রেন্ডারেই state-এ বসালে Dashboard/RFM/
-      // ইত্যাদির ভারী useMemo হিসাব প্রথম পেইন্টকেই ব্লক করে ফেলত ("অ্যাপ খোলার সময় লোডিং বেশি")।
-      // তাই প্রথমে শুধু সাম্প্রতিক ৯০ দিনের window দিয়ে state সেট করা হচ্ছে (দ্রুত, হালকা প্রথম
-      // রেন্ডার), তারপর প্রথম পেইন্ট শেষ হওয়ার পর (setTimeout 0) পুরো ডেটা দিয়ে ব্যাকফিল করা হয় —
-      // চূড়ান্ত অবস্থা অপরিবর্তিত (অফলাইন দোকানে পুরো হিস্ট্রি state-এই থাকে, Firebase চালু
-      // দোকানে এমনিতেই কিছুক্ষণ পর Firestore-এর ৩০ দিনের windowed listener পুরোটা ওভাররাইট
-      // করে দেয় — শুধু বুটের প্রথম মুহূর্তের ভারী কাজটা সরানো হলো, কোনো ডেটা হারায় না)।
+      // ── #৭ বুট-টাইম পারফরম্যান্স — ইনভয়েস উইন্ডোড লোড (আর কখনো পূর্ণ ব্যাকফিল না) ──
+      // 🔴 রিডিজাইন (SQLITE_MIGRATION_LOG.md ব্লকার #১ ফিক্স, [এন্ট্রি ২৩+]): আগে এখানে
+      // প্রথমে ৯০ দিনের windowed state সেট হতো (দ্রুত প্রথম রেন্ডার), কিন্তু তার ঠিক পরেই
+      // (setTimeout 0) নিচের একটা `_patch({ invoices: allInvoicesForBoot })` কল পুরো
+      // persisted invoice history আবার state-এ ঢুকিয়ে দিত। ১ কোটি ইনভয়েস স্কেলে এই
+      // "পুরো ইতিহাস মেমোরিতে" মুহূর্তটাই ~৫-১০GB RAM লাগাতে পারত — বাজেট Android
+      // ফোনে ক্র্যাশ/হ্যাং-এর সবচেয়ে বড় ঝুঁকি ছিল এটাই। সেই পূর্ণ-ব্যাকফিল সম্পূর্ণ
+      // সরিয়ে ফেলা হলো — state.invoices এখন থেকে বুটের পর সবসময় windowed-ই থাকে,
+      // কখনো পুরো অ্যারে লাইভ মেমরিতে আসে না।
+      //
+      // Window ৯০ দিনের বদলে ৬ মাস (১৮০ দিন) করা হলো — কারণ ঠিক নিচেই
+      // archiveOldInvoices() effect (দেখুন লাইন ~১২০০৫) ৬ মাসের বেশি পুরনো ইনভয়েস
+      // স্বয়ংক্রিয়ভাবে state থেকে সরিয়ে InvoiceArchive (IndexedDB)-এ রাখে। দুটো
+      // কাটঅফ একই (৬ মাস) রাখা মানে বুটের ঠিক পরের state আর archiveOldInvoices()
+      // চালানোর পরের "স্টেডি-স্টেট" state — এই দুটো এক এবং অভিন্ন, কোনো
+      // মধ্যবর্তী গ্যাপ (যেমন আগের ৯০দিন-বনাম-৬মাস পার্থক্য) থাকে না।
+      //
+      // ৬ মাসের চেয়ে পুরনো কোনো ইনভয়েস দরকার হলে (কাস্টমার হিস্ট্রি, রিটার্ন
+      // সার্চ, রিপোর্ট) — সেই on-demand লুকআপ ইতিমধ্যেই আছে: InvoiceArchive.getById()/
+      // .findByQuery()/.queryPage() (IndexedDB-ভিত্তিক আর্কাইভ, দেখুন কল-সাইট
+      // ReturnModule.searchInvoice, Dashboard কাস্টমার-হিস্ট্রি, void history ইত্যাদি)।
+      // এই মেকানিজম নতুন কিছু না — আগে থেকেই এই কল-সাইটগুলো InvoiceArchive ব্যবহার
+      // করত (কারণ ৬ মাসের বেশি পুরনো ডেটা এমনিতেও কিছুক্ষণ পরই state থেকে সরে
+      // যেত); শুধু এখন বুটের ঠিক পরের মুহূর্তেও (আগের মতো সাময়িকভাবে "সব মেমোরিতে"
+      // না গিয়ে) একই নিয়ম মেনে চলছে, তাই আচরণে নতুন কোনো গ্যাপ তৈরি হয়নি।
+      //
+      // ⚠️ সততার সাথে নোট (ভবিষ্যৎ সেশনের জন্য): এই সেশনে App.jsx-এর প্রতিটা
+      // কল-সাইট যাচাই করে নিশ্চিত হওয়া হয়নি যে "live invoices state"-এর উপর
+      // নির্ভরশীল প্রতিটা জায়গা (POS/dashboard-এর বাইরেও) InvoiceArchive
+      // fallback-এ ঠিকমতো পড়ে। বড় স্কেলে (১ কোটি ইনভয়েস) real-device টেস্টের
+      // সময় বিশেষভাবে "৬ মাসের বেশি পুরনো ইনভয়েস খোঁজা/দেখা" প্রতিটা স্ক্রিনে
+      // (ইনভয়েস হিস্ট্রি, কাস্টমার ডিটেইল, রিটার্ন, ভয়েড হিস্ট্রি) যাচাই করা উচিত।
       const allInvoicesForBoot = rawInvoices || [];
       const invoiceCutoff90 = new Date();
-      invoiceCutoff90.setDate(invoiceCutoff90.getDate() - 90);
+      invoiceCutoff90.setMonth(invoiceCutoff90.getMonth() - 6); // archiveOldInvoices()-এর সাথে সিঙ্কড কাটঅফ
       const invoiceCutoff90Key = _dateKeyOf(invoiceCutoff90);
       const recentInvoicesForBoot = allInvoicesForBoot.length > 500
         ? allInvoicesForBoot.filter(i => !i.dateKey || i.dateKey >= invoiceCutoff90Key)
@@ -11365,12 +11421,14 @@ function SmartBusinessMgmt() {
         localStorage.setItem("hg_device_id", "dev_" + Math.random().toString(36).slice(2, 10) + "_" + Date.now().toString(36));
       }
 
-      // ── ইনভয়েস ব্যাকফিল — প্রথম পেইন্ট শেষ হওয়ার পর পুরো হিস্ট্রি দিয়ে state আপডেট ──
-      // (windowing হয়েছিল শুধু allInvoicesForBoot.length > 500 হলে, তাই ছোট দোকানে এই
-      // ব্যাকফিল কার্যত no-op — একই অ্যারে ফিরিয়ে দিলে React re-render-ই করবে না)
-      if (recentInvoicesForBoot !== allInvoicesForBoot) {
-        setTimeout(() => { _patch({ invoices: allInvoicesForBoot }); }, 0);
-      }
+      // 🔴 আগে এখানে একটা setTimeout(() => { _patch({ invoices: allInvoicesForBoot }); }, 0)
+      // ছিল — প্রথম পেইন্টের পরপরই পুরো ইনভয়েস ইতিহাস আবার state-এ ঢুকিয়ে দিত
+      // (windowing সাময়িক, শুধু "প্রথম রেন্ডার দ্রুত করা"র জন্য ছিল, চূড়ান্ত অবস্থা
+      // ছিল "সব মেমোরিতে")। এটা ইচ্ছাকৃতভাবে সরানো হলো — এখন recentInvoicesForBoot-ই
+      // (৬ মাসের window) চূড়ান্ত অবস্থা, কখনো পুরো অ্যারে state-এ আসে না। বিস্তারিত
+      // ব্যাখ্যা ঠিক উপরে (allInvoicesForBoot/recentInvoicesForBoot ডিফাইন করা
+      // জায়গায়)। allInvoicesForBoot ভ্যারিয়েবলটা নিচে কোথাও আর ব্যবহার হচ্ছে না —
+      // ইচ্ছাকৃতভাবে রাখা হয়েছে শুধু উপরের cutoff-ফিল্টার হিসাব করতে।
 
       // ── Wave 2 — প্রথম পেইন্টের জন্য জরুরি নয় এমন কালেকশন, পেইন্টের পরে ──────
       // (auditLogs/cashLogs/stockMovements/expenses/returns/quotations/
@@ -13483,7 +13541,7 @@ function SmartBusinessMgmt() {
     // পারত। রিটার্ন ফ্লো-তে (Invoice History) যেমন freshest getState() থেকে
     // চেক করা হয়, এখানেও ঠিক তেমনি — কমিট করার ঠিক আগে সবচেয়ে সাম্প্রতিক
     // invoices স্টেট থেকে দেখা হচ্ছে এই ইনভয়েস ইতিমধ্যে ভয়েড হয়ে গেছে কিনা।
-    const freshInv = useAppStore.getState().invoices.find(i => i.id === inv.id);
+    const freshInv = useAppStore.getState().invoicesById.get(String(inv.id));
     if (freshInv && freshInv.status === "voided") {
       showToast("এই ইনভয়েস ইতিমধ্যে ভয়েড করা হয়ে গেছে", "#f59e0b");
       return;
@@ -13592,7 +13650,7 @@ function SmartBusinessMgmt() {
         // অনুসরণ করা হচ্ছে — localP শুধু ঐচ্ছিক costPrice fallback, কখনো
         // পুরো restore-কে গার্ড করে না। soldItem নিজেই batchNo/costPrice/
         // expiryDate ধরে রাখে, তাই localP আসলে না থাকলেও restore চলবে।
-        const localP = useAppStore.getState().products.find(p => p.id === soldItem.productId);
+        const localP = useAppStore.getState().productsById.get(String(soldItem.productId));
         const soldBatchNo = soldItem.batchNo || "";
         // 🔴 ফিক্স (রুট কজ — একাধিক ব্যাচ থেকে একসাথে বিক্রি হলে ভয়েডে সব এক
         // ব্যাচে মিশে যাওয়া): এই আইটেম বিক্রির সময় যদি একাধিক ব্যাচ থেকে qty
@@ -13683,7 +13741,7 @@ function SmartBusinessMgmt() {
         // দ্বিতীয়টার restore প্রথমটাকে ওভাররাইট করে হারিয়ে না যায়।
         // 🔴 ফিক্স: পণ্য সত্যিই ডিলিট হয়ে থাকলে (Firestore-এও নেই/অফলাইন) freshP
         // undefined হতে পারে — সেক্ষেত্রে local batches হিসেব সম্ভব না, তাই স্কিপ।
-        const freshP = useAppStore.getState().products.find(p => p.id === soldItem.productId) || localP;
+        const freshP = useAppStore.getState().productsById.get(String(soldItem.productId)) || localP;
         if (!freshP) {
           // 🔴 ফিক্স (বাগ ৩): local state-এও পণ্য নেই — সত্যিই ডিলিট, দোকানদারকে জানানো হবে।
           skippedDeletedNames.push(soldItem.name || soldItem.productId);
@@ -13976,7 +14034,7 @@ function SmartBusinessMgmt() {
       else transientFailure = true;
     }
     if (!stockResult && !productDeleted) {
-      const freshP = useAppStore.getState().products.find(p => p.id === productId) || localP;
+      const freshP = useAppStore.getState().productsById.get(String(productId)) || localP;
       if (freshP) {
         let updatedBatches = freshP.batches ? [...freshP.batches] : [];
         const soldBatchNo = item.batchNo || "";
@@ -16860,8 +16918,12 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
   // `useAppStore.getState().products.find(...)` ব্যবহার করে (transaction-এর
   // মধ্যে সবচেয়ে ফ্রেশ state পড়ার জন্য, race-condition এড়াতে) — সেগুলোতে এই Map
   // ব্যবহার করা যাবে না, কারণ এই Map render-time snapshot, getState()-এর মতো
-  // সবসময়-ফ্রেশ না। সেই ক্লাসের কল-সাইট আলাদা (আরও জটিল) write-through
-  // mechanism দরকার, এই সেশনে ইচ্ছাকৃতভাবে ছোঁয়া হয়নি — দেখুন migration log।
+  // সবসময়-ফ্রেশ না। সেই ক্লাসের কল-সাইট (getState()-ভিত্তিক) এখন module-level
+  // subscribeWithSelector Map (useAppStore.getState().productsById ইত্যাদি —
+  // দেখুন এন্ট্রি ২২, store definition-এর ঠিক পরে) দিয়ে সমাধান করা হয়েছে।
+  // এই লোকাল ViewerDashboardScreen-এর নিজস্ব useMemo Map (নিচে) সেই একই নাম
+  // ব্যবহার করলেও সম্পূর্ণ ভিন্ন জিনিস — এই কম্পোনেন্টের নিজস্ব local useState
+  // products-এর উপর ভিত্তি করে, store-এর সাথে সরাসরি সম্পর্কিত না।
   const productsById  = useMemo(() => new Map(products.map(p => [String(p.id), p])),   [products]);
   const customersById = useMemo(() => new Map(customers.map(c => [String(c.id), c])), [customers]);
   const [purchaseOrders,  setPurchaseOrders]  = useState(() => data?.purchaseOrders  || []);
@@ -18409,7 +18471,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     if (walkInHasBaki && walkInBakiAmt > 0) {
       if (walkInCustMode === "existing" && walkInExistingId) {
         walkInCustId = walkInExistingId;
-        const latestWalkInBal = useAppStore.getState().customers.find(c => c.id === walkInExistingId)?.balance ?? 0;
+        const latestWalkInBal = useAppStore.getState().customersById.get(String(walkInExistingId))?.balance ?? 0;
         newWalkInBal = latestWalkInBal + walkInBakiAmt;
         setCustomers(prev => prev.map(c => c.id === walkInExistingId ? { ...c, balance: newWalkInBal } : c));
         addTxn(walkInCustId, "baki", walkInBakiAmt, newWalkInBal, invId, `Walk-in বাকি`);
@@ -18441,7 +18503,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     if (needsBalanceTx) {
       _overpayAmt = (effectivePayType === "partial" && paidAmt > total) ? (paidAmt - total) : 0;
       delta = bakiAmt - _overpayAmt;
-      const latestLocalBal = useAppStore.getState().customers.find(c => c.id === selCust.id)?.balance ?? (selCust.balance || 0);
+      const latestLocalBal = useAppStore.getState().customersById.get(String(selCust.id))?.balance ?? (selCust.balance || 0);
       newBal = Math.max(0, latestLocalBal + delta);
     }
 
@@ -18452,7 +18514,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     const soldBatchMap = {};
     const sellableItems = items.filter(i => i.productType !== "service");
     const stockUpdates = sellableItems.map((sold) => {
-      const freshP = useAppStore.getState().products.find(p => p.id === sold.productId)
+      const freshP = useAppStore.getState().productsById.get(String(sold.productId))
         || products.find(p => p.id === sold.productId);
       if (!freshP || freshP.productType === "service") return null;
       const { newStock, updatedBatches, batchNo, costPrice, expiryDate, batchBreakdown } = computeStockDeductionFIFO(freshP, sold.qty);
