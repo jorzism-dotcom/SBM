@@ -23,7 +23,7 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ২৫-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ২৭-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
 
 **টার্গেট স্কেল**: ১,০০,০০০ প্রোডাক্ট · ১০,০০০ কাস্টমার · ১,০০,০০,০০০ (১ কোটি) ইনভয়েস — বর্তমান টেস্ট শপের ডেটা (২২৩৬/১৭/৬৩০) এই লক্ষ্যের তুলনায় প্রায় নগণ্য, তাই "এখন সমস্যা হচ্ছে না" কোনো নির্ভরযোগ্য সংকেত না।
 
@@ -44,7 +44,7 @@ Schema+FTS5 · dual-write (shadow) · resumable batch backfill · row-count veri
 - **Real-device যাচাই এখনো বাকি** — dev flag চালু করে real device-এ boot টাইম/মেমরি ব্যবহার (৬-মাস windowed invoices দিয়ে) আর keyset pagination (ফিক্সের পর) উভয়ই sandbox-এর বাইরে কখনো টেস্ট হয়নি। এই সেশনের ১ কোটি বেঞ্চমার্ক সার্ভার/ডেস্কটপ CPU-তে হয়েছে — বাজেট Android ফোনে সংখ্যাগুলো ধীর হবে।
 
 ### 🟡 দরকারি, ব্লকার না
-4. Read-path cutover — স্কোপড প্রস্তাব: শুধু pagination/historical browsing SQLite থেকে read করবে, POS/dashboard হিসাব-নিকাশ এখনো IndexedDB-ভিত্তিক লজিকেই থাকবে (কম ঝুঁকি)। এখনো ডিজাইন হয়নি। **নোট**: queryPage() এখন keyset-এ প্রস্তুত থাকলেও App.jsx-এর কোনো real UI কল-সাইট এখনো এটা কল করে না (এখনো শুধু DataStore.js-এর ভেতরের ফাংশন, wire করা হয়নি) — এই কাটওভার-ই সেই wiring-এর কাজ।
+4. Read-path cutover — স্কোপড প্রস্তাব: শুধু pagination/historical browsing SQLite থেকে read করবে, POS/dashboard হিসাব-নিকাশ এখনো IndexedDB-ভিত্তিক লজিকেই থাকবে (কম ঝুঁকি)। এখনো ডিজাইন হয়নি। **নোট**: queryPage() এখন keyset-এ প্রস্তুত + এন্ট্রি ২৭-এ ইউনিট-টেস্ট কভারেজও প্রস্তুত, কিন্তু App.jsx-এর কোনো real UI কল-সাইট এখনো এটা কল করে না (এখনো শুধু DataStore.js-এর ভেতরের ফাংশন, wire করা হয়নি) — এই কাটওভার-ই সেই wiring-এর কাজ।
 5. ১৬টা Virtuoso লিস্টের মধ্যে invoices ও products-কে async pagination দিতে হবে (stale-response/sequence-token guard সহ)। customers (টার্গেট ১০ হাজার) মেমোরিতেই থাকতে পারে, pagination লাগবে না।
 6. Scientist-স্টাইল shadow-compare (Phase ৭) — এখনো ডিজাইন হয়নি, শুধু নাম উল্লেখ ছিল।
 7. `FTS_NARROW_THRESHOLD = 5000` (App.jsx লাইন ৫২) — ১ লাখ প্রোডাক্ট টার্গেটে এই থ্রেশহোল্ড এখনো ঠিক আছে কিনা রিভিজিট করা দরকার।
@@ -60,6 +60,30 @@ Schema+FTS5 · dual-write (shadow) · resumable batch backfill · row-count veri
 ---
 
 ## এন্ট্রি লগ
+
+### [এন্ট্রি ২৭] — `queryPage()` ইউনিট টেস্ট যোগ হলো (৭-৯ ধারার #৬, আসন্ন read-path cutover-এর সেফটি নেট)
+
+**প্রসঙ্গ**: ৭টা বাকি সাব-টাস্ক (queryPage() wiring + async pagination, shadow-compare, date_key ইনডেক্স, FTS threshold রিভিজিট, ইত্যাদি)-এর ক্রম ঠিক করার সময় সিদ্ধান্ত হয়েছিল — সবচেয়ে ছোট/নিরাপদ, কোনো ডিপেন্ডেন্সি ছাড়া কাজ (queryPage() ইউনিট টেস্ট) দিয়ে শুরু করা, কারণ এটাই পরের বড় কাজের (read-path cutover, App.jsx-এর ~৪০ হাজার লাইনে wiring) সেফটি নেট হবে।
+
+**সমস্যা**: `DataStore.js` `@capacitor-community/sqlite` (native bridge) + Vite-এর `?raw` ইম্পোর্ট (schema.sql) ব্যবহার করে — কোনোটাই plain `node`-এ চলে না, তাই `queryPage()` আগে কোনোভাবেই ইউনিট-টেস্ট করা যাচ্ছিল না (শুধু bench script দিয়ে raw SQL টেস্ট হতো, `DataStore.js`-এর আসল ফাংশন না)।
+
+**সমাধান**: `tests/helpers/` এ দুইটা নতুন হেল্পার —
+1. `capacitor-sqlite-shim.mjs` — `@capacitor-community/sqlite`-এর মিনিমাল fake, Node-এর বিল্ট-ইন `node:sqlite` (bench script যেটা ব্যবহার করে, সেটাই) দিয়ে ব্যাকড। `query`/`execute`/`run`/`executeSet`/connection lifecycle — যতটুকু `DataStore.js` আসলে ব্যবহার করে ততটুকুই কভার করে।
+2. `vite-node-loader.mjs` — Node ESM loader hook (`resolve`/`load`), `@capacitor-community/sqlite` ইম্পোর্ট শিমে রিডাইরেক্ট করে আর `"*.sql?raw"` ইম্পোর্ট রিজলভ করে raw text হিসেবে।
+
+এই দুইটার সুবাদে `tests/datastore-querypage-tests.mjs` **`DataStore.js`-এর আসল, অপরিবর্তিত কোড** সরাসরি import করে টেস্ট করে — কোনো লজিক কপি-পেস্ট বা রিইমপ্লিমেন্ট করতে হয়নি।
+
+**১০টা কেস কভার করে**: বেসিক পেজিনেশন (limit/hasMore/nextCursor), শেষ পেজ ডিটেকশন, খালি store, পুরো তালিকা multi-page traversal-এ কোনো row miss/duplicate না হওয়া, **ডুপ্লিকেট sortColumn ভ্যালুতে id-tie-break** (এন্ট্রি ২৫-এর SEEK বাগের ঠিক যে এরিয়া, সবচেয়ে গুরুত্বপূর্ণ কেস), sortDir=ASC, custom where/params (soft-delete ফিল্টার), invoices-এর ডিফল্ট sort column (created_at, updated_at না — এটাও আগে একটা লুকানো বাগ ছিল যেটা কখনো কল-সাইট না থাকায় ধরা পড়েনি), custom sortColumn=id, আর JSON round-trip ডেটা ইন্টিগ্রিটি।
+
+**যাচাই**: মিউটেশন-টেস্ট দিয়ে কনফার্ম করা হয়েছে যে টেস্টগুলো আসলে কার্যকর — tie-break শর্ত ইচ্ছাকৃতভাবে ভেঙে (row-value tuple-এর বদলে single-column comparison) দেখা গেছে ঠিক সেই কেসটাই ফেল করে (10 unique রেকর্ডের জায়গায় 3টা দেখাচ্ছিল — মানে ৭টা রো স্কিপ হয়ে যাচ্ছিল), বাকি ৯টা কেস পাস থাকে। তারপর কোড রিস্টোর করে কনফার্ম করা হয়েছে ফাইল অপরিবর্তিত।
+
+`package.json`-এর `test` স্ক্রিপ্টে যোগ করা হয়েছে (এখন `npm test` এ ৫টা সুইট চলে)।
+
+**⚠️ sandbox-নোট**: এই sandbox-এ `node_modules` ইনস্টল করা নেই বলে `schema-tests.mjs` (zod ডিপেন্ডেন্সি) রান করা যায়নি এখানে — কিন্তু এটা প্রি-এক্সিস্টিং sandbox-সীমাবদ্ধতা, নতুন টেস্টের কারণে না। GitHub Actions (`npm ci` চলে সেখানে) এ সমস্যা হবে না। `logic-tests.mjs` (৭২), `sync-tests.mjs` (২৪), আর নতুন `datastore-querypage-tests.mjs` (১০) — সবগুলো এই sandbox-এ পাস।
+
+**পরবর্তী স্টেপ**: প্ল্যানের #১+২ (queryPage() App.jsx-এ wire করা + Virtuoso async pagination) — বড়, ঝুঁকিপূর্ণ কাজ, আলাদা মনোযোগী সেশনে করতে হবে, এই টেস্ট সুইট এখন তার সেফটি নেট হিসেবে প্রস্তুত।
+
+---
 
 ### [এন্ট্রি ২৬] — ১ কোটি স্কেল বেঞ্চমার্ক অবশেষে সম্পূর্ণ কনফার্মড (real numbers, chunked run)
 
