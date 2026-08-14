@@ -40,12 +40,13 @@ Schema+FTS5 · dual-write (shadow) · resumable batch backfill · row-count veri
 7. **🟡 নতুন নোট**: "আজকের ইনভয়েস লিস্ট" কোয়েরি ১ কোটি স্কেলে ১২১ms (আগে ছোট স্কেলে <৬ms) — সম্ভবত `(date_key, created_at)` কম্পোজিট ইনডেক্সের অভাবে সর্ট-টাইম। ব্লকার না, কিন্তু ভবিষ্যতে ফিক্সযোগ্য।
 
 ### 🔴 ব্লকার — বাকি
-- (Boot backfill, queryPage() keyset SEEK বাগ, DB-সাইজ মাপা ও ১ কোটি স্কেল কনফার্মেশন, archiveOldInvoices() dual-write ডিলিট বাগ (এন্ট্রি ২৮) — সবকটা সমাধান হয়ে গেছে উপরে — কোনো কোড-লেভেল ব্লকার এই মুহূর্তে চিহ্নিত নেই)
-- **⚠️ এন্ট্রি ২৮-এর ফিক্স `npm test` দিয়ে এখনো কনফার্ম করা হয়নি** (sandbox-এ নেটওয়ার্ক ছিল না) — পরবর্তী সেশনে/CI-তে প্রথম কাজ এটা।
-- **Real-device যাচাই এখনো বাকি** — dev flag চালু করে real device-এ boot টাইম/মেমরি ব্যবহার (৬-মাস windowed invoices দিয়ে) আর keyset pagination (ফিক্সের পর) উভয়ই sandbox-এর বাইরে কখনো টেস্ট হয়নি। এই সেশনের ১ কোটি বেঞ্চমার্ক সার্ভার/ডেস্কটপ CPU-তে হয়েছে — বাজেট Android ফোনে সংখ্যাগুলো ধীর হবে।
+- (Boot backfill, queryPage() keyset SEEK বাগ, DB-সাইজ মাপা ও ১ কোটি স্কেল কনফার্মেশন, archiveOldInvoices() dual-write ডিলিট বাগ (এন্ট্রি ২৮), Products pagination (এন্ট্রি ৩০) — সবকটা সমাধান ও npm test/real-device কনফার্মড — কোনো কোড-লেভেল ব্লকার এই মুহূর্তে চিহ্নিত নেই)
+- ✅ **এন্ট্রি ২৮ ও ৩০ — `npm test` দিয়ে কনফার্মড (২০২৬-০৮-১৪)**: CI-এর Node ভার্সন `20`→`22` বাম্প করা হয়েছে (`node:sqlite` শিমের জন্য প্রয়োজন), এরপর সব টেস্ট suite pass।
+- ✅ **টেস্ট শপে real-device যাচাই কনফার্মড**: fresh backfill (products/customers/invoices সব 100%), Products লিস্ট pagination/endReached স্ক্রল, ALTER TABLE গার্ড পুরনো DB-তে ক্র্যাশ-ফ্রি বুট — সব দেখা হয়েছে।
+- **এখনো বাকি**: এন্ট্রি ২৪-২৬-এর ১ কোটি স্কেল বেঞ্চমার্ক (boot টাইম/মেমরি, keyset pagination স্পিড) সার্ভার/ডেস্কটপ CPU-তে হয়েছিল — বাজেট Android ফোনে বড় স্কেলে (টেস্ট শপের বর্তমান ডেটা ~২২৩৬ প্রোডাক্ট, টার্গেট ১ লাখ) এখনো মাপা হয়নি।
 
 ### 🟡 দরকারি, ব্লকার না
-4. ✅ Read-path cutover — invoice history (ReturnModule) অংশ এন্ট্রি ২৯-এ সম্পূর্ণ। Products main list ডিফল্ট-ব্রাউজ অংশ এন্ট্রি ৩০-এ সম্পূর্ণ (স্কোপড: শুধু render/sort, `products` state এখনো মেমরিতে)। **কোনোটাই npm test দিয়ে কনফার্ম করা হয়নি।** POS product picker (SmartInvoiceBuilder) অংশ এখনো অস্পৃষ্ট — future scope।
+4. ✅ Read-path cutover — invoice history (ReturnModule) অংশ এন্ট্রি ২৯-এ সম্পূর্ণ। Products main list ডিফল্ট-ব্রাউজ অংশ এন্ট্রি ৩০-এ সম্পূর্ণ এবং **npm test + real-device দুটোই কনফার্মড**। POS product picker (SmartInvoiceBuilder) অংশ এখনো ইচ্ছাকৃতভাবে অস্পৃষ্ট (কারণ এন্ট্রি ৩০-এ ডকুমেন্টেড) — future scope, `PRODUCTS_ONDEMAND_MIGRATION_PLAN.md`-এর ধাপ ৫।
 5. ১৬টা Virtuoso লিস্টের মধ্যে invoices ও products-কে async pagination দিতে হবে (stale-response/sequence-token guard সহ)। customers (টার্গেট ১০ হাজার) মেমোরিতেই থাকতে পারে, pagination লাগবে না।
 6. Scientist-স্টাইল shadow-compare (Phase ৭) — এখনো ডিজাইন হয়নি, শুধু নাম উল্লেখ ছিল।
 7. `FTS_NARROW_THRESHOLD = 5000` (App.jsx লাইন ৫২) — ১ লাখ প্রোডাক্ট টার্গেটে এই থ্রেশহোল্ড এখনো ঠিক আছে কিনা রিভিজিট করা দরকার।
@@ -68,6 +69,12 @@ Schema+FTS5 · dual-write (shadow) · resumable batch backfill · row-count veri
 
 **স্কোপ**: PRODUCTS_ONDEMAND_MIGRATION_PLAN.md-এর ধাপ ৪ অনুযায়ী — Products main list স্ক্রিনের **ডিফল্ট ব্রাউজ (সার্চ নেই)** অবস্থায় রেন্ডারিং+সর্ট এখন SQLite `queryPage()` থেকে পেজ-করে-করে আসে, পুরো `products` array-এর উপর JS `.sort()` চালানোর বদলে। **সার্চ-অ্যাক্টিভ অবস্থায় কিছুই বদলায়নি** — বিদ্যমান hybrid FTS+`productMatchScore()` পাথ (`filteredAll`) সম্পূর্ণ অপরিবর্তিত। `products` state নিজে এখনো পুরোপুরি মেমরিতেই থাকে (POS বিলিং ইত্যাদির জন্য এখনো দরকার) — এই ধাপে শুধু **এই একটা স্ক্রিনের রেন্ডার/সর্ট খরচ** কমেছে, boot-টাইম মেমরি লোড কমেনি (সেটা প্ল্যানের ধাপ ৭, অনেক দূরে)।
 
+**কেন তিনটা সংলগ্ন কাজ ইচ্ছাকৃতভাবে এই ধাপের বাইরে রাখা হলো** (এই reasoning মূলত `PRODUCTS_ONDEMAND_MIGRATION_PLAN.md`-এ ছিল, কিন্তু সেই ফাইল GitHub-এ push হয়নি বলে হারিয়ে গিয়েছিল — এখানে recovered/re-documented, ২০২৬-০৮-১৪):
+- **POS product picker (SmartInvoiceBuilder) না ছোঁয়ার কারণ**: এটা সরাসরি বিলিং কাউন্টারে চলে — দোকানদার প্রতিদিন এখান থেকেই invoice বানান। এখানে SQLite pagination বসাতে গেলে স্টক-এডিট, রিয়েল-টাইম availability check-এর সাথে ইন্টারঅ্যাক্ট করতে হতো। বাগ হলে সরাসরি বিক্রি আটকে যেতে পারত। তাই আলাদাভাবে, সাবধানে করার জন্য প্ল্যানের পরের ধাপে রাখা হয়েছে।
+- **`products` state পুরোপুরি মেমরিতে রাখার কারণ**: এটা শুধু list screen-এর জিনিস না — পুরো অ্যাপ জুড়ে (POS, Dashboard, batch management, export...) ২০টার বেশি জায়গায় ব্যবহৃত হয় একটা top-level state হিসেবে। এটাকে windowed/paginated বানাতে গেলে প্রতিটা ব্যবহারের জায়গা টাচ করা লাগবে — এটা একটা multi-week প্রজেক্ট, নেটওয়ার্ক/টেস্ট ছাড়া এক সেশনে ব্লাইন্ডলি করাটা দায়িত্বহীন হতো। এজন্যই invoices-এর মতো সরল "৬ মাস পরে আর্কাইভ" প্যাটার্নও এখানে খাটে না — invoices-এর প্রাকৃতিক cutoff আছে, কিন্তু products-এর নেই (৫ বছর আগের প্রোডাক্টও আজ বিক্রি হতে পারে, মেমরিতে রেডি থাকতে হবে)।
+- **বাকি ~২৩টা call-site (Dashboard-এর ২৩টা, KPI, ইনভেন্টরি অ্যালার্ট, supplier due ইত্যাদি) না ছোঁয়ার কারণ**: এগুলো aggregate/reduce লজিক — এগুলোকে SQL query-তে বদলাতে হলে প্রতিটা জায়গার লজিক আলাদাভাবে verify করা লাগবে। এই ধাপের স্কোপ ছিল শুধু list screen-এর render/sort optimize করা, ডেটা-সোর্স আর্কিটেকচার বদলানো না।
+- **সংক্ষেপে**: এই তিনটাই আলাদা, বড় কাজ — এই ধাপে ঢুকিয়ে দিলে ঝুঁকি অনেক বেড়ে যেত, আর এই ধাপে যেটুকু হয়েছে সেটাই তখনো test-ভেরিফায়েড ছিল না। তাই `PRODUCTS_ONDEMAND_MIGRATION_PLAN.md`-এ আলাদা ধাপ হিসেবে রাখা হয়েছে (৭ ধাপ: Map consolidation → নিম্ন-স্টক অ্যালার্ট → KPI অডিট → list pagination → POS picker → supplier due → boot-লোড লজিক), প্রতিটা আগেরটা real-device ভেরিফাই হওয়ার পর পরেরটা শুরু করার নিয়মে।
+
 **স্কিমা পরিবর্তন (`schema.sql` + `DataStore.js`)**:
 - `products` টেবিলে নতুন `demand_type TEXT` কলাম + কম্পোজিট ইনডেক্স `idx_products_demand_name(demand_type, name)` যোগ হলো।
 - `HOT_FIELDS.products` (DataStore.js)-এ `demand_type` কলাম+extract (`p.demandType ?? null`) যোগ হলো — এখন থেকে প্রতিটা dual-write এই কলাম পপুলেট করবে।
@@ -83,10 +90,12 @@ Schema+FTS5 · dual-write (shadow) · resumable batch backfill · row-count veri
 - SQLite কল ব্যর্থ হলে (`try/catch`) `browseFailed=true` হয়ে যায়, যা `useSqliteBrowse`-কে `false` করে দেয় — পরের রেন্ডারে স্বয়ংক্রিয়ভাবে `filteredAll` (পুরনো JS পাথ)-এ ফলব্যাক করে।
 - `filteredAll`-এর বাইরের ২টা ব্যবহার (batch-edit/export/অন্য কোনো লজিক) — কোড-অডিটে পাওয়া গেছে `filteredAll` শুধু ৩ জায়গায় ব্যবহৃত (showCount, empty-state, Virtuoso `data`), তাই ব্লাস্ট-রেডিয়াস ছোট, অন্য কোনো ফিচার এই পরিবর্তনে প্রভাবিত হয়নি।
 
-**⚠️ যাচাই করা যায়নি (এই সেশনে নেটওয়ার্ক ছিল না)**:
-- `npm test` চালানো যায়নি — বিশেষ করে `datastore-querypage-tests.mjs` (HOT_FIELDS কলাম যোগ হওয়ায় প্রভাবিত হতে পারে যদি টেস্ট ফিক্সচার কলাম-কাউন্ট নিয়ে স্ট্রিক্ট assumption করে) এবং `schema-tests.mjs`।
-- Real-device টেস্ট আরও বেশি জরুরি এখানে — ALTER TABLE গার্ডটা একটা পুরনো টেস্ট-DB ফাইলের বিপরীতে বাস্তবে একবারও চালানো হয়নি এই সেশনে।
-- **রোলআউট অর্ডার প্রস্তাব**: (১) `npm test`, (২) টেস্ট শপে fresh backfill রি-রান (demand_type পপুলেট করতে), (৩) real-device-এ Products লিস্ট খুলে common/uncommon উভয় বাকেট + "সব" ফিল্টার + endReached স্ক্রল ম্যানুয়ালি চেক, (৪) তারপরই অন্য কোনো শপে enable বিবেচনা।
+**✅ পরবর্তী আপডেট (২০২৬-০৮-১৪, ব্যবহারকারী কনফার্মড) — যাচাই সম্পূর্ণ**:
+- CI-এর `node-version: '20'` ছিল বাগ (এন্ট্রি ৩০-এর `datastore-querypage-tests.mjs`-এর `node:sqlite`-ব্যাকড শিমের জন্য কমপক্ষে Node 22 লাগে) — `'22'`-এ বাম্প করার পর `npm test` (logic, schema, integration, sync, querypage — সবগুলো suite) **pass কনফার্মড**।
+- Fresh backfill রি-রান করা হয়েছে — products 2235/2235, customers 17/17, invoices 627/627, সব 100% (dev panel ডায়াগনস্টিকস স্ক্রিনশটে কনফার্মড)।
+- Real-device-এ Products লিস্ট (আনকমন ফিল্টার) খুলে শেষ পর্যন্ত (২৩৫-২৪৩, endReached) স্ক্রল করে pagination কাজ করা কনফার্মড।
+- `ALTER TABLE` গার্ড আসল পুরনো টেস্ট-শপের DB-তে ক্র্যাশ ছাড়া বুট হওয়া কনফার্মড (dev panel-এ "চালু" স্ট্যাটাস দেখা গেছে)।
+- **এন্ট্রি ৩০-এর পুরো রোলআউট-চেকলিস্ট (npm test → backfill → real-device browse চেক) এখন সম্পূর্ণ।** বাকি শুধু "সব" ফিল্টার ও common বাকেট নির্দিষ্টভাবে UI-তে ভিজুয়ালি আলাদা চেক করা (আনকমন বাকেট কনফার্মড হয়েছে, common এখনো স্ক্রিনশটে দেখানো হয়নি)।
 
 ---
 
