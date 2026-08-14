@@ -29,7 +29,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           # 🔴 আগে '20' ছিল — datastore-querypage-tests.mjs-এর জন্য
           # tests/helpers/vite-node-loader.mjs একটা node:sqlite-ব্যাকড শিম
