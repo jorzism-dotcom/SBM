@@ -39,6 +39,9 @@ import {
 // এই import নিজে থেকে কোনো আচরণ পাল্টায় না — শুধু নিচের debouncedSave effect-
 // গুলোতে diff-based upsert/remove যোগ হয়েছে (দেখুন সেখানকার কমেন্ট)।
 import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite, queryPage as dsQueryPage } from "./db/DataStore.js";
+// 🆕 এন্ট্রি ৩৬ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ২) — InventorySection/
+// Dashboard-এর KPI কাউন্ট + ডিটেইল লিস্ট + সাপ্লায়ার-গ্রুপিং SQL cutover
+import { getInventoryList as dsGetInventoryList, getExpiryCandidates as dsGetExpiryCandidates, getSupplierSummary as dsGetSupplierSummary, getProductsBySupplierKey as dsGetProductsBySupplierKey, getDateRangeAggregate as dsGetDateRangeAggregate } from "./db/DataStore.js";
 // 🆕 Repository লেয়ার (Phase ২, PHASE_3_4_5_FINAL_PLAN_v2.md) — এখনো array-ভিত্তিক,
 // শুধু ইন্টারফেস। প্রথম ওয়্যার্ড কল-সাইট: detailCust (নিচে)।
 import { getCustomerById } from "./db/Repository.js";
@@ -6103,7 +6106,7 @@ function diffById(prevMap, currentArr) {
 // ফেজ শেষ না হওয়া পর্যন্ত।
 // entity_type নাম store ("products"/"customers"/"invoices") থেকে events টেবিলের
 // entity_type ("product"/"customer"/"invoice") কনভেনশনে — schema.sql-এর কমেন্ট দ্রষ্টব্য
-const STORE_TO_ENTITY_TYPE = { products: "product", customers: "customer", invoices: "invoice" };
+const STORE_TO_ENTITY_TYPE = { products: "product", customers: "customer", invoices: "invoice", expenses: "expense" };
 
 function dualWriteSqlite(businessType, store, prevMapRef, currentArr) {
   if (!isSqliteEnabled()) return;
@@ -8945,7 +8948,56 @@ const MemoLoginScreen      = React.memo(LoginScreen);
 // 📊 KPI স্ট্যাটস হুক — AI ড্যাশবোর্ড ও "দৈনিক সারসংক্ষেপ" পেজ উভয় জায়গায় ব্যবহৃত।
 // একই হিসাব একই জায়গা থেকে আসে বলে দুই পেজের সংখ্যা সবসময় একে অপরের সাথে মিলবে।
 // ══════════════════════════════════════════════════════════════════════════
-function useKpiStats({ customers, invoices, products, txns, expenses = [], cashLogs = [], purchaseOrders = [], stockMovements = [], returns = [], refDayKey, refMonthKey }) {
+// 🆕 এন্ট্রি ৩৭ — todayExpense/monthExpense-এর শেয়ার্ড হুক, useKpiStats ও
+// AIPage_ দুই জায়গাতেই ব্যবহৃত (আগে দুই জায়গায় হুবহু ডুপ্লিকেট JS ছিল — ঠিক
+// এই ধরনের ডুপ্লিকেশনের কারণেই ৩০ জুলাই ২০২৬-এ cash-sale মিসম্যাচ বাগ হয়েছিল,
+// যখন একটা ফিক্স একজায়গায় হয়েছিল কিন্তু অন্যজায়গায় কপি হয়নি)।
+// isSqliteEnabled() বন্ধ থাকলে (ডিফল্ট) সবসময় আগের JS ফিল্টার/রিডিউস — আচরণ
+// অপরিবর্তিত। dateKeyGte ব্যবহার হয়েছে (dateKeyPrefix না) — DataStore.js-এর
+// getDateRangeAggregate()-এর JSDoc দ্রষ্টব্য, কারণ আসল JS ফিল্টার
+// ">= monthStartKey", শুধু-এক-মাস prefix-ম্যাচ না।
+function useExpenseTotals(expenses, businessType, todayKey, monthStartKey) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null); // null=fetch-হয়নি/লোডিং/ব্যর্থ, object=সফল
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType || !todayKey || !monthStartKey) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [todayAgg, monthAgg] = await Promise.all([
+          dsGetDateRangeAggregate(businessType, "expenses", { dateKeyExact: todayKey }),
+          dsGetDateRangeAggregate(businessType, "expenses", { dateKeyGte: monthStartKey }),
+        ]);
+        if (cancelled || seqRef.current !== seq) return;
+        setSql({ today: todayAgg.total, month: monthAgg.total });
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("এক্সপেন্স SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, todayKey, monthStartKey, expenses]);
+
+  const jsToday = useMemo(() => (expenses || []).filter(e => (e.dateKey || e.date) === todayKey).reduce((s, e) => s + (e.amount || 0), 0), [expenses, todayKey]);
+  const jsMonth = useMemo(() => (expenses || []).filter(e => (e.dateKey || e.date || "") >= monthStartKey).reduce((s, e) => s + (e.amount || 0), 0), [expenses, monthStartKey]);
+
+  return sql ? { today: sql.today, month: sql.month } : { today: jsToday, month: jsMonth };
+}
+
+function useKpiStats({ customers, invoices, products, txns, expenses = [], cashLogs = [], purchaseOrders = [], stockMovements = [], returns = [], refDayKey, refMonthKey, businessType }) {
+  // 🆕 এন্ট্রি ৩৭ — নিচের বড় useMemo-এর বাইরে (React-এর hook-নিয়ম অনুযায়ী
+  // useMemo-এর ভেতরে হুক কল করা যায় না) todayKey/monthStartKey হালকাভাবে
+  // পুনরায় কম্পিউট — নিচের memo-র ভেতরের একই লজিকের নিরীহ ডুপ্লিকেট, শুধু
+  // useExpenseTotals()-কে সঠিক dateKey রেঞ্জ দেওয়ার জন্য।
+  const _now0 = new Date();
+  const _todayKey0 = refDayKey || _dateKeyOf(_now0);
+  const _monthStartKey0 = refMonthKey ? `${refMonthKey}-01` : `${_todayKey0.slice(0, 7)}-01`;
+  const expenseTotals = useExpenseTotals(expenses, businessType, _todayKey0, _monthStartKey0);
+
   return React.useMemo(() => {
     const fmt = n => { if (!n && n !== 0) return "০"; return fmtMoney(n); };
     const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 0);
@@ -9104,8 +9156,8 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
     // (ভয়েড-রিভার্সাল) আলাদা, স্বাধীন ঘটনা — সেটা অপরিবর্তিত থাকছে।
     const currentCashDrawer = openingCashToday + todayCashSale + todayJoma - withdrawalToday + returnReversalToday;
 
-    const todayExpense = (expenses || []).filter(e => (e.dateKey || e.date) === todayKey).reduce((s, e) => s + (e.amount || 0), 0);
-    const monthExpense = (expenses || []).filter(e => (e.dateKey || e.date || "") >= monthStartKey).reduce((s, e) => s + (e.amount || 0), 0);
+    const todayExpense = expenseTotals.today;
+    const monthExpense = expenseTotals.month;
 
     return {
       fmt, pct, currentMonthNameEn, daysElapsedInMonth, growthPct,
@@ -9115,7 +9167,7 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
       monthPurchaseCost, todayExpense, monthExpense, monthSale, monthProfit, monthMargin,
       stockValue, lowStockItems, monthExpiredValue, monthExpiredCount,
     };
-  }, [customers, invoices, products, txns, expenses, cashLogs, purchaseOrders, stockMovements, returns, refDayKey, refMonthKey]);
+  }, [customers, invoices, products, txns, cashLogs, purchaseOrders, stockMovements, returns, refDayKey, refMonthKey, expenseTotals]);
 }
 
 // ── ২০টি KPI কার্ডের গ্রিড — AI ড্যাশবোর্ড ও "দৈনিক সারসংক্ষেপ" উভয় জায়গায় হুবহু একই ──
@@ -9255,7 +9307,7 @@ function KpiCardsGrid({ T, stats, compact = false }) {
   );
 }
 
-function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, shopName, anthropicKey, expenses = [], cashLogs = [], purchaseOrders = [], stockMovements = [], returns = [] }) {
+function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, shopName, anthropicKey, expenses = [], cashLogs = [], purchaseOrders = [], stockMovements = [], returns = [], businessType = "pharmacy" }) {
   const [aiTab, setAiTab] = React.useState("dashboard");
   const [chatMessages, setChatMessages] = React.useState([]);
   const [chatInput, setChatInput] = React.useState("");
@@ -9287,6 +9339,9 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
   const prevMonthStartKey = `${_prevBdY}-${String(_prevBdM + 1).padStart(2, "0")}-01`;
   const currentMonthNameEn = MONTH_NAMES_EN[_bdM]; // যেমন "July" — ডিভাইস টাইমজোন-নির্বিশেষে
   const daysElapsedInMonth = _bdD;
+
+  // 🆕 এন্ট্রি ৩৭ — শেয়ার্ড হুক (useKpiStats-এর সাথে একই সোর্স, উপরের কমেন্ট দ্রষ্টব্য)
+  const expenseTotals = useExpenseTotals(expenses, businessType, todayKey, monthStartKey);
 
   // নিজের ব্যবহার (Personal Use) ইনভয়েস বিক্রয়/লাভ হিসাবে ধরা হবে না
   const invAll = (invoices || []).filter(i => !i.isSelfUse && i.status !== "voided");
@@ -9440,8 +9495,8 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
   const currentCashDrawer = openingCashToday + todayCashSale + todayJoma - withdrawalToday + returnReversalToday;
 
   // ── খরচ (আজ/এই মাস) ─────────────────────────────────────────────────────
-  const todayExpense = (expenses || []).filter(e => (e.dateKey || e.date) === todayKey).reduce((s, e) => s + (e.amount || 0), 0);
-  const monthExpense = (expenses || []).filter(e => (e.dateKey || e.date || "") >= monthStartKey).reduce((s, e) => s + (e.amount || 0), 0);
+  const todayExpense = expenseTotals.today;
+  const monthExpense = expenseTotals.month;
 
   // ── বিজনেস হেলথ স্কোর (০-১০০) ─────────────────────────────────────────────
   const healthScore = React.useMemo(() => {
@@ -12232,6 +12287,9 @@ function SmartBusinessMgmt() {
   const _dsCustomersRef = useRef(new Map());
   const _dsProductsRef  = useRef(new Map());
   const _dsInvoicesRef  = useRef(new Map());
+  // 🆕 এন্ট্রি ৩৭ — useKpiStats-এর ৫টা ডেটা-সোর্সের প্রথম SQL cutover (schema.sql/
+  // DataStore.js-এর কমেন্ট দ্রষ্টব্য)
+  const _dsExpensesRef  = useRef(new Map());
 
   useEffect(() => { if (loaded) { debouncedSave(LK(SK.customers), customers, 1500); setBackupNeeded(true); dualWriteSqlite(businessType, "customers", _dsCustomersRef, customers); } }, [customers, loaded]);
   useEffect(() => { if (loaded) { debouncedSave(LK(SK.products),  products,  1500); setBackupNeeded(true); dualWriteSqlite(businessType, "products",  _dsProductsRef,  products);  } }, [products, loaded]);
@@ -12429,7 +12487,7 @@ function SmartBusinessMgmt() {
   useEffect(() => { if (loaded) debouncedSave(LK(SK.cashLogs),       cashLogs,       1500); }, [cashLogs,       loaded]);
   // 🔴 ফিক্স: এই ৫টা কালেকশনের আগে কোনো লোকাল পার্সিস্টেন্স ছিল না — Firebase বন্ধ
   // থাকা (local-only) দোকানে প্রতি রিলোডে এই ডেটা হারিয়ে যেত।
-  useEffect(() => { if (loaded) debouncedSave(LK(SK.expenses),         expenses,         1500); }, [expenses,         loaded]);
+  useEffect(() => { if (loaded) { debouncedSave(LK(SK.expenses),         expenses,         1500); dualWriteSqlite(businessType, "expenses", _dsExpensesRef, expenses); } }, [expenses,         loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.staffLedger),      staffLedger,      1500); }, [staffLedger,      loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.serialQueue),      serialQueue,      1500); }, [serialQueue,      loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.returns),          returns,          1500); }, [returns,          loaded]);
@@ -15518,6 +15576,7 @@ function SmartBusinessMgmt() {
               purchaseOrders={purchaseOrders}
               stockMovements={stockMovements}
               returns={returns}
+              businessType={businessType}
             />
             </React.Suspense>
           </ErrorBoundary>
@@ -15561,6 +15620,7 @@ function SmartBusinessMgmt() {
               expenses={expenses}
               stockMovements={stockMovements}
               returns={returns}
+              businessType={businessType}
             />
           </ErrorBoundary>
         )}
@@ -17167,6 +17227,7 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
               customers={customers} invoices={invoices} txns={txns} cashLogs={cashLogs}
               products={products} purchaseOrders={purchaseOrders} expenses={expenses}
               stockMovements={stockMovements} returns={returns}
+              businessType={prefix || "pharmacy"}
             />
           </ErrorBoundary>
         ) : (
@@ -20607,39 +20668,143 @@ function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [],
 // ✅ React.memo — AnalyticsSection: chart data না বদলালে re-render নেই
 const AnalyticsSection = React.memo(AnalyticsSection_);
 
-// ── InventorySection ─────────────────────────────────────────────────────────
-function InventorySection({ T, S, products, setDashModal, shopName, setInvModal, purchaseOrders = [] }) {
-  // setInvModal triggers full-page navigation in Dashboard
-  const openPage = setInvModal || (() => {});
-  const DT = getDashTokens(T);
+// ── এন্ট্রি ৩৬ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ২) ──────────────────
+// InventorySection ও Dashboard-এ হুবহু ডুপ্লিকেট ছিল এই কম্পিউটেশনগুলো —
+// এখন একটা শেয়ার্ড হুকে কনসোলিডেট, SQL cutover সহ। isSqliteEnabled() বন্ধ
+// থাকলে (ডিফল্ট, সব ৫০০ দোকানে) এই হুক সবসময় নিচের JS-ফলব্যাক পাথটাই রিটার্ন
+// করে — আচরণ ১০০% অপরিবর্তিত, কোনো live shop প্রভাবিত হয় না। চালু থাকলে
+// (শুধু dev-প্যানেল দিয়ে ম্যানুয়ালি এনাবল করা ডিভাইসে) SQL থেকে আনার চেষ্টা করে,
+// ব্যর্থ হলে (বা এখনো রেসপন্স না এলে) সাইলেন্টলি একই JS পাথে ফলব্যাক করে।
+function useInventoryData(products, businessType) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null); // null = না-আনা-হয়েছে/লোডিং, false = ব্যর্থ (ফলব্যাক), object = সফল
+  const seqRef = useRef(0);
 
-  const allStock      = useMemo(() => products.filter(p => (p.stock || 0) > 0).sort((a,b) => b.stock - a.stock), [products]);
-  const criticalStock = useMemo(() => products.filter(p => { const m = p.minStockAlert || 5; return (p.stock||0) > 0 && (p.stock||0) <= m; }), [products]);
-  const stockOut      = useMemo(() => products.filter(p => (p.stock||0) === 0), [products]);
+  useEffect(() => {
+    if (!sqliteOn || !businessType) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        // 🆕 এন্ট্রি ৩৬: আলাদা COUNT() কল লাগে না — allRows/criticalRows/outRows
+        // অ্যারের .length-ই যথেষ্ট (dsGetInventoryCounts() DataStore.js-এ টেস্টসহ
+        // রাখা আছে, ভবিষ্যতে শুধু-কাউন্ট দরকার হলে ব্যবহারযোগ্য)।
+        const [allRows, criticalRows, outRows, expiryRows, supplierSummary] = await Promise.all([
+          dsGetInventoryList(businessType, "all"),
+          dsGetInventoryList(businessType, "critical"),
+          dsGetInventoryList(businessType, "out"),
+          dsGetExpiryCandidates(businessType),
+          dsGetSupplierSummary(businessType),
+        ]);
+        if (cancelled || seqRef.current !== seq) return;
+        setSql({ allRows, criticalRows, outRows, expiryRows, supplierSummary });
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("ইনভেন্টরি SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sqliteOn, businessType, products]);
 
-  // আজকের ক্রয় — purchase entry থেকে (_type === "pe")
-  const todayKey = todayEn();
-  const todayPurchases = useMemo(() => purchaseOrders.filter(p => p._type === "pe" && (p.dateKey === todayKey || (p.createdAt && p.createdAt.startsWith(todayKey)))), [purchaseOrders, todayKey]);
-  const todayPurchaseTotal = useMemo(() => todayPurchases.reduce((s, p) => s + (p.totalCost || 0), 0), [todayPurchases]);
+  // ── JS পাথ (বিদ্যমান লজিক, অপরিবর্তিত) — সবসময় কম্পিউট হয়: sqliteOn বন্ধ
+  // থাকলে এটাই চূড়ান্ত মান, চালু থাকলেও রেসপন্স আসার আগে/ব্যর্থ হলে ফলব্যাক।
+  const jsAllStock      = useMemo(() => products.filter(p => (p.stock || 0) > 0).sort((a,b) => b.stock - a.stock), [products]);
+  const jsCriticalStock = useMemo(() => products.filter(p => { const m = p.minStockAlert || 5; return (p.stock||0) > 0 && (p.stock||0) <= m; }), [products]);
+  const jsStockOut      = useMemo(() => products.filter(p => (p.stock||0) === 0), [products]);
+  const jsSupplierRows = useMemo(() => {
+    const m = {};
+    products.forEach(p => {
+      const key = p.company || p.category || "অজ্ঞাত";
+      if (!m[key]) m[key] = { name: key, count: 0, stock: 0, products: [] };
+      m[key].count++; m[key].stock += (p.stock || 0); m[key].products.push(p);
+    });
+    return Object.values(m).sort((a, b) => b.count - a.count);
+  }, [products]);
+  const jsProductsBySupplier = useMemo(() => {
+    const m = new Map();
+    products.forEach(p => {
+      const key = p.company || p.category || "অজ্ঞাত";
+      const arr = m.get(key);
+      if (arr) arr.push(p); else m.set(key, [p]);
+    });
+    return m;
+  }, [products]);
 
-  const { expiredBatches, nearExpiryBatches } = useMemo(() => {
+  // এক্সপায়ারি বিভাজন (expiredList/nearExpiryList/expiredBatchRows) সবসময় এই
+  // একই JS রিডিউস দিয়ে হয় — শুধু ইনপুট সোর্স বদলায় (SQL-নারো করা candidate সেট
+  // বনাম পুরো products), তাই read-time new Date() তুলনা সবসময় লাইভ, কোনো
+  // staleness ঝুঁকি নেই।
+  const expirySource = (sql && sql.expiryRows) || products;
+  const { expiredList, nearExpiryList, expiredBatchRows, expiredBatches, nearExpiryBatches } = useMemo(() => {
     const now = new Date();
     const threeMonthsLater = new Date(); threeMonthsLater.setMonth(now.getMonth() + 3);
-    const expired = [];
-    const near = [];
-    products.forEach(p => {
+    const expList = expirySource.filter(p => p.expiryDate && new Date(p.expiryDate) < now);
+    const nearList = expirySource.filter(p => { if (!p.expiryDate) return false; const exp = new Date(p.expiryDate); return exp >= now && exp <= threeMonthsLater; });
+    const rows = [];
+    const expiredB = [];
+    const nearB = [];
+    expirySource.forEach(p => {
       const batches = p.batches && p.batches.length > 0
         ? p.batches
         : (p.expiryDate ? [{ expiryDate: p.expiryDate, qty: p.stock || 0 }] : []);
       batches.forEach(b => {
         if (!b.expiryDate || (b.qty || 0) <= 0) return;
         const exp = new Date(b.expiryDate);
-        if (exp < now) expired.push({ product: p, batch: b });
-        else if (exp <= threeMonthsLater) near.push({ product: p, batch: b });
+        if (exp < now) { expiredB.push({ product: p, batch: b }); }
+        else if (exp <= threeMonthsLater) { nearB.push({ product: p, batch: b }); }
       });
     });
-    return { expiredBatches: expired, nearExpiryBatches: near };
-  }, [products]);
+    expirySource.forEach(p => {
+      const batches = p.batches && p.batches.length > 0
+        ? p.batches
+        : (p.expiryDate ? [{ expiryDate: p.expiryDate, qty: p.stock || 0 }] : []);
+      batches.forEach(b => {
+        if (!b.expiryDate || (b.qty || 0) <= 0 || !(new Date(b.expiryDate) < now)) return;
+        rows.push({
+          rowId: `${p.id}::${b.batchNo || ""}::${b.expiryDate || ""}`,
+          product: p,
+          batch: { batchNo: b.batchNo || "", qty: b.qty || 0, costPrice: (b.costPrice != null ? b.costPrice : p.costPrice) || 0, expiryDate: b.expiryDate },
+        });
+      });
+    });
+    rows.sort((a, b) => new Date(a.batch.expiryDate) - new Date(b.batch.expiryDate));
+    return { expiredList: expList, nearExpiryList: nearList, expiredBatchRows: rows, expiredBatches: expiredB, nearExpiryBatches: nearB };
+  }, [expirySource]);
+
+  const useSql = !!sql;
+  const supplierList = useSql
+    ? sql.supplierSummary.map(s => ({ name: s.name, count: s.count, stock: s.stock, outCount: s.out_count, lowCount: s.low_count }))
+    : jsSupplierRows.map(s => ({ name: s.name, count: s.count, stock: s.stock, outCount: s.products.filter(p => (p.stock||0)===0).length, lowCount: s.products.filter(p => (p.stock||0)>0 && (p.stock||0)<=(p.minStockAlert||5)).length }));
+
+  return {
+    allStock:      useSql ? sql.allRows      : jsAllStock,
+    criticalStock: useSql ? sql.criticalRows : jsCriticalStock,
+    stockOut:      useSql ? sql.outRows      : jsStockOut,
+    expiredList, nearExpiryList, expiredBatchRows, expiredBatches, nearExpiryBatches,
+    supplierList,
+    productsBySupplier: jsProductsBySupplier, // supplier-detail পেজ — নিচে সরাসরি dsGetProductsBySupplierKey() দিয়ে আলাদাভাবে হ্যান্ডল হয়
+  };
+}
+
+// ── InventorySection ─────────────────────────────────────────────────────────
+function InventorySection({ T, S, products, setDashModal, shopName, setInvModal, purchaseOrders = [], businessType = "pharmacy" }) {
+  // setInvModal triggers full-page navigation in Dashboard
+  const openPage = setInvModal || (() => {});
+  const DT = getDashTokens(T);
+
+  const inv = useInventoryData(products, businessType);
+  const allStock      = inv.allStock;
+  const criticalStock = inv.criticalStock;
+  const stockOut       = inv.stockOut;
+
+  // আজকের ক্রয় — purchase entry থেকে (_type === "pe")
+  const todayKey = todayEn();
+  const todayPurchases = useMemo(() => purchaseOrders.filter(p => p._type === "pe" && (p.dateKey === todayKey || (p.createdAt && p.createdAt.startsWith(todayKey)))), [purchaseOrders, todayKey]);
+  const todayPurchaseTotal = useMemo(() => todayPurchases.reduce((s, p) => s + (p.totalCost || 0), 0), [todayPurchases]);
+
+  const { expiredBatches, nearExpiryBatches } = inv;
 
   const fmt = n => fmtMoney(n);
 
@@ -22100,45 +22265,33 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       setCashAmount(""); setCashNote(""); setCashParty(""); setCashType("owner"); setCashPartyOpen(false);
     }
   }, [cashModal]);
-  // Inventory data (memoized for performance)
-  const allStock      = React.useMemo(() => products.filter(p => (p.stock||0) > 0).sort((a,b) => b.stock-a.stock), [products]);
-  const criticalStock = React.useMemo(() => products.filter(p => { const m=p.minStockAlert||5; return (p.stock||0)>0 && (p.stock||0)<=m; }), [products]);
-  const stockOut      = React.useMemo(() => products.filter(p => (p.stock||0)===0), [products]);
-  const { expiredList, nearExpiryList } = React.useMemo(() => {
-    const now = new Date();
-    const threeMonthsLater = new Date(); threeMonthsLater.setMonth(now.getMonth() + 3);
-    return {
-      expiredList: products.filter(p => p.expiryDate && new Date(p.expiryDate) < now),
-      nearExpiryList: products.filter(p => { if (!p.expiryDate) return false; const exp = new Date(p.expiryDate); return exp >= now && exp <= threeMonthsLater; }),
-    };
-  }, [products]);
-  // ── 🧪 ব্যাচ-ভিত্তিক মেয়াদোত্তীর্ণ তালিকা — প্রতিটি এন্ট্রি একটি নির্দিষ্ট এক্সপায়ার্ড
-  // ব্যাচ (পণ্য নয়)। একই পণ্যের একাধিক ব্যাচ মেয়াদোত্তীর্ণ হলে প্রতিটি আলাদা রো হিসেবে
-  // আসবে; ব্যাচটি সরানো হলে শুধু সেই ব্যাচই বাদ যাবে, পণ্যের নতুন/অন্য ব্যাচ অক্ষত থাকবে।
-  const expiredBatchRows = React.useMemo(() => {
-    const now = new Date();
-    const rows = [];
-    products.forEach(p => {
-      getExpiredBatchesOf(p, now).forEach(b => {
-        rows.push({
-          rowId: `${p.id}::${b.batchNo || ""}::${b.expiryDate || ""}`,
-          product: p,
-          batch: b,
-        });
-      });
-    });
-    return rows.sort((a, b) => new Date(a.batch.expiryDate) - new Date(b.batch.expiryDate));
-  }, [products]);
-  // সাপ্লায়ার/কোম্পানি অনুযায়ী পণ্য গ্রুপ — supplier-detail পেজে প্রতিবার products.filter() না করে O(1) lookup
-  const productsBySupplier = React.useMemo(() => {
-    const m = new Map();
-    products.forEach(p => {
-      const key = p.company || p.category || "অজ্ঞাত";
-      const arr = m.get(key);
-      if (arr) arr.push(p); else m.set(key, [p]);
-    });
-    return m;
-  }, [products]);
+  // 🆕 এন্ট্রি ৩৬ — Inventory data, এখন শেয়ার্ড হুক (InventorySection-এর সাথে
+  // একই), isSqliteEnabled() চালু থাকলে SQL থেকে, নাহলে (ডিফল্ট) আগের JS-ই।
+  const inv = useInventoryData(products, businessType);
+  const allStock      = inv.allStock;
+  const criticalStock = inv.criticalStock;
+  const stockOut       = inv.stockOut;
+  const { expiredList, nearExpiryList, expiredBatchRows, productsBySupplier } = inv;
+
+  // 🆕 এন্ট্রি ৩৬ — supplier-detail পেজের জন্য আলাদা lazy fetch (শুধু invModal
+  // ওই নির্দিষ্ট সাপ্লায়ারে থাকলেই কল হয়, বাকি সব দোকানের জন্য পুরোপুরি নিষ্ক্রিয়)।
+  // এখানেই (কোনো conditional early-return-এর আগে) হুক ডিক্লেয়ার করা জরুরি — React-এর
+  // হুক নিয়ম অনুযায়ী নিচের if(invModal===...) return ব্লকগুলোর ভেতরে হুক কল করা যায় না।
+  const [supplierDetailSql, setSupplierDetailSql] = useState(null); // null=fetch-হয়নি/লোডিং, false=ব্যর্থ, array=সফল
+  useEffect(() => {
+    const supName = invModal && invModal.startsWith("supplier-detail:") ? invModal.replace("supplier-detail:", "") : null;
+    if (!supName || !isSqliteEnabled() || !businessType) { setSupplierDetailSql(null); return undefined; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await dsGetProductsBySupplierKey(businessType, supName);
+        if (!cancelled) setSupplierDetailSql(rows);
+      } catch (e) {
+        if (!cancelled) { console.warn("সাপ্লায়ার-ডিটেইল SQL ফেচ ব্যর্থ, JS ফলব্যাক:", e); setSupplierDetailSql(false); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [invModal, businessType]);
 
   const BAR_GRADIENTS = [
     "linear-gradient(90deg,#22d3ee,#3b82f6,#6366f1)","linear-gradient(90deg,#6366f1,#8b5cf6,#a78bfa,#f59e0b)",
@@ -22722,16 +22875,9 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
 
   // ── সাপ্লায়ার তালিকা পেজ ──
   if (invModal === 'supplier') {
-    // সব পণ্যের সাপ্লায়ার গ্রুপ করো
-    const supplierMap = {};
-    products.forEach(p => {
-      const key = p.company || p.category || "অজ্ঞাত";
-      if (!supplierMap[key]) supplierMap[key] = { name: key, count: 0, stock: 0, products: [] };
-      supplierMap[key].count++;
-      supplierMap[key].stock += (p.stock || 0);
-      supplierMap[key].products.push(p);
-    });
-    const supplierList = Object.values(supplierMap).sort((a, b) => b.count - a.count);
+    // 🆕 এন্ট্রি ৩৬ — শেয়ার্ড হুক থেকে (isSqliteEnabled() চালু থাকলে GROUP BY
+    // supplier_key SQL অ্যাগ্রিগেট, নাহলে আগের JS গ্রুপিং)
+    const supplierList = inv.supplierList;
     return (
       <div style={{ ...S.page, padding: "0 14px 16px" }}>
         <button style={S.textBtn} onClick={() => setInvModal(null)}>← ড্যাশবোর্ডে ফিরুন</button>
@@ -22739,8 +22885,8 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
         <div style={{ color: "#64748b", fontSize: 12, marginBottom: 14 }}>{supplierList.length}টি সাপ্লায়ার</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {supplierList.map((sup, i) => {
-            const outCount = sup.products.filter(p => (p.stock||0) === 0).length;
-            const lowCount = sup.products.filter(p => (p.stock||0) > 0 && (p.stock||0) <= (p.minStockAlert||5)).length;
+            const outCount = sup.outCount;
+            const lowCount = sup.lowCount;
             return (
               <div key={sup.name} className="tap-card" onClick={() => setInvModal(`supplier-detail:${sup.name}`)}
                 style={{ background: "linear-gradient(135deg,#071a0f,#0d2a18)", border: "1.5px solid #1fd15e33", borderRadius: 16, padding: "14px 16px", cursor: "pointer" }}>
@@ -22770,7 +22916,9 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   // ── সাপ্লায়ার ডিটেইলস পেজ ──
   if (invModal && invModal.startsWith('supplier-detail:')) {
     const supplierName = invModal.replace('supplier-detail:', '');
-    const supProducts = productsBySupplier.get(supplierName) || [];
+    // 🆕 এন্ট্রি ৩৬ — Array.isArray চেক দিয়ে false(ব্যর্থ)/null(লোডিং) দুটো
+    // অবস্থাতেই JS Map ফলব্যাক (আগের behavior অপরিবর্তিত)
+    const supProducts = Array.isArray(supplierDetailSql) ? supplierDetailSql : (productsBySupplier.get(supplierName) || []);
     const maxStock = supProducts.length > 0 ? Math.max(...supProducts.map(p => p.stock||0), 1) : 1;
     const BAR_GRADIENTS = ["linear-gradient(90deg,#1fd15e,#4ade80)","linear-gradient(90deg,#0ea5e9,#38bdf8)","linear-gradient(90deg,#a855f7,#c084fc)","linear-gradient(90deg,#f59e0b,#fcd34d)","linear-gradient(90deg,#ef4444,#f87171)","linear-gradient(90deg,#10b981,#34d399)"];
     return (
@@ -25746,7 +25894,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             ছাড়া অচল। salon-এ ফিজিক্যাল স্টক/ব্যাচ/ক্রয় প্রাসঙ্গিক না বলে বাকি তিনটা
             কার্ডও (স্টক/ক্রিটিক্যাল/স্টক-আউট) সবসময় ০ দেখাত — তাই পুরো সেকশনটাই হাইড। */}
         {businessType !== "salon" && (
-          <InventorySection T={T} S={S} products={products} setDashModal={setDashModal} shopName={shopName} setInvModal={setInvModal} purchaseOrders={purchaseOrders || []} />
+          <InventorySection T={T} S={S} products={products} setDashModal={setDashModal} shopName={shopName} setInvModal={setInvModal} purchaseOrders={purchaseOrders || []} businessType={businessType} />
         )}
 
       </div>
@@ -32670,7 +32818,7 @@ function NotificationCenterModule({ T, S, currentUser, setCurrentUser, users, ma
 // ══════════════════════════════════════════════════════════════════════════
 // 📊 দৈনিক সারসংক্ষেপ — Settings থেকে সরিয়ে আলাদা মডিউল হিসেবে
 // ══════════════════════════════════════════════════════════════════════════
-function DailySummaryModule({ T, S, currentUser, shopName, showToast, customers = [], invoices = [], txns = [], cashLogs = [], products = [], purchaseOrders = [], expenses = [], stockMovements = [], returns = [] }) {
+function DailySummaryModule({ T, S, currentUser, shopName, showToast, customers = [], invoices = [], txns = [], cashLogs = [], products = [], purchaseOrders = [], expenses = [], stockMovements = [], returns = [], businessType = "pharmacy" }) {
   const [showDailyCard, setShowDailyCard] = useState(true);
   const [showKpiSection, setShowKpiSection] = useState(true);
   // 🆕 (২১ জুলাই ২০২৬ — "স্ক্রল ছাড়া এক পেজেই ২০টা কার্ড দেখতে চাই"): কমপ্যাক্ট
@@ -32690,7 +32838,7 @@ function DailySummaryModule({ T, S, currentUser, shopName, showToast, customers 
   // 🆕 ব্যবসার সারসংক্ষেপ সেকশনে দিন/মাস নেভিগেটর — 💸 খরচ ব্যবস্থাপনা পেজের
   // নেভিগেটরের হুবহু একই প্যাটার্ন (শেয়ার্ড UnifiedDayMonthNav কম্পোনেন্ট)।
   const kpiNav = useUnifiedDayMonthNav();
-  const kpiStats = useKpiStats({ customers, invoices, products, txns, expenses, cashLogs, purchaseOrders, stockMovements, returns, refDayKey: kpiNav.dateKey, refMonthKey: kpiNav.monthKey });
+  const kpiStats = useKpiStats({ customers, invoices, products, txns, expenses, cashLogs, purchaseOrders, stockMovements, returns, refDayKey: kpiNav.dateKey, refMonthKey: kpiNav.monthKey, businessType });
 
   if (currentUser?.role === "staff") {
     return (
