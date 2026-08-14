@@ -38,7 +38,7 @@ import {
 // তৈরি DataStore abstraction layer। isSqliteEnabled() ফ্ল্যাগ ডিফল্ট বন্ধ, তাই
 // এই import নিজে থেকে কোনো আচরণ পাল্টায় না — শুধু নিচের debouncedSave effect-
 // গুলোতে diff-based upsert/remove যোগ হয়েছে (দেখুন সেখানকার কমেন্ট)।
-import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite } from "./db/DataStore.js";
+import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite, queryPage as dsQueryPage } from "./db/DataStore.js";
 // 🆕 Repository লেয়ার (Phase ২, PHASE_3_4_5_FINAL_PLAN_v2.md) — এখনো array-ভিত্তিক,
 // শুধু ইন্টারফেস। প্রথম ওয়্যার্ড কল-সাইট: detailCust (নিচে)।
 import { getCustomerById } from "./db/Repository.js";
@@ -12060,6 +12060,14 @@ function SmartBusinessMgmt() {
     const ok = await InvoiceArchive.putMany(stale);
     if (!ok) return; // আর্কাইভ-write ব্যর্থ → লাইভ state অপরিবর্তিত থাকে, ডেটা হারানোর ঝুঁকি নেই
     const staleIds = new Set(stale.map(i => i.id));
+    // 🔴 ফিক্স (এন্ট্রি ২৮ — dualWriteSqlite() লুকানো bug): archiving শুধু লাইভ
+    // React state/UI থেকে সরানোর কথা, SQLite থেকে না — কিন্তু dualWriteSqlite()
+    // এর diffById() জেনেরিক diff-মেকানিজম prevMapRef-এ id "হারিয়ে গেলে" সেটাকে
+    // ডিলিট ধরে নেয়, তাই নিচের setInvoices()-এর ঠিক আগে _dsInvoicesRef থেকেও
+    // archived id-গুলো সরিয়ে দিতে হবে — যাতে পরের diff-এ সেগুলো "removed" হিসেবে
+    // না ধরা পড়ে এবং SQLite-এর invoices টেবিলে ডেটা থেকেই যায় (true lifetime
+    // history/RFM-এর জন্য প্রয়োজনীয়)।
+    staleIds.forEach((id) => { _dsInvoicesRef.current.delete(id); });
     setInvoices(prev => prev.filter(i => !staleIds.has(i.id)));
   }, []);
 
@@ -27345,6 +27353,82 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     return result.map((p, i) => ({ ...p, serial: i + 1, serialStr: String(i + 1) }));
   }, [productsWithSerialAll, deferredSearch, demandFilter, prodListFtsIds, prodListFtsQuery]);
 
+  // 🆕 এন্ট্রি ৩০ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ৪) — ডিফল্ট-ব্রাউজ
+  // (সার্চ নেই) অবস্থায় SQLite queryPage() থেকে পেজ-করে-করে আনা, filteredAll-এর
+  // পুরো-array JS sort-এর বদলে। সার্চ-অ্যাক্টিভ অবস্থায় filteredAll (hybrid FTS+JS
+  // scoring) সম্পূর্ণ অপরিবর্তিত থাকে — নিচের browse-লজিক সেই পাথ ছোঁয় না।
+  //
+  // ডিজাইন: demand_type-এর মাত্র ২টা মান (common/uncommon) বলে multi-column
+  // keyset cursor (যা DataStore.js queryPage() এখনো সাপোর্ট করে না) এড়িয়ে,
+  // দুটো আলাদা single-column queryPage() কল ব্যবহার হচ্ছে — common বাকেট আগে
+  // (name ASC), শেষ হলে uncommon বাকেটে সিমলেসলি চলে যায়। SQLite কল ব্যর্থ হলে
+  // filteredAll (JS ফলব্যাক)-এ সাইলেন্টলি ফিরে যায়।
+  const BROWSE_PAGE_SIZE = 40;
+  const isSearchActive = !!(deferredSearch && deferredSearch.trim() && !deferredSearch.trim().startsWith("__"));
+  const [browseRows,    setBrowseRows]    = useState([]);
+  const [browseTotal,   setBrowseTotal]   = useState(null);
+  const [browseDone,    setBrowseDone]    = useState(false);
+  const [browseLoading, setBrowseLoading] = useState(false);
+  const [browseFailed,  setBrowseFailed]  = useState(false);
+  const browseCursorRef = useRef(null);
+  const browsePhaseRef  = useRef("common"); // "common" | "uncommon" | "done"
+  const useSqliteBrowse = isSqliteEnabled() && !isSearchActive && !browseFailed;
+
+  const browseWhereFor = React.useCallback((phase) => {
+    if (demandFilter === "common")   return "deleted = 0 AND (demand_type = 'common' OR demand_type IS NULL)";
+    if (demandFilter === "uncommon") return "deleted = 0 AND demand_type = 'uncommon'";
+    return phase === "uncommon"
+      ? "deleted = 0 AND demand_type = 'uncommon'"
+      : "deleted = 0 AND (demand_type = 'common' OR demand_type IS NULL)";
+  }, [demandFilter]);
+
+  const loadBrowsePage = React.useCallback(async (reset = false) => {
+    setBrowseLoading(true);
+    try {
+      let phase  = reset ? (demandFilter === "uncommon" ? "uncommon" : "common") : browsePhaseRef.current;
+      let cursor = reset ? null : browseCursorRef.current;
+      if (phase === "done") { setBrowseLoading(false); return; }
+      const r = await dsQueryPage(businessType, "products", {
+        where: browseWhereFor(phase), sortColumn: "name", sortDir: "ASC",
+        limit: BROWSE_PAGE_SIZE, cursor,
+      });
+      let nextPhase = phase, nextCursor = r.nextCursor;
+      if (!r.hasMore) {
+        nextPhase = (demandFilter === "সব" && phase === "common") ? "uncommon" : "done";
+        nextCursor = null;
+      }
+      browsePhaseRef.current = nextPhase;
+      browseCursorRef.current = nextCursor;
+      setBrowseDone(nextPhase === "done");
+      setBrowseRows(prev => reset ? r.rows : [...prev, ...r.rows]);
+    } catch {
+      setBrowseFailed(true); // SQLite ব্যর্থ → পরের রেন্ডারে filteredAll ফলব্যাকে চলে যাবে
+    } finally {
+      setBrowseLoading(false);
+    }
+  }, [demandFilter, businessType, browseWhereFor]);
+
+  // ফিল্টার/সার্চ-মোড বদলালে ব্রাউজ-পেজিনেশন রিসেট করে প্রথম পেজ (+ মোট গণনা) লোড
+  useEffect(() => {
+    if (!useSqliteBrowse) return;
+    browsePhaseRef.current = demandFilter === "uncommon" ? "uncommon" : "common";
+    browseCursorRef.current = null;
+    setBrowseRows([]);
+    setBrowseDone(false);
+    loadBrowsePage(true);
+    (async () => {
+      try {
+        const whereCount =
+          demandFilter === "common"   ? "deleted=0 AND (demand_type='common' OR demand_type IS NULL)" :
+          demandFilter === "uncommon" ? "deleted=0 AND demand_type='uncommon'" :
+          "deleted=0";
+        const res = await dsAggregate(businessType, "products", { select: "COUNT(*) as cnt", where: whereCount });
+        setBrowseTotal(res?.cnt ?? null);
+      } catch { setBrowseTotal(null); }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useSqliteBrowse, demandFilter, businessType]);
+
   // ── FIFO active-batch map — প্রোডাক্ট লিস্টের ব্যাচ ব্যাজ দেখানোর জন্য (prodBatchMap fix) ──
   const prodBatchMap = useMemo(() => {
     const map = {};
@@ -28827,7 +28911,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           onClear={() => { setSearch(""); }}
           color="#22c55e"
           T={T} S={S}
-          showCount count={filteredAll.length + "টি"}
+          showCount count={(useSqliteBrowse && browseTotal != null ? browseTotal : filteredAll.length) + "টি"}
           voiceColor="#22c55e"
           style={{ flex: 1, marginBottom: 0 }}
         />
@@ -29259,15 +29343,18 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {filteredAll.length === 0 && (
+        {/* 🆕 এন্ট্রি ৩০ — ব্রাউজ-মোডে (useSqliteBrowse) SQLite-পেজিনেটেড browseRows,
+            নাহলে/সার্চ-অ্যাক্টিভ হলে আগের মতোই filteredAll (JS, পুরো array) */}
+        {(useSqliteBrowse ? browseRows.length === 0 && browseDone : filteredAll.length === 0) && (
           <div style={S.empty}>
             কোনো পণ্য নেই
           </div>
         )}
-        {filteredAll.length > 0 && (
+        {(useSqliteBrowse ? browseRows.length > 0 : filteredAll.length > 0) && (
         <Virtuoso
           style={{ height: "calc(100dvh - 260px)" }}
-          data={filteredAll}
+          data={useSqliteBrowse ? browseRows.map((p, i) => ({ ...p, serial: i + 1, serialStr: String(i + 1) })) : filteredAll}
+          endReached={useSqliteBrowse ? () => { if (!browseDone && !browseLoading) loadBrowsePage(false); } : undefined}
           increaseViewportBy={{ top: 400, bottom: 600 }}
           computeItemKey={(_, p) => p.id}
           itemContent={(_, p) => {
@@ -30313,6 +30400,10 @@ const rhDayLabel   = (dk) => { const d = new Date(dk + "T00:00:00"); if (isNaN(d
 const rhMonthLabel = (mk) => { const [y, m] = (mk || "").split("-"); return m ? `${RH_MONTH_NAMES_BN[parseInt(m, 10) - 1]} ${y}` : mk; };
 
 function ReturnModule({ T, S, invoices, products, customers, returns, setReturns, setProducts, setCustomers, setStockMovements, addTxn, showToast, currentUser, shopName, setCashLogs, auditLog, voidInvoice, processReturn }) {
+  // 🆕 read-path cutover (এন্ট্রি ২৯): ReturnModule prop হিসেবে businessType পায় না,
+  // কিন্তু businessType গ্লোবাল Zustand store-এ থাকে (useAppStore) — prop-drilling
+  // এড়িয়ে সরাসরি hook দিয়ে নেওয়া হলো, parent-এর JSX কল-সাইট অস্পৃষ্ট রাখতে।
+  const businessType = useAppStore(s => s.businessType) || "pharmacy";
 
   const fmt      = n => fmtMoney(n);
   const todayKey = _dateKeyOf(new Date());
@@ -30397,6 +30488,12 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
   // 🔴 ফিক্স: আগে সরাসরি Firestore কুয়েরি (ইন্টারনেট লাগত) — এখন লাইভ invoices
   // state (শেষ ৬ মাস) + InvoiceArchive (৬ মাসের বেশি পুরনো, IndexedDB) মার্জ
   // করে সম্পূর্ণ লোকালি রেজাল্ট বানানো হয়, তাই Firebase বন্ধ থাকা দোকানেও কাজ করে।
+  // 🔴 read-path cutover (এন্ট্রি ২৯): isSqliteEnabled() হলে SQLite-ই একক সোর্স —
+  // dual-write-এর কারণে লাইভ+আর্কাইভড দুটো ইনভয়েসই ইতিমধ্যে SQLite-এ আছে (এন্ট্রি
+  // ২৮-এর archiving-ফিক্সের পর), তাই লাইভ invoices state + InvoiceArchive merge
+  // করলে ডুপ্লিকেট হয়ে যাবে — তাই দুটো পাথ এখন পরস্পর-exclusive। SQLite কল ব্যর্থ
+  // হলে (try/catch) পুরনো liveRows+InvoiceArchive merge পাথে সাইলেন্ট ফলব্যাক করে,
+  // dual-write ফেজে যেটা এখনো একমাত্র নিশ্চিত সোর্স-অফ-ট্রুথ।
   const loadInvHistPage = React.useCallback(async (reset = false) => {
     setInvHistLoading(true); setInvHistError(null);
     try {
@@ -30409,16 +30506,34 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
         if (dateTo   && (inv.dateKey || "") > dateTo)   return false;
         return true;
       };
-      const liveRows = (invoices || []).filter(matchesFilter);
-      const archiveResult = await InvoiceArchive.queryPage({
-        customerId: ihCustId || undefined,
-        payType: ihPayType !== "all" ? ihPayType : undefined,
-        dateFrom: dateFrom || undefined,
-        dateTo: dateTo || undefined,
-        pageSize: 100000, // পুরো ম্যাচিং সেট — নিচে ম্যানুয়ালি offset-ভিত্তিক স্লাইস হবে
-      });
-      const merged = [...liveRows, ...archiveResult.rows]
-        .sort((a, b) => (b.dateKey || "").localeCompare(a.dateKey || "") || (b.createdAt || 0) - (a.createdAt || 0));
+      let merged = null;
+      if (isSqliteEnabled()) {
+        try {
+          const whereParts = [];
+          const params = [];
+          if (ihCustId) { whereParts.push("customer_id = ?"); params.push(ihCustId); }
+          if (dateFrom) { whereParts.push("date_key >= ?"); params.push(dateFrom); }
+          if (dateTo)   { whereParts.push("date_key <= ?"); params.push(dateTo); }
+          const where = whereParts.length ? whereParts.join(" AND ") : "1=1";
+          // pageSize-এর মতোই বড় limit — পুরো ম্যাচিং সেট আনা হচ্ছে, নিচে
+          // ম্যানুয়ালি offset-ভিত্তিক স্লাইস হবে (আগের InvoiceArchive.queryPage()
+          // এর মতোই প্যাটার্ন, শুধু সোর্স বদলেছে — shape/রিস্ক প্রায় অপরিবর্তিত)
+          const r = await dsQueryPage(businessType, "invoices", { where, params, sortColumn: "created_at", sortDir: "DESC", limit: 100000 });
+          merged = r.rows.filter(matchesFilter);
+        } catch { merged = null; } // SQLite ব্যর্থ → নিচে ফলব্যাক
+      }
+      if (!merged) {
+        const liveRows = (invoices || []).filter(matchesFilter);
+        const archiveResult = await InvoiceArchive.queryPage({
+          customerId: ihCustId || undefined,
+          payType: ihPayType !== "all" ? ihPayType : undefined,
+          dateFrom: dateFrom || undefined,
+          dateTo: dateTo || undefined,
+          pageSize: 100000, // পুরো ম্যাচিং সেট — নিচে ম্যানুয়ালি offset-ভিত্তিক স্লাইস হবে
+        });
+        merged = [...liveRows, ...archiveResult.rows];
+      }
+      merged.sort((a, b) => (b.dateKey || "").localeCompare(a.dateKey || "") || (b.createdAt || 0) - (a.createdAt || 0));
       const offset = reset ? 0 : invHistOffsetRef.current;
       const page = merged.slice(offset, offset + INV_HIST_PAGE_SIZE);
       invHistOffsetRef.current = offset + page.length;
@@ -30429,7 +30544,7 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
     } finally {
       setInvHistLoading(false);
     }
-  }, [ihCustId, ihPayType, ihDate, ihMonth, invoices]);
+  }, [ihCustId, ihPayType, ihDate, ihMonth, invoices, businessType]);
 
   const openInvHist = () => {
     invHistOffsetRef.current = 0;
@@ -30464,17 +30579,33 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
 
   // 🔴 ফিক্স: আগে সরাসরি Firestore কুয়েরি — এখন লাইভ invoices state (শেষ ৬ মাস)
   // + InvoiceArchive (৬ মাসের বেশি পুরনো) মার্জ করে সম্পূর্ণ লোকালি, ইন্টারনেট ছাড়াই।
+  // 🔴 read-path cutover (এন্ট্রি ২৯) — একই প্যাটার্ন loadInvHistPage()-এর মতো:
+  // SQLite একক সোর্স যখন enabled, নাহলে পুরনো liveRows+InvoiceArchive merge।
   const loadVoidHist = React.useCallback(async () => {
     setVhLoading(true); setVhError(null);
     try {
       const dateFrom = vhViewMode === "date" ? vhNavDate : `${vhNavMonth}-01`;
       const dateTo   = vhViewMode === "date" ? vhNavDate : `${vhNavMonth}-31`;
       const cap = vhViewMode === "date" ? 100 : 200;
-      const liveRows = (invoices || []).filter(i =>
-        i.status === "voided" && (i.dateKey || "") >= dateFrom && (i.dateKey || "") <= dateTo
-      );
-      const archiveResult = await InvoiceArchive.queryPage({ status: "voided", dateFrom, dateTo, pageSize: cap });
-      const merged = [...liveRows, ...archiveResult.rows]
+      let merged = null;
+      if (isSqliteEnabled()) {
+        try {
+          const r = await dsQueryPage(businessType, "invoices", {
+            where: "status = ? AND date_key >= ? AND date_key <= ?",
+            params: ["voided", dateFrom, dateTo],
+            sortColumn: "created_at", sortDir: "DESC", limit: cap,
+          });
+          merged = r.rows;
+        } catch { merged = null; } // SQLite ব্যর্থ → নিচে ফলব্যাক
+      }
+      if (!merged) {
+        const liveRows = (invoices || []).filter(i =>
+          i.status === "voided" && (i.dateKey || "") >= dateFrom && (i.dateKey || "") <= dateTo
+        );
+        const archiveResult = await InvoiceArchive.queryPage({ status: "voided", dateFrom, dateTo, pageSize: cap });
+        merged = [...liveRows, ...archiveResult.rows];
+      }
+      merged = merged
         .sort((a, b) => (b.dateKey || "").localeCompare(a.dateKey || "") || (b.createdAt || 0) - (a.createdAt || 0))
         .slice(0, cap);
       setVhRows(merged);
@@ -30483,7 +30614,7 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
     } finally {
       setVhLoading(false);
     }
-  }, [vhViewMode, vhNavDate, vhNavMonth, invoices]);
+  }, [vhViewMode, vhNavDate, vhNavMonth, invoices, businessType]);
 
   const openVoidHist = () => {
     setShowVoidHist(true);
