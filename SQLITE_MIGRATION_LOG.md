@@ -23,7 +23,7 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ২৭-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৩০-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
 
 **টার্গেট স্কেল**: ১,০০,০০০ প্রোডাক্ট · ১০,০০০ কাস্টমার · ১,০০,০০,০০০ (১ কোটি) ইনভয়েস — বর্তমান টেস্ট শপের ডেটা (২২৩৬/১৭/৬৩০) এই লক্ষ্যের তুলনায় প্রায় নগণ্য, তাই "এখন সমস্যা হচ্ছে না" কোনো নির্ভরযোগ্য সংকেত না।
 
@@ -40,11 +40,12 @@ Schema+FTS5 · dual-write (shadow) · resumable batch backfill · row-count veri
 7. **🟡 নতুন নোট**: "আজকের ইনভয়েস লিস্ট" কোয়েরি ১ কোটি স্কেলে ১২১ms (আগে ছোট স্কেলে <৬ms) — সম্ভবত `(date_key, created_at)` কম্পোজিট ইনডেক্সের অভাবে সর্ট-টাইম। ব্লকার না, কিন্তু ভবিষ্যতে ফিক্সযোগ্য।
 
 ### 🔴 ব্লকার — বাকি
-- (Boot backfill, queryPage() keyset SEEK বাগ, DB-সাইজ মাপা ও ১ কোটি স্কেল কনফার্মেশন — সবকটা সমাধান হয়ে গেছে উপরে — কোনো কোড-লেভেল ব্লকার এই মুহূর্তে চিহ্নিত নেই)
+- (Boot backfill, queryPage() keyset SEEK বাগ, DB-সাইজ মাপা ও ১ কোটি স্কেল কনফার্মেশন, archiveOldInvoices() dual-write ডিলিট বাগ (এন্ট্রি ২৮) — সবকটা সমাধান হয়ে গেছে উপরে — কোনো কোড-লেভেল ব্লকার এই মুহূর্তে চিহ্নিত নেই)
+- **⚠️ এন্ট্রি ২৮-এর ফিক্স `npm test` দিয়ে এখনো কনফার্ম করা হয়নি** (sandbox-এ নেটওয়ার্ক ছিল না) — পরবর্তী সেশনে/CI-তে প্রথম কাজ এটা।
 - **Real-device যাচাই এখনো বাকি** — dev flag চালু করে real device-এ boot টাইম/মেমরি ব্যবহার (৬-মাস windowed invoices দিয়ে) আর keyset pagination (ফিক্সের পর) উভয়ই sandbox-এর বাইরে কখনো টেস্ট হয়নি। এই সেশনের ১ কোটি বেঞ্চমার্ক সার্ভার/ডেস্কটপ CPU-তে হয়েছে — বাজেট Android ফোনে সংখ্যাগুলো ধীর হবে।
 
 ### 🟡 দরকারি, ব্লকার না
-4. Read-path cutover — স্কোপড প্রস্তাব: শুধু pagination/historical browsing SQLite থেকে read করবে, POS/dashboard হিসাব-নিকাশ এখনো IndexedDB-ভিত্তিক লজিকেই থাকবে (কম ঝুঁকি)। এখনো ডিজাইন হয়নি। **নোট**: queryPage() এখন keyset-এ প্রস্তুত + এন্ট্রি ২৭-এ ইউনিট-টেস্ট কভারেজও প্রস্তুত, কিন্তু App.jsx-এর কোনো real UI কল-সাইট এখনো এটা কল করে না (এখনো শুধু DataStore.js-এর ভেতরের ফাংশন, wire করা হয়নি) — এই কাটওভার-ই সেই wiring-এর কাজ।
+4. ✅ Read-path cutover — invoice history (ReturnModule) অংশ এন্ট্রি ২৯-এ সম্পূর্ণ। Products main list ডিফল্ট-ব্রাউজ অংশ এন্ট্রি ৩০-এ সম্পূর্ণ (স্কোপড: শুধু render/sort, `products` state এখনো মেমরিতে)। **কোনোটাই npm test দিয়ে কনফার্ম করা হয়নি।** POS product picker (SmartInvoiceBuilder) অংশ এখনো অস্পৃষ্ট — future scope।
 5. ১৬টা Virtuoso লিস্টের মধ্যে invoices ও products-কে async pagination দিতে হবে (stale-response/sequence-token guard সহ)। customers (টার্গেট ১০ হাজার) মেমোরিতেই থাকতে পারে, pagination লাগবে না।
 6. Scientist-স্টাইল shadow-compare (Phase ৭) — এখনো ডিজাইন হয়নি, শুধু নাম উল্লেখ ছিল।
 7. `FTS_NARROW_THRESHOLD = 5000` (App.jsx লাইন ৫২) — ১ লাখ প্রোডাক্ট টার্গেটে এই থ্রেশহোল্ড এখনো ঠিক আছে কিনা রিভিজিট করা দরকার।
@@ -53,6 +54,8 @@ Schema+FTS5 · dual-write (shadow) · resumable batch backfill · row-count veri
 8. customers/invoices resumable migration আলাদাভাবে টেস্ট (ঐচ্ছিক, একই কোড-পাথ ব্যবহার করে)
 9. একাধিক শপে টেস্ট (এখনো শুধু ১টা টেস্ট শপ)
 10. `capacitor-google-auth` RC ভার্সন (এন্ট্রি ২০) real-device কনফার্ম
+11. RFM materialization (এন্ট্রি ২৮) — customers টেবিলে `ltv`/`segment`/`days_since`/`risk_score` কলাম যোগ + প্রতি invoice/txn write-এ ইনক্রিমেন্টাল আপডেট (denormalization); সিদ্ধান্ত হয়ে গেছে `ltv` সত্যিকারের lifetime value হবে (archive সহ), কিন্তু ডিজাইনই এখনো শুরু হয়নি — নতুন write-path লজিক, নতুন সিঙ্ক-বাগের সম্ভাবনা, স্কোপ বড়
+12. **products on-demand migration** (এন্ট্রি ২৯-এর পরে শুরু হওয়া বহু-সেশন প্রজেক্ট) — সম্পূর্ণ প্ল্যান+২০-কম্পোনেন্ট কল-সাইট ইনভেন্টরি এখন `PRODUCTS_ONDEMAND_MIGRATION_PLAN.md`-তে; নতুন সেশনে এই ফাইলটাও আপলোড করে চালিয়ে যেতে হবে
 
 ### প্রস্তাবিত অর্ডার
 🔴-এর তিনটা আগে (একে অপরের উপর নির্ভরশীল — pagination ঠিক না করে boot backfill ফিক্স করলেও লিস্ট UI-তে একই সমস্যা থেকে যাবে) → তারপর ৪-৫-৬-৭ একটা করে আলাদা সেশনে।
@@ -60,6 +63,75 @@ Schema+FTS5 · dual-write (shadow) · resumable batch backfill · row-count veri
 ---
 
 ## এন্ট্রি লগ
+
+### [এন্ট্রি ৩০] — Products main list ডিফল্ট-ব্রাউজ pagination (#২, স্কোপড: শুধু render/sort SQLite-এ, `products` state মেমরিতেই থাকে)
+
+**স্কোপ**: PRODUCTS_ONDEMAND_MIGRATION_PLAN.md-এর ধাপ ৪ অনুযায়ী — Products main list স্ক্রিনের **ডিফল্ট ব্রাউজ (সার্চ নেই)** অবস্থায় রেন্ডারিং+সর্ট এখন SQLite `queryPage()` থেকে পেজ-করে-করে আসে, পুরো `products` array-এর উপর JS `.sort()` চালানোর বদলে। **সার্চ-অ্যাক্টিভ অবস্থায় কিছুই বদলায়নি** — বিদ্যমান hybrid FTS+`productMatchScore()` পাথ (`filteredAll`) সম্পূর্ণ অপরিবর্তিত। `products` state নিজে এখনো পুরোপুরি মেমরিতেই থাকে (POS বিলিং ইত্যাদির জন্য এখনো দরকার) — এই ধাপে শুধু **এই একটা স্ক্রিনের রেন্ডার/সর্ট খরচ** কমেছে, boot-টাইম মেমরি লোড কমেনি (সেটা প্ল্যানের ধাপ ৭, অনেক দূরে)।
+
+**স্কিমা পরিবর্তন (`schema.sql` + `DataStore.js`)**:
+- `products` টেবিলে নতুন `demand_type TEXT` কলাম + কম্পোজিট ইনডেক্স `idx_products_demand_name(demand_type, name)` যোগ হলো।
+- `HOT_FIELDS.products` (DataStore.js)-এ `demand_type` কলাম+extract (`p.demandType ?? null`) যোগ হলো — এখন থেকে প্রতিটা dual-write এই কলাম পপুলেট করবে।
+- **🔴 গুরুত্বপূর্ণ মাইগ্রেশন-গ্যাপ যেটা এই সেশনেই ধরে ফিক্স করা হয়েছে**: `getDb()` শুধু `CREATE TABLE IF NOT EXISTS` চালায়, যা আগে-থেকে-তৈরি DB ফাইলে নতুন কলাম যোগ করে না (no-op) — এতে পুরনো DB-তে `CREATE INDEX ... ON products(demand_type, ...)` "no such column" এরর দিয়ে **পুরো schema execute() ভেঙে দিত** (মানে আগের সেশনের টেস্ট-শপের DB নিয়ে অ্যাপ বুট করলে ক্র্যাশ করত)। ফিক্স: `restOfSchema` execute()-এর ঠিক আগে একটা আলাদা `ALTER TABLE products ADD COLUMN demand_type TEXT` (try/catch-এ, "duplicate column"/"no such table" দুটোই নিরাপদে ignore) — এটা পুরনো DB-তে কলাম আগেভাগে যোগ করে দেয়, তারপর CREATE INDEX নিরাপদে চলে।
+- **⚠️ বিদ্যমান SQLite ডেটার জন্য এখনো একটা গ্যাপ থেকে যাচ্ছে**: ALTER TABLE কলাম যোগ করলেও, আগে থেকে migrate/backfill হওয়া রেকর্ডগুলোর `demand_type` মান NULL-ই থাকবে যতক্ষণ না সেই রেকর্ড আবার touch হয় (নতুন update ট্রিগার dual-write) — NULL-কে WHERE ক্লজে "common" হিসেবে ট্রিট করা হয়েছে (JS ডিফল্টের সাথে মিলিয়ে), তাই আগে-থেকে-"uncommon" মার্ক করা প্রোডাক্ট, backfill-এর পর re-touch না হওয়া পর্যন্ত, ভুলভাবে "common" বাকেটে দেখাবে। **টেস্ট শপে SQLite enable করার আগে একটা fresh backfill রি-রান আবশ্যক** (existing `migrateStoreResumable()`, idempotent — re-run নিরাপদ)।
+
+**App.jsx পরিবর্তন (`Products` কম্পোনেন্ট)**:
+- নতুন state/লজিক ব্লক (`browseRows`, `browseTotal`, `browseDone`, `browseLoading`, `browseFailed`, `loadBrowsePage()`) — `filteredAll` useMemo-এর ঠিক পরে, `filteredAll` নিজে অপরিবর্তিত।
+- **ডিজাইন সিদ্ধান্ত**: `demand_type`-এর মাত্র ২টা মান বলে multi-column keyset cursor (যা `DataStore.js queryPage()` এখনো সাপোর্ট করে না, শুধু single sortColumn+id) এড়িয়ে গেছে — common বাকেট আগে (`name ASC`), শেষ হলে (`hasMore: false`) uncommon বাকেটে সিমলেসলি ট্রানজিশন করে, দুটো আলাদা `queryPage()` কল দিয়ে। `queryPage()` কোর ফাংশন **স্পর্শ করা হয়নি** (এন্ট্রি ২৭-এর টেস্ট কভারেজ প্রভাবিত হয় না)।
+- **আচরণ-পরিবর্তন (ইচ্ছাকৃত, ডকুমেন্ট করা হলো)**: আগে ডিফল্ট-ব্রাউজ অর্ডার ছিল "কমন/আনকমন গ্রুপিং + বাকি স্টেবল-সর্ট (মূল array অর্ডার, যা মূলত arbitrary)"। এখন SQLite-ব্যাকড ব্রাউজ মোডে প্রতিটা বাকেটের ভেতরে **name ASC** (বর্ণানুক্রমিক) — deterministic ও index-এ ধরা সহজ। সার্চ-অ্যাক্টিভ অবস্থায় কোনো পরিবর্তন নেই।
+- `showCount` এখন `useSqliteBrowse` অবস্থায় SQLite `COUNT(*)` থেকে আসা `browseTotal` দেখায় (আগের JS `filteredAll.length`-এর বদলে, যেহেতু browseRows পুরো ম্যাচিং সেট না, শুধু লোড-হওয়া পেজগুলো)।
+- Virtuoso-র `data` prop `useSqliteBrowse` হলে `browseRows` (serial = offset-ভিত্তিক `i+1`), নাহলে আগের মতোই `filteredAll`। `endReached` হ্যান্ডলার `useSqliteBrowse` অবস্থায় পরের পেজ লোড করে।
+- SQLite কল ব্যর্থ হলে (`try/catch`) `browseFailed=true` হয়ে যায়, যা `useSqliteBrowse`-কে `false` করে দেয় — পরের রেন্ডারে স্বয়ংক্রিয়ভাবে `filteredAll` (পুরনো JS পাথ)-এ ফলব্যাক করে।
+- `filteredAll`-এর বাইরের ২টা ব্যবহার (batch-edit/export/অন্য কোনো লজিক) — কোড-অডিটে পাওয়া গেছে `filteredAll` শুধু ৩ জায়গায় ব্যবহৃত (showCount, empty-state, Virtuoso `data`), তাই ব্লাস্ট-রেডিয়াস ছোট, অন্য কোনো ফিচার এই পরিবর্তনে প্রভাবিত হয়নি।
+
+**⚠️ যাচাই করা যায়নি (এই সেশনে নেটওয়ার্ক ছিল না)**:
+- `npm test` চালানো যায়নি — বিশেষ করে `datastore-querypage-tests.mjs` (HOT_FIELDS কলাম যোগ হওয়ায় প্রভাবিত হতে পারে যদি টেস্ট ফিক্সচার কলাম-কাউন্ট নিয়ে স্ট্রিক্ট assumption করে) এবং `schema-tests.mjs`।
+- Real-device টেস্ট আরও বেশি জরুরি এখানে — ALTER TABLE গার্ডটা একটা পুরনো টেস্ট-DB ফাইলের বিপরীতে বাস্তবে একবারও চালানো হয়নি এই সেশনে।
+- **রোলআউট অর্ডার প্রস্তাব**: (১) `npm test`, (২) টেস্ট শপে fresh backfill রি-রান (demand_type পপুলেট করতে), (৩) real-device-এ Products লিস্ট খুলে common/uncommon উভয় বাকেট + "সব" ফিল্টার + endReached স্ক্রল ম্যানুয়ালি চেক, (৪) তারপরই অন্য কোনো শপে enable বিবেচনা।
+
+---
+
+### [এন্ট্রি ২৯] — #১ Invoice history cutover সম্পূর্ণ (queryPage() প্রথম real UI কল-সাইট), #২ (products pagination) ইচ্ছাকৃতভাবে শুরু করা হয়নি — ডিজাইন আগে দরকার
+
+**প্রসঙ্গ**: এন্ট্রি ২৮-এর ব্লকার ফিক্সের পর প্ল্যানের #১+#২ (একসাথে প্রস্তাবিত ছিল) নিয়ে এগোনো হলো। কিন্তু কোড রিভিউ করে দেখা গেল #১ (adapter-swap, কম ঝুঁকি) আর #২ (নতুন ডিজাইন লাগবে, সবচেয়ে ঝুঁকিপূর্ণ, live স্টক-এডিট স্ক্রিন) — এই দুটোকে এক বসায় একসাথে করাই একটা ঝুঁকি ছিল (আগের সেশনের প্ল্যানিং আলোচনাতেও এই একই উদ্বেগ ওঠা হয়েছিল)। তাই #১ সম্পূর্ণ করে, #২ শুরু করার আগে থামা হলো — নিচে কারণ ও প্রস্তাবিত ডিজাইন বিস্তারিত।
+
+**✅ #১ সম্পূর্ণ — `ReturnModule`-এর তিনটা ফাংশন**:
+- `loadInvHistPage()` ও `loadVoidHist()` — `isSqliteEnabled()` হলে এখন `InvoiceArchive.queryPage()` (IndexedDB)-এর বদলে `DataStore.queryPage()` (SQLite) কল করে। **গুরুত্বপূর্ণ ডিজাইন-সিদ্ধান্ত**: dual-write-এর কারণে SQLite-এ লাইভ+আর্কাইভড দুটো ইনভয়েসই থাকে (এন্ট্রি ২৮-এর ফিক্সের পর) — তাই আগের মতো লাইভ `invoices` state + `InvoiceArchive` merge করলে ডুপ্লিকেট হয়ে যেত, তাই SQLite path-এ শুধু SQLite-ই একক সোর্স (merge বাদ)। SQLite কল ব্যর্থ হলে (try/catch) পুরনো merge-পাথে সাইলেন্ট ফলব্যাক করে।
+- `searchInvoice()` **ইচ্ছাকৃতভাবে অপরিবর্তিত রাখা হয়েছে** — এটা substring/LIKE-স্টাইল সার্চ করে (invoiceNo-তে যেকোনো অংশ ম্যাচ), যা `queryPage()`-এর keyset রেঞ্জ-কোয়েরিতে সরাসরি সম্ভব না (invoices টেবিলে FTS নেই, schema.sql-এ ইচ্ছাকৃতভাবে বাদ দেওয়া হয়েছিল)। এখনো লাইভ state + `InvoiceArchive.findByQuery()` ব্যবহার করে, নিরাপদ ও অপরিবর্তিত।
+- `payType` ফিল্টার SQL WHERE-এ যায়নি (schema-তে কোনো `pay_type` কলাম নেই, শুধু `data` JSON ব্লবে) — SQLite path-এও আগের মতোই ফলব্যাক-ফ্রি JS পোস্ট-ফিল্টার (`matchesFilter`) ব্যবহার হচ্ছে, ব্যবহারকারীর দেখা রেজাল্টে কোনো পার্থক্য নেই। `json_extract()`-ভিত্তিক SQL ফিল্টারিং এই সেশনে ইচ্ছাকৃতভাবে এড়ানো হয়েছে (কোডবেসে এখনো কোথাও ব্যবহৃত হয়নি, native SQLite প্লাগইনে JSON1 সাপোর্ট এই সেশনে যাচাই করা যায়নি)।
+- Dashboard (লাইন ~২১৮২৮) আর CustomerDetail (লাইন ~২৬১৫৯)-এর নিজস্ব `InvoiceArchive.queryPage()` কল-সাইট **ইচ্ছাকৃতভাবে ছোঁয়া হয়নি** — মূল প্ল্যানে শুধু ReturnModule-এর তিনটা ফাংশনকেই "#১" হিসেবে ধরা হয়েছিল, স্কোপ-ক্রিপ এড়াতে বাকিগুলো আলাদা ভবিষ্যৎ আইটেম।
+- `businessType` prop হিসেবে `ReturnModule`-এ পাস হয় না — parent JSX অস্পৃষ্ট রাখতে prop-drilling না করে সরাসরি `useAppStore(s => s.businessType)` হুক দিয়ে নেওয়া হয়েছে।
+
+**⚠️ যাচাই করা যায়নি**: এই সেশনের sandbox-এ নেটওয়ার্ক নেই (`npm install`/esbuild/test সম্ভব না)। এই এডিটটা এন্ট্রি ২৭-এর `datastore-querypage-tests.mjs`-এর একই `DataStore.queryPage()` ফাংশন কল করছে (ইতিমধ্যে ইউনিট-টেস্ট কভারড), কিন্তু App.jsx-এর এই নতুন কল-সাইট দুটো নিজে টেস্ট-কভারড না। **পরবর্তী সেশনে/CI-তে `npm test` + real-device dev-flag চালু করে ম্যানুয়াল স্মোক-টেস্ট (ইনভয়েস হিস্ট্রি খুলে পুরনো + নতুন ইনভয়েস দুটোই দেখা যাচ্ছে কিনা, ভয়েড হিস্ট্রি) আবশ্যক Enable করার আগে।**
+
+**🔴 #২ (Products main list pagination) ইচ্ছাকৃতভাবে শুরু করা হয়নি** — কারণ:
+1. **এখনো ডিজাইনই নেই** (মাস্টার স্ট্যাটাসের ৫ নং আইটেম) — এটা "queryPage() ওয়্যাপ করা" (যেমন #১) না, এটা একটা নতুন ফিচার-ডিজাইন দাবি করে: demand-type সর্ট (common/uncommon আগে) + সার্চ-টাইম hybrid FTS+JS scoring + সিরিয়াল-নম্বর — তিনটাই বর্তমানে পুরো `products` array-এর উপর নির্ভরশীল, আর SQLite `queryPage()` single-column keyset সর্ট করে, মাল্টি-ক্রাইটেরিয়া ডাইনামিক সর্ট (search-score-সহ) না।
+2. **সবচেয়ে ঝুঁকিপূর্ণ স্ক্রিন** — এই স্ক্রিনেই স্টক এডিট/ব্যাচ ম্যানেজমেন্টের মতো ক্রিটিকাল অ্যাকশন হয়; বাগ হলে সরাসরি লাইভ দোকানের ইনভেন্টরি অপারেশন ব্যাহত হবে।
+3. **নেটওয়ার্ক/টেস্ট-বিহীন sandbox-এ এত বড়, নতুন-ডিজাইনের পরিবর্তন যাচাই ছাড়া লেখা** — নিজে থেকেই একটা ঝুঁকি যোগ করত, যেটা এই মাইগ্রেশনের নিজস্ব "চিরস্থায়ী নিয়ম #৪" (প্রতিটা ধাপের পর টেস্ট) এর বিপরীত।
+
+**প্রস্তাবিত ডিজাইন (পরের সেশনে কনফার্ম করে শুরু করা উচিত)**:
+- **ডিফল্ট ব্রাউজ (সার্চ নেই)**: `demand_type` কলাম + ইনডেক্স schema-তে যোগ, SQLite `queryPage()` দিয়ে `ORDER BY demand_type ASC, <sortColumn> ASC` (row-value tuple keyset, এন্ট্রি ২৫-এর প্যাটার্নে) — খাঁটি pagination।
+- **সার্চ-অ্যাক্টিভ অবস্থা**: বর্তমান hybrid প্যাটার্নই থাকবে (FTS candidate-narrowing + JS `productMatchScore()` র‍্যাঙ্কিং, ইতিমধ্যে ৪ কল-সাইটে প্রমাণিত) — কোনো নতুন ডিজাইন লাগবে না, শুধু narrowed candidate সেটে pagination যোগ হবে।
+- **সিরিয়াল নম্বর**: `p.serial` (array-পজিশন থেকে) পেজ-ভিত্তিক হয়ে যাবে (`offset + i`) — ভিজ্যুয়াল ব্যাজ মাত্র, ইনভয়েসে carry হলেও critical কোনো লজিকে ব্যবহৃত হয় না (আগেই যাচাই করা হয়েছিল), তাই এই পরিবর্তন নিরাপদ।
+
+---
+
+### [এন্ট্রি ২৮] — 🔴 dual-write archiving বাগ ফিক্স (১+২ শুরুর আগে ব্লকার ছিল) + RFM lifetime-value স্কোপ ডিসিশন
+
+**প্রসঙ্গ**: প্ল্যানের #১+২ (invoice history cutover + products pagination) নিয়ে আলোচনা করতে গিয়ে, এবং কাস্টমার লিস্টের RFM (LTV/segment) SQLite-এ আনার সম্ভাবনা যাচাই করতে গিয়ে কোড রিভিউ করার সময় দুইটা জিনিস ধরা পড়েছে — দ্বিতীয়টা এতটাই গুরুত্বপূর্ণ যে #১ শুরু করার আগে ফিক্স করা বাধ্যতামূলক হয়ে গেছে।
+
+**১) RFM-এর `ltv` আসলে "৬-মাসের সেল", সত্যিকারের lifetime value না** — `rfmData` যে `invoices` array থেকে হিসাব করে সেটা এন্ট্রি ২৪-এর windowed live state (৬ মাসের বেশি পুরনো ইনভয়েস আর্কাইভে সরে যায়, live-এ থাকে না)। **সিদ্ধান্ত**: নতুন SQLite ভার্সনে `ltv` সত্যিকারের lifetime value হবে (সব ইনভয়েস, আর্কাইভ সহ)। এটা এখনো কোডে প্রয়োগ হয়নি — RFM materialization নিজেই একটা আলাদা, বড় future scope (নিচে ১১ নম্বরে যোগ হলো), শুধু ভবিষ্যতের স্কোপের জন্য সিদ্ধান্তটা এখানে রেকর্ড রাখা হলো।
+
+**২) 🔴 বড় আবিষ্কার — Archiving আসলে SQLite থেকেও ডিলিট করে দিচ্ছিল (ফিক্স হয়ে গেছে)**: `dualWriteSqlite()` জেনেরিক `diffById()` মেকানিজম ব্যবহার করে — `invoices` array থেকে কোনো id "হারিয়ে গেলে" সেটাকে ডিলিট ধরে নেয় আর SQLite-এ `DELETE FROM invoices` চালায়। কিন্তু `archiveOldInvoices()` ঠিক এই কাজটাই করত — ৬ মাসের পুরনো ইনভয়েস `setInvoices(prev => prev.filter(...))` দিয়ে লাইভ array থেকে সরাত (IndexedDB আর্কাইভে পাঠানোর পর), যা জেনেরিক diff-মেকানিজমের চোখে হার্ড-ডিলিটের মতোই দেখাত। ফলাফল: SQLite-এর `invoices` টেবিলও আসলে শুধু ৬ মাসের ডেটা রাখছিল — ৬ মাস পার হলেই SQLite থেকেও মুছে যাচ্ছিল। ধরা না পড়লে RFM "true lifetime value" (উপরের ১ নং) কখনো কাজ করত না, আর #১ (invoice history cutover)-ও `DataStore.queryPage()` দিয়ে পুরনো ইনভয়েস খুঁজলে পেত না।
+
+**ফিক্স**: `archiveOldInvoices()`-এ `setInvoices(prev => prev.filter(...))` কল করার ঠিক আগে, dual-write-এর "প্রেভিয়াস স্ন্যাপশট" ref (`_dsInvoicesRef`) থেকে ওই archived id-গুলো সরিয়ে দেওয়া হয়েছে (`_dsInvoicesRef.current.delete(id)`) — যাতে পরের diff-এ সেগুলো "removed" হিসেবে না ধরা পড়ে। এতে SQLite-এ ডেটা থেকেই যায় (archiving শুধু লাইভ React state/UI থেকে সরায়, SQLite থেকে না — যেটাই আসলে দরকার ছিল)।
+
+**যাচাই**: এই সেশনের sandbox-এ নেটওয়ার্ক অ্যাক্সেস ছিল না বলে `npm test`/esbuild চালানো যায়নি এখানে (আগের সেশনে esbuild দিয়ে সিনট্যাক্স ভেরিফাই হয়েছিল, ভুল ধরা পড়েনি — একই প্যাটার্নের এডিট)। **পরবর্তী সেশনে/লোকাল মেশিনে/CI-তে `npm test` চালিয়ে কনফার্ম করা আবশ্যক**, বিশেষ করে `sync-tests.mjs` আর `datastore-querypage-tests.mjs`।
+
+**ঝুঁকি**: ফিক্সটা নিজে ছোট ও সার্জিক্যাল (`archiveOldInvoices()`-এর ৭ লাইন, `DataStore.js`/schema অস্পৃষ্ট) কিন্তু **প্রোডাকশনে ইতিমধ্যে চলমান** dual-write বাগ ফিক্স করছে — অর্থাৎ এই মুহূর্ত পর্যন্ত deployed যেকোনো শপে SQLite-এর `invoices` টেবিল সম্ভবত ইতিমধ্যেই ৬-মাসের বেশি পুরনো ডেটা হারিয়ে ফেলেছে (dual-write শুধু shadow-write, IndexedDB blob এখনো সোর্স-অফ-ট্রুথ, তাই কোনো ইউজার-ফেসিং ডেটা-লস হয়নি, কিন্তু future RFM/read-path কাটওভারের ভিত্তি নষ্ট থাকত)।
+
+**যা এখনো বাকি**: #১+#২ (invoice history cutover + products pagination) — এই ফিক্সের পরই শুরু করা নিরাপদ। RFM materialization এখনো ডিজাইনই হয়নি (নতুন কলাম + write-path denormalization লাগবে, স্কোপ বড়)।
+
+---
 
 ### [এন্ট্রি ২৭] — `queryPage()` ইউনিট টেস্ট যোগ হলো (৭-৯ ধারার #৬, আসন্ন read-path cutover-এর সেফটি নেট)
 
