@@ -31633,7 +31633,18 @@ function buildDailySummaryData({ invoices = [], txns = [], customers = [], produ
   const jomaToday     = (txns || []).filter(t => inRange(t.dateKey) && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((s, t) => s + t.amount, 0);
   const totalBakiNow  = (customers || []).reduce((s, c) => s + (c.balance || 0), 0);
   // 🟢 আজকের লাভ ও 🔴 আজকের লস — invoice-level আলাদা করে হিসাব
-  const prodMap   = new Map((products || []).map(p => [p.id, p]));
+  // 🆕 এন্ট্রি ৩১ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ১ — Map consolidation):
+  // আগে প্রতিটা কলে (এই ফাংশন ৫টা জায়গা থেকে কল হয়) নতুন করে Map বানানো হতো।
+  // এখন প্রমাণিত global productsById (useAppStore, ৭টা কল-সাইটে ইতিমধ্যে ব্যবহৃত)
+  // reuse করা হলো — এটা plain function (React component না), তাই non-reactive
+  // getState() প্যাটার্নেই যায় (হুক ব্যবহার করা যাবে না)। সব কল-সাইট অপরিবর্তিত
+  // live `products` state-ই পাস করে, তাই ডেটা-সোর্স হুবহু অভিন্ন — কোনো
+  // আচরণ-পরিবর্তন নেই, শুধু redundant Map-rebuild এড়ানো হলো। `products` param
+  // fallback হিসেবে রাখা হলো যদি productsById কোনো কারণে খালি থাকে (safety net)।
+  const _globalProdMap = useAppStore.getState().productsById;
+  const prodMap = (_globalProdMap && _globalProdMap.size > 0)
+    ? _globalProdMap
+    : new Map((products || []).map(p => [p.id, p]));
   let totalProfit = todayInvList.reduce((s, inv) => {
     const p = calcInvoiceProfit(inv, prodMap);
     return s + (p > 0 ? p : 0);
