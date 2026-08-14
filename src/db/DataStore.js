@@ -178,6 +178,17 @@ export async function getDb(businessType) {
   try {
     await db.execute(`ALTER TABLE products ADD COLUMN demand_type TEXT;`);
   } catch (_) { /* কলাম আগে থেকেই আছে, অথবা টেবিলই এখনো নেই — উভয়ই নিরাপদ */ }
+  // 🆕 এন্ট্রি ৩৬ (ধাপ ২) — একই কারণে (দেখুন উপরের কমেন্ট) demand_type-এর মতোই
+  // ALTER TABLE গার্ড লাগবে এই তিনটা নতুন কলামের জন্যও।
+  try {
+    await db.execute(`ALTER TABLE products ADD COLUMN min_stock_alert REAL;`);
+  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
+  try {
+    await db.execute(`ALTER TABLE products ADD COLUMN nearest_expiry_date TEXT;`);
+  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
+  try {
+    await db.execute(`ALTER TABLE products ADD COLUMN supplier_key TEXT;`);
+  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
   // schema.sql-এ multiple statements আছে — execute() মাল্টি-স্টেটমেন্ট সাপোর্ট করে
   await db.execute(restOfSchema);
 
@@ -208,9 +219,30 @@ export async function analyzeDb(businessType) {
 // store: "products" | "customers" | "invoices"
 // প্রতিটা রেকর্ডের "hot fields" আলাদা, বাকিটা JSON — কলাম ম্যাপিং নিচে।
 
+// 🆕 এন্ট্রি ৩৬ (ধাপ ২) — App.jsx-এর getExpiredBatchesOf()/getSortedActiveBatches()-এর
+// সাথে সামঞ্জস্যপূর্ণ: qty>0 এমন সব ব্যাচের (এক্সপায়ার্ড হোক বা না হোক) মধ্যে
+// সবচেয়ে কাছের expiryDate বের করা — legacy পণ্যে (batches নেই) top-level
+// expiryDate ফলব্যাক। এটা রিড-টাইমে কোনো "এক্সপায়ার্ড কি না" সিদ্ধান্ত নেয় না,
+// শুধু raw তারিখ — তাই কখনো stale হয় না (schema.sql-এর কমেন্ট দ্রষ্টব্য)।
+function computeNearestExpiryDate(p) {
+  if (p.batches && p.batches.length > 0) {
+    let soonest = null;
+    for (const b of p.batches) {
+      if ((b.qty || 0) <= 0 || !b.expiryDate) continue;
+      if (soonest === null || new Date(b.expiryDate).getTime() < new Date(soonest).getTime()) soonest = b.expiryDate;
+    }
+    return soonest;
+  }
+  if (p.expiryDate && (p.stock || 0) > 0) return p.expiryDate;
+  return null;
+}
+
 const HOT_FIELDS = {
   products: {
-    columns: ["id", "name", "name_norm", "barcode", "stock", "cost_price", "price", "updated_at", "deleted", "demand_type"],
+    columns: [
+      "id", "name", "name_norm", "barcode", "stock", "cost_price", "price", "updated_at", "deleted", "demand_type",
+      "min_stock_alert", "nearest_expiry_date", "supplier_key", // 🆕 এন্ট্রি ৩৬ (ধাপ ২)
+    ],
     extract: (p) => [
       String(p.id),
       p.name ?? "",
@@ -222,6 +254,9 @@ const HOT_FIELDS = {
       p.updatedAt ?? Date.now(),
       p.deleted ? 1 : 0,
       p.demandType ?? null, // 🆕 এন্ট্রি ৩০ — NULL হলে queryPage()-এর WHERE ক্লজে "common" হিসেবে ট্রিট হয় (JS p.demandType||"common" ডিফল্টের সাথে মিলিয়ে)
+      numOrNull(p.minStockAlert), // 🆕 এন্ট্রি ৩৬ — NULL হলে কোয়েরিতে COALESCE(min_stock_alert, 5) (JS p.minStockAlert||5-এর সাথে মিলিয়ে)
+      computeNearestExpiryDate(p), // 🆕 এন্ট্রি ৩৬
+      p.company || p.category || "অজ্ঞাত", // 🆕 এন্ট্রি ৩৬ — App.jsx-এর productsBySupplier/supplierMap-এর ঠিক একই key logic
     ],
   },
   customers: {
@@ -246,6 +281,17 @@ const HOT_FIELDS = {
       inv.status ?? "active",
       numOrNull(inv.total),
       inv.createdAt ?? Date.now(),
+    ],
+  },
+  // 🆕 এন্ট্রি ৩৭ — useKpiStats-এর ৫টা ডেটা-সোর্সের প্রথমটা (schema.sql-এর কমেন্ট দ্রষ্টব্য)
+  expenses: {
+    columns: ["id", "category", "amount", "date_key", "updated_at"],
+    extract: (e) => [
+      String(e.id),
+      e.category ?? null,
+      numOrNull(e.amount),
+      e.dateKey ?? e.date ?? null,
+      e.updatedAt ?? null,
     ],
   },
 };
@@ -506,6 +552,130 @@ export async function aggregate(businessType, store, { select, where = "1=1", pa
   const sql = `SELECT ${select} FROM ${store} WHERE ${where}`;
   const res = await db.query(sql, params);
   return res.values?.[0] || null;
+}
+
+// ── এন্ট্রি ৩৬ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ২) ──────────────────
+// InventorySection-এর KPI কাউন্ট + ডিটেইল লিস্ট + সাপ্লায়ার-গ্রুপিং — এখন সরাসরি
+// SQL থেকে। ⚠️ এই সব ফাংশন `deleted = 0` ধরে নেয় (App.jsx-এর মূল products state
+// আসলে soft-deleted রেকর্ড বাদ দিয়েই পাস হয়, তাই এখানে explicit ফিল্টার মিলিয়ে
+// রাখা হলো — dual-write ফেজে দুই পাথে ফলাফল না মেলার ঝুঁকি এড়াতে)।
+
+// exception-list (কম-স্টক/স্টক-আউট/মেয়াদোত্তীর্ণ) সাধারণত ছোট হয় বাস্তব দোকানে,
+// কিন্তু নিরাপত্তার জন্য একটা ক্যাপ — এর বেশি হলে শুধু প্রথম N-টা রিটার্ন হবে।
+const INVENTORY_LIST_LIMIT = 5000;
+
+/** ৩টা KPI কার্ডের কাউন্ট — একটা কোয়েরিতে conditional SUM, ৩টা আলাদা COUNT() না। */
+export async function getInventoryCounts(businessType) {
+  const db = await getDb(businessType);
+  const sql = `
+    SELECT
+      SUM(CASE WHEN stock > 0 THEN 1 ELSE 0 END) AS all_stock_count,
+      SUM(CASE WHEN stock > 0 AND stock <= COALESCE(min_stock_alert, 5) THEN 1 ELSE 0 END) AS critical_count,
+      SUM(CASE WHEN stock IS NULL OR stock = 0 THEN 1 ELSE 0 END) AS stock_out_count
+    FROM products WHERE deleted = 0
+  `;
+  const res = await db.query(sql);
+  const row = res.values?.[0] || {};
+  return {
+    allStock: row.all_stock_count || 0,
+    critical: row.critical_count || 0,
+    stockOut: row.stock_out_count || 0,
+  };
+}
+
+/**
+ * ডিটেইল লিস্ট — 'all' | 'critical' | 'out'। allStock App.jsx-এর মূল আচরণ
+ * (stock DESC সর্ট) বজায় রাখে; critical/out আগের মতোই আনসর্টেড।
+ */
+export async function getInventoryList(businessType, kind, opts = {}) {
+  const { limit = INVENTORY_LIST_LIMIT } = opts;
+  const db = await getDb(businessType);
+  let where, orderBy = "";
+  if (kind === "all") { where = "deleted = 0 AND stock > 0"; orderBy = "ORDER BY stock DESC"; }
+  else if (kind === "critical") { where = "deleted = 0 AND stock > 0 AND stock <= COALESCE(min_stock_alert, 5)"; }
+  else if (kind === "out") { where = "deleted = 0 AND (stock IS NULL OR stock = 0)"; }
+  else throw new Error(`getInventoryList(): অজানা kind "${kind}"`);
+  const sql = `SELECT data FROM products WHERE ${where} ${orderBy} LIMIT ?`;
+  const res = await db.query(sql, [limit]);
+  return (res.values || []).map((r) => JSON.parse(r.data));
+}
+
+/**
+ * মেয়াদোত্তীর্ণ/মেয়াদ-শেষের-কাছাকাছি ব্যাচের জন্য candidate সেট — শুধু
+ * `nearest_expiry_date` কলামে ইনডেক্স-সিক করে narrow করা, আসল ব্যাচ-লেভেল
+ * এক্সপায়ার্ড/near-expiry বিভাজন App.jsx-এর বিদ্যমান JS লজিকেই (getExpiredBatchesOf
+ * ইত্যাদি) হবে — এই ছোট candidate অ্যারের উপর, পুরো products-এর উপর না।
+ * @param {number} [opts.monthsAhead=3] - near-expiry উইন্ডো (App.jsx-এর threeMonthsLater-এর সাথে মিলিয়ে)
+ */
+export async function getExpiryCandidates(businessType, opts = {}) {
+  const { monthsAhead = 3, limit = INVENTORY_LIST_LIMIT } = opts;
+  const db = await getDb(businessType);
+  const bound = new Date();
+  bound.setMonth(bound.getMonth() + monthsAhead);
+  const boundStr = bound.toISOString().slice(0, 10);
+  const sql = `SELECT data FROM products WHERE deleted = 0 AND nearest_expiry_date IS NOT NULL AND nearest_expiry_date <= ? LIMIT ?`;
+  const res = await db.query(sql, [boundStr, limit]);
+  return (res.values || []).map((r) => JSON.parse(r.data));
+}
+
+/** 'supplier' পেজ — প্রতি সাপ্লায়ারের count/stock/out/low, GROUP BY supplier_key। */
+export async function getSupplierSummary(businessType) {
+  const db = await getDb(businessType);
+  const sql = `
+    SELECT
+      supplier_key AS name,
+      COUNT(*) AS count,
+      SUM(COALESCE(stock, 0)) AS stock,
+      SUM(CASE WHEN stock IS NULL OR stock = 0 THEN 1 ELSE 0 END) AS out_count,
+      SUM(CASE WHEN stock > 0 AND stock <= COALESCE(min_stock_alert, 5) THEN 1 ELSE 0 END) AS low_count
+    FROM products
+    WHERE deleted = 0
+    GROUP BY supplier_key
+    ORDER BY count DESC
+  `;
+  const res = await db.query(sql);
+  return res.values || [];
+}
+
+/** 'supplier-detail' পেজ — একটা নির্দিষ্ট সাপ্লায়ারের সব পণ্য। */
+export async function getProductsBySupplierKey(businessType, supplierKey, opts = {}) {
+  const { limit = INVENTORY_LIST_LIMIT } = opts;
+  const db = await getDb(businessType);
+  const sql = `SELECT data FROM products WHERE deleted = 0 AND supplier_key = ? LIMIT ?`;
+  const res = await db.query(sql, [supplierKey, limit]);
+  return (res.values || []).map((r) => JSON.parse(r.data));
+}
+
+// ── এন্ট্রি ৩৭ (useKpiStats windowing-দরকার-নেই ডেটা-সোর্সগুলোর SQL cutover) ──
+/**
+ * date_key কলাম-ভিত্তিক জেনেরিক SUM+COUNT — আপাতত শুধু 'expenses'-এ প্রযোজ্য,
+ * কিন্তু store প্যারামিটার নিয়ে ডিজাইন করা হয়েছে যাতে ভবিষ্যতে cashLogs/
+ * purchaseOrders ইত্যাদি টেবিল যোগ হলে (একই date_key প্যাটার্ন থাকলে) এই একই
+ * ফাংশন পুনর্ব্যবহার করা যায় — নতুন করে লিখতে না হয়।
+ * @param {object} opts
+ * @param {string} [opts.dateKeyExact] - ঠিক এই date_key (যেমন "আজ")
+ * @param {string} [opts.dateKeyGte] - এই date_key থেকে (>=) — App.jsx-এর
+ *   `monthExpense` ফিল্টার আসলে ">= monthStartKey" (মাস-প্রেফিক্স ম্যাচ না!),
+ *   তাই এটা dateKeyPrefix থেকে আলাদা অপশন — নেভিগেট করা অতীত মাসের জন্য
+ *   dateKeyPrefix ভুল ফলাফল দিত (শুধু ওই একমাসেই সীমাবদ্ধ করে ফেলত, যেখানে
+ *   আসল JS আচরণ ওই মাস থেকে আজ পর্যন্ত সবকিছু ধরে)।
+ * @param {string} [opts.dateKeyPrefix] - এই দিয়ে শুরু (LIKE 'YYYY-MM%') — শুধু
+ *   তখনই ব্যবহার করুন যখন সত্যিই এক-মাসে সীমাবদ্ধ রাখা দরকার (dateKeyGte-এর
+ *   থেকে ভিন্ন সিমান্টিক্স, উপরের নোট দ্রষ্টব্য)
+ * @param {string} [opts.amountColumn="amount"]
+ */
+export async function getDateRangeAggregate(businessType, store, opts = {}) {
+  const { dateKeyExact, dateKeyGte, dateKeyPrefix, amountColumn = "amount" } = opts;
+  const db = await getDb(businessType);
+  let where = "1=1";
+  const params = [];
+  if (dateKeyExact) { where += " AND date_key = ?"; params.push(dateKeyExact); }
+  if (dateKeyGte) { where += " AND date_key >= ?"; params.push(dateKeyGte); }
+  if (dateKeyPrefix) { where += " AND date_key LIKE ?"; params.push(dateKeyPrefix + "%"); }
+  const sql = `SELECT COUNT(*) AS cnt, SUM(COALESCE(${amountColumn}, 0)) AS total FROM ${store} WHERE ${where}`;
+  const res = await db.query(sql, params);
+  const row = res.values?.[0] || {};
+  return { count: row.cnt || 0, total: row.total || 0 };
 }
 
 // ── Phase 2: Resumable migration runner ─────────────────────────────────────

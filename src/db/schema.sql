@@ -30,12 +30,29 @@ CREATE TABLE IF NOT EXISTS products (
   deleted     INTEGER NOT NULL DEFAULT 0,  -- soft-delete flag (deletedProducts আলাদা array-এর বদলে)
   demand_type TEXT,              -- 🆕 এন্ট্রি ৩০ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ৪): "common"/"uncommon"/NULL
                                   -- (NULL = "common" ট্রিট হয়, JS p.demandType||"common" ডিফল্টের সাথে মিলিয়ে)
+  min_stock_alert     REAL,      -- 🆕 এন্ট্রি ৩৬ (ধাপ ২, InventorySection): NULL হলে JS-এর p.minStockAlert||5
+                                  -- ডিফল্টের সাথে মিলিয়ে কোয়েরিতে COALESCE(min_stock_alert, 5) ব্যবহার হয়
+  nearest_expiry_date TEXT,      -- 🆕 এন্ট্রি ৩৬: qty>0 এমন সব ব্যাচের (এক্সপায়ার্ড হোক বা না হোক) মধ্যে
+                                  -- সবচেয়ে কাছের expiryDate (legacy পণ্যে top-level expiryDate)। এটা একটা
+                                  -- raw ক্যালেন্ডার-তারিখ fact — ব্যাচ বদলালে (write-time) রিফ্রেশ হয়, কিন্তু
+                                  -- নিজে কোনো "এক্সপায়ার্ড কি না" স্ট্যাটাস স্টোর করে না (তাই সময় পার হলেও
+                                  -- stale হয় না) — শুধু SQL-এ candidate narrow করতে (WHERE <= cutoff) ব্যবহার
+                                  -- হয়, আসল expired/near-expiry বিভাজন App.jsx-এ read-time new Date() দিয়েই
+                                  -- হয় (আগের মতোই, কোনো staleness ঝুঁকি নেই — এন্ট্রি ৩৩-৩৫-এর POS availability
+                                  -- সমস্যা থেকে ইচ্ছাকৃতভাবে ভিন্ন ডিজাইন)
+  supplier_key        TEXT,      -- 🆕 এন্ট্রি ৩৬: company || category || "অজ্ঞাত" — সাপ্লায়ার গ্রুপিং/ফিল্টারের জন্য
   data        TEXT NOT NULL      -- পুরো product object JSON (batches, dosageForm, unit, সব বাকি ফিল্ড)
 );
 CREATE INDEX IF NOT EXISTS idx_products_name_norm ON products(name_norm);
 CREATE INDEX IF NOT EXISTS idx_products_barcode   ON products(barcode);
 CREATE INDEX IF NOT EXISTS idx_products_updated   ON products(updated_at);
 CREATE INDEX IF NOT EXISTS idx_products_deleted   ON products(deleted);
+-- 🆕 এন্ট্রি ৩৬ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ২) — InventorySection
+-- KPI কাউন্ট + ডিটেইল লিস্ট + সাপ্লায়ার-গ্রুপিং SQL cutover-এর ইনডেক্স
+CREATE INDEX IF NOT EXISTS idx_products_stock            ON products(stock);
+CREATE INDEX IF NOT EXISTS idx_products_stock_minalert    ON products(stock, min_stock_alert);
+CREATE INDEX IF NOT EXISTS idx_products_nearest_expiry    ON products(nearest_expiry_date);
+CREATE INDEX IF NOT EXISTS idx_products_supplier_key      ON products(supplier_key);
 -- 🆕 keyset pagination কম্পোজিট ইনডেক্স (DataStore.js queryPage(), ব্লকার #২ ফিক্স) —
 -- (sortColumn, id) দুটো কলামই একসাথে ইনডেক্সে থাকায় "WHERE (updated_at, id) < (?, ?)
 -- ORDER BY updated_at DESC, id DESC LIMIT N" কোয়েরি single covering-index seek-এ
@@ -117,6 +134,22 @@ CREATE INDEX IF NOT EXISTS idx_invoices_dashboard   ON invoices(date_key, status
 -- (products/customers-এর মতো updated_at না — invoices টেবিলে সেই কলামই নেই), দেখুন
 -- DataStore.js DEFAULT_SORT_COLUMN আর queryPage()-এর কমেন্ট।
 CREATE INDEX IF NOT EXISTS idx_invoices_created_id  ON invoices(created_at, id);
+
+-- ── expenses ─────────────────────────────────────────────────────────────
+-- 🆕 এন্ট্রি ৩৭ (useKpiStats-এর ৫টা এখনো-SQL-না-হওয়া ডেটা-সোর্সের প্রথমটা)।
+-- expenses সবচেয়ে সরল শেপ (batches/nested আইটেম নেই) বলে প্রথমে বেছে নেওয়া হলো।
+-- deleteExpense() হার্ড-ডিলিট করে (কোনো soft-delete ফ্ল্যাগ নেই), তাই
+-- products/customers-এর মতো `deleted` কলাম দরকার নেই — dualWriteSqlite()-এর
+-- removedIds → remove() পাথ (আসল SQL DELETE) সরাসরি প্রযোজ্য।
+CREATE TABLE IF NOT EXISTS expenses (
+  id          TEXT PRIMARY KEY,
+  category    TEXT,
+  amount      REAL,
+  date_key    TEXT,      -- YYYY-MM-DD (e.dateKey||e.date) — todayAmt/monthAmt ফিল্টারের জন্য
+  updated_at  TEXT,       -- e.updatedAt (ISO string — products-এর epoch-ms থেকে ভিন্ন ফরম্যাট, শুধু bookkeeping, sort/pagination-এ ব্যবহার হয় না)
+  data        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_expenses_date_key ON expenses(date_key);
 
 -- ── migration মেটাডেটা (কোন blob key কতদূর ব্যাকফিল হয়েছে, resumability-র জন্য) ──
 CREATE TABLE IF NOT EXISTS _migration_state (
