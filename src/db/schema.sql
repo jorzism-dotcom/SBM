@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS products (
   price       REAL,
   updated_at  INTEGER NOT NULL,  -- Date.now() — sync/conflict resolution আর "সাম্প্রতিক এডিট" সর্টের জন্য
   deleted     INTEGER NOT NULL DEFAULT 0,  -- soft-delete flag (deletedProducts আলাদা array-এর বদলে)
+  demand_type TEXT,              -- 🆕 এন্ট্রি ৩০ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ৪): "common"/"uncommon"/NULL
+                                  -- (NULL = "common" ট্রিট হয়, JS p.demandType||"common" ডিফল্টের সাথে মিলিয়ে)
   data        TEXT NOT NULL      -- পুরো product object JSON (batches, dosageForm, unit, সব বাকি ফিল্ড)
 );
 CREATE INDEX IF NOT EXISTS idx_products_name_norm ON products(name_norm);
@@ -39,6 +41,12 @@ CREATE INDEX IF NOT EXISTS idx_products_deleted   ON products(deleted);
 -- ORDER BY updated_at DESC, id DESC LIMIT N" কোয়েরি single covering-index seek-এ
 -- সমাধান হয়, কোনো row ফেলে দেওয়ার (OFFSET-এর মতো) দরকার হয় না।
 CREATE INDEX IF NOT EXISTS idx_products_updated_id ON products(updated_at, id);
+-- 🆕 এন্ট্রি ৩০ — Products main list ডিফল্ট-ব্রাউজ pagination: demand_type বাকেট
+-- (common আগে, uncommon পরে — দুটো আলাদা queryPage() কল, কোনো মাল্টি-কলাম
+-- কার্সার লাগে না) + প্রতি বাকেটের ভেতরে name ASC সর্ট। এই কম্পোজিট ইনডেক্স
+-- "WHERE demand_type = ? ORDER BY name ASC" কোয়েরিকে ইনডেক্স-সিকে নিয়ে যায়।
+CREATE INDEX IF NOT EXISTS idx_products_demand_name ON products(demand_type, name);
+CREATE INDEX IF NOT EXISTS idx_products_demand_name_id ON products(demand_type, name, id);
 
 -- FTS5 ভার্চুয়াল টেবিল — প্রোডাক্ট নাম সার্চ (বাংলা/ইংরেজি, কাছাকাছি-বানান সহনশীল)
 -- 🔴 ফিক্স (real-device টেস্টে ধরা পড়া ২য় বাগ — এন্ট্রি ৯ দেখুন): আগে এখানে

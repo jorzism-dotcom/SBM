@@ -166,6 +166,18 @@ export async function getDb(businessType) {
   for (const pragma of pragmaLines) {
     await db.query(pragma.trim());
   }
+  // 🆕 এন্ট্রি ৩০ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ৪) — ALTER TABLE
+  // মাইগ্রেশন গার্ড: নিচের `CREATE TABLE IF NOT EXISTS` আগে-থেকে-তৈরি DB
+  // ফাইলে (এই কলাম যোগ হওয়ার আগে তৈরি) নতুন কলাম যোগ করে না (no-op), আর
+  // schema.sql-এর নতুন `CREATE INDEX ... ON products(demand_type, ...)` তখন
+  // "no such column" এরর দিয়ে পুরো restOfSchema execute()-টাই ভেঙে দিত।
+  // তাই CREATE TABLE/INDEX ব্যাচ চালানোর *আগে* আলাদা ALTER TABLE — কলাম আগে
+  // থেকেই থাকলে ("duplicate column") বা টেবিলই এখনো তৈরি না হলে ("no such
+  // table", একেবারে নতুন DB-তে) দুটো ক্ষেত্রেই এরর silently ignore করা হচ্ছে,
+  // কারণ দুটোই নিরাপদ/প্রত্যাশিত অবস্থা।
+  try {
+    await db.execute(`ALTER TABLE products ADD COLUMN demand_type TEXT;`);
+  } catch (_) { /* কলাম আগে থেকেই আছে, অথবা টেবিলই এখনো নেই — উভয়ই নিরাপদ */ }
   // schema.sql-এ multiple statements আছে — execute() মাল্টি-স্টেটমেন্ট সাপোর্ট করে
   await db.execute(restOfSchema);
 
@@ -198,7 +210,7 @@ export async function analyzeDb(businessType) {
 
 const HOT_FIELDS = {
   products: {
-    columns: ["id", "name", "name_norm", "barcode", "stock", "cost_price", "price", "updated_at", "deleted"],
+    columns: ["id", "name", "name_norm", "barcode", "stock", "cost_price", "price", "updated_at", "deleted", "demand_type"],
     extract: (p) => [
       String(p.id),
       p.name ?? "",
@@ -209,6 +221,7 @@ const HOT_FIELDS = {
       numOrNull(p.price),
       p.updatedAt ?? Date.now(),
       p.deleted ? 1 : 0,
+      p.demandType ?? null, // 🆕 এন্ট্রি ৩০ — NULL হলে queryPage()-এর WHERE ক্লজে "common" হিসেবে ট্রিট হয় (JS p.demandType||"common" ডিফল্টের সাথে মিলিয়ে)
     ],
   },
   customers: {
