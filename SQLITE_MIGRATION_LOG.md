@@ -23,11 +23,15 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৩২-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৩৭-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
 
-**🔴 এন্ট্রি ৩২**: ধাপ ৫ (POS picker) ডিজাইন-অডিট সম্পূর্ণ, কোড শুরু হয়নি — `queryPage()`-এর single-column keyset সীমাবদ্ধতা এখানে সরাসরি বাধা (দুই-স্তরের sort + "unavailable সবসময় শেষে" নিয়ম page-fetch-এ ভাঙে)। পরের সেশনে প্রথমে ডিজাইন-সিদ্ধান্ত (queryPage() বদলানো vs. নতুন availability_rank কলাম) নেটওয়ার্ক-সক্ষম পরিবেশে নিতে হবে।
+**🟢 এন্ট্রি ৩৭**: useKpiStats-এর ৫টা ডেটা-সোর্সের মধ্যে প্রথমটা (`expenses`) SQL cutover সম্পূর্ণ — টেবিল+dual-write+todayExpense/monthExpense অ্যাগ্রিগেট, `npm test`+lint+build ক্লিন। বাকি ৪টা (`txns`/`cashLogs`/`purchaseOrders`/`returns`) এখনো শুরু হয়নি। real-device টেস্ট বাকি।
 
-**🔴 এন্ট্রি ৩১-এর সিদ্ধান্ত (এখনো প্রযোজ্য)**: `PRODUCTS_ONDEMAND_MIGRATION_PLAN.md`-এর ধাপ ২/৩/৬ (সব aggregate/count টাইপ কাজ) এখনই SQL-এ বদলানো **premature** — `products` state ধাপ ৭-এর আগ পর্যন্ত এমনিতেই পুরোপুরি মেমরিতে থাকবে বলে এখন কোনো real লাভ নেই, শুধু নতুন schema-migration ঝুঁকি যোগ হয়। এই তিনটা ধাপ ৭-এর সাথে/আগে একসাথে করার সুপারিশ করা হয়েছে। পরবর্তী বাস্তবিক-মূল্যবান কাজ: ধাপ ৫ (POS picker) — সবচেয়ে ঝুঁকিপূর্ণ, সাবধানে আলাদা সেশনে।
+**🟢 এন্ট্রি ৩৬**: ধাপ ২ (InventorySection/Dashboard KPI+ডিটেইল লিস্ট+সাপ্লায়ার-গ্রুপিং) SQL cutover কোড-সম্পূর্ণ, `npm test`+lint+build ক্লিন — real-device টেস্ট বাকি। এন্ট্রি ৩৩-৩৫ ইচ্ছাকৃতভাবে স্কিপড (আলাদা চ্যাটের POS-availability-sweep ডিজাইন, কখনো এই zip-এ আসেনি, বাদ দেওয়া হয়েছে — বিস্তারিত এন্ট্রি ৩৬ দ্রষ্টব্য)।
+
+**🔴 এন্ট্রি ৩২ (এখনো অস্পৃষ্ট)**: ধাপ ৫ (POS picker) ডিজাইন-অডিট সম্পূর্ণ, কোড শুরু হয়নি — `queryPage()`-এর single-column keyset সীমাবদ্ধতা এখানে সরাসরি বাধা (দুই-স্তরের sort + "unavailable সবসময় শেষে" নিয়ম page-fetch-এ ভাঙে)। ধাপ ৩/৬/৭-এর পরে, আলাদা সেশনে সাবধানে করতে হবে।
+
+**🟡 এন্ট্রি ৩১-এর সিদ্ধান্ত (আংশিক সুপারসিডেড — এন্ট্রি ৩৬ দেখুন)**: এই সেশনে ব্যবহারকারী স্পষ্টভাবে চেয়েছেন products/customers পুরোপুরি SQL-based হোক (শুধু ধাপ ৭-এর অপেক্ষায় থাকা না) — তাই ধাপ ২ (এন্ট্রি ৩৬-এ) এগিয়ে নেওয়া হয়েছে, "products মেমরিতেই থাকবে বলে লাভ নেই" যুক্তি সত্ত্বেও (ঝুঁকি ছোট/নিয়ন্ত্রিত ছিল বলে)। বাকি ধাপ ৩/৬/৭ একই যুক্তিতে এগোবে।
 
 **টার্গেট স্কেল**: ১,০০,০০০ প্রোডাক্ট · ১০,০০০ কাস্টমার · ১,০০,০০,০০০ (১ কোটি) ইনভয়েস — বর্তমান টেস্ট শপের ডেটা (২২৩৬/১৭/৬৩০) এই লক্ষ্যের তুলনায় প্রায় নগণ্য, তাই "এখন সমস্যা হচ্ছে না" কোনো নির্ভরযোগ্য সংকেত না।
 
@@ -68,6 +72,117 @@ Schema+FTS5 · dual-write (shadow) · resumable batch backfill · row-count veri
 ---
 
 ## এন্ট্রি লগ
+
+### [এন্ট্রি ৩৭] — useKpiStats-এর ৫টা SQL-না-হওয়া ডেটা-সোর্সের প্রথমটা: `expenses` টেবিল + dual-write + todayExpense/monthExpense SQL cutover, sandbox-ভেরিফায়েড
+
+**প্রেক্ষাপট**: ধাপ ৩ (`useKpiStats` গভীর অডিট) করতে গিয়ে দেখা গেল এই হুক ৭টা
+ডেটা-সোর্স ব্যবহার করে (invoices/products/customers/txns/cashLogs/
+purchaseOrders/expenses/returns) — কিন্তু ৫টার (txns/cashLogs/purchaseOrders/
+expenses/returns) **কোনো SQL টেবিলই নেই**। তাই "useKpiStats SQL করা" আসলে
+আগে এই ৫টার জন্য schema+dual-write+backfill (Phase 0+1+2 আবার, নতুন ডোমেইনে)
+— একটা বহু-সেশনের কাজ। ব্যবহারকারীর সিদ্ধান্তে এই সেশনেই প্রথম টেবিল (`expenses`,
+সবচেয়ে সরল শেপ বলে প্রথমে বাছা) দিয়ে শুরু করা হলো।
+
+**যা করা হয়েছে**:
+1. `schema.sql` — নতুন `expenses` টেবিল (`id`, `category`, `amount`, `date_key`,
+   `updated_at`, `data`) + `date_key` ইনডেক্স। কোনো `deleted` কলাম দরকার হয়নি —
+   `deleteExpense()` হার্ড-ডিলিট করে (কোনো soft-delete ফ্ল্যাগ নেই), তাই
+   `dualWriteSqlite()`-এর `removedIds → remove()` পাথ (আসল SQL DELETE) সরাসরি
+   প্রযোজ্য। এটা নতুন টেবিল বলে কোনো `ALTER TABLE` গার্ড লাগেনি (`CREATE TABLE
+   IF NOT EXISTS` প্রতি `getDb()`-এ এমনিতেই চলে, বিদ্যমান DB ফাইলেও নতুন টেবিল
+   যোগ হয়ে যায়)।
+2. `DataStore.js` — `HOT_FIELDS.expenses` extract। নতুন জেনেরিক
+   `getDateRangeAggregate(businessType, store, opts)` — `dateKeyExact`/
+   `dateKeyGte`/`dateKeyPrefix` তিনটা অপশন সাপোর্ট করে, `store` প্যারামিটার
+   নিয়ে ডিজাইন করা হয়েছে যাতে ভবিষ্যতে cashLogs/purchaseOrders টেবিল যোগ
+   হলে পুনর্ব্যবহার করা যায়। **🔑 সূক্ষ্ম নোট**: App.jsx-এর `monthExpense` ফিল্টার
+   আসলে `>= monthStartKey` (prefix-ম্যাচ **না**!) — তাই `dateKeyGte` আলাদা
+   অপশন হিসেবে যোগ করা হয়েছে (`dateKeyPrefix` ব্যবহার করলে নেভিগেট করা অতীত
+   মাসে ভুল ফলাফল দিত, কারণ prefix শুধু ওই এক মাসেই সীমাবদ্ধ করে ফেলে, যেখানে
+   আসল আচরণ ওই মাস থেকে আজ পর্যন্ত সবকিছু ধরে)।
+3. `App.jsx` — `STORE_TO_ENTITY_TYPE`-এ `expenses:"expense"` যোগ, dual-write
+   ওয়্যারিং (`_dsExpensesRef` + `dualWriteSqlite()` কল, `expenses`-এর বিদ্যমান
+   local-save `useEffect`-এর পাশে)। নতুন শেয়ার্ড হুক `useExpenseTotals(expenses,
+   businessType, todayKey, monthStartKey)` — **`useKpiStats` ও `AIPage_` দুই
+   জায়গাতেই** ব্যবহৃত (আগে দুই জায়গায় হুবহু ডুপ্লিকেট JS ছিল — ঠিক এই ধরনের
+   ডুপ্লিকেশনের কারণেই ৩০ জুলাই ২০২৬-এ cash-sale মিসম্যাচ বাগ হয়েছিল, একটা ফিক্স
+   একজায়গায় হয়েছিল অন্যজায়গায় কপি হয়নি)। `isSqliteEnabled()` বন্ধ থাকলে
+   (ডিফল্ট) সবসময় আগের JS ফিল্টার/রিডিউস — আচরণ অপরিবর্তিত। `useKpiStats`-এর
+   পুরো বডি `React.useMemo()`-এ মোড়ানো বলে (hooks নিয়ম অনুযায়ী মেমোর ভেতরে হুক
+   কল করা যায় না) `todayKey`/`monthStartKey` মেমোর *বাইরে* হালকাভাবে আলাদা করে
+   কম্পিউট করে `useExpenseTotals()`-কে দেওয়া হয়েছে, ফলাফল মেমোর dependency-তে
+   যোগ। `DailySummaryModule` (২ call site) ও `AIPage`-এ `businessType` prop
+   নতুন করে থ্রেড করা হয়েছে (আগে এই দুই কম্পোনেন্টে ছিলই না)।
+4. `tests/datastore-expenses-tests.mjs` — নতুন ফাইল, ৭টা কেস (dateKeyExact/
+   dateKeyGte/dateKeyPrefix, ফিল্টার-বিহীন, খালি-রেঞ্জ, NULL amount, হার্ড-
+   ডিলিটের পর অ্যাগ্রিগেট) — `node:sqlite` শিম দিয়ে। `package.json`-এ যোগ।
+
+**যাচাই**: `npm test` — সব ১৩৯টা কেস (৭২+১৪+১০+২৪+১০+১২+**৭ নতুন**) পাস। lint —
+নতুন কোনো error/warning (একটা নতুন `react-hooks/exhaustive-deps` warning
+ধরা পড়েছিল `expenses` unnecessary dep নিয়ে, ঠিক করা হয়েছে)। `vite build` —
+ক্লিন।
+
+**যা এখনো বাকি**: real-device টেস্ট। বাকি ৪টা টেবিল (`txns`, `cashLogs`,
+`purchaseOrders`, `returns`) — এখনো শুরু হয়নি, প্রতিটাই এই একই প্যাটার্নে
+(schema+dual-write+HOT_FIELDS+aggregate helper) আলাদা সেশনে করতে হবে।
+
+**পরের ধাপ**: পরবর্তী টেবিল (`cashLogs` বা `purchaseOrders` — যেটাই পরে বাছা হয়)।
+
+---
+
+### [এন্ট্রি ৩৬] — PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ২ (InventorySection/Dashboard KPI+ডিটেইল লিস্ট+সাপ্লায়ার-গ্রুপিং) SQL cutover সম্পূর্ণ, sandbox-ভেরিফায়েড — real-device টেস্ট বাকি
+
+**⚠️ এন্ট্রি ৩৩-৩৫ সম্পর্কে**: এই তিনটা নম্বর ইচ্ছাকৃতভাবে খালি রাখা হলো। এগুলো একটা
+আলাদা শেয়ারড/স্ক্রিনশট-ভিত্তিক চ্যাটে হয়েছিল (ধাপ ৫ বন্ধ করা → আবার খোলা →
+bounded-staleness `sweepExpiredAvailability()` ডিজাইন শুরু) — কিন্তু সেই সেশনের
+কোড কখনো এই প্রজেক্ট zip-এ আসেনি (আপলোড হওয়া zip এন্ট্রি ৩২-এর অবস্থাতেই ছিল)।
+এই সেশনে সিদ্ধান্ত হয়েছে সেই অ্যাপ্রোচ পুরোপুরি বাদ দিয়ে বরং ধাপ ২/৩/৫/৬/৭
+(পুরো products/customers SQL-based করা) এগিয়ে নেওয়া হবে, ছোট/নিরাপদ থেকে ক্রমান্বয়ে।
+
+**যা করা হয়েছে (ধাপ ২)**:
+1. `schema.sql` — products টেবিলে ৩টা নতুন কলাম: `min_stock_alert` (REAL, NULL হলে
+   কোয়েরিতে `COALESCE(min_stock_alert, 5)`), `nearest_expiry_date` (TEXT — qty>0
+   এমন সব ব্যাচের মধ্যে সবচেয়ে কাছের expiryDate, এক্সপায়ার্ড হোক বা না — একটা raw
+   ক্যালেন্ডার-তারিখ fact, কখনো stale হয় না, দেখুন নিচের নোট), `supplier_key`
+   (company||category||"অজ্ঞাত")। + ৪টা নতুন ইনডেক্স। এন্ট্রি ৩০-এর প্যাটার্নেই
+   `getDb()`-এ ৩টা নতুন `ALTER TABLE ... ADD COLUMN` গার্ড।
+2. `DataStore.js` — `HOT_FIELDS.products.extract()` এই ৩টা নতুন কলাম বের করে
+   (নতুন `computeNearestExpiryDate()` হেল্পার)। নতুন এক্সপোর্ট: `getInventoryCounts()`,
+   `getInventoryList(kind)` ('all'/'critical'/'out'), `getExpiryCandidates()`,
+   `getSupplierSummary()` (GROUP BY), `getProductsBySupplierKey()`।
+3. **🔑 staleness-ডিজাইন নোট (কেন এন্ট্রি ৩৩-৩৫-এর POS সমস্যা এখানে প্রযোজ্য না)**:
+   `nearest_expiry_date` কোনো "এক্সপায়ার্ড কি না" স্ট্যাটাস স্টোর করে না, শুধু raw
+   তারিখ — SQL শুধু এটা দিয়ে candidate সেট **narrow** করে (ইনডেক্স সিক), আসল
+   expired/near-expiry বিভাজন App.jsx-এর বিদ্যমান JS লজিকেই থাকে (read-time
+   `new Date()` তুলনা, ঠিক আগের মতোই) — শুধু ইনপুট এখন পুরো `products`-এর বদলে
+   SQL-নারো করা ছোট candidate অ্যারে। তাই এখানে কোনো sweep/cron/expire-mechanism
+   লাগেনি, POS picker (ধাপ ৫)-এর সমস্যা থেকে সম্পূর্ণ ভিন্ন প্রকৃতির।
+4. `App.jsx` — নতুন শেয়ার্ড হুক `useInventoryData(products, businessType)`
+   (module-scope, InventorySection ও Dashboard দুটোতেই ব্যবহৃত — আগে এই দুই
+   জায়গায় ৭টা `useMemo` হুবহু ডুপ্লিকেট ছিল, এখন একটাই সোর্স)। `isSqliteEnabled()`
+   বন্ধ থাকলে (ডিফল্ট, সব ৫০০ দোকানে) সবসময় আগের JS পাথ — **কোনো live shop-এ
+   আচরণ পাল্টায়নি**। চালু থাকলে (dev-প্যানেল দিয়ে ম্যানুয়ালি এনাবল করা ডিভাইসে) SQL
+   থেকে আনে, ব্যর্থ/লোডিং হলে সাইলেন্টলি JS ফলব্যাক। supplier-detail পেজের জন্য
+   আলাদা lazy fetch হুক (শুধু ওই পেজে থাকলেই কল হয়)।
+5. `tests/datastore-inventory-tests.mjs` — নতুন ফাইল, ১২টা কেস (counts, list
+   filtering, expiry candidate narrowing legacy+batches উভয় path, supplier
+   summary/GROUP BY, supplier-key lookup) — `node:sqlite` শিম দিয়ে আসল
+   `DataStore.js` টেস্ট করে (queryPage টেস্টের প্যাটার্নে)। `package.json`-এর
+   `test` স্ক্রিপ্টে যোগ করা হয়েছে।
+
+**যাচাই**: `npm test` — সব ১৩২টা কেস (৭২+১৪+১০+২৪+১০+**১২ নতুন**) পাস। `npm run lint`
+— নতুন কোনো error না (শুধু pre-existing warning প্যাটার্নের সাথে সামঞ্জস্যপূর্ণ ২-১টা
+`catch(_)` warning, ঠিক demand_type-এর মতোই)। `vite build` — ক্লিন বিল্ড, নতুন কোনো
+error/warning না।
+
+**যা এখনো বাকি**: real-device টেস্ট (dev-প্যানেলে `isSqliteEnabled()` চালু করে
+InventorySection কার্ড + all/critical/out/expired/near-expiry/supplier/
+supplier-detail পেজ — সব মিলিয়ে JS-পাথের সাথে ফলাফল মিলছে কিনা)। এই সেশনে
+নেটওয়ার্ক/npm সক্ষম sandbox থাকলেও real Android ডিভাইস নেই।
+
+**পরের ধাপ**: ধাপ ৩ (KPI/aggregate — Dashboard-এর অন্যান্য কার্ড, এখনো audit করা হয়নি)।
+
+---
 
 ### [এন্ট্রি ৩২] — PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ৫ (POS product picker) — ডিজাইন-অডিট সম্পূর্ণ, কোড ইচ্ছাকৃতভাবে শুরু করা হয়নি
 
