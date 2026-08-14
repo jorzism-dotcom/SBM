@@ -31,7 +31,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # 🔴 আগে '20' ছিল — datastore-querypage-tests.mjs-এর জন্য
+          # tests/helpers/vite-node-loader.mjs একটা node:sqlite-ব্যাকড শিম
+          # ব্যবহার করে, কিন্তু node:sqlite মডিউল Node 20-এ নেই (যোগ হয়েছে
+          # v22.5.0-এ, flag ছাড়া চলে v22.13.0+ থেকে)। তাই '22'-এ বাম্প করা হলো।
+          node-version: '22'
 
       - name: Setup Java (JDK 17)
         uses: actions/setup-java@v4
