@@ -20,6 +20,7 @@ import {
   runInvariantChecks, getReturnedQtyForInvoice, getReturnedAmountForInvoice,
   calcReturnRefundAmount, calcLineDiscountedRevenue, scaleBatchBreakdownForVoid,
   getVoidedInvoiceIds, filterReturnsExcludingVoided, filterTodayInvoices,
+  computeProductSales,
 } from "./logic.js";
 // 🧪 Schema validation (zod) — Firestore write-এর আগে টাকা/স্টক-সংক্রান্ত
 // ফিল্ডে NaN/undefined ঢুকে যাচ্ছে কিনা যাচাই করে। দেখুন src/schemas.js-এর
@@ -49,6 +50,8 @@ import { getInventoryCounts as dsGetInventoryCounts, getExpiredRemovalTotals as 
 // 🆕 এন্ট্রি ৪১ — ধাপ ৬ (computeSupplierDueMap SQL cutover)
 import { getSupplierDueRows as dsGetSupplierDueRows } from "./db/DataStore.js";
 import { getDistinctCategories as dsGetDistinctCategories, getDistinctSuppliers as dsGetDistinctSuppliers, getDistinctDosageForms as dsGetDistinctDosageForms, findProductByNameNorm as dsFindProductByNameNorm, normName as dsNormName } from "./db/DataStore.js";
+// 🆕 এন্ট্রি ৪৮ — AIPage_-এর ৪র্থ সাব-প্যাটার্ন (forecastData/productSales জয়েন, বেস্টসেলার র‍্যাংকিং)
+import { upsertInvoiceItems as dsUpsertInvoiceItems, removeInvoiceItems as dsRemoveInvoiceItems, getProductSalesRows as dsGetProductSalesRows } from "./db/DataStore.js";
 
 // 🆕 এন্ট্রি ৪২-৪৩ (ধাপ ৭.২, PRODUCTS_ONDEMAND_MIGRATION_PLAN.md) — lazy/async
 // id-ভিত্তিক product লুকআপের জন্য ব্যাচ-হেল্পার
@@ -6141,6 +6144,25 @@ function dualWriteSqlite(businessType, store, prevMapRef, currentArr) {
   }
 }
 
+// 🆕 এন্ট্রি ৪৮ (AIPage_-এর ৪র্থ সাব-প্যাটার্ন) — invoices dual-write-এর ঠিক পাশে,
+// স্বাধীন diff (নিজস্ব prevMapRef), invoiceItems টেবিলে প্রতি-ইনভয়েস লাইন-আইটেম
+// রো লেখে/মোছে (schema.sql-এর invoiceItems কমেন্ট, DataStore.js upsertInvoiceItems()
+// দ্রষ্টব্য)। fire-and-forget — dualWriteSqlite()-এর মতোই মূল write-path অস্পৃষ্ট।
+// prodMap ক্লোজার থেকে আসে (_itemCostPrice() fallback-এর জন্য) — dep-list-এ নেই
+// ইচ্ছাকৃতভাবে (শুধু invoices বদলালেই রিফ্রেশ হবে, products একা বদলালে না —
+// schema.sql-এর "ছোট, স্বীকৃত edge-case" নোট দ্রষ্টব্য, entry ৪১-এর সাথে সামঞ্জস্যপূর্ণ)।
+function dualWriteInvoiceItems(businessType, prevMapRef, invoices, prodMap) {
+  if (!isSqliteEnabled()) return;
+  const { changed, removedIds, nextMap } = diffById(prevMapRef.current, invoices);
+  prevMapRef.current = nextMap;
+  changed.forEach((inv) => {
+    dsUpsertInvoiceItems(businessType, inv, prodMap).catch(() => {});
+  });
+  removedIds.forEach((id) => {
+    dsRemoveInvoiceItems(businessType, id).catch(() => {});
+  });
+}
+
 // ─── Password Hashing (Web Crypto API) ───────────────────────────────────────
 async function hashPassword(plain) {
   try {
@@ -9485,6 +9507,45 @@ function useSupplierDueRows(products, purchaseOrders, supplierPayments, business
   }, [sql, jsMap, jsRows]);
 }
 
+// 🆕 এন্ট্রি ৪৮ (AIPage_-এর ৪র্থ ও শেষ সাব-প্যাটার্ন — forecastData/productSales
+// জয়েন, বেস্টসেলার র‍্যাংকিং)। schema.sql-এর invoiceItems কমেন্ট + DataStore.js-এর
+// getProductSalesRows() দ্রষ্টব্য — write-time প্রিকম্পিউটেড লাইন-আইটেম রো থেকে
+// GROUP BY/SUM SQL অ্যাগ্রিগেট। JS ফলব্যাক = logic.js-এর computeProductSales()
+// (আগে App.jsx-এই ইনলাইন ছিল, এখানে তোলা হলো একই ফাংশন টেস্টেও রিইউজ করতে —
+// entry ৪১-এর "duplicate-logic এড়ানো" নীতি)। cutoffs = { d30, d60, d90 } —
+// কলার (নিচে) থেকে আসে, উপরে সংজ্ঞায়িত ms()-ভিত্তিক ভ্যারিয়েবল।
+function useProductSalesRows(invAll, prodMap, businessType, cutoffs) {
+  const { d30, d60, d90 } = cutoffs;
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await dsGetProductSalesRows(businessType, { d30, d60, d90 });
+        if (cancelled || seqRef.current !== seq) return;
+        setSql(rows);
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("productSales SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, invAll, d30, d60, d90]);
+
+  const jsProductSales = React.useMemo(
+    () => computeProductSales(invAll, prodMap, { d30, d60, d90 }),
+    [invAll, prodMap, d30, d60, d90]
+  );
+
+  return sql ? sql : jsProductSales;
+}
+
 // 🆕 এন্ট্রি ৪৪ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ৭.৩-এর ব্লকার, ক্যাটাগরি ③ FULL-SCAN)
 // ৪টা আইটেমের মধ্যে ৩টা এখানে — একই sql-state/seqRef/fallback প্যাটার্ন
 // (useProductStockTotals/useSupplierDueRows-এর মতো)। dup-name check নিচে
@@ -10183,29 +10244,14 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
     : { text: "দুর্বল", color: "#ef4444" };
 
   // ── প্রোডাক্ট বিক্রয় বিশ্লেষণ ──────────────────────────────────────────────
-  const productSales = React.useMemo(() => {
-    const map = {};
-    invAll.forEach(inv => {
-      const items = inv.items || [];
-      // 🔴 ফিক্স (৩১ জুলাই ২০২৬): আগে (inv.total||0)/subtotal দিয়ে uniform ratio
-      // বানানো হতো — এতে extraCharge (কোনো পণ্যের cost নেই) যোগ থাকায় ratio
-      // ১-এর বেশি হয়ে যেত, আর সেটাও সব লাইনে সমানভাবে বসত (এক পণ্যের ছাড়ের দায়
-      // অন্য পণ্যের ঘাড়ে)। এখন logic.js-এর calcLineDiscountedRevenue() (single
-      // source of truth) — extraCharge বাদ, প্রতি-লাইন নিজস্ব itemDiscount।
-      items.forEach(it => {
-        if (!map[it.name]) map[it.name] = { name: it.name, m1: 0, m2: 0, m3: 0, rev: 0, cost: 0, qty: 0 };
-        const d = inv.date || inv.dateKey || "";
-        const qty = it.qty || 1;
-        const rev = calcLineDiscountedRevenue(it, items, inv.discount || 0); // discount-adjusted
-        const cost = qty * _itemCostPrice(it, prodMap); // it.costPrice ?? prodMap fallback
-        if (d >= d30) { map[it.name].m1 += qty; }
-        else if (d >= d60) { map[it.name].m2 += qty; }
-        else if (d >= d90) { map[it.name].m3 += qty; }
-        if (d >= d90) { map[it.name].rev += rev; map[it.name].cost += cost; map[it.name].qty += qty; }
-      });
-    });
-    return Object.values(map).filter(p => p.qty > 0);
-  }, [invAll, prodMap]);
+  // 🆕 এন্ট্রি ৪৮ — SQL cutover (আগে এখানে ইনলাইন useMemo ছিল, এখন
+  // useProductSalesRows() হুক — SQL চালু থাকলে invoiceItems টেবিল থেকে GROUP
+  // BY/SUM অ্যাগ্রিগেট, নাহলে logic.js-এর computeProductSales() (এই একই লজিক,
+  // এখন সেখানে তোলা — একই ফাংশন tests/datastore-invoiceitems-tests.mjs-এও
+  // রিইউজ হয়)। 🔴 এই তোলার সময় একটা রিয়েল বাগ ধরা পড়েছে ও ফিক্স হয়েছে —
+  // দেখুন computeProductSales()-এর কমেন্ট (আগে inv.date ব্যবহার হতো, যা
+  // dateKey-এর সাথে ফরম্যাট না মেলায় m1/m2/m3 বাকেট কার্যত এলোমেলো করে দিত)।
+  const productSales = useProductSalesRows(invAll, prodMap, businessType, { d30, d60, d90 });
 
   // ── ফোরকাস্ট: weighted moving average ────────────────────────────────────
   const forecastData = React.useMemo(() => {
@@ -12791,6 +12837,13 @@ function SmartBusinessMgmt() {
     // না ধরা পড়ে এবং SQLite-এর invoices টেবিলে ডেটা থেকেই যায় (true lifetime
     // history/RFM-এর জন্য প্রয়োজনীয়)।
     staleIds.forEach((id) => { _dsInvoicesRef.current.delete(id); });
+    // 🆕 এন্ট্রি ৪৮ — এখানে ইচ্ছাকৃতভাবে _dsInvoiceItemsRef-এ একই "delete before
+    // remove" ট্রিক প্রয়োগ করা হয়নি: invoiceItems শুধু productSales-এর ৯০-দিনের
+    // window-এর জন্য (lifetime history দরকার নেই, invoices টেবিলের মতো না), আর
+    // এই আর্কাইভ-কাটঅফই ৬ মাস — তাই আর্কাইভ হওয়া ইনভয়েসের লাইন-আইটেম রো এমনিতেও
+    // কখনো productSales কোয়েরিতে ব্যবহৃত হতো না। dualWriteInvoiceItems() পরের
+    // রেন্ডারে এই id-গুলোকে স্বাভাবিকভাবেই "removed" ধরে invoiceItems থেকে মুছে
+    // দেবে (schema.sql-এর invoiceItems কমেন্টে বিস্তারিত)।
     setInvoices(prev => prev.filter(i => !staleIds.has(i.id)));
   }, []);
 
@@ -12955,6 +13008,7 @@ function SmartBusinessMgmt() {
   const _dsCustomersRef = useRef(new Map());
   const _dsProductsRef  = useRef(new Map());
   const _dsInvoicesRef  = useRef(new Map());
+  const _dsInvoiceItemsRef = useRef(new Map()); // 🆕 এন্ট্রি ৪৮ — invoiceItems টেবিলের জন্য স্বাধীন diff-স্ন্যাপশট
   // 🆕 এন্ট্রি ৩৭ — useKpiStats-এর ৫টা ডেটা-সোর্সের প্রথম SQL cutover (schema.sql/
   // DataStore.js-এর কমেন্ট দ্রষ্টব্য)
   const _dsExpensesRef  = useRef(new Map());
@@ -12971,6 +13025,8 @@ function SmartBusinessMgmt() {
   useEffect(() => { if (loaded) { debouncedSave(LK(SK.customers), customers, 1500); setBackupNeeded(true); dualWriteSqlite(businessType, "customers", _dsCustomersRef, customers); } }, [customers, loaded]);
   useEffect(() => { if (loaded) { debouncedSave(LK(SK.products),  products,  1500); setBackupNeeded(true); dualWriteSqlite(businessType, "products",  _dsProductsRef,  products);  } }, [products, loaded]);
   useEffect(() => { if (loaded) { debouncedSave(LK(SK.invoices),  invoices,  1500); setBackupNeeded(true); dualWriteSqlite(businessType, "invoices",  _dsInvoicesRef,  invoices);  } }, [invoices, loaded]);
+  // 🆕 এন্ট্রি ৪৮ — invoiceItems টেবিল dual-write (invoices dual-write-এর ঠিক পাশে, স্বাধীন diff)
+  useEffect(() => { if (loaded) { dualWriteInvoiceItems(businessType, _dsInvoiceItemsRef, invoices, globalProdMap); } }, [invoices, loaded]);
   useEffect(() => { if (loaded) { debouncedSave(LK(SK.txns),      txns,      2000); setBackupNeeded(true); dualWriteSqlite(businessType, "txns", _dsTxnsRef, txns); } }, [txns, loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.smsLog), smsLog, 2000); }, [smsLog, loaded]);
   useEffect(() => { if (loaded) save(SK.users,     users);     }, [users, loaded]);

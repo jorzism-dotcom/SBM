@@ -266,6 +266,52 @@ export function calcProfitTotal(invList, prodMap) {
   return invList.reduce((s, inv) => s + calcInvoiceProfit(inv, prodMap), 0);
 }
 
+// ─── প্রোডাক্ট বিক্রয় বিশ্লেষণ (weighted forecast-এর ইনপুট) ────────────────────
+/**
+ * App.jsx-এর productSales useMemo, এন্ট্রি ৪৮-এ এখানে তোলা হলো — SQL cutover-এর
+ * JS-ফলব্যাক আর tests/datastore-invoiceitems-tests.mjs দুই জায়গাতেই এই একই
+ * ফাংশন ব্যবহারের জন্য (entry ৪১-এর "duplicate-logic এড়ানো" নীতি অনুসরণ করে)।
+ *
+ * প্রতিটা ইনভয়েস-লাইনকে product *name*-এ (id না — লেগ্যাসি শেপ, একাধিক id একই
+ * নামে থাকতে পারে) গ্রুপ করে ৩০/৬০/৯০-দিনের রোলিং বিক্রয়-বাকেট (m1/m2/m3) +
+ * ৯০-দিনের টোটাল রেভিনিউ/কস্ট/qty বের করে।
+ *
+ * 🔴 বাগ ফিক্স (এন্ট্রি ৪৮, এই ফাংশনে তোলার সময় ধরা পড়া — আগে App.jsx-এ ছিল
+ * `const d = inv.date || inv.dateKey || ""`): inv.date আসলে
+ * `toLocaleDateString("en-US",{timeZone:"Asia/Dhaka"})` দিয়ে বানানো "M/D/YYYY"
+ * ফরম্যাটের ডিসপ্লে-স্ট্রিং (যেমন "8/16/2026"), আর d30/d60/d90 cutoff
+ * "YYYY-MM-DD" (dateKey-স্টাইল)। দুই ভিন্ন ফরম্যাট স্ট্রিং-তুলনা করলে ফলাফল
+ * অর্থহীন হয় (যেমন "8/16/2026" >= "2026-07-17" সবসময় true, কারণ ASCII-তে
+ * '8' > '2', প্রকৃত তারিখ নির্বিশেষে) — inv.date সবসময় truthy থাকায় dateKey
+ * ফলব্যাকে কখনো পৌঁছাতই না, তাই m1/m2/m3 বাকেট কার্যত এলোমেলো হয়ে যাচ্ছিল
+ * (ফলে "সেরা পণ্য"/রিঅর্ডার-সাজেশন/মার্জিন হিরো-ভিলেন — এই সব কয়টা ফিচারই ভুল
+ * ডেটা দেখাচ্ছিল)। ফিক্স: এখন inv.dateKey (cutoff-দের সাথে একই ফরম্যাট) প্রথমে,
+ * শুধু সেটা মিসিং হলে (খুব পুরনো লিগ্যাসি ইনভয়েস) inv.date ফলব্যাক।
+ *
+ * @param {Array} invList - আগে থেকেই ফিল্টার করা (voided/self-use বাদ) ইনভয়েস-অ্যারে
+ * @param {Map} prodMap - id→product ম্যাপ (_itemCostPrice()-এর fallback-এর জন্য)
+ * @param {{d30:string, d60:string, d90:string}} cutoffs - YYYY-MM-DD cutoff (আজ থেকে ৩০/৬০/৯০ দিন আগে)
+ * @returns {Array<{name:string, m1:number, m2:number, m3:number, rev:number, cost:number, qty:number}>}
+ */
+export function computeProductSales(invList = [], prodMap, { d30, d60, d90 } = {}) {
+  const map = {};
+  (invList || []).forEach(inv => {
+    const items = inv.items || [];
+    const d = inv.dateKey || inv.date || "";
+    items.forEach(it => {
+      if (!map[it.name]) map[it.name] = { name: it.name, m1: 0, m2: 0, m3: 0, rev: 0, cost: 0, qty: 0 };
+      const qty = it.qty || 1;
+      const rev = calcLineDiscountedRevenue(it, items, inv.discount || 0);
+      const cost = qty * _itemCostPrice(it, prodMap);
+      if (d >= d30) { map[it.name].m1 += qty; }
+      else if (d >= d60) { map[it.name].m2 += qty; }
+      else if (d >= d90) { map[it.name].m3 += qty; }
+      if (d >= d90) { map[it.name].rev += rev; map[it.name].cost += cost; map[it.name].qty += qty; }
+    });
+  });
+  return Object.values(map).filter(p => p.qty > 0);
+}
+
 // ✅ আপডেট: নিচের ৪টি ফাংশন আর "reference-copy" না — এখন single-source-of-truth।
 // createInvoice() / voidInvoice() / buildDailySummaryData() (App.jsx) এখন এই
 // ফাংশনগুলো সরাসরি import করে কল করে, নিজেদের আলাদা কপি রাখে না (দেখুন
