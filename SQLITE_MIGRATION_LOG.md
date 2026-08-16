@@ -23,7 +23,14 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৫১-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৫২-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🔴 এন্ট্রি ৫২**: ব্যবহারকারী GitHub Actions CI-এর "build" ওয়ার্কফ্লো ফেইল স্ক্রিনশট শেয়ার করলেন — `Type-check (JSDoc + @ts-check)` স্টেপে `tsc --noEmit` ফেইল: `src/logic.js(296,60): error TS2739 — Type '{}' is missing d30, d60, d90`।
+- **⚠️ সততার সাথে**: এটা এই সেশনের App.jsx পরিবর্তনের কারণে হয়নি (logic.js এই সেশনে স্পর্শই করা হয়নি) — কিন্তু ধরা পড়ল আমার নিজের sandbox-ভেরিফিকেশন প্রক্রিয়ায় গ্যাপ ছিল: এতদিন `npm test`+`lint`+`build` চালানো হতো, কিন্তু `package.json`-এর আলাদা `npm run typecheck` (`tsc --noEmit -p jsconfig.json`) স্ক্রিপ্টটা কখনো sandbox-এ চালানো হয়নি — অথচ এটা CI-এর নিজস্ব build স্টেপ, এন্ট্রি ৪৯-৫১-এর "npm test/lint/build ক্লিন" দাবিগুলো তাই typecheck কভার করেনি।
+- **root cause**: `computeProductSales()`-এর JSDoc-এ তৃতীয় প্যারামিটার `cutoffs`-এর টাইপ `{d30:string, d60:string, d90:string}` (সব required) লেখা ছিল, কিন্তু রানটাইম ডিফল্ট মান `{}` — টাইপ-চেকার এই দুটো মিলছে না বলে এরর দিচ্ছিল। এটা সম্ভবত এন্ট্রি ৪৮-এই (যখন এই ফাংশন App.jsx থেকে logic.js-এ তোলা হয়) তৈরি হয়েছিল, কিন্তু তখনো typecheck sandbox-এ চালানো হয়নি বলে ধরা পড়েনি।
+- **ফিক্স**: শুধু JSDoc টাইপ-অ্যানোটেশন বদলানো হলো (`{d30?:string, d60?:string, d90?:string}` + প্যারামিটার ঐচ্ছিক `[cutoffs]`) — রানটাইম কোড/আচরণ কিছুই বদলায়নি, শুধু টাইপ এখন বাস্তব ডিফল্ট মানের সাথে মেলে।
+- **এখন থেকে sandbox-ভেরিফিকেশনে `npm run typecheck`ও যোগ করা হলো** — শুধু test/lint/build না।
+- যাচাই: `npm test` ২২৭/২২৭ পাস, `npm run lint` 0 error, `npm run build` ক্লিন, **`npm run typecheck` এখন ক্লিন** (আগে ফেইল করত)।
 
 **🟢 এন্ট্রি ৫১**: এন্ট্রি ৪৯-এর প্ল্যানে "CustomerDetail → InvoiceVoidModal" কে দ্বিতীয় (কম-ঝুঁকির) `useProductsByIds()` টার্গেট বলা হয়েছিল — কোড অডিটে ধরা পড়ল এটা **ভুল ছিল**: `InvoiceVoidModal`-এ `products` prop পাস হয় কিন্তু ফাংশন-বডিতে কোথাও ব্যবহারই হয় না (dead prop, grep দিয়ে নিশ্চিত)। আসল কার্যকর টার্গেট পাওয়া গেল `AuditTrailModule → DailySalesStockCard` (দৈনিক বিক্রয়/লাভ কোলাপ্সিবল প্যানেল, ডিফল্ট বন্ধ, বিলিং না) — এখানে সত্যিকারের `prodMap = new Map(products.map(...))` (পূর্ণ অ্যারে থেকে বিল্ড) ছিল, `calcProfitTotal()` আর soldRows-এর name-fallback-এ ব্যবহৃত হতো। এই কম্পোনেন্টে আগে `businessType` prop-ই ছিল না (হুক চালাতে দরকার) — কল-চেইনে ইতিমধ্যে scope-এ থাকা `businessType` ২টা লেয়ার (App→AuditTrailModule→DailySalesStockCard) দিয়ে প্লাম্ব করা হলো। `neededProductIds` (শুধু নির্বাচিত দিনের stockMovements+dayInvoices থেকে বের করা বাউন্ডেড id-সেট) দিয়ে `useProductsByIds()` কল করা হলো, আর `calcProfitTotal()`-এর জন্য একটা ছোট `{ get: getProductById }` wrapper (Map-সদৃশ ইন্টারফেস) পাস করা হলো যাতে `calcProfitTotal()`/`logic.js`-এর নিজস্ব কোড কিছুই বদলাতে না হয়। soldRows-এর `prodMap.get()`ও একই হুকের `getProductById()`-এ রুট করা হয়েছে।
 - একই সিঙ্ক-ফলব্যাক ডিজাইন (এন্ট্রি ৪২/৫০): বুট সিকোয়েন্স অপরিবর্তিত থাকায় SQL-ফেচ এখনো ফায়ার করবে না, আচরণ কাগজে-কলমে অপরিবর্তিত।
@@ -131,6 +138,22 @@ Schema+FTS5 · dual-write (shadow) · resumable batch backfill · row-count veri
 ---
 
 ## এন্ট্রি লগ
+
+### [এন্ট্রি ৫২] — CI typecheck ফেইল ফিক্স + sandbox-ভেরিফিকেশন গ্যাপ বন্ধ
+
+**তারিখ**: ১৬ আগস্ট ২০২৬। **ট্রিগার**: ব্যবহারকারীর GitHub Actions "build" ওয়ার্কফ্লো ফেইল স্ক্রিনশট (Type-check স্টেপ)।
+
+**সমস্যা**: `src/logic.js(296,60)`-এ TS2739 — `computeProductSales(invList, prodMap, { d30, d60, d90 } = {})`-এর JSDoc টাইপ `cutoffs`-কে required `{d30:string,d60:string,d90:string}` বলছিল, কিন্তু ডিফল্ট রানটাইম মান `{}`।
+
+**⚠️ সততার নোট**: এই সেশনের App.jsx পরিবর্তনের (এন্ট্রি ৫০-৫১) সাথে সম্পর্কহীন — `logic.js` এই সেশনে স্পর্শই করা হয়নি। কিন্তু এন্ট্রি ৪৯-৫১-এ "npm test+lint+build ক্লিন" যে দাবি করা হয়েছিল, তাতে `npm run typecheck` (`package.json`-এ আলাদা স্ক্রিপ্ট, CI-এর নিজস্ব build স্টেপ) কখনো sandbox-এ চালানো হয়নি — তাই এই বাগ (সম্ভবত এন্ট্রি ৪৮ থেকেই বিদ্যমান, যখন এই ফাংশন App.jsx থেকে logic.js-এ তোলা হয়) এতদিন অলক্ষিত ছিল।
+
+**ফিক্স**: শুধু JSDoc টাইপ বদলানো হলো — `@param {{d30?:string, d60?:string, d90?:string}} [cutoffs]`। রানটাইম কোড অপরিবর্তিত, শুধু টাইপ এখন প্রকৃত ডিফল্ট (`{}`) মানের সাথে মেলে।
+
+**প্রসেস-ফিক্স**: sandbox-ভেরিফিকেশন চেকলিস্টে এখন থেকে `npm run typecheck`ও যোগ (আগে শুধু test/lint/build)।
+
+**যাচাই**: `npm test` ২২৭/২২৭ পাস, `npm run lint` 0 error, `npm run build` ক্লিন, `npm run typecheck` — **এখন ক্লিন** (আগে ফেইল করত)।
+
+---
 
 ### [এন্ট্রি ৫১] — CustomerDetail টার্গেট ভুল প্রমাণিত (dead prop) → আসল টার্গেট AuditTrailModule/DailySalesStockCard-এ wire করা হলো
 
