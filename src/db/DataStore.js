@@ -771,12 +771,15 @@ const INVENTORY_LIST_LIMIT = 5000;
  * ফলব্যাক লজিকের CASE-WHEN সমতুল্য — costPrice শূন্য/NULL হলে price, সেটাও না
  * থাকলে ০)। critical কাউন্টই useKpiStats-এর lowStockItems.length-এর সমতুল্য
  * (একই "stock>0 AND stock<=minStockAlert" শর্ত — তাই আলাদা কোনো নতুন কাউন্ট
- * লাগেনি)।
+ * লাগেনি)। 🆕 এন্ট্রি ৪৬ — total_count যোগ হলো (AIPage_-এর prodAll.length-এর
+ * SQL সমতুল্য, allStock+stockOut যোগ করেও বের করা যেত কিন্তু এক্সপ্লিসিট
+ * COUNT(*) স্পষ্ট এবং ভবিষ্যতে soft-delete/deleted শর্ত বদলালেও নিরাপদ)।
  */
 export async function getInventoryCounts(businessType) {
   const db = await getDb(businessType);
   const sql = `
     SELECT
+      COUNT(*) AS total_count,
       SUM(CASE WHEN stock > 0 THEN 1 ELSE 0 END) AS all_stock_count,
       SUM(CASE WHEN stock > 0 AND stock <= COALESCE(min_stock_alert, 5) THEN 1 ELSE 0 END) AS critical_count,
       SUM(CASE WHEN stock IS NULL OR stock = 0 THEN 1 ELSE 0 END) AS stock_out_count,
@@ -786,6 +789,7 @@ export async function getInventoryCounts(businessType) {
   const res = await db.query(sql);
   const row = res.values?.[0] || {};
   return {
+    totalCount: row.total_count || 0,
     allStock: row.all_stock_count || 0,
     critical: row.critical_count || 0,
     stockOut: row.stock_out_count || 0,
