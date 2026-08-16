@@ -15,6 +15,7 @@ import {
   getActiveBatch, getSellableStock, computeSupplierDueMap, calcNextBatch,
   runInvariantChecks, getReturnedQtyForInvoice, getReturnedAmountForInvoice,
   calcReturnRefundAmount, calcLineDiscountedRevenue, scaleBatchBreakdownForVoid,
+  computeProductSales,
 } from "../src/logic.js";
 
 let passCount = 0;
@@ -252,6 +253,65 @@ t("লাইন-ভিত্তিক ডিসকাউন্ট রেভি�
   const sum = calcLineDiscountedRevenue(a, items, 5) + calcLineDiscountedRevenue(b, items, 5);
   // netSubtotal = (150-10) + 100 = 240; মোট রেভিনিউ = 240 - 5 = 235
   return { pass: approx(sum, 235), expected: 235, actual: sum };
+});
+
+// ── computeProductSales — এন্ট্রি ৪৮ (৩০/৬০/৯০-দিনের বিক্রয়-বাকেট) ────────────
+t("প্রোডাক্ট বিক্রয় বিশ্লেষণ", "সাধারণ কেস — m1/rev/cost/qty ঠিকভাবে যোগ হওয়া উচিত", () => {
+  const prodMap = new Map([["p1", { costPrice: 50 }]]);
+  const inv = { id: "i1", dateKey: "2026-08-10", items: [{ productId: "p1", name: "প্যারাসিটামল", price: 100, qty: 2, costPrice: 50 }], discount: 0 };
+  const cutoffs = { d30: "2026-07-17", d60: "2026-06-17", d90: "2026-05-19" };
+  const rows = computeProductSales([inv], prodMap, cutoffs);
+  const row = rows.find(r => r.name === "প্যারাসিটামল");
+  const pass = row && row.m1 === 2 && row.m2 === 0 && row.m3 === 0 && approx(row.rev, 200) && approx(row.cost, 100) && row.qty === 2;
+  return { pass, expected: "m1=2, rev=200, cost=100, qty=2", actual: JSON.stringify(row) };
+});
+t("প্রোডাক্ট বিক্রয় বিশ্লেষণ", "৯০ দিনের বাইরের ইনভয়েস সম্পূর্ণ বাদ যাওয়া উচিত", () => {
+  const prodMap = new Map();
+  const inv = { id: "i1", dateKey: "2026-01-01", items: [{ name: "X", price: 100, qty: 1 }], discount: 0 };
+  const cutoffs = { d30: "2026-07-17", d60: "2026-06-17", d90: "2026-05-19" };
+  const rows = computeProductSales([inv], prodMap, cutoffs);
+  return { pass: rows.length === 0, expected: 0, actual: rows.length };
+});
+t("প্রোডাক্ট বিক্রয় বিশ্লেষণ", "৩০-৬০-৯০ বাকেট সঠিকভাবে বিভাজন হওয়া উচিত", () => {
+  const prodMap = new Map();
+  const cutoffs = { d30: "2026-07-17", d60: "2026-06-17", d90: "2026-05-19" };
+  const invs = [
+    { id: "i1", dateKey: "2026-08-10", items: [{ name: "X", price: 10, qty: 1 }], discount: 0 }, // m1
+    { id: "i2", dateKey: "2026-06-20", items: [{ name: "X", price: 10, qty: 2 }], discount: 0 }, // m2 (d60<=d<d30)
+    { id: "i3", dateKey: "2026-05-25", items: [{ name: "X", price: 10, qty: 4 }], discount: 0 }, // m3 (d90<=d<d60)
+  ];
+  const rows = computeProductSales(invs, prodMap, cutoffs);
+  const row = rows.find(r => r.name === "X");
+  const pass = row && row.m1 === 1 && row.m2 === 2 && row.m3 === 4 && row.qty === 7;
+  return { pass, expected: "m1=1,m2=2,m3=4,qty=7", actual: JSON.stringify(row) };
+});
+t("প্রোডাক্ট বিক্রয় বিশ্লেষণ", "🔴 রিগ্রেশন (এন্ট্রি ৪৮ বাগ) — inv.date (M/D/YYYY) থাকলেও dateKey (YYYY-MM-DD) দিয়েই বাকেট নির্ণয় হওয়া উচিত", () => {
+  const prodMap = new Map();
+  const cutoffs = { d30: "2026-07-17", d60: "2026-06-17", d90: "2026-05-19" };
+  // inv.date = "8/16/2026" (আগস্ট, m1-এ পড়া উচিত) কিন্তু dateKey ইচ্ছাকৃতভাবে ৯০ দিনের
+  // বাইরে (জানুয়ারি) — বাগ-সহ কোডে inv.date-এর প্রথম ক্যারেক্টার '8' > '2' হওয়ায়
+  // ভুলভাবে "সাম্প্রতিক" ধরে নিত; ফিক্সের পর dateKey-ই সিদ্ধান্ত নেয়, তাই বাদ যাওয়া উচিত।
+  const inv = { id: "i1", date: "8/16/2026", dateKey: "2026-01-15", items: [{ name: "X", price: 10, qty: 5 }], discount: 0 };
+  const rows = computeProductSales([inv], prodMap, cutoffs);
+  return { pass: rows.length === 0, expected: 0, actual: rows.length };
+});
+t("প্রোডাক্ট বিক্রয় বিশ্লেষণ", "qty শূন্য হলে (রিটার্ন-বাতিল ইত্যাদি) ফলাফল থেকে বাদ যাওয়া উচিত", () => {
+  const prodMap = new Map();
+  const cutoffs = { d30: "2026-07-17", d60: "2026-06-17", d90: "2026-05-19" };
+  const inv = { id: "i1", dateKey: "2026-01-01", items: [], discount: 0 };
+  const rows = computeProductSales([inv], prodMap, cutoffs);
+  return { pass: rows.length === 0, expected: 0, actual: rows.length };
+});
+t("প্রোডাক্ট বিক্রয় বিশ্লেষণ", "একাধিক ইনভয়েসে একই পণ্য থাকলে যোগফল হওয়া উচিত", () => {
+  const prodMap = new Map();
+  const cutoffs = { d30: "2026-07-17", d60: "2026-06-17", d90: "2026-05-19" };
+  const invs = [
+    { id: "i1", dateKey: "2026-08-01", items: [{ name: "X", price: 10, qty: 3 }], discount: 0 },
+    { id: "i2", dateKey: "2026-08-05", items: [{ name: "X", price: 10, qty: 4 }], discount: 0 },
+  ];
+  const rows = computeProductSales(invs, prodMap, cutoffs);
+  const row = rows.find(r => r.name === "X");
+  return { pass: row && row.m1 === 7 && row.qty === 7, expected: 7, actual: row?.m1 };
 });
 
 t("ব্যালেন্স ক্ল্যাম্প", "ভয়েড রিভার্সালে balance কখনো নেগেটিভ হয়ে যাওয়া উচিত না", () => {
