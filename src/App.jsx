@@ -42,6 +42,12 @@ import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggr
 // 🆕 এন্ট্রি ৩৬ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ২) — InventorySection/
 // Dashboard-এর KPI কাউন্ট + ডিটেইল লিস্ট + সাপ্লায়ার-গ্রুপিং SQL cutover
 import { getInventoryList as dsGetInventoryList, getExpiryCandidates as dsGetExpiryCandidates, getSupplierSummary as dsGetSupplierSummary, getProductsBySupplierKey as dsGetProductsBySupplierKey, getDateRangeAggregate as dsGetDateRangeAggregate } from "./db/DataStore.js";
+// 🆕 এন্ট্রি ৩৮ — useKpiStats-এর বাকি ৪টা ডেটা-সোর্স (cashLogs/purchaseOrders/txns/returns)
+import { getCashLogTotal as dsGetCashLogTotal, getPurchaseOrderTotals as dsGetPurchaseOrderTotals, getTxnTotals as dsGetTxnTotals, getReturnsTotals as dsGetReturnsTotals } from "./db/DataStore.js";
+// 🆕 এন্ট্রি ৩৯ — useKpiStats-এর products-নির্ভর অবশিষ্ট অংশ (stockValue/lowStockItems/monthExpiredValue/monthExpiredCount)
+import { getInventoryCounts as dsGetInventoryCounts, getExpiredRemovalTotals as dsGetExpiredRemovalTotals } from "./db/DataStore.js";
+// 🆕 এন্ট্রি ৪১ — ধাপ ৬ (computeSupplierDueMap SQL cutover)
+import { getSupplierDueRows as dsGetSupplierDueRows } from "./db/DataStore.js";
 // 🆕 Repository লেয়ার (Phase ২, PHASE_3_4_5_FINAL_PLAN_v2.md) — এখনো array-ভিত্তিক,
 // শুধু ইন্টারফেস। প্রথম ওয়্যার্ড কল-সাইট: detailCust (নিচে)।
 import { getCustomerById } from "./db/Repository.js";
@@ -6106,7 +6112,7 @@ function diffById(prevMap, currentArr) {
 // ফেজ শেষ না হওয়া পর্যন্ত।
 // entity_type নাম store ("products"/"customers"/"invoices") থেকে events টেবিলের
 // entity_type ("product"/"customer"/"invoice") কনভেনশনে — schema.sql-এর কমেন্ট দ্রষ্টব্য
-const STORE_TO_ENTITY_TYPE = { products: "product", customers: "customer", invoices: "invoice", expenses: "expense" };
+const STORE_TO_ENTITY_TYPE = { products: "product", customers: "customer", invoices: "invoice", expenses: "expense", cashLogs: "cashLog", purchaseOrders: "purchaseOrder", txns: "txn", returns: "return", stockMovements: "stockMovement", supplierPayments: "supplierPayment" };
 
 function dualWriteSqlite(businessType, store, prevMapRef, currentArr) {
   if (!isSqliteEnabled()) return;
@@ -8988,6 +8994,269 @@ function useExpenseTotals(expenses, businessType, todayKey, monthStartKey) {
   return sql ? { today: sql.today, month: sql.month } : { today: jsToday, month: jsMonth };
 }
 
+// 🆕 এন্ট্রি ৩৮ — cashLogs/purchaseOrders/txns/returns-এর শেয়ার্ড হুক, useExpenseTotals-এর
+// ঠিক একই প্যাটার্নে (useKpiStats ও AIPage_ দুই জায়গাতেই ব্যবহৃত, যাতে এন্ট্রি ৩৭-এ
+// ধরা পড়া "দুই জায়গায় ডুপ্লিকেট JS লজিক" ধরনের ফিউচার বাগ এখানে আর না ঘটে)।
+// isSqliteEnabled() বন্ধ থাকলে (ডিফল্ট) সবসময় আগের JS ফিল্টার/রিডিউস — আচরণ অপরিবর্তিত।
+
+function useCashLogTotals(cashLogs, businessType, todayKey) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType || !todayKey) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [opening, withdrawal, returnReversal] = await Promise.all([
+          dsGetCashLogTotal(businessType, { dateKey: todayKey, type: "opening" }),
+          dsGetCashLogTotal(businessType, { dateKey: todayKey, type: "withdrawal" }),
+          dsGetCashLogTotal(businessType, { dateKey: todayKey, type: "return_refund_reversal" }),
+        ]);
+        if (cancelled || seqRef.current !== seq) return;
+        setSql({ opening, withdrawal, returnReversal });
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("cashLogs SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, todayKey, cashLogs]);
+
+  const cashLogsAll = cashLogs || [];
+  const jsOpening = useMemo(() => cashLogsAll.filter(c => c.type === "opening" && c.dateKey === todayKey).reduce((s, c) => s + (c.amount || 0), 0), [cashLogsAll, todayKey]);
+  const jsWithdrawal = useMemo(() => cashLogsAll.filter(c => c.type === "withdrawal" && c.dateKey === todayKey).reduce((s, c) => s + (c.amount || 0), 0), [cashLogsAll, todayKey]);
+  const jsReturnReversal = useMemo(() => cashLogsAll.filter(c => c.type === "return_refund_reversal" && c.dateKey === todayKey).reduce((s, c) => s + (c.amount || 0), 0), [cashLogsAll, todayKey]);
+
+  return sql ? sql : { opening: jsOpening, withdrawal: jsWithdrawal, returnReversal: jsReturnReversal };
+}
+
+function usePurchaseOrderTotals(purchaseOrders, businessType, todayKey, monthStartKey) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType || !todayKey || !monthStartKey) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await dsGetPurchaseOrderTotals(businessType, { todayKey, monthStartKey });
+        if (cancelled || seqRef.current !== seq) return;
+        setSql(res);
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("purchaseOrders SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, todayKey, monthStartKey, purchaseOrders]);
+
+  const purchaseOrdersAll = useMemo(() => (purchaseOrders || []).filter(p => p._type === "pe"), [purchaseOrders]);
+  const jsToday = useMemo(() => purchaseOrdersAll.filter(p => p.dateKey === todayKey || (p.createdAt && p.createdAt.startsWith(todayKey))), [purchaseOrdersAll, todayKey]);
+  const jsTodayCost = useMemo(() => jsToday.reduce((s, p) => s + (p.totalCost || 0), 0), [jsToday]);
+  const jsTodayCount = jsToday.length;
+  const jsMonthCost = useMemo(() => purchaseOrdersAll.filter(p => (p.dateKey || "") >= monthStartKey).reduce((s, p) => s + (p.totalCost || 0), 0), [purchaseOrdersAll, monthStartKey]);
+
+  return sql ? sql : { todayCost: jsTodayCost, todayCount: jsTodayCount, monthCost: jsMonthCost };
+}
+
+function useTxnTotals(txns, invoices, businessType, todayKey) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType || !todayKey) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await dsGetTxnTotals(businessType, todayKey);
+        if (cancelled || seqRef.current !== seq) return;
+        setSql(res);
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("txns SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, todayKey, txns, invoices]);
+
+  const txnAll = txns || [];
+  const _voidedIds = useMemo(() => new Set((invoices || []).filter(i => i.status === "voided").map(i => i.id)), [invoices]);
+  const jsBaki = useMemo(() => txnAll.filter(t => t.dateKey === todayKey && t.type === "baki" && t.invoiceId && !_voidedIds.has(t.invoiceId)).reduce((s, t) => s + (t.amount || 0), 0), [txnAll, todayKey, _voidedIds]);
+  const jsJoma = useMemo(() => txnAll.filter(t => t.dateKey === todayKey && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((s, t) => s + (t.amount || 0), 0), [txnAll, todayKey]);
+
+  return sql ? sql : { todayBakiIncurred: jsBaki, todayJoma: jsJoma };
+}
+
+function useReturnsTotals(returns, invoices, businessType, todayKey, monthStartKey) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType || !todayKey || !monthStartKey) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await dsGetReturnsTotals(businessType, { todayKey, monthStartKey });
+        if (cancelled || seqRef.current !== seq) return;
+        setSql(res);
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("returns SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, todayKey, monthStartKey, returns, invoices]);
+
+  const voidedInvIds = useMemo(() => getVoidedInvoiceIds(invoices), [invoices]);
+  const returnsActive = useMemo(() => filterReturnsExcludingVoided(returns || [], voidedInvIds), [returns, voidedInvIds]);
+  const jsTodayReturns = useMemo(() => returnsActive.filter(r => r.dateKey === todayKey), [returnsActive, todayKey]);
+  const jsMonthReturns = useMemo(() => returnsActive.filter(r => (r.dateKey || "") >= monthStartKey), [returnsActive, monthStartKey]);
+  const jsTodayRefund = useMemo(() => jsTodayReturns.reduce((s, r) => s + (r.refundAmount || 0), 0), [jsTodayReturns]);
+  const jsMonthRefund = useMemo(() => jsMonthReturns.reduce((s, r) => s + (r.refundAmount || 0), 0), [jsMonthReturns]);
+  const jsTodayProfitImpact = useMemo(() => jsTodayReturns.reduce((s, r) => s + ((r.refundAmount || 0) - (r.costPrice || 0) * (r.qty || 0)), 0), [jsTodayReturns]);
+  const jsMonthProfitImpact = useMemo(() => jsMonthReturns.reduce((s, r) => s + ((r.refundAmount || 0) - (r.costPrice || 0) * (r.qty || 0)), 0), [jsMonthReturns]);
+  const jsTodayCashRefund = useMemo(() => jsTodayReturns.filter(r => r.refundMode === "cash").reduce((s, r) => s + (r.refundAmount || 0), 0), [jsTodayReturns]);
+
+  return sql ? sql : {
+    todayRefund: jsTodayRefund, monthRefund: jsMonthRefund,
+    todayProfitImpact: jsTodayProfitImpact, monthProfitImpact: jsMonthProfitImpact,
+    todayCashRefund: jsTodayCashRefund,
+  };
+}
+
+// 🆕 এন্ট্রি ৩৯ — useKpiStats-এর products-নির্ভর অবশিষ্ট অংশ: stockValue/lowStockCount
+// (getInventoryCounts()-এর stock_value/critical কলাম — এন্ট্রি ৩৬-এ InventorySection-এর
+// জন্য বানানো একই ফাংশন, useKpiStats-এও পুনর্ব্যবহার করা হচ্ছে, নতুন করে লেখার দরকার
+// হয়নি) + monthExpiredValue/monthExpiredCount (stockMovements টেবিল, উপরে দেখুন)।
+
+function useProductStockTotals(products, businessType) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await dsGetInventoryCounts(businessType);
+        if (cancelled || seqRef.current !== seq) return;
+        setSql({ stockValue: res.stockValue, lowStockCount: res.critical });
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("products stock SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, products]);
+
+  const prodAll = products || [];
+  const jsStockValue = useMemo(() => prodAll.reduce((s, p) => s + (p.costPrice || p.price || 0) * (p.stock || 0), 0), [prodAll]);
+  const jsLowStockCount = useMemo(() => prodAll.filter(p => (p.stock || 0) > 0 && (p.stock || 0) <= (p.minStockAlert || 5)).length, [prodAll]);
+
+  return sql ? sql : { stockValue: jsStockValue, lowStockCount: jsLowStockCount };
+}
+
+function useExpiredRemovalTotals(stockMovements, businessType, monthKey) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType || !monthKey) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await dsGetExpiredRemovalTotals(businessType, monthKey);
+        if (cancelled || seqRef.current !== seq) return;
+        setSql(res);
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("stockMovements SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, monthKey, stockMovements]);
+
+  const jsRemovals = useMemo(() => (stockMovements || []).filter(mv =>
+    mv.source === "expired_removal" && (mv.monthKey || (mv.dateKey ? mv.dateKey.slice(0, 7) : "")) === monthKey
+  ), [stockMovements, monthKey]);
+  const jsValue = useMemo(() => jsRemovals.reduce((s, r) => s + (r.value || 0), 0), [jsRemovals]);
+  const jsCount = jsRemovals.length;
+
+  return sql ? { value: sql.value, count: sql.count } : { value: jsValue, count: jsCount };
+}
+
+// 🆕 এন্ট্রি ৪১ (ধাপ ৬, computeSupplierDueMap) — Dashboard ও SupplierPaymentModule
+// দুই জায়গাতেই একই সোর্স (entry ৩৭/৩৮-এর "duplicate-JS-logic বাগ এড়াতে দুই
+// জায়গায় একই শেয়ার্ড হুক" নীতি অনুসরণ করে)। SQL চালু থাকলে getSupplierDueRows()
+// (schema.sql-এর "supplier due-map" কমেন্ট-ব্লক দ্রষ্টব্য) সরাসরি ডিডুপ্লিকেটেড
+// রো-অ্যারে দেয়; JS ফলব্যাকে computeSupplierDueMap()+uniqueSupplierRows() (আসল,
+// অপরিবর্তিত logic.js ফাংশন)। দুই ক্ষেত্রেই রিটার্ন হয় { map, rows } —
+// map = raw/canonical নাম দিয়ে লুকআপের জন্য (supplierDueMap[name] প্যাটার্ন),
+// rows = sorted list রেন্ডারের জন্য (uniqueSupplierRows-এর সমতুল্য, আগে থেকেই
+// ডিডুপ্লিকেটেড)।
+function useSupplierDueRows(products, purchaseOrders, supplierPayments, businessType) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await dsGetSupplierDueRows(businessType);
+        if (cancelled || seqRef.current !== seq) return;
+        setSql(rows);
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("supplier due-map SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, products, purchaseOrders, supplierPayments]);
+
+  const jsMap = useMemo(() => computeSupplierDueMap(products, purchaseOrders, supplierPayments), [products, purchaseOrders, supplierPayments]);
+  const jsRows = useMemo(() => uniqueSupplierRows(jsMap), [jsMap]);
+
+  return useMemo(() => {
+    if (sql) {
+      // raw-name backward-compat: প্রতিটা raw ভ্যারিয়েন্টও merged রো পয়েন্ট করে
+      // (computeSupplierDueMap()-এর finalMap[raw]=... আচরণের সমতুল্য — এই লুকআপ
+      // SupplierPaymentModule-এর paymentSummary-তে সরাসরি ব্যবহৃত হয়, যেখানে
+      // key হিসেবে raw supplierName আসে, canonical নাম না)।
+      const map = {};
+      const rows = sql.map(({ rawVariants, ...row }) => {
+        map[row.name] = row;
+        (rawVariants || []).forEach(raw => { if (raw) map[raw] = row; });
+        return row;
+      });
+      return { map, rows };
+    }
+    return { map: jsMap, rows: jsRows };
+  }, [sql, jsMap, jsRows]);
+}
+
 function useKpiStats({ customers, invoices, products, txns, expenses = [], cashLogs = [], purchaseOrders = [], stockMovements = [], returns = [], refDayKey, refMonthKey, businessType }) {
   // 🆕 এন্ট্রি ৩৭ — নিচের বড় useMemo-এর বাইরে (React-এর hook-নিয়ম অনুযায়ী
   // useMemo-এর ভেতরে হুক কল করা যায় না) todayKey/monthStartKey হালকাভাবে
@@ -8997,6 +9266,15 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
   const _todayKey0 = refDayKey || _dateKeyOf(_now0);
   const _monthStartKey0 = refMonthKey ? `${refMonthKey}-01` : `${_todayKey0.slice(0, 7)}-01`;
   const expenseTotals = useExpenseTotals(expenses, businessType, _todayKey0, _monthStartKey0);
+  // 🆕 এন্ট্রি ৩৮ — একই কারণে (useMemo-এর ভেতরে হুক কল করা যাবে না) বাকি ৪টা
+  // শেয়ার্ড হুকও এখানে, বাইরে কল করা হচ্ছে।
+  const cashLogTotals = useCashLogTotals(cashLogs, businessType, _todayKey0);
+  const purchaseOrderTotals = usePurchaseOrderTotals(purchaseOrders, businessType, _todayKey0, _monthStartKey0);
+  const txnTotals = useTxnTotals(txns, invoices, businessType, _todayKey0);
+  const returnsTotals = useReturnsTotals(returns, invoices, businessType, _todayKey0, _monthStartKey0);
+  // 🆕 এন্ট্রি ৩৯ — products-নির্ভর অবশিষ্ট অংশ (stockValue/lowStockCount/monthExpired*)
+  const productStockTotals = useProductStockTotals(products, businessType);
+  const expiredRemovalTotals = useExpiredRemovalTotals(stockMovements, businessType, _monthStartKey0.slice(0, 7));
 
   return React.useMemo(() => {
     const fmt = n => { if (!n && n !== 0) return "০"; return fmtMoney(n); };
@@ -9021,7 +9299,9 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
     const selfUseInvs = (invoices || []).filter(i => i.isSelfUse);
     const custAll = customers || [];
     const prodAll = products || [];
-    const txnAll = txns || [];
+    // 🆕 এন্ট্রি ৩৮ — এই মেমোর ভেতরে txnAll আর সরাসরি ব্যবহৃত হয় না (todayBakiIncurred/
+    // todayJoma এখন txnTotals হুক থেকে আসে, নিচে দেখুন) — তাই লোকাল ভ্যারিয়েবলটা বাদ
+    // (lint no-unused-vars এড়াতে)।
 
     const todayInvs = filterTodayInvoices(invoices, todayKey);
     const monthInvs = invAll.filter(i => (i.dateKey || i.date || "") >= monthStartKey);
@@ -9044,22 +9324,20 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
     // দেওয়া হচ্ছে (সেই ইনভয়েসের পুরো টাকাই তো এমনিতেই বাদ পড়ে গেছে)।
     // 🔴 ফিক্স (২৪ জুলাই ২০২৬, পরে src/logic.js-এ শেয়ার্ড হেল্পারে সরানো হলো):
     // দেখুন getVoidedInvoiceIds/filterReturnsExcludingVoided-এর JSDoc।
-    const voidedInvIdsForReturns = getVoidedInvoiceIds(invoices);
-    const returnsAll = returns || [];
-    const returnsActive = filterReturnsExcludingVoided(returnsAll, voidedInvIdsForReturns);
-    const todayReturns = returnsActive.filter(r => r.dateKey === todayKey);
-    const monthReturns = returnsActive.filter(r => (r.dateKey || "") >= monthStartKey);
-    const todayReturnsRefund = todayReturns.reduce((s, r) => s + (r.refundAmount || 0), 0);
-    const monthReturnsRefund = monthReturns.reduce((s, r) => s + (r.refundAmount || 0), 0);
-    const todayReturnsProfitImpact = todayReturns.reduce((s, r) => s + ((r.refundAmount || 0) - (r.costPrice || 0) * (r.qty || 0)), 0);
-    const monthReturnsProfitImpact = monthReturns.reduce((s, r) => s + ((r.refundAmount || 0) - (r.costPrice || 0) * (r.qty || 0)), 0);
+    // 🆕 এন্ট্রি ৩৮ — returnsTotals (SQL/JS ফলব্যাক শেয়ার্ড হুক, উপরে সংজ্ঞায়িত)
+    // isSqliteEnabled() বন্ধ থাকলে ভেতরে ঠিক আগের মতোই getVoidedInvoiceIds+
+    // filterReturnsExcludingVoided লজিক চলে, তাই সংখ্যা অপরিবর্তিত।
+    const todayReturnsRefund = returnsTotals.todayRefund;
+    const monthReturnsRefund = returnsTotals.monthRefund;
+    const todayReturnsProfitImpact = returnsTotals.todayProfitImpact;
+    const monthReturnsProfitImpact = returnsTotals.monthProfitImpact;
     // 🔴 ফিক্স (৩০ জুলাই ২০২৬ — Home ড্যাশবোর্ড vs AI পেজ "আজকের নগদ বিক্রয়" মিসম্যাচ):
     // AIPage_/অন্য ২টা কম্পোনেন্টে (লাইন ~১৩৩৫৫, ~১৫৭৯৮) আগে থেকেই cash-mode রিটার্নের
     // refundAmount todayCashSale থেকে বাদ যেত, কিন্তু এই হুকে (Home পেজের KPI গ্রিড)
     // এই একই ফিক্স কখনো কপি হয়নি — ফলে নগদ-রিটার্নের দিনগুলোতে Home পেজ ও AI পেজ
     // ভিন্ন সংখ্যা দেখাত। বাকি-মোড রিটার্ন কাস্টমারের balance সমন্বয় করে, ক্যাশ
     // ড্রয়ারকে প্রভাবিত করে না — তাই শুধু cash-mode রিটার্ন এখানে বাদ যাচ্ছে।
-    const todayReturnsCashRefund = todayReturns.filter(r => r.refundMode === "cash").reduce((s, r) => s + (r.refundAmount || 0), 0);
+    const todayReturnsCashRefund = returnsTotals.todayCashRefund;
 
     const todaySale = todayInvs.reduce((s, i) => s + (i.total || 0), 0) - todayReturnsRefund;
     const monthSale = monthInvs.reduce((s, i) => s + (i.total || 0), 0) - monthReturnsRefund;
@@ -9074,16 +9352,13 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
     const monthMargin = pct(monthProfit, monthSale);
     const totalBaki = custAll.reduce((s, c) => s + (c.balance || 0), 0);
     const bakiCustomers = custAll.filter(c => (c.balance || 0) > 0).length;
-    const stockValue = prodAll.reduce((s, p) => s + (p.costPrice || p.price || 0) * (p.stock || 0), 0);
-    const lowStockItems = prodAll.filter(p => (p.stock || 0) > 0 && (p.stock || 0) <= (p.minStockAlert || 5));
+    // 🆕 এন্ট্রি ৩৯ — productStockTotals/expiredRemovalTotals শেয়ার্ড হুক (SQL/JS
+    // ফলব্যাক, উপরে সংজ্ঞায়িত) — useKpiStats-এর products-নির্ভর অবশিষ্ট অংশ
+    const stockValue = productStockTotals.stockValue;
+    const lowStockCount = productStockTotals.lowStockCount;
 
-    const currentMonthKeyForExp = monthStartKey.slice(0, 7);
-    const monthExpiredRemovals = (stockMovements || []).filter(mv =>
-      mv.source === "expired_removal" &&
-      (mv.monthKey || (mv.dateKey ? mv.dateKey.slice(0, 7) : "")) === currentMonthKeyForExp
-    );
-    const monthExpiredValue = monthExpiredRemovals.reduce((s, r) => s + (r.value || 0), 0);
-    const monthExpiredCount = monthExpiredRemovals.length;
+    const monthExpiredValue = expiredRemovalTotals.value;
+    const monthExpiredCount = expiredRemovalTotals.count;
 
     const monthSelfUseCost = selfUseInvs
       .filter(i => (i.dateKey || i.date || "") >= monthStartKey)
@@ -9123,31 +9398,30 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
     }, 0);
 
     const todayKeyEn = todayKey; // নেভিগেটরে বাছাই করা দিনের সাথে সামঞ্জস্যপূর্ণ (txns/cashLogs ফিল্টারেও একই দিন ব্যবহৃত হবে)
-    const _voidedIds = new Set((invoices || []).filter(i => i.status === "voided").map(i => i.id));
-    const todayBakiIncurred = txnAll.filter(t => t.dateKey === todayKeyEn && t.type === "baki" && t.invoiceId && !_voidedIds.has(t.invoiceId)).reduce((s, t) => s + (t.amount || 0), 0);
-    const todayJoma = txnAll.filter(t => t.dateKey === todayKeyEn && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((s, t) => s + (t.amount || 0), 0);
+    // 🆕 এন্ট্রি ৩৮ — txnTotals (SQL/JS ফলব্যাক শেয়ার্ড হুক, উপরে সংজ্ঞায়িত)
+    const todayBakiIncurred = txnTotals.todayBakiIncurred;
+    const todayJoma = txnTotals.todayJoma;
 
-    const cashLogsAll = cashLogs || [];
-    const openingCashToday = cashLogsAll.filter(c => c.type === "opening" && c.dateKey === todayKeyEn).reduce((s, c) => s + (c.amount || 0), 0);
+    // 🆕 এন্ট্রি ৩৮ — cashLogTotals (SQL/JS ফলব্যাক শেয়ার্ড হুক, উপরে সংজ্ঞায়িত)
+    const openingCashToday = cashLogTotals.opening;
     // 🔴 ফিক্স (২৪ জুলাই ২০২৬ — উইথড্রয়াল/বাতিল conflation): "withdrawal" টাইপ এখন
     // শুধু মালিক/স্টাফের সত্যিকারের ক্যাশ উত্তোলন বোঝায় — পণ্য ফেরতের রিফান্ড
     // (return_refund) বা তার ভয়েড-রিভার্সাল (return_refund_reversal) এতে ধরা পড়ে
     // না। ক্যাশ ড্রয়ারের প্রকৃত হিসাবে সেগুলো এখনও লাগে (আসল টাকা বেরিয়েছিল),
     // তাই আলাদাভাবে যোগ/বিয়োগ করা হচ্ছে।
-    const withdrawalToday = cashLogsAll.filter(c => c.type === "withdrawal" && c.dateKey === todayKeyEn).reduce((s, c) => s + (c.amount || 0), 0);
+    const withdrawalToday = cashLogTotals.withdrawal;
     // 🔴 ফিক্স (৩০ জুলাই ২০২৬): returnRefundToday (cashLogs "return_refund") আর এখানে
     // আলাদাভাবে দরকার নেই — todayCashSale-এই এখন cash-mode রিটার্ন বাদ যায় (উপরে দেখুন)।
-    const returnReversalToday = cashLogsAll.filter(c => c.type === "return_refund_reversal" && c.dateKey === todayKeyEn).reduce((s, c) => s + (c.amount || 0), 0);
+    const returnReversalToday = cashLogTotals.returnReversal;
 
-    const purchaseOrdersAll = (purchaseOrders || []).filter(p => p._type === "pe");
+    // 🆕 এন্ট্রি ৩৮ — purchaseOrderTotals (SQL/JS ফলব্যাক শেয়ার্ড হুক, উপরে সংজ্ঞায়িত)
     // 🔴 ফিক্স (হোম পেজ vs "দৈনিক সারসংক্ষেপ" পেজের হিসাব অমিল): এখানে শুধু
     // dateKey চেক হতো, কিন্তু buildDailySummaryData()-এ dateKey না থাকলে
     // createdAt ফলব্যাকও চেক হয় — ফলে একই দিনের ক্রয় দুই জায়গায় ভিন্ন সংখ্যা
     // দেখাতে পারত। এখন দুই জায়গায়ই একই (dateKey অথবা createdAt) শর্ত।
-    const todayPurchases = purchaseOrdersAll.filter(p => p.dateKey === todayKey || (p.createdAt && p.createdAt.startsWith(todayKey)));
-    const todayPurchaseCost = todayPurchases.reduce((s, p) => s + (p.totalCost || 0), 0);
-    const todayPurchaseCount = todayPurchases.length;
-    const monthPurchaseCost = purchaseOrdersAll.filter(p => (p.dateKey || "") >= monthStartKey).reduce((s, p) => s + (p.totalCost || 0), 0);
+    const todayPurchaseCost = purchaseOrderTotals.todayCost;
+    const todayPurchaseCount = purchaseOrderTotals.todayCount;
+    const monthPurchaseCost = purchaseOrderTotals.monthCost;
 
     // 🔴 ফিক্স (৩০ জুলাই ২০২৬ — ক্যাশড্রয়ার ডাবল-কাউন্ট): todayCashSale এখন
     // ইতিমধ্যে todayReturnsCashRefund বাদ দিয়ে হিসাব হয় (উপরে দেখুন) — তাই এখানে
@@ -9165,9 +9439,9 @@ function useKpiStats({ customers, invoices, products, txns, expenses = [], cashL
       todayProfit, totalBaki, bakiCustomers, todayJoma, todaySelfUseCost, monthSelfUseCost,
       openingCashToday, withdrawalToday, currentCashDrawer, todayPurchaseCost, todayPurchaseCount,
       monthPurchaseCost, todayExpense, monthExpense, monthSale, monthProfit, monthMargin,
-      stockValue, lowStockItems, monthExpiredValue, monthExpiredCount,
+      stockValue, lowStockCount, monthExpiredValue, monthExpiredCount,
     };
-  }, [customers, invoices, products, txns, cashLogs, purchaseOrders, stockMovements, returns, refDayKey, refMonthKey, expenseTotals]);
+  }, [customers, invoices, products, txns, cashLogs, purchaseOrders, stockMovements, returns, refDayKey, refMonthKey, expenseTotals, cashLogTotals, purchaseOrderTotals, txnTotals, returnsTotals, productStockTotals, expiredRemovalTotals]);
 }
 
 // ── ২০টি KPI কার্ডের গ্রিড — AI ড্যাশবোর্ড ও "দৈনিক সারসংক্ষেপ" উভয় জায়গায় হুবহু একই ──
@@ -9182,7 +9456,7 @@ function KpiCardsGrid({ T, stats, compact = false }) {
     todayProfit, totalBaki, bakiCustomers, todayJoma, todaySelfUseCost, monthSelfUseCost,
     openingCashToday, withdrawalToday, currentCashDrawer, todayPurchaseCost, todayPurchaseCount,
     monthPurchaseCost, todayExpense, monthExpense, monthSale, monthProfit, monthMargin,
-    stockValue, lowStockItems, monthExpiredValue, monthExpiredCount } = stats;
+    stockValue, lowStockCount, monthExpiredValue, monthExpiredCount } = stats;
 
   const items = [
     { icon: "💰", val: `৳${fmt(todaySale)}`, label: "আজকের বিক্রয়", sub: `${todayInvs.length}টি ইনভয়েস`, color: "#22c55e" },
@@ -9203,7 +9477,7 @@ function KpiCardsGrid({ T, stats, compact = false }) {
     { icon: "🧮", val: `৳${fmt(monthExpense)}`, label: `এই মাসের খরচ (${currentMonthNameEn})`, sub: `১–${daysElapsedInMonth} ${currentMonthNameEn}`, color: "#ef4444" },
     { icon: "📈", val: `৳${fmt(monthSale)}`, label: `এই মাসের বিক্রয় (${currentMonthNameEn})`, sub: growthPct !== null ? `${growthPct > 0 ? "▲" : "▼"} ${Math.abs(growthPct)}%` : currentMonthNameEn, color: "#3b82f6" },
     { icon: "💎", val: `৳${fmt(monthProfit)}`, label: `এই মাসে লাভ (${currentMonthNameEn})`, sub: `মার্জিন ${monthMargin}%`, color: monthMargin >= 15 ? "#22c55e" : monthMargin >= 8 ? "#f59e0b" : "#ef4444" },
-    { icon: "📦", val: `৳${fmt(stockValue)}`, label: "স্টক মূল্য", sub: `কম স্টক ${lowStockItems.length}টি`, color: "#ec4899" },
+    { icon: "📦", val: `৳${fmt(stockValue)}`, label: "স্টক মূল্য", sub: `কম স্টক ${lowStockCount}টি`, color: "#ec4899" },
     { icon: "⏳", val: `৳${fmt(monthExpiredValue)}`, label: `এই মাসের মেয়াদোত্তীর্ণ পণ্যের মূল্য (${currentMonthNameEn})`, sub: `${monthExpiredCount}টি ব্যাচ সরানো হয়েছে`, color: "#dc2626" },
   ];
 
@@ -9342,6 +9616,14 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
 
   // 🆕 এন্ট্রি ৩৭ — শেয়ার্ড হুক (useKpiStats-এর সাথে একই সোর্স, উপরের কমেন্ট দ্রষ্টব্য)
   const expenseTotals = useExpenseTotals(expenses, businessType, todayKey, monthStartKey);
+  // 🆕 এন্ট্রি ৩৮ — বাকি ৪টা শেয়ার্ড হুকও এখানে (useKpiStats-এর সাথে একই সোর্স) —
+  // AIPage_ আগে এই ৪টার নিজস্ব আলাদা JS কপি ব্যবহার করত, ঠিক যেভাবে expenses-এও
+  // (এন্ট্রি ৩৭-এর আগে) করত, যেটা ৩০ জুলাই ২০২৬-এর cash-sale মিসম্যাচ বাগের কারণ
+  // হয়েছিল। এখন দুই জায়গাতেই (Home KPI গ্রিড + এই AI পেজ) একই হুক থেকে সংখ্যা আসে।
+  const cashLogTotals = useCashLogTotals(cashLogs, businessType, todayKey);
+  const purchaseOrderTotals = usePurchaseOrderTotals(purchaseOrders, businessType, todayKey, monthStartKey);
+  const txnTotals = useTxnTotals(txns, invoices, businessType, todayKey);
+  const returnsTotals = useReturnsTotals(returns, invoices, businessType, todayKey, monthStartKey);
 
   // নিজের ব্যবহার (Personal Use) ইনভয়েস বিক্রয়/লাভ হিসাবে ধরা হবে না
   const invAll = (invoices || []).filter(i => !i.isSelfUse && i.status !== "voided");
@@ -9370,15 +9652,18 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
   const voidedInvIdsForReturnsAI = getVoidedInvoiceIds(invoices);
   const returnsAll = returns || [];
   const returnsActiveAI = filterReturnsExcludingVoided(returnsAll, voidedInvIdsForReturnsAI);
-  const todayReturns = returnsActiveAI.filter(r => r.dateKey === todayKey);
+  // 🆕 এন্ট্রি ৩৮ — সপ্তাহ-ভিত্তিক (week*) হিসাব returnsTotals হুকের স্কোপের বাইরে
+  // (হুক শুধু today/month কভার করে, useKpiStats-এর প্রয়োজন অনুযায়ী ডিজাইন করা),
+  // তাই এই একটাই এখনো লোকাল JS।
   const weekReturns = returnsActiveAI.filter(r => (r.dateKey || "") >= d7);
-  const monthReturns = returnsActiveAI.filter(r => (r.dateKey || "") >= monthStartKey);
-  const todayReturnsRefund = todayReturns.reduce((s, r) => s + (r.refundAmount || 0), 0);
   const weekReturnsRefund = weekReturns.reduce((s, r) => s + (r.refundAmount || 0), 0);
-  const monthReturnsRefund = monthReturns.reduce((s, r) => s + (r.refundAmount || 0), 0);
-  const todayReturnsCashRefund = todayReturns.filter(r => r.refundMode === "cash").reduce((s, r) => s + (r.refundAmount || 0), 0);
-  const todayReturnsProfitImpact = todayReturns.reduce((s, r) => s + ((r.refundAmount || 0) - (r.costPrice || 0) * (r.qty || 0)), 0);
-  const monthReturnsProfitImpact = monthReturns.reduce((s, r) => s + ((r.refundAmount || 0) - (r.costPrice || 0) * (r.qty || 0)), 0);
+  // today/month এখন returnsTotals শেয়ার্ড হুক থেকে (উপরে সংজ্ঞায়িত) — SQL চালু
+  // থাকলে SQL, নাহলে হুকের ভেতরে ঠিক এই একই voided-বাদ JS লজিক চলে (আচরণ অপরিবর্তিত)।
+  const todayReturnsRefund = returnsTotals.todayRefund;
+  const monthReturnsRefund = returnsTotals.monthRefund;
+  const todayReturnsCashRefund = returnsTotals.todayCashRefund;
+  const todayReturnsProfitImpact = returnsTotals.todayProfitImpact;
+  const monthReturnsProfitImpact = returnsTotals.monthProfitImpact;
 
   const todaySale = todayInvs.reduce((s, i) => s + (i.total || 0), 0) - todayReturnsRefund;
   const weekSale = weekInvs.reduce((s, i) => s + (i.total || 0), 0) - weekReturnsRefund;
@@ -9464,28 +9749,29 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
   }, 0);
 
   // ── আজকের বাকি (নতুন) ও আজকের বাকি আদায় ────────────────────────────────
+  // 🆕 এন্ট্রি ৩৮ — txnTotals শেয়ার্ড হুক থেকে (উপরে সংজ্ঞায়িত, useKpiStats-এর
+  // সাথে একই সোর্স)। todayKeyEn === todayKey (দুটোই _dateKeyOf(new Date())-এর
+  // ফলাফল, পুরনো কোডেও আলাদা কল ছিল, এই পরিবর্তনে নতুন করে ঝুঁকি যোগ হয়নি)।
   const todayKeyEn = todayEn();
-  const _voidedIds = new Set((invoices || []).filter(i => i.status === "voided").map(i => i.id));
-  const todayBakiIncurred = txnAll.filter(t => t.dateKey === todayKeyEn && t.type === "baki" && t.invoiceId && !_voidedIds.has(t.invoiceId)).reduce((s, t) => s + (t.amount || 0), 0);
-  const todayJoma = txnAll.filter(t => t.dateKey === todayKeyEn && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((s, t) => s + (t.amount || 0), 0);
+  const todayBakiIncurred = txnTotals.todayBakiIncurred;
+  const todayJoma = txnTotals.todayJoma;
 
   // ── ক্যাশ ড্রয়ার — ওপেনিং/উইথড্রয়াল/বর্তমান ক্যাশ ────────────────────────
-  const cashLogsAll = cashLogs || [];
-  const openingCashToday = cashLogsAll.filter(c => c.type === "opening" && c.dateKey === todayKeyEn).reduce((s, c) => s + (c.amount || 0), 0);
+  // 🆕 এন্ট্রি ৩৮ — cashLogTotals শেয়ার্ড হুক থেকে (উপরে সংজ্ঞায়িত)
+  const openingCashToday = cashLogTotals.opening;
   // 🔴 ফিক্স (২৪ জুলাই ২০২৬ — উইথড্রয়াল/বাতিল conflation): দেখুন useKpiStats-এর
   // একই ফিক্সের কমেন্ট — "withdrawal" এখন শুধু সত্যিকারের ক্যাশ উত্তোলন,
   // পণ্য ফেরত/ভয়েড-রিভার্সাল আলাদাভাবে ধরা হচ্ছে।
-  const withdrawalToday = cashLogsAll.filter(c => c.type === "withdrawal" && c.dateKey === todayKeyEn).reduce((s, c) => s + (c.amount || 0), 0);
+  const withdrawalToday = cashLogTotals.withdrawal;
   // 🔴 ফিক্স (৩০ জুলাই ২০২৬): returnRefundToday (cashLogs "return_refund") আর এখানে
   // আলাদাভাবে দরকার নেই — todayCashSale-এই এখন cash-mode রিটার্ন বাদ যায় (উপরে দেখুন)।
-  const returnReversalToday = cashLogsAll.filter(c => c.type === "return_refund_reversal" && c.dateKey === todayKeyEn).reduce((s, c) => s + (c.amount || 0), 0);
+  const returnReversalToday = cashLogTotals.returnReversal;
 
   // ── ক্রয় (আজ/এই মাস) ────────────────────────────────────────────────────
-  const purchaseOrdersAll = (purchaseOrders || []).filter(p => p._type === "pe");
-  const todayPurchases = purchaseOrdersAll.filter(p => p.dateKey === todayKey);
-  const todayPurchaseCost = todayPurchases.reduce((s, p) => s + (p.totalCost || 0), 0);
-  const todayPurchaseCount = todayPurchases.length;
-  const monthPurchaseCost = purchaseOrdersAll.filter(p => (p.dateKey || "") >= monthStartKey).reduce((s, p) => s + (p.totalCost || 0), 0);
+  // 🆕 এন্ট্রি ৩৮ — purchaseOrderTotals শেয়ার্ড হুক থেকে (উপরে সংজ্ঞায়িত)
+  const todayPurchaseCost = purchaseOrderTotals.todayCost;
+  const todayPurchaseCount = purchaseOrderTotals.todayCount;
+  const monthPurchaseCost = purchaseOrderTotals.monthCost;
 
   // 🔴 ফিক্স (৩০ জুলাই ২০২৬ — ক্যাশড্রয়ার ডাবল-কাউন্ট): todayCashSale এখানে
   // আগে থেকেই todayReturnsCashRefund বাদ দিয়ে হিসাব হয় (উপরে দেখুন) — তাই
@@ -12290,11 +12576,20 @@ function SmartBusinessMgmt() {
   // 🆕 এন্ট্রি ৩৭ — useKpiStats-এর ৫টা ডেটা-সোর্সের প্রথম SQL cutover (schema.sql/
   // DataStore.js-এর কমেন্ট দ্রষ্টব্য)
   const _dsExpensesRef  = useRef(new Map());
+  // 🆕 এন্ট্রি ৩৮ — বাকি ৪টা
+  const _dsCashLogsRef       = useRef(new Map());
+  const _dsPurchaseOrdersRef = useRef(new Map());
+  const _dsTxnsRef           = useRef(new Map());
+  const _dsReturnsRef        = useRef(new Map());
+  // 🆕 এন্ট্রি ৩৯
+  const _dsStockMovementsRef = useRef(new Map());
+  // 🆕 এন্ট্রি ৪১
+  const _dsSupplierPaymentsRef = useRef(new Map());
 
   useEffect(() => { if (loaded) { debouncedSave(LK(SK.customers), customers, 1500); setBackupNeeded(true); dualWriteSqlite(businessType, "customers", _dsCustomersRef, customers); } }, [customers, loaded]);
   useEffect(() => { if (loaded) { debouncedSave(LK(SK.products),  products,  1500); setBackupNeeded(true); dualWriteSqlite(businessType, "products",  _dsProductsRef,  products);  } }, [products, loaded]);
   useEffect(() => { if (loaded) { debouncedSave(LK(SK.invoices),  invoices,  1500); setBackupNeeded(true); dualWriteSqlite(businessType, "invoices",  _dsInvoicesRef,  invoices);  } }, [invoices, loaded]);
-  useEffect(() => { if (loaded) { debouncedSave(LK(SK.txns),      txns,      2000); setBackupNeeded(true); } }, [txns, loaded]);
+  useEffect(() => { if (loaded) { debouncedSave(LK(SK.txns),      txns,      2000); setBackupNeeded(true); dualWriteSqlite(businessType, "txns", _dsTxnsRef, txns); } }, [txns, loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.smsLog), smsLog, 2000); }, [smsLog, loaded]);
   useEffect(() => { if (loaded) save(SK.users,     users);     }, [users, loaded]);
   useEffect(() => { if (loaded) save(SK.shopName,  shopName);  }, [shopName, loaded]);
@@ -12482,18 +12777,18 @@ function SmartBusinessMgmt() {
     })();
   }, [currentUser?.role, loaded]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (loaded) debouncedSave(LK(SK.suppliers),      suppliers,      1500); }, [suppliers,      loaded]);
-  useEffect(() => { if (loaded) debouncedSave(LK(SK.purchaseOrders), purchaseOrders, 1500); }, [purchaseOrders, loaded]);
-  useEffect(() => { if (loaded) debouncedSave(LK(SK.stockMovements), stockMovements, 1500); }, [stockMovements, loaded]);
-  useEffect(() => { if (loaded) debouncedSave(LK(SK.cashLogs),       cashLogs,       1500); }, [cashLogs,       loaded]);
+  useEffect(() => { if (loaded) { debouncedSave(LK(SK.purchaseOrders), purchaseOrders, 1500); dualWriteSqlite(businessType, "purchaseOrders", _dsPurchaseOrdersRef, purchaseOrders); } }, [purchaseOrders, loaded]);
+  useEffect(() => { if (loaded) { debouncedSave(LK(SK.stockMovements), stockMovements, 1500); dualWriteSqlite(businessType, "stockMovements", _dsStockMovementsRef, stockMovements); } }, [stockMovements, loaded]);
+  useEffect(() => { if (loaded) { debouncedSave(LK(SK.cashLogs),       cashLogs,       1500); dualWriteSqlite(businessType, "cashLogs", _dsCashLogsRef, cashLogs); } }, [cashLogs,       loaded]);
   // 🔴 ফিক্স: এই ৫টা কালেকশনের আগে কোনো লোকাল পার্সিস্টেন্স ছিল না — Firebase বন্ধ
   // থাকা (local-only) দোকানে প্রতি রিলোডে এই ডেটা হারিয়ে যেত।
   useEffect(() => { if (loaded) { debouncedSave(LK(SK.expenses),         expenses,         1500); dualWriteSqlite(businessType, "expenses", _dsExpensesRef, expenses); } }, [expenses,         loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.staffLedger),      staffLedger,      1500); }, [staffLedger,      loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.serialQueue),      serialQueue,      1500); }, [serialQueue,      loaded]);
-  useEffect(() => { if (loaded) debouncedSave(LK(SK.returns),          returns,          1500); }, [returns,          loaded]);
+  useEffect(() => { if (loaded) { debouncedSave(LK(SK.returns),          returns,          1500); dualWriteSqlite(businessType, "returns", _dsReturnsRef, returns); } }, [returns,          loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.auditLogs),        auditLogs,        2000); }, [auditLogs,        loaded]);
   useEffect(() => { if (loaded) debouncedSave(LK(SK.quotations),       quotations,       1500); }, [quotations,       loaded]);
-  useEffect(() => { if (loaded) debouncedSave(LK(SK.supplierPayments), supplierPayments, 1500); }, [supplierPayments, loaded]);
+  useEffect(() => { if (loaded) debouncedSave(LK(SK.supplierPayments), supplierPayments, 1500); dualWriteSqlite(businessType, "supplierPayments", _dsSupplierPaymentsRef, supplierPayments); }, [supplierPayments, loaded]);
   // 🔴 ফিক্স: "ব্যাকআপ প্রয়োজন" ব্যাজ আগে শুধু customers/products/invoices/txns
   // বদলালে জ্বলত — বাকি ব্যাকআপযোগ্য ফিল্ডগুলো বদলালে জ্বলত না।
   useEffect(() => { if (loaded) setBackupNeeded(true); }, [suppliers, purchaseOrders, stockMovements, cashLogs, expenses, returns, auditLogs, quotations, supplierPayments, paymentInvoices, staffLedger, serialQueue, loaded]);
@@ -15415,6 +15710,7 @@ function SmartBusinessMgmt() {
               shopName={shopName}
               cashLogs={cashLogs}
               setCashLogs={setCashLogs}
+              businessType={businessType}
             />
           </ErrorBoundary>
         )}
@@ -18120,6 +18416,76 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     return ps;
   }, [productsWithSerial, catFilter, prodSearch, ftsCandidateIds, ftsCandidateQuery]);
 
+  // 🆕 এন্ট্রি ৪০ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ৫, POS product picker) —
+  // ডিফল্ট-ব্রাউজ (সার্চ নেই) মোডে SQLite `browse_rank` কলাম দিয়ে pagination,
+  // উপরের filteredProducts-এর দুই-ধাপের JS sort-এর বদলে। সার্চ-অ্যাক্টিভ অবস্থায়
+  // filteredProducts (hybrid FTS+JS scoring) সম্পূর্ণ অপরিবর্তিত — নিচের ব্রাউজ-
+  // লজিক সেই পাথ ছোঁয় না, এন্ট্রি ৩২-এর সিদ্ধান্ত অনুযায়ী।
+  //
+  // 🔴 গুরুত্বপূর্ণ ডিজাইন-সিদ্ধান্ত (entry 30-এর Products list ব্রাউজ থেকে
+  // ইচ্ছাকৃতভাবে ভিন্ন): এটা সরাসরি বিলিং কাউন্টার (এন্ট্রি ৩২-এর staleness
+  // উদ্বেগ)। তাই SQL রো-র `data` (JSON snapshot) সরাসরি রেন্ডার না করে, SQL শুধু
+  // এই পেজের product id-অর্ডার দেয় — প্রতিটা id তারপর productsByIdMap (live
+  // `products` state থেকে) দিয়ে লুকআপ হয়। ফলে dual-write সামান্যতম lag করলেও
+  // rendered কার্ডের stock/price/availability কখনো stale হয় না — SQL শুধু ক্রম
+  // ঠিক করে, ডেটা না।
+  const productsByIdMap = useMemo(() => new Map(productsWithSerial.map(p => [String(p.id), p])), [productsWithSerial]);
+
+  const [browseIds,     setBrowseIds]     = useState([]);
+  const [browseDone,    setBrowseDone]    = useState(false);
+  const [browseLoading, setBrowseLoading] = useState(false);
+  const [browseFailed,  setBrowseFailed]  = useState(false);
+  const browseCursorRef = useRef(null);
+  const isSearchActive = !!prodSearch.trim();
+  const useSqliteBrowse = isSqliteEnabled() && !isSearchActive && !browseFailed;
+
+  const browseWhereFor = useCallback((filter) => {
+    if (filter === "সার্ভিস") return { where: "deleted = 0 AND product_type = 'service'", params: [] };
+    if (filter !== "সব") return { where: "deleted = 0 AND product_type != 'service' AND category = ?", params: [filter] };
+    return { where: "deleted = 0", params: [] };
+  }, []);
+
+  const loadBrowsePage = useCallback(async (reset = false) => {
+    setBrowseLoading(true);
+    try {
+      const { where, params } = browseWhereFor(catFilter);
+      const cursor = reset ? null : browseCursorRef.current;
+      const r = await dsQueryPage(businessType, "products", {
+        where, params, sortColumn: "browse_rank", sortDir: "ASC", limit: 60, cursor,
+      });
+      const ids = r.rows.map(p => String(p.id));
+      browseCursorRef.current = r.nextCursor;
+      setBrowseDone(!r.hasMore);
+      setBrowseIds(prev => reset ? ids : [...prev, ...ids]);
+    } catch {
+      setBrowseFailed(true); // SQLite ব্যর্থ → পরের রেন্ডারে filteredProducts (JS ফলব্যাক)-এ চলে যাবে
+    } finally {
+      setBrowseLoading(false);
+    }
+  }, [businessType, catFilter, browseWhereFor]);
+
+  // ফিল্টার/সার্চ-মোড বদলালে ব্রাউজ-পেজিনেশন রিসেট করে প্রথম পেজ লোড
+  useEffect(() => {
+    if (!useSqliteBrowse) return;
+    browseCursorRef.current = null;
+    setBrowseIds([]);
+    setBrowseDone(false);
+    loadBrowsePage(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useSqliteBrowse, catFilter, businessType]);
+
+  const browseProducts = useMemo(() => {
+    if (!useSqliteBrowse) return null;
+    return browseIds.map(id => productsByIdMap.get(id)).filter(Boolean);
+  }, [useSqliteBrowse, browseIds, productsByIdMap]);
+
+  // useSqliteBrowse সত্যি হলেও browseProducts প্রথম রেন্ডারে null থাকতে পারে
+  // (state আপডেট হওয়ার আগে) — তাই null-চেক দিয়ে filteredProducts ফলব্যাক
+  const gridProducts = (useSqliteBrowse && browseProducts) ? browseProducts : filteredProducts;
+  const gridEndReached = useSqliteBrowse
+    ? () => { if (!browseDone && !browseLoading) loadBrowsePage(false); }
+    : undefined;
+
   // C1 fix: Invoice Step2 product pagination (৫০টি করে)
   // VirtuosoGrid ব্যবহার হচ্ছে — pagination ও pagedProducts সরানো হয়েছে
   // filteredProducts সরাসরি VirtuosoGrid-এ যাচ্ছে
@@ -19512,7 +19878,8 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
           {/* Product Grid — 2 column — Virtuoso Virtual */}
           <VirtuosoGrid
             style={{ height: "calc(100dvh - 340px)" }}
-            data={filteredProducts}
+            data={gridProducts}
+            endReached={gridEndReached}
             listClassName="sbm-inv-product-grid"
             increaseViewportBy={{ top: 400, bottom: 600 }}
             computeItemKey={(_, p) => p.id}
@@ -19763,7 +20130,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
               );
             }}
           />
-          {filteredProducts.length === 0 && (
+          {gridProducts.length === 0 && (
             <div style={{ textAlign: "center", color: T.sub, fontSize: 13, padding: "24px 0" }}>
               কোনো পণ্য পাওয়া যায়নি
             </div>
@@ -22014,13 +22381,11 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   // ── 🆕 সাপ্লায়ারকে পেমেন্ট (উইথড্রয়াল) — সাপ্লায়ার নাম সার্চ/অটো-সাজেস্ট + বর্তমান বাকি অটো-শো ──
   // একই computeSupplierDueMap ব্যবহার করা হয় যা সাপ্লায়ার পেজেও (SupplierPaymentModule) ব্যবহৃত হয়,
   // ফলে এখানে দেখানো বাকি সবসময় সাপ্লায়ার পেজের সাথে সিঙ্ক থাকে।
-  const dashSupplierDueMap = useMemo(() =>
-    computeSupplierDueMap(products, purchaseOrders, supplierPayments),
-    [products, purchaseOrders, supplierPayments]
-  );
+  // 🆕 এন্ট্রি ৪১ — useSupplierDueRows() শেয়ার্ড হুক (SQL/JS ফলব্যাক, উপরে সংজ্ঞায়িত)
+  const { map: dashSupplierDueMap, rows: dashSupplierDueRows } = useSupplierDueRows(products, purchaseOrders, supplierPayments, businessType);
   const dashSupplierNames = useMemo(() =>
-    uniqueSupplierRows(dashSupplierDueMap).sort((a, b) => b.due - a.due).map(s => s.name),
-    [dashSupplierDueMap]
+    [...dashSupplierDueRows].sort((a, b) => b.due - a.due).map(s => s.name),
+    [dashSupplierDueRows]
   );
   const cashPartyFiltered = useMemo(() => {
     const q = cashParty.trim();
@@ -30099,19 +30464,18 @@ function BatchSyncTool({ T, S, products = [], setProducts, invoices = [], setInv
 
 function SupplierPaymentModule({ T, S, products = [], purchaseOrders = [],
   supplierPayments = [], setSupplierPayments, showToast, currentUser, shopName,
-  cashLogs = [], setCashLogs }) {
+  cashLogs = [], setCashLogs, businessType = "pharmacy" }) {
 
   const fmt = n => fmtMoney(n);
   const todayKey = _dateKeyOf(new Date());
 
   // ── Build supplier due-map (কেন্দ্রীয় হিসাব — Dashboard-এর ক্যাশ উইথড্রয়ালের সাথেও শেয়ার করা) ──
-  const supplierDueMap = useMemo(() =>
-    computeSupplierDueMap(products, purchaseOrders, supplierPayments),
-    [products, purchaseOrders, supplierPayments]
-  );
+  // 🆕 এন্ট্রি ৪১ — useSupplierDueRows() শেয়ার্ড হুক (SQL/JS ফলব্যাক) — Dashboard-এর
+  // সাথে একই সোর্স, যাতে দুই জায়গার সংখ্যা কখনো আলাদা না হয়ে যায়।
+  const { map: supplierDueMap, rows: supplierDueRows } = useSupplierDueRows(products, purchaseOrders, supplierPayments, businessType);
   const suppliers = useMemo(() =>
-    uniqueSupplierRows(supplierDueMap).sort((a, b) => b.totalPurchased - a.totalPurchased),
-    [supplierDueMap]
+    [...supplierDueRows].sort((a, b) => b.totalPurchased - a.totalPurchased),
+    [supplierDueRows]
   );
   // ── Per-supplier পেমেন্ট সামারি (lastPaid/count — শুধু ইতিহাস তালিকায় দেখানোর জন্য) ──
   const paymentSummary = useMemo(() => {
