@@ -92,6 +92,38 @@ Dashboard-এর ভিত্তি এটাই — কী কী KPI ঠিক
 ### ধাপ ৭ (শেষ, শুধু সব আগের ধাপ সম্পূর্ণ+real-device ভেরিফায়েড হলে) — `products` boot-লোড লেজি করা
 এই ধাপেই আসল মেমরি-সেভিংস আসবে — এর আগে কিছুই মেমরি কমাবে না, শুধু রিড-প্যাটার্ন প্রস্তুত করে।
 
+**🟡 এন্ট্রি ৪২ (SQLITE_MIGRATION_LOG.md) — অডিট সম্পূর্ণ, cutover শুরু হয়নি**: আসল ব্লকার = `productsById` global Map সিঙ্ক্রোনাসভাবে পুরো `products` অ্যারে থেকে রিবিল্ড হয় (App.jsx লাইন ৩৭৯-৩৮২), ৬৭টা ব্যবহার-সাইট এর উপর নির্ভরশীল — POS পিকার/Products লিস্ট SQL দিয়ে শুধু *অর্ডার* ঠিক করে, কার্ড-রেন্ডারের জন্য পূর্ণ product object এখনো এই সিঙ্ক Map থেকেই আসে। `DataStore.getByIds()` (ব্যাচ id-লুকআপ, ৫০০-চাংক, অর্ডার-প্রিজার্ভড, ৮-কেস টেস্টেড) ভিত্তি হিসেবে যোগ হয়েছে।
+
+**🟡 এন্ট্রি ৪৩ — ৭.১ (ক্যাটাগরাইজেশন) + ৭.২ (async hook) সম্পূর্ণ, ৭.৩ (বুট পরিবর্তন) ব্লকড**: বিস্তারিত নিচে ও SQLITE_MIGRATION_LOG.md এন্ট্রি ৪৩-এ।
+
+### ৭.১ — ব্যবহার-সাইট ক্যাটাগরাইজেশন (এন্ট্রি ৪৩-এ সম্পূর্ণ)
+
+App.jsx-এ `products`/`productsById`/`prodMap`/`prodAll` ব্যবহার করা ৯৪টা লাইন (গ্রেপ-কনফার্মড) কম্পোনেন্ট-ভিত্তিক ৩টা ক্যাটাগরিতে ভাগ করা হলো:
+
+**ক্যাটাগরি ①  AGGREGATE — ইতিমধ্যে SQL-cutover, `products` এখানে শুধু fallback**
+`useProductStockTotals`/`useExpiredRemovalTotals` (৯১৪৪+), `useKpiStats`-এর বাকি অংশ, `InventorySection`, `AnalyticsSection_`, `ProfitStatementCard`, `Dashboard`-এর `reorderAlerts`, `SupplierPaymentModule`/`useSupplierDueRows`, `DailySalesStockCard`, `DailySummaryModule`, `DailyNotifCard`। — এই গ্রুপে `products` prop এখনো লাগে (JS ফলব্যাক-পাথের জন্য), কিন্তু `isSqliteEnabled()` true থাকলে ব্যবহারিকভাবে অদরকারি। lazy-boot হলে এই ফলব্যাকগুলো সাময়িক ভুল সংখ্যা (0/আংশিক) দেখাতে পারে SQL রেজাল্ট আসার আগ পর্যন্ত — টাকার হিসাবে নন-ব্লকিং (এন্ট্রি ৩৯-এর মতো async race-প্রুফ প্যাটার্নেই, কিন্তু transient glitch-এর ঝুঁকি নতুন করে বাড়বে যদি `products` শুরুতে খালি থাকে)।
+
+**ক্যাটাগরি ②  VISIBLE-ID — সত্যিকারের lazy-boot প্রার্থী, `getByIds()`/`useProductsByIds()` দিয়ে প্রতিস্থাপনযোগ্য**
+- POS পিকার (`SmartInvoiceBuilder`) — `browseIds.map(id => productsByIdMap.get(id))` (লাইন ১৮৪৭৯), cart lookup (`invProdMap`, লাইন ১৮৫১৫), receipt/sale product lookup (১৮৭১৪, ১৮৯৩০, ১৮৯৫২-৩, ২০২৪১)
+- Products main list card রেন্ডার (এন্ট্রি ৩০-এর SQL browse ordering-এর সাথে জোড়া)
+- `SmartBusinessMgmt`-এর `createInvoice()`/sale ফ্লো (১৩৯৯৯-১৪৫৬৭) — নির্দিষ্ট বিক্রিত `productId`-এর স্টক-ডিডাকশন লুকআপ
+- `CustomerDetail`, `ExpenseTracker`, `AuditTrailModule`, `DailySalesStockCard`, `BatchSyncTool`, `InvoiceVoidModal`, `ReturnModule` — প্রতিটাই নির্দিষ্ট ইনভয়েস/রিটার্ন লাইন-আইটেমের product data রেন্ডার করে, কখনো পুরো ক্যাটালগ স্ক্যান করে না
+- Purchase Entry-এর একক-প্রোডাক্ট রেফারেন্স (`peSelProdForBatch`, লাইন ২৮০০৪)
+
+**ক্যাটাগরি ③  FULL-SCAN — সত্যিকারের পুরো ক্যাটালগ দরকার, `getByIds()`-এ যাবে না, আলাদা SQL DISTINCT/aggregate লাগবে (৭.৩-এর পূর্বশর্ত, নতুন এই অডিটে ধরা পড়েছে)**
+- `getKnownSuppliers()` (লাইন ৮৯৭) / `getKnownCustomDosageForms()` (৯০৭) — পুরো ক্যাটালগ থেকে distinct company/dosageForm বের করে (SupplierPicker/dosage-chip অটো-সাজেশনের জন্য) → `SELECT DISTINCT supplier_due_raw FROM products` টাইপ কোয়েরিতে যাবে, dosageForm-এর জন্য নতুন কলাম লাগবে (এখনো schema.sql-এ নেই)
+- SmartInvoiceBuilder-এর ক্যাটাগরি-লিস্ট বিল্ডার (লাইন ১৮৩৫৫, `new Set(products.map(p => p.category))`) → `SELECT DISTINCT category FROM products`-এ যাবে
+- Products main list-এ ডুপ্লিকেট-নাম চেক (লাইন ২৮১৬২, নতুন প্রোডাক্ট সেভের আগে) → `SELECT id FROM products WHERE name_norm = ?` (schema-তে `name_norm` কলাম ইতিমধ্যে আছে, তাই এটা সবচেয়ে সহজ কনভার্শন)
+- `AIPage_`-এর forecast/expired-scan/টিপস (এন্ট্রি ৪১-এ আগে থেকেই "বাকি কাজ" হিসেবে ফ্ল্যাগড, এই অডিট শুধু নিশ্চিত করল এটা ৭.৩-এরও প্রকৃত ব্লকার)
+
+**⚠️ মূল উপসংহার**: ক্যাটাগরি ③ সম্পূর্ণ SQL-কভার্ড না হওয়া পর্যন্ত `products`-কে বুটে *সম্পূর্ণ বাদ* দেওয়া যাবে না (এই ফাংশনগুলো ক্র্যাশ করবে/ভুল ফলাফল দেবে)। এটাই ৭.৩ (বুট সিকোয়েন্স পরিবর্তন) এই মুহূর্তে সম্পূর্ণ করা যায়নি কেন — বিস্তারিত এন্ট্রি ৪৩ দ্রষ্টব্য।
+
+### ৭.২ — async cache hook (এন্ট্রি ৪৩-এ কোড-সম্পূর্ণ, wire করা হয়নি)
+`useProductsByIds(ids, businessType, productsByIdMap)` — App.jsx-এ যোগ হয়েছে (KpiCardsGrid-এর কাছে, useProductStockTotals-এর ঠিক আগে)। `productsByIdMap`-এ id না পাওয়া গেলেই শুধু `DataStore.getByIds()` ব্যাচ-কল করে, ইতিমধ্যে-ক্যাশড/in-flight id দ্বিতীয়বার ফেচ করে না। এই মুহূর্তে `products` সবসময় পূর্ণ থাকায় (৭.৩ হয়নি) এই হুকের SQL-পাথ বাস্তবে কখনো চলে না — শুধু কোড-রেডি, ভবিষ্যতের জন্য।
+
+### ৭.৩ — বুট সিকোয়েন্স পরিবর্তন — **এখনো করা হয়নি, ইচ্ছাকৃতভাবে**
+কারণ: ক্যাটাগরি ③ (উপরে) এখনো SQL-cutover হয়নি বলে বুট থেকে `products` সরালে ওই ফাংশনগুলো ভাঙবে। PRODUCTS_ONDEMAND_MIGRATION_PLAN.md-এর নিজস্ব নিয়ম #৪ ("products কখনোই সম্পূর্ণ মেমরি থেকে সরানো যাবে না POS বিলিং কাজ করার আগ পর্যন্ত") এবং entry ৪০-এর POS picker real-device টেস্ট এখনো বাকি থাকা — দুটো কারণেই এই মুহূর্তে বুট-লজিক বদলানো ৫০০ লাইভ দোকানে অপ্রয়োজনীয় ঝুঁকি। প্রস্তাবিত পরবর্তী ক্রম: ক্যাটাগরি ③-এর ৪টা আইটেম SQL-এ আনা (প্রতিটা ছোট, স্বাধীন, এন্ট্রি ৩৭-৪১-এর প্যাটার্নেই) → এন্ট্রি ৪০ real-device টেস্ট → তারপরই ৭.৩ (বুট থেকে bounded/lazy সেট আনা)।
+
 ---
 
 ## 🔴 এখনো অজানা / পরের সেশনে যাচাই করতে হবে
