@@ -290,7 +290,7 @@ export function calcProfitTotal(invList, prodMap) {
  *
  * @param {Array} invList - আগে থেকেই ফিল্টার করা (voided/self-use বাদ) ইনভয়েস-অ্যারে
  * @param {Map} prodMap - id→product ম্যাপ (_itemCostPrice()-এর fallback-এর জন্য)
- * @param {{d30:string, d60:string, d90:string}} cutoffs - YYYY-MM-DD cutoff (আজ থেকে ৩০/৬০/৯০ দিন আগে)
+ * @param {{d30?:string, d60?:string, d90?:string}} [cutoffs] - YYYY-MM-DD cutoff (আজ থেকে ৩০/৬০/৯০ দিন আগে)
  * @returns {Array<{name:string, m1:number, m2:number, m3:number, rev:number, cost:number, qty:number}>}
  */
 export function computeProductSales(invList = [], prodMap, { d30, d60, d90 } = {}) {
