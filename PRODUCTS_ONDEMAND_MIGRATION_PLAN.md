@@ -96,6 +96,8 @@ Dashboard-এর ভিত্তি এটাই — কী কী KPI ঠিক
 
 **🟡 এন্ট্রি ৪৩ — ৭.১ (ক্যাটাগরাইজেশন) + ৭.২ (async hook) সম্পূর্ণ, ৭.৩ (বুট পরিবর্তন) ব্লকড**: বিস্তারিত নিচে ও SQLITE_MIGRATION_LOG.md এন্ট্রি ৪৩-এ।
 
+**🟢 এন্ট্রি ৪৪ — ক্যাটাগরি ③-এর ৪টার মধ্যে ৩টা SQL cutover সম্পূর্ণ**: dup-name check, category-list, supplier/dosageForm অটো-সাজেস্ট — কোড-সম্পূর্ণ, sandbox esbuild-ভেরিফায়েড, `npm test` এখনো বাকি (sandbox নেটওয়ার্ক ব্লকড)। AIPage_ forecast/expired-scan এখনো বাকি — এটাই এখন ৭.৩-এর একমাত্র অবশিষ্ট ব্লকার। বিস্তারিত SQLITE_MIGRATION_LOG.md এন্ট্রি ৪৪-এ।
+
 ### ৭.১ — ব্যবহার-সাইট ক্যাটাগরাইজেশন (এন্ট্রি ৪৩-এ সম্পূর্ণ)
 
 App.jsx-এ `products`/`productsById`/`prodMap`/`prodAll` ব্যবহার করা ৯৪টা লাইন (গ্রেপ-কনফার্মড) কম্পোনেন্ট-ভিত্তিক ৩টা ক্যাটাগরিতে ভাগ করা হলো:
