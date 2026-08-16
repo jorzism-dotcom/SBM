@@ -23,7 +23,9 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৫২-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৫৩-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟢 এন্ট্রি ৫৩**: Products main list card এখন POS-এর মতোই `useProductsByIds()` id+hydrate প্যাটার্নে (আগে সরাসরি SQL row-স্ন্যাপশট রেন্ডার হতো)। CustomerDetail টার্গেট dead-prop বলে কাজ লাগেনি (এন্ট্রি ৫১-এই resolved)। sandbox পুরোপুরি ক্লিন (test+lint+typecheck+build+golden-master+fuzz), **real-device স্মোক-টেস্ট বাকি**। বিস্তারিত এন্ট্রি ৫৩ দ্রষ্টব্য।
 
 **🔴 এন্ট্রি ৫২**: ব্যবহারকারী GitHub Actions CI-এর "build" ওয়ার্কফ্লো ফেইল স্ক্রিনশট শেয়ার করলেন — `Type-check (JSDoc + @ts-check)` স্টেপে `tsc --noEmit` ফেইল: `src/logic.js(296,60): error TS2739 — Type '{}' is missing d30, d60, d90`।
 - **⚠️ সততার সাথে**: এটা এই সেশনের App.jsx পরিবর্তনের কারণে হয়নি (logic.js এই সেশনে স্পর্শই করা হয়নি) — কিন্তু ধরা পড়ল আমার নিজের sandbox-ভেরিফিকেশন প্রক্রিয়ায় গ্যাপ ছিল: এতদিন `npm test`+`lint`+`build` চালানো হতো, কিন্তু `package.json`-এর আলাদা `npm run typecheck` (`tsc --noEmit -p jsconfig.json`) স্ক্রিপ্টটা কখনো sandbox-এ চালানো হয়নি — অথচ এটা CI-এর নিজস্ব build স্টেপ, এন্ট্রি ৪৯-৫১-এর "npm test/lint/build ক্লিন" দাবিগুলো তাই typecheck কভার করেনি।
@@ -138,6 +140,30 @@ Schema+FTS5 · dual-write (shadow) · resumable batch backfill · row-count veri
 ---
 
 ## এন্ট্রি লগ
+
+### [এন্ট্রি ৫৩] — Products main list card: SQL row-স্ন্যাপশট রেন্ডারিং থেকে POS-এর id+hydrate প্যাটার্নে কনভার্ট
+
+**তারিখ**: ১৬ আগস্ট ২০২৬। **প্রসঙ্গ**: এন্ট্রি ৫০-৫১-এর পরিকল্পনা ছিল "একই প্যাটার্ন Products main list card ও CustomerDetail-এও বসানো" — কিন্তু কোড অডিটে ধরা পড়ল দুটোই যেভাবে ভাবা হয়েছিল সেভাবে প্রযোজ্য না:
+
+- **CustomerDetail — কাজ নেই**: `CustomerDetail`-এর `products` prop নিজের বডিতে ব্যবহৃতই হয় না, শুধু `InvoiceVoidModal`-এ pass হয় — আর `InvoiceVoidModal`-ও `products` prop ব্যবহার করে না (dead prop, কনফার্মড)। এটা ঠিক এন্ট্রি ৫১-এর নিজস্ব আবিষ্কার, আসল টার্গেট (`DailySalesStockCard`) সেখানেই আগে wire হয়ে গেছে। নতুন কাজ নেই।
+- **Products main list — ভিন্ন ডিজাইন, তাই "একই প্যাটার্ন" মানে আসলে কনভার্শন**: এন্ট্রি ৩০-এর `browseRows` সরাসরি SQL `data` কলাম (dual-write-সময়কার পূর্ণ JSON স্ন্যাপশট) থেকে রেন্ডার হতো — POS-এর মতো id-লিস্ট+লাইভ-হাইড্রেট না। কোড-অডিটে ধরা পড়ল `editId`-ভিত্তিক আসল সেভ-লজিক (৪৭৭ লাইন, `products.find(p => p.id === editId)`) ইতিমধ্যেই লাইভ state ব্যবহার করে — তাই আসল সেভে কোনো bug ছিল না, কিন্তু কার্ডের ডিসপ্লে (স্টক ব্যাজ) ও এডিট-ফর্মের ডিফল্ট প্রি-ফিল stale dual-write স্ন্যাপশট থেকে আসার একটা bounded staleness-window ছিল।
+
+**পরিবর্তন (`src/App.jsx`, `Products` কম্পোনেন্ট)**:
+1. নতুন `productsByIdMap` (`new Map(products.map(p => [String(p.id), p]))`) — POS-এর প্যাটার্নের সাথে সামঞ্জস্যপূর্ণ।
+2. `browseRows` (পূর্ণ product অবজেক্ট state) → `browseIds` (শুধু id array) রিনেম/রিডিজাইন — `loadBrowsePage()` এখন `r.rows.map(p => String(p.id))` স্টোর করে, পূর্ণ রো না।
+3. নতুন `useProductsByIds(browseIds, businessType, productsByIdMap)` কল + `browseProducts` useMemo (POS-এর `browseProducts`-এর হুবহু প্যাটার্ন) — প্রতিটা কার্ড এখন সবসময় লাইভ `productsByIdMap` থেকে হাইড্রেট হয়ে রেন্ডার হয়।
+4. Virtuoso `data` prop ও empty-state চেক দুটোই `browseRows` থেকে `browseProducts`-এ আপডেট।
+5. `showCount`-এর `browseTotal` (SQL `COUNT(*)`) অপরিবর্তিত — এটা আলাদা aggregate কল, প্রভাবিত হয়নি।
+
+**আচরণ**: যতক্ষণ `products` পুরোপুরি মেমরিতে থাকে (বুট সিকোয়েন্স এখনো অপরিবর্তিত, ৭.৩ এখনো বাকি), `useProductsByIds()`-এর ভেতরের `productsByIdMap?.has(id)` শর্তে সবসময় true — কোনো SQL ফেচ ফায়ার করে না, সিঙ্ক্রোনাস লুকআপই হয়। কাগজে-কলমে zero-regression, শুধু stale-snapshot window দূর হলো।
+
+**⚠️ real-device স্মোক-টেস্ট এখনো বাকি**: Products লিস্ট (কমন+আনকমন উভয় ফিল্টার), স্ক্রল-পেজিনেশন, এডিট-বাটনে ক্লিক করে ফর্মের ডিফল্ট ভ্যালু ঠিক আছে কিনা, স্টক-আপডেট সেভ করে দেখা, ডিলিট (রিসাইকেল বিন)।
+
+**যাচাই**: `npm test` — সব ২১২টা কেস পাস ✅, `npm run lint` — 0 error (577 প্রি-এক্সিস্টিং warning, নতুন কিছু না) ✅, `npm run typecheck` — ক্লিন ✅, `npm run build` — ক্লিন ✅, `npm run test:golden-master` — ৭/৭ ✅, `npm run test:fuzz` — সব পাস ✅।
+
+**পরের ধাপ**: real-device স্মোক-টেস্ট এই পরিবর্তনের জন্য → তারপর আসল ধাপ ৭.৩ (বুট সিকোয়েন্স থেকে `products` সম্পূর্ণ সরানো, মূল মেমরি-সাশ্রয়ের ধাপ)।
+
+---
 
 ### [এন্ট্রি ৫২] — CI typecheck ফেইল ফিক্স + sandbox-ভেরিফিকেশন গ্যাপ বন্ধ
 
