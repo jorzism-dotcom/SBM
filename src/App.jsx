@@ -16367,6 +16367,7 @@ function SmartBusinessMgmt() {
               invoices={invoices}
               products={products}
               stockMovements={stockMovements}
+              businessType={businessType}
             />
           </ErrorBoundary>
         )}
@@ -18911,10 +18912,18 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [useSqliteBrowse, catFilter, businessType]);
 
+  // 🆕 ধাপ ৭.৩ (প্রথম রিয়েল রেন্ডার-পাথ ওয়্যারিং, POS) — এখানে সরাসরি
+  // `productsByIdMap.get(id)` না ডেকে `useProductsByIds()` হুকের `get()` দিয়ে
+  // লুকআপ হচ্ছে। যতক্ষণ বুট সিকোয়েন্স অপরিবর্তিত (products পুরোপুরি মেমরিতে),
+  // ততক্ষণ হুকের ভেতরের if (productsByIdMap?.has(id)) শর্তে এটা সবসময় সিঙ্ক্রোনাস
+  // productsByIdMap.get() রিটার্ন করে — কোনো SQL ফেচ ট্রিগার হয় না, আচরণ
+  // বিটওয়াইজ অপরিবর্তিত থাকার কথা (এন্ট্রি ৪২-এর হুক-ডিজাইন অনুযায়ী)।
+  const { get: getBrowseProduct } = useProductsByIds(browseIds, businessType, productsByIdMap);
+
   const browseProducts = useMemo(() => {
     if (!useSqliteBrowse) return null;
-    return browseIds.map(id => productsByIdMap.get(id)).filter(Boolean);
-  }, [useSqliteBrowse, browseIds, productsByIdMap]);
+    return browseIds.map(id => getBrowseProduct(id)).filter(Boolean);
+  }, [useSqliteBrowse, browseIds, getBrowseProduct]);
 
   // useSqliteBrowse সত্যি হলেও browseProducts প্রথম রেন্ডারে null থাকতে পারে
   // (state আপডেট হওয়ার আগে) — তাই null-চেক দিয়ে filteredProducts ফলব্যাক
@@ -33785,7 +33794,7 @@ function AuditFilterChip({ T, active, onClick, icon, label, count, color }) {
 // ভেতরেই একটা এক্সপ্যান্ডেবল কার্ড হিসেবে (stockMovements-এর source:"sale"
 // এন্ট্রি থেকে prevStock/stock টেনে, একই দিনের একাধিক বিক্রি প্রোডাক্ট-ভিত্তিক
 // একত্র করে) ──────────────────────────────────────────────────────────────
-function DailySalesStockCard({ T, S, invoices = [], products = [], stockMovements = [] }) {
+function DailySalesStockCard({ T, S, invoices = [], products = [], stockMovements = [], businessType = "pharmacy" }) {
   const [expanded, setExpanded] = useState(false);
   const [selDate,  setSelDate]  = useState(() => todayEn());
 
@@ -33796,8 +33805,32 @@ function DailySalesStockCard({ T, S, invoices = [], products = [], stockMovement
     (i.dateKey === selDate || (!i.dateKey && i.date && i.date.startsWith(selDate)))
   ), [invoices, selDate]);
 
+  // 🆕 ধাপ ৭.৩ (দ্বিতীয় রিয়েল রেন্ডার-পাথ ওয়্যারিং, low-risk side-panel) — এই
+  // প্যানেলের দরকার শুধু আজকের দিনের বিক্রিত পণ্যগুলোর id (bounded, ছোট সেট) —
+  // পুরো `products` অ্যারে থেকে বিল্ড করা `prodMap`-এর বদলে
+  // `useProductsByIds()` দিয়ে শুধু সেই id-গুলোর জন্য লুকআপ। বুট সিকোয়েন্স
+  // অপরিবর্তিত থাকায় (products পুরো মেমরিতেই) হুক এখনো সবসময় সিঙ্ক্রোনাস
+  // fallback (productsByIdMap) থেকেই রিটার্ন করবে, real SQL fetch এখনো ফায়ার
+  // করবে না (এন্ট্রি ৪২-এর ডিজাইন, এন্ট্রি ৫০-এ POS-এ একইভাবে wire করা)।
+  const neededProductIds = useMemo(() => {
+    const ids = new Set();
+    (stockMovements || []).forEach(m => {
+      if (m && m.source === "sale" && m.dateKey === selDate && m.productId != null) ids.add(String(m.productId));
+    });
+    dayInvoices.forEach(inv => {
+      (inv.items || []).forEach(it => { if (it && it.productId != null) ids.add(String(it.productId)); });
+    });
+    return Array.from(ids);
+  }, [stockMovements, selDate, dayInvoices]);
+
+  const { get: getProductById } = useProductsByIds(neededProductIds, businessType, prodMap);
+  // calcProfitTotal()/soldRows নিচে prodMap.get(id) আশা করে — Map-সদৃশ ছোট
+  // wrapper দিয়ে হুকের get() ফাংশনটাই ওই একই ইন্টারফেসে এক্সপোজ করা হলো,
+  // calcProfitTotal()/soldRows-এর কোড কিছুই বদলাতে হয়নি।
+  const hookProdMap = useMemo(() => ({ get: getProductById }), [getProductById]);
+
   const totalSaleAmt = useMemo(() => dayInvoices.reduce((s, i) => s + (i.total || 0), 0), [dayInvoices]);
-  const totalProfit  = useMemo(() => calcProfitTotal(dayInvoices, prodMap), [dayInvoices, prodMap]);
+  const totalProfit  = useMemo(() => calcProfitTotal(dayInvoices, hookProdMap), [dayInvoices, hookProdMap]);
 
   // প্রতিটা বিক্রিত পণ্যের বিক্রির আগে/পরের স্টক — একই দিনে একই পণ্য একাধিকবার
   // বিক্রি হলে সময়ানুক্রমে সাজিয়ে প্রথমটার prevStock (আগে) ও শেষেরটার stock
@@ -33814,7 +33847,7 @@ function DailySalesStockCard({ T, S, invoices = [], products = [], stockMovement
       moves.sort((a, b) => new Date(a.at) - new Date(b.at));
       const first = moves[0], last = moves[moves.length - 1];
       const qtySold = moves.reduce((s, m) => s + Math.abs(m.delta || 0), 0);
-      const p = prodMap.get(productId);
+      const p = getProductById(productId);
       rows.push({
         productId, name: last.productName || p?.name || "অজানা পণ্য",
         qtySold, stockBefore: first.prevStock, stockAfter: last.stock,
@@ -33822,7 +33855,7 @@ function DailySalesStockCard({ T, S, invoices = [], products = [], stockMovement
     });
     rows.sort((a, b) => b.qtySold - a.qtySold);
     return rows;
-  }, [stockMovements, selDate, prodMap]);
+  }, [stockMovements, selDate, getProductById]);
 
   const totalQtySold = useMemo(() => soldRows.reduce((s, r) => s + r.qtySold, 0), [soldRows]);
 
@@ -33901,7 +33934,7 @@ function DailySalesStockCard({ T, S, invoices = [], products = [], stockMovement
   );
 }
 
-function AuditTrailModule({ T, S, currentUser, auditLogs = [], shopName, invoices = [], products = [], stockMovements = [] }) {
+function AuditTrailModule({ T, S, currentUser, auditLogs = [], shopName, invoices = [], products = [], stockMovements = [], businessType = "pharmacy" }) {
   const [auditFilter, setAuditFilter] = useState("all");
   const [searchQ,     setSearchQ]     = useState("");
   const [dateRange,   setDateRange]   = useState("all"); // all | today | week | month
@@ -34054,7 +34087,7 @@ function AuditTrailModule({ T, S, currentUser, auditLogs = [], shopName, invoice
       </div>
 
       {/* 🆕 (৩০ জুলাই ২০২৬) দৈনিক বিক্রয় ও স্টক বিস্তারিত — এক্সপ্যান্ডেবল কার্ড */}
-      <DailySalesStockCard T={T} S={S} invoices={invoices} products={products} stockMovements={stockMovements} />
+      <DailySalesStockCard T={T} S={S} invoices={invoices} products={products} stockMovements={stockMovements} businessType={businessType} />
 
       {/* ── প্রধান কার্ড — সার্চ, ফিল্টার ও লগ লিস্ট ── */}
       <div className="qc-gradient-card" style={{ ...S.card, padding: "14px 16px" }}>
