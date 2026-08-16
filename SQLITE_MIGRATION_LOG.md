@@ -23,15 +23,29 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৩৭-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৪১-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
 
-**🟢 এন্ট্রি ৩৭**: useKpiStats-এর ৫টা ডেটা-সোর্সের মধ্যে প্রথমটা (`expenses`) SQL cutover সম্পূর্ণ — টেবিল+dual-write+todayExpense/monthExpense অ্যাগ্রিগেট, `npm test`+lint+build ক্লিন। বাকি ৪টা (`txns`/`cashLogs`/`purchaseOrders`/`returns`) এখনো শুরু হয়নি। real-device টেস্ট বাকি।
+**📌 স্থায়ী নির্দেশনা (ব্যবহারকারীর ফাইনাল সিদ্ধান্ত, ১৫ আগস্ট ২০২৬)**: "আমি অ্যাপের সব SQL করব, এটাই ফাইনাল।" — অর্থাৎ কোনো ফিচার/হিসাব "in-memory থেকে যথেষ্ট লাভ নেই" বা "ঝুঁকিপূর্ণ" বলে স্কিপ করার প্রস্তাব দেওয়া চলবে না; বরং safest ইমপ্লিমেন্টেশন-স্ট্র্যাটেজি বেছে এগোতে হবে (যেমন এন্ট্রি ৪১-এ: normalizeSupplierKey()-এর মতো regex/fuzzy-matching লজিক SQL-এ regex দিয়ে রেপ্লিকেট না করে, JS-এই write-time-এ প্রিকম্পিউট করে ফ্ল্যাট কলামে বসানো, শুধু GROUP BY/SUM SQL-এ)। প্রতিটা নতুন ধাপে এই নীতি মাথায় রাখা জরুরি।
+
+**🟢 এন্ট্রি ৪১**: ধাপ ৬ (SupplierPaymentModule/computeSupplierDueMap) SQL cutover সম্পূর্ণ — sandbox-ভেরিফায়েড + SQL-vs-JS সরাসরি প্যারিটি-টেস্টেড (৮ কেস, সব মিলেছে)। `computeSupplierDueMap()` products+purchaseOrders+supplierPayments জুড়ে ফাজি সাপ্লায়ার-নাম merge করে (`normalizeSupplierKey()` — regex+typo-alias)। এই normalize-লজিক SQL-এ regex দিয়ে রেপ্লিকেট না করে, `product`/`purchaseOrders`/নতুন `supplierPayments` টেবিলে write-time-এ (JS extract()) `supplier_due_key`(normalized)/`supplier_due_raw` কলাম প্রিকম্পিউট, `purchaseOrders`-এ `purchase_amount` (items reduce, batches-এর মতোই নেস্টেড JSON JS-এই পার্স)। নতুন `getSupplierDueRows()` — CTE দিয়ে raw-name UNION → canonical (দীর্ঘতম ভ্যারিয়েন্ট) বাছাই → ৩ টেবিল জুড়ে LEFT JOIN SUM। নতুন `useSupplierDueRows()` শেয়ার্ড হুক (`Dashboard` ও `SupplierPaymentModule` দুই জায়গাতেই — এন্ট্রি ৩৭/৩৮-এর ডুপ্লিকেট-লজিক-এড়ানো নীতি)। **বাগ ধরে ঠিক করা হয়েছে**: `SupplierPaymentModule`-এর `paymentSummary` raw (non-canonical) সাপ্লায়ার-নাম দিয়ে lookup করে — SQL পাথে `rawVariants` (group_concat) না আনলে এই lookup ভুলভাবে 0 দিত; ফিক্স করা হয়েছে। ⚠️ স্বীকৃত non-financial edge-case: দুটো ভিন্ন raw-নাম-ভ্যারিয়েন্ট ঠিক একই length হলে canonical *ডিসপ্লে-নাম* বাছাইয়ে SQL vs JS ভিন্ন হতে পারে (টাকার হিসাবে কোনো প্রভাব নেই)। `npm test` (১৭৩ কেস) + golden-master (১৫) + fuzz + lint (0 error) + build — সব ক্লিন।
+
+**🟡 এন্ট্রি ৪০**: ধাপ ৫ (POS product picker/SmartInvoiceBuilder) কোড-সম্পূর্ণ — sandbox-ভেরিফায়েড, **real-device স্মোক-টেস্ট এখনো বাকি (বিশেষভাবে জরুরি, বিলিং কাউন্টার)**। এন্ট্রি ৩২-এর দুই ডিজাইন-বিকল্পের মধ্যে (খ) বাছা হলো — `queryPage()` কোর ফাংশন বদলানো হয়নি, বরং নতুন `browse_rank` কম্বাইন্ড sort-key কলাম (tier digit + name, single-column lexicographic sort দিয়েই effectively ৩-স্তরের অর্ডার)। নতুন `product_type`/`category` কলামও (ক্যাটাগরি WHERE-ফিল্টারের জন্য)। **নিরাপত্তা-ডিজাইন**: SQL শুধু এই পেজের product-id অর্ডার দেয় — প্রতিটা কার্ড তারপরও live `products` state (`productsByIdMap`) থেকে রেন্ডার হয়, SQL row-এর JSON snapshot সরাসরি রেন্ডার হয় না (entry 30-এর Products list ব্রাউজ থেকে ইচ্ছাকৃতভাবে ভিন্ন) — তাই dual-write lag থাকলেও ভুল স্টক-আউট পণ্য দেখানো/বিক্রি করার ঝুঁকি নেই। সার্চ-অ্যাক্টিভ মোড সম্পূর্ণ অপরিবর্তিত (JS/hybrid FTS)। **⚠️ পরবর্তী সেশনে সবার আগে করণীয়: dev panel/real device দিয়ে POS picker-এ ক্যাটাগরি ফিল্টার, স্ক্রল-পেজিনেশন, আর স্টক-আউট পণ্য সত্যিই শেষে/disabled দেখাচ্ছে কিনা যাচাই করা।**
+
+**🟢 এন্ট্রি ৩৯**: এন্ট্রি ৩৮-এর স্ক্রিনশটে চিহ্নিত অবশিষ্ট অংশ — `stockValue`/`lowStockItems`/`monthExpiredValue`/`monthExpiredCount` (products-নির্ভর) SQL cutover সম্পূর্ণ। নতুন `stockMovements` টেবিল (শুধু `source='expired_removal'` প্রাসঙ্গিক)। `getInventoryCounts()`-এ (এন্ট্রি ৩৬-এর একই ফাংশন, InventorySection-এর সাথে শেয়ার্ড) `stock_value` কলাম যোগ হলো — নতুন কোনো ফাংশন লাগেনি, `critical` কাউন্টই lowStockItems-এর সংখ্যার সমতুল্য। নতুন `getExpiredRemovalTotals()`। দুটো নতুন শেয়ার্ড হুক (`useProductStockTotals`/`useExpiredRemovalTotals`) `useKpiStats`-এ বসানো হয়েছে; `useKpiStats`-এর রিটার্ন ফিল্ড `lowStockItems` (array) → `lowStockCount` (number) রিনেম হয়েছে (`KpiCardsGrid` শুধু `.length` ব্যবহার করত)। ⚠️ **এন্ট্রি ৪১-এ সুপারসিডেড নোট**: এই এন্ট্রিতে "`AIPage_`-এর নিজস্ব stockValue/lowStockItems JS-ই থাকবে, `products` in-memory থাকা অবস্থায় লাভ নেই" যুক্তি দেওয়া হয়েছিল — এন্ট্রি ৪১-এর "সব SQL" নির্দেশনার পরে এই যুক্তি আর প্রযোজ্য না, ভবিষ্যতে এটাও SQL-এ আনতে হবে (নিচে "বাকি কাজ" দেখুন)। **useKpiStats-এর ৫টা ডেটা-সোর্স + products-নির্ভর অংশ — ধাপ ৩ পুরোপুরি ও পুরোপুরিভাবে শেষ।**
+
+**🟢 এন্ট্রি ৩৮**: useKpiStats-এর ধাপ ৩ (`useKpiStats` টেবিল) সম্পূর্ণ — বাকি ৪টা ডেটা-সোর্স (`cashLogs`/`purchaseOrders`/`txns`/`returns`) SQL cutover। টেবিল+dual-write+ডোমেইন-স্পেসিফিক অ্যাগ্রিগেট ফাংশন (`getCashLogTotal`/`getPurchaseOrderTotals`/`getTxnTotals`/`getReturnsTotals`, শেষ দুইটায় invoices-এর সাথে voided-বাদ NOT EXISTS সাব-কোয়েরি)। এন্ট্রি ৩৭-এর মতোই শেয়ার্ড হুক প্যাটার্ন (`useCashLogTotals`/`usePurchaseOrderTotals`/`useTxnTotals`/`useReturnsTotals`) — `useKpiStats` ও `AIPage_` দুই জায়গাতেই একই সোর্স, যাতে ভবিষ্যতে duplicate-JS-logic বাগ (এন্ট্রি ৩৭-এর আগে ঠিক এই কারণে হয়েছিল) আর না ঘটে। `returnsTotals` হুক শুধু today/month কভার করে — `AIPage_`-এর সাপ্তাহিক (`week*`) হিসাব এখনো লোকাল JS।
+
+**📋 এন্ট্রি ৪১-এর পরে বাকি কাজ (এন্ট্রি ৪০-এর real-device টেস্ট বাদে)**: "সব SQL" নির্দেশনা অনুযায়ী এখনো JS-এ থাকা বড় অংশগুলো — (১) `AIPage_`-এর নিজস্ব `stockValue`/`lowStockItems`/cashLogs/purchaseOrders-এর সাপ্তাহিক (week*) হিসাব (এন্ট্রি ৩৮/৩৯-এ ইচ্ছাকৃতভাবে স্কিপড ছিল, এখন আর না), (২) ধাপ ৭ (products boot-load lazy — মূল মেমরি-সাশ্রয়ের ধাপ), (৩) Customers SQL cutover। প্রতিটাতেই "নেস্টেড/regex-নির্ভর অংশ JS-এ প্রিকম্পিউট, শুধু aggregation SQL-এ" নীতি অনুসরণ করা।
+
+⚠️ **এন্ট্রি ৩৮-এ আবিষ্কৃত গ্যাপ (এখনো প্রযোজ্য)**: আপলোড করা zip-এ `package.json`-এর `test` স্ক্রিপ্ট রেফারেন্স করা `tests/datastore-expenses-tests.mjs` (এন্ট্রি ৩৭) ও `tests/datastore-inventory-tests.mjs` (এন্ট্রি ৩৬) ফাইল দুটোই অনুপস্থিত পাওয়া গেছে (এন্ট্রি ৩৩-৩৫-এর মতো আরেকটা "হারানো ফাইল" প্যাটার্ন)। দুটোই পুনর্গঠন করা হয়েছে (মূল সংস্করণের সাথে হুবহু না মিললেও একই ফাংশনগুলোর মূল আচরণ/edge-case কভার করে)। **পরের সেশনে জিপ ডাউনলোড করার পর `npm test` একবার লোকালি চালিয়ে নিশ্চিত হওয়া ভালো যে এই পুনর্গঠিত ফাইলগুলো ঠিকমতো এসেছে।**
+
+**🟢 এন্ট্রি ৩৭**: useKpiStats-এর ৫টা ডেটা-সোর্সের মধ্যে প্রথমটা (`expenses`) SQL cutover সম্পূর্ণ — টেবিল+dual-write+todayExpense/monthExpense অ্যাগ্রিগেট, `npm test`+lint+build ক্লিন। বাকি ৪টা (`txns`/`cashLogs`/`purchaseOrders`/`returns`) এন্ট্রি ৩৮-এ সম্পূর্ণ হলো।
 
 **🟢 এন্ট্রি ৩৬**: ধাপ ২ (InventorySection/Dashboard KPI+ডিটেইল লিস্ট+সাপ্লায়ার-গ্রুপিং) SQL cutover কোড-সম্পূর্ণ, `npm test`+lint+build ক্লিন — real-device টেস্ট বাকি। এন্ট্রি ৩৩-৩৫ ইচ্ছাকৃতভাবে স্কিপড (আলাদা চ্যাটের POS-availability-sweep ডিজাইন, কখনো এই zip-এ আসেনি, বাদ দেওয়া হয়েছে — বিস্তারিত এন্ট্রি ৩৬ দ্রষ্টব্য)।
 
-**🔴 এন্ট্রি ৩২ (এখনো অস্পৃষ্ট)**: ধাপ ৫ (POS picker) ডিজাইন-অডিট সম্পূর্ণ, কোড শুরু হয়নি — `queryPage()`-এর single-column keyset সীমাবদ্ধতা এখানে সরাসরি বাধা (দুই-স্তরের sort + "unavailable সবসময় শেষে" নিয়ম page-fetch-এ ভাঙে)। ধাপ ৩/৬/৭-এর পরে, আলাদা সেশনে সাবধানে করতে হবে।
+**🟡 এন্ট্রি ৩২ (কোড এন্ট্রি ৪০/৪১-এ সম্পূর্ণ হয়েছে)**: ধাপ ৫ (POS picker) ও ধাপ ৬ (SupplierPaymentModule)-এর ডিজাইন-অডিট — যথাক্রমে এন্ট্রি ৪০/৪১-এ implement হয়েছে। **পরবর্তী কাজ: real-device স্মোক-টেস্ট (এন্ট্রি ৪০, POS picker) → ধাপ ৭ (products lazy-load) → Customers SQL cutover → এন্ট্রি ৪১-এর "বাকি কাজ" তালিকা (AIPage_-এর অবশিষ্ট JS অংশ)।**
 
-**🟡 এন্ট্রি ৩১-এর সিদ্ধান্ত (আংশিক সুপারসিডেড — এন্ট্রি ৩৬ দেখুন)**: এই সেশনে ব্যবহারকারী স্পষ্টভাবে চেয়েছেন products/customers পুরোপুরি SQL-based হোক (শুধু ধাপ ৭-এর অপেক্ষায় থাকা না) — তাই ধাপ ২ (এন্ট্রি ৩৬-এ) এগিয়ে নেওয়া হয়েছে, "products মেমরিতেই থাকবে বলে লাভ নেই" যুক্তি সত্ত্বেও (ঝুঁকি ছোট/নিয়ন্ত্রিত ছিল বলে)। বাকি ধাপ ৩/৬/৭ একই যুক্তিতে এগোবে।
+**🟡 এন্ট্রি ৩১-এর সিদ্ধান্ত (আংশিক সুপারসিডেড — এন্ট্রি ৩৬ দেখুন)**: এই সেশনে ব্যবহারকারী স্পষ্টভাবে চেয়েছেন products/customers পুরোপুরি SQL-based হোক (শুধু ধাপ ৭-এর অপেক্ষায় থাকা না) — তাই ধাপ ২ (এন্ট্রি ৩৬-এ) এগিয়ে নেওয়া হয়েছে, "products মেমরিতেই থাকবে বলে লাভ নেই" যুক্তি সত্ত্বেও (ঝুঁকি ছোট/নিয়ন্ত্রিত ছিল বলে)। বাকি ধাপ ৬/৭ একই যুক্তিতে এগোবে।
 
 **টার্গেট স্কেল**: ১,০০,০০০ প্রোডাক্ট · ১০,০০০ কাস্টমার · ১,০০,০০,০০০ (১ কোটি) ইনভয়েস — বর্তমান টেস্ট শপের ডেটা (২২৩৬/১৭/৬৩০) এই লক্ষ্যের তুলনায় প্রায় নগণ্য, তাই "এখন সমস্যা হচ্ছে না" কোনো নির্ভরযোগ্য সংকেত না।
 
@@ -72,6 +86,134 @@ Schema+FTS5 · dual-write (shadow) · resumable batch backfill · row-count veri
 ---
 
 ## এন্ট্রি লগ
+
+### [এন্ট্রি ৪১] — PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ৬ (SupplierPaymentModule/computeSupplierDueMap) SQL cutover — sandbox-ভেরিফায়েড + SQL-vs-JS প্যারিটি-টেস্টেড
+
+**তারিখ**: ১৫ আগস্ট ২০২৬। **ট্রিগার**: "পরের ধাপ: ধাপ ৬ (SupplierPaymentModule) শুরু করুন" → `computeSupplierDueMap()` পড়ে fuzzy cross-collection merge-এর ঝুঁকি দেখে ব্যবহারকারীকে জিজ্ঞেস করা হলো → ব্যবহারকারীর ফাইনাল নির্দেশনা: **"আমি অ্যাপের সব SQL করব, এটাই ফাইনাল।"**
+
+**প্রেক্ষাপট**: `computeSupplierDueMap(products, purchaseOrders, supplierPayments)` — শুধু single-table filtered aggregate না, বরং ৩টা কালেকশন জুড়ে ফাজি সাপ্লায়ার-নাম merge: প্রতিটা raw নাম `normalizeSupplierKey()` (lowercase+suffix-strip regex+typo-alias dictionary) দিয়ে normalize, একই normalized key-এর সবচেয়ে লম্বা raw নামকে canonical ডিসপ্লে-নাম বাছাই, তারপর productCount/totalStock/totalPurchased/paid/due অ্যাগ্রিগেট। প্রাথমিক প্রস্তাব ছিল শুধু `supplierPayments` dual-write করে aggregate JS-ই রাখা (কম ঝুঁকি, কিন্তু আংশিক SQL) — ব্যবহারকারী এটা প্রত্যাখ্যান করে পূর্ণ SQL cutover চাইলেন।
+
+**ডিজাইন নীতি (এন্ট্রি ৪০-এর browse_rank-এর ধারাবাহিকতায়)**: normalize-লজিক (regex+alias lookup) SQLite-এ replicate করা হয়নি — বরং write-time-এ (JS `extract()`) `normalizeSupplierKey()` **আসল ফাংশনটাই** কল করে ফলাফল ফ্ল্যাট কলামে বসানো হয়েছে। SQL শুধু precomputed key দিয়ে GROUP BY/JOIN/SUM করে — set-based অ্যাগ্রিগেশন, কোনো string-processing SQL-এ চলে না। এতে "দুই জায়গায় একই fuzzy-matching লজিক আলাদাভাবে লেখা, কোনো একদিন out-of-sync হয়ে যাওয়া" ঝুঁকি সম্পূর্ণ দূর হয় (SQL পাথ ও JS ফলব্যাক পাথ — দুটোই একই `normalizeSupplierKey()` কল করে, শুধু কোন সময়ে (write-time vs read-time) সেটাই আলাদা)।
+
+**কী করা হলো**:
+1. `schema.sql`:
+   - `products`-এ `supplier_due_key`/`supplier_due_raw` কলাম (company||supplier থেকে, entry ৩৬-এর `supplier_key`-এর থেকে সম্পূর্ণ আলাদা উদ্দেশ্য/সোর্স — সেটা category-ফলব্যাক সহ Inventory-গ্রুপিং-এর জন্য, এটা normalize-করা fuzzy-merge-এর জন্য)
+   - `purchaseOrders`-এ একই দুইটা কলাম + `purchase_amount` (items-এর reduce, পুরো `_type` নির্বিশেষে — JS ফাংশনের ঠিক একই স্কোপ, entry ৩৮-এর `entry_type='pe'`-নির্দিষ্ট KPI ফিল্টার থেকে আলাদা)
+   - নতুন `supplierPayments` টেবিল (`signed_amount` কলাম প্রিকম্পিউটেড — `type==='due' ? -amount : amount`, SQL-এ `SUM(signed_amount)` সরাসরি "paid" দেয়)
+2. `DataStore.js`:
+   - `normalizeSupplierKey` ইমপোর্ট (logic.js থেকে)
+   - `productSupplierDueRaw()`/`poSupplierDueRaw()`/`paymentSupplierDueRaw()`/`supplierDueKeyOf()`/`poPurchaseAmount()` হেল্পার
+   - HOT_FIELDS-এ products/purchaseOrders extract() আপডেট + নতুন supplierPayments এন্ট্রি
+   - ALTER TABLE গার্ড (৫টা নতুন কলাম)
+   - নতুন `getSupplierDueRows(businessType)` — একটা CTE-চেইন কোয়েরি: `raw_names` (৩ টেবিল UNION) → `canonical` (প্রতি key-তে দীর্ঘতম raw ভ্যারিয়েন্ট, `LENGTH()` দিয়ে) → `raw_variants` (group_concat, backward-compat lookup-এর জন্য) → `prod_agg`/`po_agg`/`pay_agg` (প্রতি টেবিলের GROUP BY SUM) → ফাইনাল LEFT JOIN।
+3. App.jsx:
+   - `supplierPayments` dual-write wiring (`_dsSupplierPaymentsRef` + effect) + `STORE_TO_ENTITY_TYPE`
+   - নতুন শেয়ার্ড হুক `useSupplierDueRows(products, purchaseOrders, supplierPayments, businessType)` — `Dashboard` ও `SupplierPaymentModule` দুই জায়গাতেই (এন্ট্রি ৩৭/৩৮-এর ডুপ্লিকেট-লজিক-এড়ানো নীতি অনুসরণ করে)। `{ map, rows }` রিটার্ন করে — `map` ব্যাকওয়ার্ড-কম্প্যাট raw-নাম লুকআপের জন্য, `rows` sorted-list রেন্ডারের জন্য।
+   - **🔴 বাগ ধরা পড়ল ও ঠিক হলো**: `SupplierPaymentModule`-এর `paymentSummary` (পেমেন্ট-হিস্ট্রি সামারি) raw (non-canonical) `supplierName` দিয়ে `supplierDueMap[name]` লুকআপ করে — SQL পাথে শুধু canonical নাম দিয়ে map বানালে এই লুকআপ ভুলভাবে `undefined`→`0` দিত। ফিক্স: SQL-এ `raw_variants` CTE (group_concat) যোগ করে প্রতিটা raw ভ্যারিয়েন্টও merged রো পয়েন্ট করানো হয়েছে — JS-এর `finalMap[raw] = ...` ব্যাকওয়ার্ড-কম্প্যাট আচরণের সমতুল্য।
+   - `SupplierPaymentModule`-এ `businessType` প্রপ যোগ করতে হলো (আগে prop হিসেবে পাস হতো না, নতুন হুকের জন্য দরকার হলো — parent call site-এ ইতিমধ্যে scope-এ ছিল)।
+
+**যাচাই**:
+- ম্যানুয়াল প্যারিটি-স্ক্রিপ্ট দিয়ে প্রথমে SQL vs JS পাশাপাশি চালিয়ে দেখা হলো (multi-name-variant কেস) — হুবহু মিলেছে
+- নতুন `datastore-supplier-due-tests.mjs` (৮টা কেস) — প্রতিটাতেই `getSupplierDueRows()` (SQL) বনাম আসল `computeSupplierDueMap()`+`uniqueSupplierRows()` (JS) সরাসরি পাশাপাশি তুলনা: নাম-ভ্যারিয়েন্ট merge+canonical selection, একাধিক আলাদা সাপ্লায়ার, due/paid sign convention, items-reduce purchase amount, খালি-নাম বাদ দেওয়া, rawVariants backward-compat, খালি ডেটাসেট, multi-product aggregation
+- `npm test` (১৭৩ কেস, সব ক্লিন) + `test:golden-master` (১৫) + `test:fuzz` (৯ প্রপার্টি) + lint (0 error — বিল্ডের সময় একটা `businessType is not defined` এরর ধরা পড়েছিল ও ঠিক হয়েছে) + `vite build` — সব পাস
+
+**⚠️ স্বীকৃত non-financial edge-case**: canonical *ডিসপ্লে-নাম* বাছাইয়ে দুটো ভিন্ন raw-নাম-ভ্যারিয়েন্ট ঠিক একই character-length হলে JS (insertion-order-based) ও SQL (`LENGTH()` টাই-ব্রেকে SQLite-এর নিজস্ব সিদ্ধান্ত) ভিন্ন ভ্যারিয়েন্ট বাছাই করতে পারে। টাকার হিসাব (productCount/totalStock/totalPurchased/paid/due) এতে প্রভাবিত হয় না — শুধু কোন বানানে নামটা দেখানো হবে সেটার একটা প্রান্তিক এজ-কেস।
+
+**বাকি**: real-device ভেরিফিকেশন এখনো বাকি — sandbox+parity-টেস্ট-ভেরিফায়েড শুধু। ধাপ ৬ কোড-সম্পূর্ণ। পরের ধাপ: এন্ট্রি ৪০-এর real-device স্মোক-টেস্ট → ধাপ ৭ (products boot-load lazy) → Customers SQL cutover → "সব SQL" নির্দেশনা অনুযায়ী `AIPage_`-এর অবশিষ্ট JS অংশ (stockValue/lowStockItems/সাপ্তাহিক returns হিসাব)।
+
+---
+
+### [এন্ট্রি ৪০] — PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ৫ (POS product picker/SmartInvoiceBuilder) SQL cutover — কোড-সম্পূর্ণ, sandbox-ভেরিফায়েড, real-device বাকি
+
+**তারিখ**: ১৫ আগস্ট ২০২৬। **ট্রিগার**: "পরের ধাপ: ধাপ ৫ (POS picker) শুরু করুন"।
+
+**প্রেক্ষাপট (এন্ট্রি ৩২-এর অডিট থেকে)**: SmartInvoiceBuilder-এর ডিফল্ট-ব্রাউজ মোডে (সার্চ নেই) পণ্যগুলো দুই-ধাপের JS stable sort দিয়ে সাজানো হয় — প্রথমে demand_type (common আগে), তারপর availability (unavailable সবসময় শেষে)। এটা effectively একটা ৩-স্তরের priority অর্ডার তৈরি করে, কিন্তু `queryPage()` শুধু single-column keyset সাপোর্ট করে। এন্ট্রি ৩২-এ দুটো বিকল্প ছিল: (ক) `queryPage()` কোর ফাংশন বদলানো (৪+ শেয়ার্ড কল-সাইট, বেশি ঝুঁকি), অথবা (খ) precomputed combined sort-key কলাম। এই সেশনে (খ) বাছা হলো।
+
+**কী করা হলো**:
+1. **`browse_rank` ডিজাইন** — নতুন TEXT কলাম `"<tier_digit><name>"` ফরম্যাটে। tier = App.jsx-এর `isProductUnavailable()`+`demandType` লজিকের সমতুল্য single digit (0=available+common, 1=available+uncommon, 2=unavailable+common, 3=unavailable+uncommon)। শুধু `ORDER BY browse_rank ASC` দিয়েই lexicographic sort টিয়ার-তারপর-নাম অর্ডার দেয় — কোনো multi-column keyset বা `queryPage()` পরিবর্তন ছাড়াই।
+2. `schema.sql`-এ `product_type`/`category`/`browse_rank` কলাম + ৪টা ইনডেক্স (deleted+browse_rank ও deleted+product_type+category+browse_rank কম্বিনেশন, `সব`/নির্দিষ্ট-ক্যাটাগরি/সার্ভিস — ৩টা WHERE-প্যাটার্নই কভার করতে)।
+3. `DataStore.js`:
+   - `logic.js` থেকে `getSellableStock` ইমপোর্ট
+   - `computeBrowseTier(p)`/`computeBrowseRank(p)` (এক্সপোর্টেড, golden-master.mjs-এ ইউনিট-টেস্টের জন্য) — App.jsx-এর `isProductUnavailable()` ফাংশনের সাথে বাইট-বাই-বাইট মিলিয়ে
+   - `HOT_FIELDS.products.extract()`-এ ৩টা নতুন কলাম যোগ
+   - ALTER TABLE গার্ড (পুরনো DB ফাইলে নতুন কলাম যোগ করতে, এন্ট্রি ৩০-এর একই প্যাটার্নে)
+4. **App.jsx (SmartInvoiceBuilder)** — `filteredProducts` memo-র পরে নতুন ব্রাউজ-পেজিনেশন ব্লক:
+   - `browseIds`/`browseDone`/`browseLoading`/`browseFailed` state + `loadBrowsePage()`/`browseWhereFor()` — এন্ট্রি ৩০-এর Products list ব্রাউজের একই নামকরণ/প্যাটার্ন অনুসরণ করে
+   - **🔴 গুরুত্বপূর্ণ নিরাপত্তা-সিদ্ধান্ত (entry 30 থেকে ইচ্ছাকৃতভাবে ভিন্ন)**: এন্ট্রি ৩০-এ SQL row-এর `data` (JSON snapshot) সরাসরি রেন্ডার হয়, কিন্তু POS picker সরাসরি বিলিং কাউন্টার (এন্ট্রি ৩২-এর staleness উদ্বেগ)। তাই এখানে SQL শুধু page-এর product-id অর্ডার দেয়; প্রতিটা id `productsByIdMap` (live `products` state থেকে বানানো Map) দিয়ে লুকআপ হয়ে আসল product অবজেক্ট রেন্ডার হয়। ফলে dual-write-এ সামান্যতম lag থাকলেও stock/price/availability ডেটা কখনো stale দেখানো হয় না — SQL শুধু *ক্রম* ঠিক করে, *ডেটা* না। সর্বোচ্চ ঝুঁকি: কোনো আইটেম কয়েক মিলিসেকেন্ডের জন্য "ভুল বাকেটে" দেখানো, যা পরের dual-write cycle-এ (stock কলাম যে cadence-এ আপডেট হয়, একই cadence) স্বয়ংক্রিয়ভাবে ঠিক হয়ে যায়।
+   - `gridProducts = (useSqliteBrowse && browseProducts) ? browseProducts : filteredProducts` — null-ফলব্যাক প্যাটার্নে প্রথম লোডের আগে বা SQL ব্যর্থ হলে স্বয়ংক্রিয়ভাবে JS ফলব্যাক
+   - সার্চ-অ্যাক্টিভ মোড সম্পূর্ণ অস্পৃষ্ট — `isSearchActive` true হলে `useSqliteBrowse` false, `filteredProducts`-এর hybrid FTS+scoring পাথ যেমন ছিল তেমনই চলে
+   - `VirtuosoGrid`-এর `data`/`endReached` প্রপ + খালি-স্টেট চেক `gridProducts` ব্যবহার করতে আপডেট হয়েছে
+
+**নতুন টেস্ট**:
+- `golden-master.mjs`-এ ৮টা নতুন কেস (`computeBrowseTier`/`computeBrowseRank` — ৪টা টিয়ার কম্বিনেশন, সার্ভিস-সবসময়-available, demandType ডিফল্ট, ব্যাচ-ভিত্তিক মেয়াদোত্তীর্ণ)
+- নতুন `datastore-pos-browse-tests.mjs` (৬টা কেস) — আসল `upsertMany()`→`queryPage()` end-to-end ফ্লো: ৪-টিয়ার অর্ডার+name ASC তাইব্রেক, deleted বাদ, ক্যাটাগরি ফিল্টার, সার্ভিস ফিল্টার, multi-page keyset pagination, re-upsert-এ browse_rank রিফ্রেশ
+
+**যাচাই**: `npm test` (১৬৫ কেস, সব ক্লিন) + `test:golden-master` (১৫) + `test:fuzz` (৯ প্রপার্টি) + lint (0 error — নতুন ALTER TABLE গার্ডের `catch(_)` warning এন্ট্রি ৩০-এর একই accepted প্যাটার্নে) + `vite build` — সব পাস।
+
+**⚠️ বাকি (পরের সেশনে সবার আগে)**:
+- **real-device স্মোক-টেস্ট** — এটা POS picker, সরাসরি বিলিং কাউন্টার, তাই sandbox-ভেরিফিকেশন যথেষ্ট না। দেখতে হবে: (ক) ক্যাটাগরি ফিল্টার বদলালে সঠিক পণ্য আসছে কিনা, (খ) স্ক্রল করলে পরের পেজ ঠিকমতো লোড হচ্ছে কিনা (endReached), (গ) স্টক-আউট পণ্য সত্যিই তালিকার শেষে/disabled দেখাচ্ছে কিনা, (ঘ) দ্রুত পরপর কয়েকটা বিক্রির পরও picker-এর অর্ডার/availability ভুল না দেখানো
+- dev panel দিয়ে JS-vs-SQL রিকনসিলিয়েশন (আগের এন্ট্রিগুলোর মতোই)
+- পরের ধাপ: ধাপ ৬ (SupplierPaymentModule + ছোট কল-সাইট) → ধাপ ৭ (products boot-load lazy) → Customers SQL cutover
+
+---
+
+### [এন্ট্রি ৩৯] — `stockValue`/`lowStockItems`/`monthExpiredValue`/`monthExpiredCount` SQL cutover — useKpiStats-এর ধাপ ৩ পুরোপুরি সম্পূর্ণ, sandbox-ভেরিফায়েড
+
+**তারিখ**: ১৫ আগস্ট ২০২৬। **ট্রিগার**: "stockVaLue/LowStockItems/monthExpiredValue/monthExpiredcount (products-নির্ভর অংশ) ইত্যাদি SQL-এ আনা হয়েছে কি?" → "হ্যাঁ, এখনই করুন"।
+
+**প্রেক্ষাপট**: এন্ট্রি ৩৮-এর স্ক্রিনশটে useKpiStats-এর ৫টা ডেটা-সোর্সের নিচে একটা নোট ছিল — এই ৫টা (expenses+cashLogs+purchaseOrders+txns+returns) শেষ হলেও `stockValue`/`lowStockItems`/`monthExpiredValue`/`monthExpiredCount` (products-নির্ভর অংশ) SQL-এ আনা বাকি থাকবে। এন্ট্রি ৩৮-এ সেটা মিস হয়ে গিয়েছিল, ব্যবহারকারী জিজ্ঞেস করায় ধরা পড়ল।
+
+**কী করা হলো**:
+1. `schema.sql`-এ নতুন `stockMovements` টেবিল (id, source, month_key, value, updated_at, data) — শুধু `source='expired_removal'` এন্ট্রিই এই KPI-তে প্রাসঙ্গিক।
+2. `DataStore.js`:
+   - `HOT_FIELDS`-এ `stockMovements` এন্ট্রি (month_key = mv.monthKey, না থাকলে mv.dateKey-এর প্রথম ৭ ক্যারেক্টার)
+   - `getInventoryCounts()`-এ (এন্ট্রি ৩৬-এর InventorySection-এর সাথে শেয়ার্ড ফাংশন) `stock_value` কলাম যোগ — `COALESCE(NULLIF(cost_price,0), NULLIF(price,0), 0) * COALESCE(stock,0)`, App.jsx-এর `(p.costPrice || p.price || 0) * (p.stock || 0)` লজিকের হুবহু SQL সমতুল্য (falsy 0/null উভয়ই ফলব্যাক ট্রিগার করে)। `critical` কাউন্টই lowStockItems-এর সংখ্যার সমতুল্য — নতুন কোনো ফাংশন লাগেনি।
+   - নতুন `getExpiredRemovalTotals(bt, monthKey)`
+3. App.jsx:
+   - `stockMovements` dual-write wiring (`_dsStockMovementsRef` + effect) + `STORE_TO_ENTITY_TYPE`
+   - দুটো নতুন শেয়ার্ড হুক — `useProductStockTotals(products, businessType)` ও `useExpiredRemovalTotals(stockMovements, businessType, monthKey)` — বাকি সবগুলোর মতোই SQL/JS ফলব্যাক প্যাটার্নে
+   - `useKpiStats`-এর JS reduce/filter এই হুক দিয়ে প্রতিস্থাপিত। রিটার্ন ফিল্ড `lowStockItems` (product array) → `lowStockCount` (number) রিনেম হলো, কারণ `KpiCardsGrid` শুধু `.length` ব্যবহার করত — পুরো array পাস করার দরকার ছিল না।
+4. **ইচ্ছাকৃত সিদ্ধান্ত (স্কোপ)**: `AIPage_`-এর নিজস্ব `stockValue`/`lowStockItems` (৩টা জায়গায় ব্যবহৃত — health score, smart actions, চ্যাট উত্তর) এখনো JS-ই রাখা হয়েছে, SQL cutover করা হয়নি। কারণ:
+   - ওখানে পুরো product অবজেক্ট-অ্যারে লাগে (`.slice(0,3).map(p=>p.name)` ইত্যাদির জন্য), শুধু aggregate number না — SQL দিয়ে এটা আনতে হলে `getInventoryList('critical')`-এর মতো আলাদা list-fetching হুক লাগত, যেটা এই সেশনের স্কোপের বাইরে।
+   - `products` prop এখনো পুরোপুরি in-memory (ধাপ ৭-এর lazy-load এখনো হয়নি) — তাই এই মুহূর্তে SQL কাটওভারের তাৎক্ষণিক memory/perf লাভ নেই, শুধু কোড-সঙ্গতির প্রশ্ন। যেহেতু ফর্মুলা দুই জায়গাতেই বাইট-বাই-বাইট একই থাকছে (কোনো বাগ-ফিক্স হচ্ছে না, শুধু cutover), useKpiStats আর AIPage_-এর সংখ্যায় কোনো ফারাক পড়বে না — তাই এন্ট্রি ৩৭/৩৮-এর duplicate-logic ঝুঁকি এখানে প্রযোজ্য না।
+
+**নতুন টেস্ট**: `datastore-kpi-extra-tests.mjs`-এ ৩টা নতুন কেস যোগ — `getInventoryCounts()`-এর `stock_value` (costPrice falsy→price ফলব্যাক + deleted বাদ) ও `getExpiredRemovalTotals()` (source+month_key ফিল্টার + dateKey ফলব্যাক)।
+
+**যাচাই**: `npm test` (১৪৯ কেস, সব ক্লিন) + `test:golden-master` (৭) + `test:fuzz` (৯ প্রপার্টি) + lint (0 error) + `vite build` — সব পাস।
+
+**বাকি**: real-device ভেরিফিকেশন এখনো বাকি — sandbox-ভেরিফায়েড শুধু। **useKpiStats-এর ধাপ ৩ এখন সত্যিকার অর্থেই ১০০% সম্পূর্ণ** (৫টা ডেটা-সোর্স + products-নির্ভর অংশ)। পরের ধাপ: ধাপ ৫ (POS picker) → ধাপ ৬ (SupplierPaymentModule) → ধাপ ৭ (products lazy-load) → Customers SQL cutover।
+
+---
+
+### [এন্ট্রি ৩৮] — useKpiStats-এর বাকি ৪টা ডেটা-সোর্স (`cashLogs`/`purchaseOrders`/`txns`/`returns`) SQL cutover — ধাপ ৩ সম্পূর্ণ, sandbox-ভেরিফায়েড
+
+**তারিখ**: ১৫ আগস্ট ২০২৬। **ট্রিগার**: "স্ক্রিনশট দেখুন। ধাপ ৩ কমপ্লিট করুন।"
+
+**কী করা হলো**:
+1. `schema.sql`-এ ৪টা নতুন টেবিল — `cashLogs`(id, type, amount, date_key, updated_at, data), `purchaseOrders`(id, entry_type, total_cost, date_key, updated_at, data — "type" SQL কীওয়ার্ড এড়াতে entry_type), `txns`(id, type, source, amount, invoice_id, date_key, updated_at, data), `returns`(id, invoice_id, refund_amount, cost_price, qty, refund_mode, date_key, updated_at, data) — সংশ্লিষ্ট ইনডেক্সসহ।
+2. `DataStore.js`-এ `HOT_FIELDS`-এ ৪টা নতুন এন্ট্রি + ৪টা ডোমেইন-স্পেসিফিক অ্যাগ্রিগেট ফাংশন (expenses-এর জেনেরিক `getDateRangeAggregate()` পুনর্ব্যবহার করা হয়নি — প্রতিটাতেই extra type/source শর্ত বা voided-বাদ NOT EXISTS সাব-কোয়েরি লাগে):
+   - `getCashLogTotal(bt, {dateKey, type})` — একটা date+type-এর SUM
+   - `getPurchaseOrderTotals(bt, {todayKey, monthStartKey})` — 'pe' এন্ট্রির today cost/count + month cost
+   - `getTxnTotals(bt, todayKey)` — todayBakiIncurred (invoice voided হলে বাদ) + todayJoma (নির্দিষ্ট source বাদ)
+   - `getReturnsTotals(bt, {todayKey, monthStartKey})` — today/month refund + profit-impact + today cash-refund, voided ইনভয়েসের রিটার্ন বাদ
+3. `purchaseOrders`-এর `date_key` কলাম App.jsx-এর `dateKey === todayKey || createdAt.startsWith(todayKey)` ফলব্যাক লজিকের সমতুল্য করতে `p.dateKey ?? p.createdAt.slice(0,10)` হিসেবে এক্সট্র্যাক্ট হয় (schema.sql/DataStore.js কমেন্ট দ্রষ্টব্য)।
+4. App.jsx-এ ৪টা নতুন dual-write ref (`_dsCashLogsRef` ইত্যাদি) + সংশ্লিষ্ট save-effect-এ `dualWriteSqlite()` কল।
+5. ৪টা নতুন শেয়ার্ড হুক (`useCashLogTotals`/`usePurchaseOrderTotals`/`useTxnTotals`/`useReturnsTotals`) — এন্ট্রি ৩৭-এর `useExpenseTotals`-এর ঠিক একই প্যাটার্নে (isSqliteEnabled() বন্ধ থাকলে সবসময় আগের JS ফিল্টার/রিডিউস, আচরণ অপরিবর্তিত)। **গুরুত্বপূর্ণ**: এই হুকগুলো `useKpiStats` ও `AIPage_` — দুই জায়গাতেই বসানো হয়েছে, যাতে এন্ট্রি ৩৭-এর আগে যেভাবে দুই কম্পোনেন্টে আলাদা JS কপি থাকায় ৩০ জুলাই ২০২৬-এর cash-sale মিসম্যাচ বাগ হয়েছিল, সেই প্যাটার্ন এখানে আর না ঘটে।
+6. `AIPage_`-এর সাপ্তাহিক (`weekReturns`/`weekReturnsRefund`) হিসাব `returnsTotals` হুকের স্কোপের বাইরে (হুক শুধু today/month কভার করে) — তাই ইচ্ছাকৃতভাবে লোকাল JS-ই রাখা হয়েছে, নতুন করে হুক জটিল না করে।
+
+**⚠️ এই সেশনে আবিষ্কৃত গ্যাপ (হারানো টেস্ট ফাইল)**: `package.json`-এর `test` স্ক্রিপ্ট `tests/datastore-expenses-tests.mjs` (এন্ট্রি ৩৭) ও `tests/datastore-inventory-tests.mjs` (এন্ট্রি ৩৬) রেফারেন্স করে, কিন্তু আপলোড করা zip-এ ফাইল দুটোই ছিল না — এন্ট্রি ৩৩-৩৫-এর "কখনো এই zip-এ আসেনি" প্যাটার্নের আরেকটা ঘটনা, সম্ভবত এন্ট্রি ৩৬/৩৭-এর ডেলিভারি zip-এ বাদ পড়ে গিয়েছিল। **ফিক্স**: DataStore.js-এর ডকব্লক/আচরণ অনুযায়ী দুটোই পুনর্গঠন করা হয়েছে —
+- `datastore-inventory-tests.mjs`: ১২টা কেস (`getInventoryCounts`/`getInventoryList`/`getExpiryCandidates`/`getSupplierSummary`/`getProductsBySupplierKey`) — সবগুলো পাস
+- `datastore-expenses-tests.mjs`: ৭টা কেস (`getDateRangeAggregate()`-এর dateKeyExact/dateKeyGte/dateKeyPrefix/amountColumn/edge-case) — সবগুলো পাস
+
+পুনর্গঠিত সংস্করণ মূল হারানো ফাইলগুলোর সাথে হুবহু নাও মিলতে পারে, কিন্তু একই ফাংশনগুলোর মূল আচরণ/edge-case কভার করে। **সতর্কতা**: যদি ভবিষ্যতে কোনো সেশনে আসল মূল ফাইল পাওয়া যায় (অন্য কোনো ব্যাকআপ/আগের zip-এ), সেটা দিয়ে এই পুনর্গঠিত সংস্করণ প্রতিস্থাপন করাই ভালো — pinned case সংখ্যা/নির্দিষ্ট assertion ভিন্ন থাকতে পারে।
+
+**নতুন টেস্ট**: `datastore-kpi-extra-tests.mjs` (৭টা কেস — এই সেশনের ৪টা নতুন অ্যাগ্রিগেট ফাংশন, প্রতিটার ২-৩টা edge-case সহ)।
+
+**যাচাই**: `npm test` (১৪১ কেস, সব ক্লিন — logic ৭২ + schema ১৪ + integration ১০ + sync ২৪ + querypage ১০ + inventory ১২ + expenses ৭ + kpi-extra ৭) + `test:golden-master` (৭) + `test:fuzz` (৯ প্রপার্টি) + lint (0 error) + `vite build` — সব পাস।
+
+**বাকি**: real-device ভেরিফিকেশন (dev panel দিয়ে) এখনো বাকি — শুধু sandbox/node:sqlite শিমে ভেরিফায়েড। ধাপ ৩ (useKpiStats-এর ৫টা ডেটা-সোর্স) এখন সম্পূর্ণ — পরের ধাপ: ধাপ ৫ (POS product picker, SmartInvoiceBuilder) → ধাপ ৬ (SupplierPaymentModule) → ধাপ ৭ (products boot-load lazy) → Customers SQL cutover।
+
+---
 
 ### [এন্ট্রি ৩৭] — useKpiStats-এর ৫টা SQL-না-হওয়া ডেটা-সোর্সের প্রথমটা: `expenses` টেবিল + dual-write + todayExpense/monthExpense SQL cutover, sandbox-ভেরিফায়েড
 
