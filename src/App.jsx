@@ -9253,6 +9253,153 @@ function useProductStockTotals(products, businessType) {
   return sql ? sql : { stockValue: jsStockValue, lowStockCount: jsLowStockCount };
 }
 
+// 🆕 এন্ট্রি ৪৫ — AIPage_-এর lowStockItems (এন্ট্রি ৪৪-এ চিহ্নিত ৪টা সাব-প্যাটার্নের
+// প্রথমটা, "সবচেয়ে সহজ অংশ")। useProductStockTotals()-এর মতো নয় — ওটা শুধু
+// lowStockCount (সংখ্যা) দেয়, কিন্তু AIPage_-এর ৮+ জায়গায় আসল আইটেম-লিস্ট লাগে
+// (নাম/স্টক দেখানোর জন্য, .slice().map(p=>p.name) ইত্যাদি) — তাই dsGetInventoryList()
+// (এন্ট্রি ৩৬-এ InventorySection-এর জন্য বানানো, একই "critical" kind) পুনর্ব্যবহার
+// করে পূর্ণ product অবজেক্ট-অ্যারে ফেরত দেওয়া হচ্ছে, শুধু কাউন্ট না। JS ফলব্যাক
+// prodAll.filter()-এর সাথে ঠিক একই শর্ত (stock>0 AND stock<=minStockAlert||5)
+// বজায় রাখা হয়েছে যাতে SQL অন/অফ দুই অবস্থাতেই ফলাফল অভিন্ন থাকে।
+function useLowStockItems(products, businessType) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await dsGetInventoryList(businessType, "critical");
+        if (cancelled || seqRef.current !== seq) return;
+        setSql(rows);
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("lowStockItems SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, products]);
+
+  const prodAll = products || [];
+  const jsLowStockItems = useMemo(
+    () => prodAll.filter(p => (p.stock || 0) > 0 && (p.stock || 0) <= (p.minStockAlert || 5)),
+    [prodAll]
+  );
+
+  return sql ? sql : jsLowStockItems;
+}
+
+// 🆕 এন্ট্রি ৪৬ — AIPage_-এর outOfStock/prodAll.length (এন্ট্রি ৪৪-৪৫-এ চিহ্নিত
+// ৪টা সাব-প্যাটার্নের ২য়টা)। শুধু সংখ্যা লাগে (আইটেম-লিস্ট না), তাই
+// getInventoryCounts()-ই যথেষ্ট (এন্ট্রি ৩৬/৩৯-এ বানানো, নতুন total_count কলাম
+// এন্ট্রি ৪৬-এ যোগ হলো) — নতুন কোনো ডেডিকেটেড getOutOfStockCount() ফাংশন
+// লাগেনি। useProductStockTotals()-এর সাথে duplicate SQL কল এড়াতে চাইলে ভবিষ্যতে
+// দুটো হুক এক getInventoryCounts() রেসপন্স শেয়ার করতে পারে, কিন্তু আপাতত
+// প্যাটার্ন সামঞ্জস্যের জন্য আলাদা হুক (প্রতিটা ছোট, independent, ব্যবহার-সাইট
+// অনুযায়ী trace করা সহজ — বিদ্যমান useProductStockTotals/useLowStockItems-এর
+// মতোই স্বতন্ত্র)।
+function useOutOfStockCount(products, businessType) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await dsGetInventoryCounts(businessType);
+        if (cancelled || seqRef.current !== seq) return;
+        setSql({ outOfStock: res.stockOut, totalProducts: res.totalCount });
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("outOfStock SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, products]);
+
+  const prodAll = products || [];
+  const jsOutOfStock = useMemo(() => prodAll.filter(p => (p.stock || 0) === 0).length, [prodAll]);
+
+  return sql ? sql : { outOfStock: jsOutOfStock, totalProducts: prodAll.length };
+}
+
+// 🆕 এন্ট্রি ৪৬ — ruleBasedAnswer()-এর "কম স্টক" চ্যাট-উত্তরে স্টকশূন্য পণ্যের
+// পূর্ণ তালিকা লাগে (নাম দেখানোর জন্য .slice(0,5).map(p=>p.name)) — শুধু কাউন্ট
+// (useOutOfStockCount) দিয়ে হয় না, lowStockItems-এর মতোই একই সমস্যা (এন্ট্রি ৪৫
+// দ্রষ্টব্য)। বিদ্যমান dsGetInventoryList(businessType, "out") (এন্ট্রি ৩৬-এ
+// InventorySection-এর জন্য বানানো "kind" প্যারামিটারে ইতিমধ্যেই সমর্থিত, নতুন
+// SQL লাগেনি) পুনর্ব্যবহার করা হলো।
+function useOutOfStockItems(products, businessType) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await dsGetInventoryList(businessType, "out");
+        if (cancelled || seqRef.current !== seq) return;
+        setSql(rows);
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("outOfStockItems SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, products]);
+
+  const prodAll = products || [];
+  const jsOutOfStockItems = useMemo(() => prodAll.filter(p => (p.stock || 0) === 0), [prodAll]);
+
+  return sql ? sql : jsOutOfStockItems;
+}
+
+// 🆕 এন্ট্রি ৪৭ — AIPage_-এর expired/near-expiry স্ক্যান (৪টা সাব-প্যাটার্নের ৩য়টা)।
+// InventorySection-এ (এন্ট্রি ৩৬) ইতিমধ্যেই এই একই "candidate-narrowing" প্যাটার্ন
+// আছে (dsGetExpiryCandidates() দিয়ে nearest_expiry_date<=3মাস ইনডেক্স-সিক করে
+// candidate সেট ছোট করা, তারপর সেই ছোট সেটের উপর read-time new Date() তুলনা দিয়ে
+// আসল expired/near বিভাজন — staleness ঝুঁকি নেই কারণ তুলনাটা সবসময় লাইভ) — এখানে
+// একই ফাংশন পুনর্ব্যবহার করে হুক আকারে জেনারালাইজ করা হলো, নতুন SQL লাগেনি।
+// JS ফলব্যাক পুরো prodAll (candidate-narrowing না থাকলে পুরো array-ই স্ক্যান হবে,
+// AIPage_-এর আগের আচরণের সাথে হুবহু মিল)।
+function useExpiryCandidates(products, businessType) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await dsGetExpiryCandidates(businessType);
+        if (cancelled || seqRef.current !== seq) return;
+        setSql(rows);
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("expiryCandidates SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, products]);
+
+  return sql ? sql : (products || []);
+}
+
 function useExpiredRemovalTotals(stockMovements, businessType, monthKey) {
   const sqliteOn = isSqliteEnabled();
   const [sql, setSql] = useState(null);
@@ -9894,8 +10041,15 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
   const monthMargin = pct(monthProfit, monthSale);
   const totalBaki = custAll.reduce((s, c) => s + (c.balance || 0), 0);
   const bakiCustomers = custAll.filter(c => (c.balance || 0) > 0).length;
-  const stockValue = prodAll.reduce((s, p) => s + (p.costPrice || p.price || 0) * (p.stock || 0), 0);
-  const lowStockItems = prodAll.filter(p => (p.stock || 0) > 0 && (p.stock || 0) <= (p.minStockAlert || 5));
+  // 🆕 এন্ট্রি ৪৫ — stockValue/lowStockItems এখন শেয়ার্ড হুক থেকে (SQL চালু থাকলে
+  // SQL, নাহলে ঠিক এই একই JS ফলব্যাক হুকের ভেতরেই)। stockValue-এর জন্য
+  // useProductStockTotals() পুনর্ব্যবহার করা হলো (এন্ট্রি ৩৯-এ useKpiStats-এর
+  // জন্য বানানো, এখানে দ্বিতীয় ব্যবহার); lowStockItems-এর জন্য নতুন
+  // useLowStockItems() হুক (উপরে দেখুন, dsGetInventoryList('critical') পুনর্ব্যবহার
+  // করে — এন্ট্রি ৩৬-এ InventorySection-এর জন্য বানানো একই ফাংশন)।
+  const productStockTotalsAI = useProductStockTotals(prodAll, businessType);
+  const stockValue = productStockTotalsAI.stockValue;
+  const lowStockItems = useLowStockItems(prodAll, businessType);
 
   // ── 💊 এই মাসে "মেয়াদোত্তীর্ণ পণ্যের মাসিক হিসাব" পেজ থেকে দোকান+অ্যাপ থেকে
   // সরানো ব্যাচগুলোর মূল্য/সংখ্যা — stockMovements(source==='expired_removal')
@@ -9907,7 +10061,19 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
   );
   const monthExpiredValue = monthExpiredRemovals.reduce((s, r) => s + (r.value || 0), 0);
   const monthExpiredCount = monthExpiredRemovals.length; // কতটি ব্যাচ সরানো হয়েছে
-  const outOfStock = prodAll.filter(p => (p.stock || 0) === 0).length;
+  // 🆕 এন্ট্রি ৪৬ — outOfStock/prodAll.length (health score + চ্যাট-সারসংক্ষেপে
+  // ব্যবহৃত মোট-পণ্য-সংখ্যা) এখন শেয়ার্ড useOutOfStockCount() হুক থেকে (উপরে
+  // দেখুন, getInventoryCounts()-এর নতুন total_count কলাম পুনর্ব্যবহার করে)।
+  const outOfStockTotalsAI = useOutOfStockCount(prodAll, businessType);
+  const outOfStock = outOfStockTotalsAI.outOfStock;
+  const totalProductsAI = outOfStockTotalsAI.totalProducts;
+  // 🆕 এন্ট্রি ৪৬ — ruleBasedAnswer()-এর "কম স্টক" চ্যাট-উত্তরের জন্য পূর্ণ
+  // আইটেম-তালিকা (উপরে useOutOfStockItems() দেখুন)।
+  const outOfStockItemsAI = useOutOfStockItems(prodAll, businessType);
+  // 🆕 এন্ট্রি ৪৭ — ruleBasedAnswer()-এর "মেয়াদ/এক্সপায়ার" ও "ফার্মেসি পরামর্শ"
+  // চ্যাট-উত্তরের জন্য candidate-narrowed products (উপরে useExpiryCandidates() দেখুন,
+  // InventorySection-এর dsGetExpiryCandidates() রিইউজ করে)।
+  const expiryCandidatesAI = useExpiryCandidates(prodAll, businessType);
   const dailyAvg = monthSale / daysElapsedInMonth;
 
   // ── নিজের ব্যবহার (মালিকের ড্রয়িং) — খরচমূল্যে এই মাসের মোট ─────────────────
@@ -10005,11 +10171,11 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
     if (monthMargin >= 20) score += 15; else if (monthMargin >= 10) score += 8; else if (monthMargin < 0) score -= 15;
     if (growthPct !== null) { if (growthPct > 10) score += 10; else if (growthPct > 0) score += 5; else if (growthPct < -10) score -= 10; }
     if (totalBaki > monthSale * 0.5) score -= 10; else if (totalBaki < monthSale * 0.2) score += 5;
-    if (outOfStock > prodAll.length * 0.2) score -= 10;
+    if (outOfStock > totalProductsAI * 0.2) score -= 10;
     if (lowStockItems.length > 5) score -= 5;
     if (todayInvs.length > 0) score += 5;
     return Math.max(0, Math.min(100, score));
-  }, [monthMargin, growthPct, totalBaki, monthSale, outOfStock, prodAll.length, lowStockItems.length, todayInvs.length]);
+  }, [monthMargin, growthPct, totalBaki, monthSale, outOfStock, totalProductsAI, lowStockItems.length, todayInvs.length]);
 
   const healthLabel = healthScore >= 75 ? { text: "চমৎকার", color: "#22c55e" }
     : healthScore >= 55 ? { text: "ভালো", color: "#f59e0b" }
@@ -10202,7 +10368,7 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
 - মাসিক বিক্রয়: ৳${fmtFull(monthSale)} | মাসিক লাভ: ৳${fmtFull(monthProfit)} (${monthMargin}% মার্জিন)
 - মোট বকেয়া: ৳${fmtFull(totalBaki)} (${bakiCustomers}জন কাস্টমার)
 - স্টক মূল্য: ৳${fmtFull(stockValue)} | স্টকশূন্য: ${outOfStock}টি | কম স্টক: ${lowStockItems.length}টি
-- মোট গ্রাহক: ${custAll.length}জন | মোট ওষুধ: ${prodAll.length}টি
+- মোট গ্রাহক: ${custAll.length}জন | মোট ওষুধ: ${totalProductsAI}টি
 - ফার্মেসি স্বাস্থ্য স্কোর: ${healthScore}/১০০ (${healthLabel.text})
 - সেরা ওষুধ (এ মাসে): ${forecastData.slice(0, 3).map(p => `${p.name} (${p.m1}টি)`).join(", ") || "ডেটা নেই"}
 - ঝুঁকিপূর্ণ গ্রাহক: ${customerRFM.filter(c => c.segment === "at_risk").length}জন
@@ -10234,11 +10400,11 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
           throw new Error("API error");
         }
       } catch {
-        setChatMessages(prev => [...prev, { role: "ai", text: ruleBasedAnswer(q, { todaySale, monthSale, totalBaki, stockValue, lowStockItems, monthProfit, monthMargin, todayProfit, todayInvs, custAll, prodAll, healthScore, forecastData, invAll }) }]);
+        setChatMessages(prev => [...prev, { role: "ai", text: ruleBasedAnswer(q, { todaySale, monthSale, totalBaki, stockValue, lowStockItems, outOfStockItems: outOfStockItemsAI, totalProducts: totalProductsAI, expiryCandidates: expiryCandidatesAI, monthProfit, monthMargin, todayProfit, todayInvs, custAll, prodAll, healthScore, forecastData, invAll }) }]);
       }
     } else {
       setTimeout(() => {
-        setChatMessages(prev => [...prev, { role: "ai", text: ruleBasedAnswer(q, { todaySale, monthSale, totalBaki, stockValue, lowStockItems, monthProfit, monthMargin, todayProfit, todayInvs, custAll, prodAll, healthScore, forecastData, invAll }) }]);
+        setChatMessages(prev => [...prev, { role: "ai", text: ruleBasedAnswer(q, { todaySale, monthSale, totalBaki, stockValue, lowStockItems, outOfStockItems: outOfStockItemsAI, totalProducts: totalProductsAI, expiryCandidates: expiryCandidatesAI, monthProfit, monthMargin, todayProfit, todayInvs, custAll, prodAll, healthScore, forecastData, invAll }) }]);
         setChatLoading(false);
       }, 500);
       return;
@@ -11023,6 +11189,7 @@ function HealthMeter({ score, label, T, activeColor, growthPct }) {
 function ruleBasedAnswer(q, data) {
   const {
     todaySale, monthSale, totalBaki, stockValue, lowStockItems,
+    outOfStockItems, totalProducts, expiryCandidates,
     monthProfit, monthMargin, todayInvs, custAll, prodAll,
     healthScore, forecastData,
   } = data;
@@ -11100,7 +11267,7 @@ function ruleBasedAnswer(q, data) {
   // ── স্টক / মজুদ ─────────────────────────────────────────────────────────────
   if (has("স্টক","stock","মজুদ","inventory","মাল","পণ্য শেষ","শেষ হয়ে")) {
     if (has("কম","শেষ","নেই","reorder","রিঅর্ডার")) {
-      const out = prodAll.filter(p=>(p.stock||0)===0);
+      const out = outOfStockItems;
       if (lowStockItems.length===0 && out.length===0) return "📦 সব পণ্যে পর্যাপ্ত স্টক আছে।";
       let res = "";
       if (out.length>0) res+=`🚫 স্টকশূন্য (${out.length}টি)\n${out.slice(0,5).map(p=>`• ${p.name}`).join("\n")}\n\n`;
@@ -11115,7 +11282,7 @@ function ruleBasedAnswer(q, data) {
       if (!over.length) return "অতিরিক্ত স্টকের কোনো পণ্য নেই।";
       return `📦 অতিরিক্ত স্টক আছে\n${over.map(p=>`• ${p.name} — ${p.stock}টি`).join("\n")}\n💡 এগুলোতে ডিসকাউন্ট দিয়ে বিক্রি করুন।`;
     }
-    return `📦 স্টক সারসংক্ষেপ\n• মোট স্টক মূল্য: ৳${fmt(stockValue)}\n• কম স্টক: ${lowStockItems.length}টি\n• স্টকশূন্য: ${prodAll.filter(p=>(p.stock||0)===0).length}টি\n• মোট পণ্য: ${prodAll.length}টি`;
+    return `📦 স্টক সারসংক্ষেপ\n• মোট স্টক মূল্য: ৳${fmt(stockValue)}\n• কম স্টক: ${lowStockItems.length}টি\n• স্টকশূন্য: ${outOfStockItems.length}টি\n• মোট পণ্য: ${totalProducts}টি`;
   }
 
   // ── পণ্য ────────────────────────────────────────────────────────────────────
@@ -11132,7 +11299,7 @@ function ruleBasedAnswer(q, data) {
       const slow = [...forecastData].filter(p=>p.m1<3).slice(0,5);
       return `🐢 কম বিক্রয় পণ্য\n${slow.map(p=>`• ${p.name} — ${p.m1}টি এ মাসে`).join("\n")||"সব পণ্য ভালো বিক্রি হচ্ছে!"}\n💡 কম বিক্রয় পণ্যে ডিসকাউন্ট দিন বা বাদ দিন।`;
     }
-    return `🛍️ পণ্য সারসংক্ষেপ\n• মোট পণ্য: ${prodAll.length}টি\n• সেরা পণ্য: ${forecastData[0]?.name||"ডেটা নেই"}\n• মোট স্টক মূল্য: ৳${fmt(stockValue)}`;
+    return `🛍️ পণ্য সারসংক্ষেপ\n• মোট পণ্য: ${totalProducts}টি\n• সেরা পণ্য: ${forecastData[0]?.name||"ডেটা নেই"}\n• মোট স্টক মূল্য: ৳${fmt(stockValue)}`;
   }
 
   // ── কাস্টমার ────────────────────────────────────────────────────────────────
@@ -11169,8 +11336,8 @@ function ruleBasedAnswer(q, data) {
   // ── মেয়াদ / এক্সপায়ারি ──────────────────────────────────────────────────────
   if (has("মেয়াদ","expiry","expired","মেয়াদোত্তীর্ণ","এক্সপায়ার")) {
     const now = new Date();
-    const expired = (prodAll||[]).filter(p => p.expiryDate && new Date(p.expiryDate) < now);
-    const near = (prodAll||[]).filter(p => {
+    const expired = (expiryCandidates||[]).filter(p => p.expiryDate && new Date(p.expiryDate) < now);
+    const near = (expiryCandidates||[]).filter(p => {
       if (!p.expiryDate) return false;
       const diff = (new Date(p.expiryDate) - now) / 86400000;
       return diff >= 0 && diff <= 90;
@@ -11185,8 +11352,8 @@ function ruleBasedAnswer(q, data) {
   // ── ফার্মেসি পরামর্শ ─────────────────────────────────────────────────────────
   if (has("ফার্মেসি","pharmacy","দোকান কেমন","ওষুধ")) {
     const now = new Date();
-    const expired = (prodAll||[]).filter(p => p.expiryDate && new Date(p.expiryDate) < now);
-    const near = (prodAll||[]).filter(p => {
+    const expired = (expiryCandidates||[]).filter(p => p.expiryDate && new Date(p.expiryDate) < now);
+    const near = (expiryCandidates||[]).filter(p => {
       if (!p.expiryDate) return false;
       const diff = (new Date(p.expiryDate) - now) / 86400000;
       return diff >= 0 && diff <= 90;
@@ -11196,7 +11363,7 @@ function ruleBasedAnswer(q, data) {
     if (near.length > 0) tips.push(`⏰ ${near.length}টি ওষুধের মেয়াদ ৩ মাসে শেষ হবে`);
     if (lowStockItems.length > 0) tips.push(`📦 ${lowStockItems.length}টি ওষুধে স্টক কম`);
     if (totalBaki > monthSale * 0.3) tips.push(`💸 বকেয়া বেশি — আদায় করুন`);
-    if (tips.length === 0) return `✅ ফার্মেসি ভালোভাবে চলছে!\n• মাসিক বিক্রয়: ৳${fmt(monthSale)}\n• মোট ওষুধ: ${prodAll.length}টি\n• স্বাস্থ্য স্কোর: ${healthScore}/১০০`;
+    if (tips.length === 0) return `✅ ফার্মেসি ভালোভাবে চলছে!\n• মাসিক বিক্রয়: ৳${fmt(monthSale)}\n• মোট ওষুধ: ${totalProducts}টি\n• স্বাস্থ্য স্কোর: ${healthScore}/১০০`;
     return `🏥 ফার্মেসির অবস্থা\n${tips.map((t,i)=>`${i+1}. ${t}`).join("\n")}`;
   }
 
