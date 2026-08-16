@@ -16162,6 +16162,7 @@ function SmartBusinessMgmt() {
               showToast={showToast}
               currentUser={currentUser}
               auditLog={auditLog}
+              businessType={businessType}
             />
           </ErrorBoundary>
         )}
@@ -21485,9 +21486,16 @@ const AnalyticsSection = React.memo(AnalyticsSection_);
 // InventorySection ও Dashboard-এ হুবহু ডুপ্লিকেট ছিল এই কম্পিউটেশনগুলো —
 // এখন একটা শেয়ার্ড হুকে কনসোলিডেট, SQL cutover সহ। isSqliteEnabled() বন্ধ
 // থাকলে (ডিফল্ট, সব ৫০০ দোকানে) এই হুক সবসময় নিচের JS-ফলব্যাক পাথটাই রিটার্ন
-// করে — আচরণ ১০০% অপরিবর্তিত, কোনো live shop প্রভাবিত হয় না। চালু থাকলে
-// (শুধু dev-প্যানেল দিয়ে ম্যানুয়ালি এনাবল করা ডিভাইসে) SQL থেকে আনার চেষ্টা করে,
-// ব্যর্থ হলে (বা এখনো রেসপন্স না এলে) সাইলেন্টলি একই JS পাথে ফলব্যাক করে।
+// করে — আচরণ ১০০% অপরিবর্তিত, কোনো live shop প্রভাবিত হয় না।
+//
+// 🆕 এন্ট্রি ৫৪: isSqliteEnabled() চালু থাকা ডিভাইসে (আপাতত শুধু ম্যানুয়ালি
+// এনাবল করা টেস্ট-শপ) SQL ব্যর্থ হলে বা এখনো রেসপন্স না এলে আর সাইলেন্টলি
+// JS-এ ফলব্যাক করে না — কারণ সেই সাইলেন্ট ফলব্যাক SQL পাথের নিজস্ব বাগ ঢেকে
+// দিতে পারে (ঠিক যেমনটা এন্ট্রি ৪৯-এ getDistinctCategories()-এ ধরা পড়েছিল)।
+// এই ক্ষেত্রে allStock/criticalStock/stockOut/supplierList খালি অ্যারে +
+// sqlStatus:'loading'|'error' রিটার্ন করে, UI নিজে দরকার হলে সেটা দেখাতে পারে।
+// isSqliteEnabled() বন্ধ থাকলে (৫০০ দোকানের বর্তমান অবস্থা) এই বদল কোনো
+// প্রভাব ফেলে না — sqlStatus:'disabled', মান সবসময় আগের মতোই jsX।
 function useInventoryData(products, businessType) {
   const sqliteOn = isSqliteEnabled();
   const [sql, setSql] = useState(null); // null = না-আনা-হয়েছে/লোডিং, false = ব্যর্থ (ফলব্যাক), object = সফল
@@ -21587,16 +21595,29 @@ function useInventoryData(products, businessType) {
   }, [expirySource]);
 
   const useSql = !!sql;
-  const supplierList = useSql
-    ? sql.supplierSummary.map(s => ({ name: s.name, count: s.count, stock: s.stock, outCount: s.out_count, lowCount: s.low_count }))
-    : jsSupplierRows.map(s => ({ name: s.name, count: s.count, stock: s.stock, outCount: s.products.filter(p => (p.stock||0)===0).length, lowCount: s.products.filter(p => (p.stock||0)>0 && (p.stock||0)<=(p.minStockAlert||5)).length }));
+  const jsSupplierList = jsSupplierRows.map(s => ({ name: s.name, count: s.count, stock: s.stock, outCount: s.products.filter(p => (p.stock||0)===0).length, lowCount: s.products.filter(p => (p.stock||0)>0 && (p.stock||0)<=(p.minStockAlert||5)).length }));
+
+  // 🆕 এন্ট্রি ৫৪: sqlStatus — 'disabled' (isSqliteEnabled() বন্ধ, ৫০০ দোকানের
+  // বর্তমান অবস্থা, jsX-ই ব্যবহৃত), 'loading' (চালু কিন্তু রেসপন্স আসেনি),
+  // 'error' (চালু, ফেচ ব্যর্থ), 'ok' (চালু, সফল)।
+  const sqlStatus = !sqliteOn ? "disabled" : useSql ? "ok" : (sql === false ? "error" : "loading");
+
+  let allStock, criticalStock, stockOut, supplierList;
+  if (!sqliteOn) {
+    // আগের আচরণ, অপরিবর্তিত — ৫০০ দোকানের কোনোটাই এখনো প্রভাবিত না
+    allStock = jsAllStock; criticalStock = jsCriticalStock; stockOut = jsStockOut; supplierList = jsSupplierList;
+  } else if (useSql) {
+    allStock = sql.allRows; criticalStock = sql.criticalRows; stockOut = sql.outRows;
+    supplierList = sql.supplierSummary.map(s => ({ name: s.name, count: s.count, stock: s.stock, outCount: s.out_count, lowCount: s.low_count }));
+  } else {
+    // sqliteOn চালু কিন্তু loading/error — আর সাইলেন্টলি JS-এ ফলব্যাক করি না
+    allStock = []; criticalStock = []; stockOut = []; supplierList = [];
+  }
 
   return {
-    allStock:      useSql ? sql.allRows      : jsAllStock,
-    criticalStock: useSql ? sql.criticalRows : jsCriticalStock,
-    stockOut:      useSql ? sql.outRows      : jsStockOut,
+    allStock, criticalStock, stockOut,
     expiredList, nearExpiryList, expiredBatchRows, expiredBatches, nearExpiryBatches,
-    supplierList,
+    supplierList, sqlStatus,
     productsBySupplier: jsProductsBySupplier, // supplier-detail পেজ — নিচে সরাসরি dsGetProductsBySupplierKey() দিয়ে আলাদাভাবে হ্যান্ডল হয়
   };
 }
@@ -21611,6 +21632,7 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
   const allStock      = inv.allStock;
   const criticalStock = inv.criticalStock;
   const stockOut       = inv.stockOut;
+  const sqlStatus      = inv.sqlStatus; // 🆕 এন্ট্রি ৫৪ — 'disabled'/'loading'/'error'/'ok'
 
   // আজকের ক্রয় — purchase entry থেকে (_type === "pe")
   const todayKey = todayEn();
@@ -21665,6 +21687,16 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
           <span style={{ color: DT.sectionBarText, fontSize:10.5, fontWeight:900 }}>{products.length}টি পণ্য</span>
         </div>
       </div>
+      {/* 🆕 এন্ট্রি ৫৪ — শুধু isSqliteEnabled() চালু ডিভাইসে (আপাতত টেস্ট-শপ) দৃশ্যমান;
+          বন্ধ থাকা ৫০০ দোকানে sqlStatus সবসময় 'disabled', এই ব্লক কখনো রেন্ডার হয় না। */}
+      {(sqlStatus === "loading" || sqlStatus === "error") && (
+        <div style={{ marginBottom:9, padding:"7px 12px", borderRadius:10,
+          background: sqlStatus === "error" ? "rgba(239,68,68,0.12)" : "rgba(234,179,8,0.12)",
+          border: `1px solid ${sqlStatus === "error" ? "rgba(239,68,68,0.35)" : "rgba(234,179,8,0.35)"}`,
+          color: sqlStatus === "error" ? "#fca5a5" : "#fde68a", fontSize:11, fontWeight:700 }}>
+          {sqlStatus === "error" ? "⚠️ স্টক ডেটা লোড করা যায়নি (SQL ব্যর্থ) — নিচের সংখ্যা সঠিক নয়" : "স্টক ডেটা লোড হচ্ছে…"}
+        </div>
+      )}
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9, marginBottom:9 }}>
         {cards.map((c, i) => {
           // Determine if this card should show a notification badge
@@ -28471,7 +28503,18 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const [peSaving, setPeSaving] = useState(false);
   // ── ক্রয় এন্ট্রি ট্যাবের ভারী হিসাব — memo করা, যাতে প্রতি keystroke/re-render-এ পুরো array স্ক্যান না হয় ──
   const peAllEntries = useMemo(() => purchaseOrders.filter(p => p._type === "pe"), [purchaseOrders]);
-  const peSelProdForBatch = useMemo(() => products.find(p => p.id === peForm.productId), [products, peForm.productId]);
+  // 🆕 এন্ট্রি ৫৫ (৭.৩): আগে products.find(p=>p.id===peForm.productId) — একক
+  // id-lookup, POS/Products-list-এর মতোই useProductsByIds() দিয়ে id+hydrate
+  // প্যাটার্নে কনভার্ট করা হলো। productsByIdMap সবসময় পূর্ণ থাকা অবস্থায়
+  // (৭.৩-এর বুট-ধাপ এখনো অস্পৃষ্ট) get() সবসময় প্রথম শর্তেই মিলে যায় —
+  // আচরণ অপরিবর্তিত, শুধু ভবিষ্যতে lazy-boot হলে এই সাইট প্রস্তুত থাকবে।
+  const peSelId = peForm.productId != null ? [peForm.productId] : [];
+  const peProdByIds = useProductsByIds(peSelId, businessType, productsByIdMap);
+  // 🆕 এন্ট্রি ৫৬ (৭.৩): এডিট-ফর্মের originalProduct (audit-log-এর জন্য) —
+  // editId থাকলে সেই একক id হাইড্রেট করে।
+  const editSelId = editId != null ? [editId] : [];
+  const editProdByIds = useProductsByIds(editSelId, businessType, productsByIdMap);
+  const peSelProdForBatch = peForm.productId != null ? peProdByIds.get(peForm.productId) : undefined;
   const peLatestBatchLabel = useMemo(() => {
     if (!peSelProdForBatch?.batches?.length) return null;
     const inStock = peSelProdForBatch.batches.filter(b => (b.qty || 0) > 0);
@@ -28720,7 +28763,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     };
     if (editId) {
       // ── audit log-এর জন্য আগের ভ্যালু সংরক্ষণ ────────────────────────────
-      const originalProduct = products.find(p => p.id === editId);
+      // 🆕 এন্ট্রি ৫৬ (৭.৩): আগে products.find(p=>p.id===editId) — একক
+      // id-lookup, POS/Products-list-এর মতোই useProductsByIds() দিয়ে
+      // id+hydrate প্যাটার্নে কনভার্ট। শুধু audit-log-এর জন্য পুরনো মান
+      // পড়া হয় (দাম/স্টক লেখা হয় না এখানে), তাই বিলিং/কস্ট-ক্রিটিক্যাল না।
+      const originalProduct = editProdByIds.get(editId);
       const oldPrice = originalProduct?.price || 0;
       const newPrice = parseFloat(form.price) || 0;
       const oldStock = originalProduct?.stock || 0;
@@ -30637,7 +30684,7 @@ const MemoProducts = React.memo(Products);
 // এই মডিউলটা স্বয়ংসম্পূর্ণ (self-contained) — সমস্যা সমাধান হয়ে গেলে শুধু
 // এই ফাংশন + navItems-এর "batchSync" এন্ট্রি + tab === "batchSync" রেন্ডার
 // ব্লকটা সরিয়ে দিলেই পুরো ফিচার ক্লিন-আপ হয়ে যাবে, অন্য কোথাও কিছু বদলাতে হবে না।
-function BatchSyncTool({ T, S, products = [], setProducts, invoices = [], setInvoices, showToast, currentUser, auditLog }) {
+function BatchSyncTool({ T, S, products = [], setProducts, invoices = [], setInvoices, showToast, currentUser, auditLog, businessType }) {
   const fmt = n => fmtMoney(n);
   const [section, setSection] = React.useState("risk"); // "risk" | "mismatch" | "correction"
   const [editingId, setEditingId] = React.useState(null);
@@ -30702,13 +30749,28 @@ function BatchSyncTool({ T, S, products = [], setProducts, invoices = [], setInv
     flaggedInvoiceItems.forEach(f => {
       const key = f.productId || f.productName;
       if (!map[key]) {
-        const prod = products.find(p => p.id === f.productId);
-        map[key] = { productId: f.productId, productName: f.productName, suggestedCost: prod?.costPrice || 0, items: [] };
+        // এন্ট্রি ৫৬-এর নিচের useProductsByIds() থেকে সিঙ্ক্রোনাসভাবে get() করা হবে,
+        // এখানে শুধু placeholder — আসল hydrate নিচের batchProdByIds.get() দিয়ে হয়
+        map[key] = { productId: f.productId, items: [] };
       }
       map[key].items.push(f);
     });
-    return Object.values(map);
-  }, [flaggedInvoiceItems, products]);
+    return map;
+  }, [flaggedInvoiceItems]);
+  const batchProdIds = React.useMemo(() => Object.values(correctionGroups).map(g => g.productId).filter(id => id != null), [correctionGroups]);
+  const batchProdByIdMap = React.useMemo(() => new Map(products.map(p => [String(p.id), p])), [products]);
+  // 🆕 এন্ট্রি ৫৬ (৭.৩): আগে products.find(p=>p.id===f.productId) প্রতি গ্রুপে
+  // লুপের ভেতরে (O(n×m)) — এখন bounded id-সেট নিয়ে useProductsByIds() দিয়ে
+  // একবারে হাইড্রেট। এটা ডায়াগনস্টিক/অ্যাডমিন টুল (বিলিং না), suggestedCost
+  // শুধু সাজেশন হিসেবে দেখানো হয়, সরাসরি লেখা হয় না।
+  const batchProdByIds = useProductsByIds(batchProdIds, businessType, batchProdByIdMap);
+  const correctionGroupsWithCost = React.useMemo(() => {
+    return Object.values(correctionGroups).map(g => {
+      const prod = g.productId != null ? batchProdByIds.get(g.productId) : null;
+      return { productId: g.productId, productName: g.items[0]?.productName, suggestedCost: prod?.costPrice || 0, items: g.items };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [correctionGroups, batchProdByIds.cache]);
 
   const applyCorrection = (group) => {
     const newCost = parseFloat(correctCostInputs[group.productId] ?? group.suggestedCost);
@@ -30884,9 +30946,9 @@ function BatchSyncTool({ T, S, products = [], setProducts, invoices = [], setInv
       )}
 
       {section === "correction" && (
-        correctionGroups.length === 0 ? (
+        correctionGroupsWithCost.length === 0 ? (
           <div style={{ textAlign: "center", color: T.sub || "#94a3b8", fontSize: 13, padding: 30 }}>✅ ক্রয়মূল্য-বেশি এমন কোনো পুরনো ইনভয়েস পাওয়া যায়নি</div>
-        ) : correctionGroups.map(group => {
+        ) : correctionGroupsWithCost.map(group => {
           const activeItems = group.items.filter(it => !excludedItems[`${it.invId}-${it.itemIndex}`]);
           const inputVal = correctCostInputs[group.productId] ?? String(group.suggestedCost || "");
           const previewCost = parseFloat(inputVal) || 0;
