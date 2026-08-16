@@ -18,7 +18,7 @@ import { CapacitorSQLite, SQLiteConnection } from "@capacitor-community/sqlite";
 // dateKey লজিক আনা হচ্ছে, App.jsx-এর _dateKeyOf()/scripts/generate-synthetic-
 // dataset.mjs-এর bdDateKey()-এর সাথে ১০০% সিঙ্কড রাখতে (SQLITE_MIGRATION_LOG.md
 // এন্ট্রি ২-এ ধরা পড়া টাইমজোন বাগের ফিক্স)।
-import { _bdParts } from "../logic.js";
+import { _bdParts, getSellableStock, normalizeSupplierKey } from "../logic.js";
 
 // ── Feature flag ─────────────────────────────────────────────────────────
 // এই ফ্ল্যাগ বন্ধ থাকলে (ডিফল্ট) পুরো অ্যাপ আগের মতোই IndexedDB blob-array
@@ -189,6 +189,34 @@ export async function getDb(businessType) {
   try {
     await db.execute(`ALTER TABLE products ADD COLUMN supplier_key TEXT;`);
   } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
+  // 🆕 এন্ট্রি ৪০ (ধাপ ৫, POS product picker) — একই কারণে ALTER TABLE গার্ড
+  // এই ৩টা নতুন কলামের জন্যও (schema.sql-এর browse_rank কমেন্ট দ্রষ্টব্য)।
+  try {
+    await db.execute(`ALTER TABLE products ADD COLUMN product_type TEXT;`);
+  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
+  try {
+    await db.execute(`ALTER TABLE products ADD COLUMN category TEXT;`);
+  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
+  try {
+    await db.execute(`ALTER TABLE products ADD COLUMN browse_rank TEXT;`);
+  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
+  // 🆕 এন্ট্রি ৪১ (ধাপ ৬, computeSupplierDueMap) — একই কারণে ALTER TABLE গার্ড
+  // (schema.sql-এর "supplier due-map" কমেন্ট-ব্লক দ্রষ্টব্য)।
+  try {
+    await db.execute(`ALTER TABLE products ADD COLUMN supplier_due_key TEXT;`);
+  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
+  try {
+    await db.execute(`ALTER TABLE products ADD COLUMN supplier_due_raw TEXT;`);
+  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
+  try {
+    await db.execute(`ALTER TABLE purchaseOrders ADD COLUMN supplier_due_key TEXT;`);
+  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
+  try {
+    await db.execute(`ALTER TABLE purchaseOrders ADD COLUMN supplier_due_raw TEXT;`);
+  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
+  try {
+    await db.execute(`ALTER TABLE purchaseOrders ADD COLUMN purchase_amount REAL;`);
+  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
   // schema.sql-এ multiple statements আছে — execute() মাল্টি-স্টেটমেন্ট সাপোর্ট করে
   await db.execute(restOfSchema);
 
@@ -237,11 +265,56 @@ function computeNearestExpiryDate(p) {
   return null;
 }
 
+// 🆕 এন্ট্রি ৪০ (ধাপ ৫, POS picker) — App.jsx SmartInvoiceBuilder-এর
+// isProductUnavailable() + demandType-এর দুই-ধাপের stable sort-এর ঠিক একই
+// ফলাফল দেয় এমন একটা single tier digit (schema.sql-এর browse_rank কমেন্ট
+// দ্রষ্টব্য) — App.jsx-এর isProductUnavailable() ফাংশনের সাথে বাইট-বাই-বাইট
+// মিলিয়ে রাখা জরুরি (দুই জায়গায় ভিন্ন হলে picker-এর ক্রম আসল availability-র
+// সাথে না মেলার ঝুঁকি — যদিও নিচে ব্যাখ্যা করা হয়েছে যে ক্রম ভুল হলেও আসল
+// বিক্রি-ব্লকিং লজিক প্রভাবিত হয় না, কারণ সেটা সবসময় live product data থেকে চলে)।
+export function computeBrowseTier(p) {
+  const unavailable = p.productType !== "service" && p.stock !== undefined && getSellableStock(p) <= 0;
+  const uncommon = (p.demandType || "common") === "uncommon";
+  return (unavailable ? 2 : 0) + (uncommon ? 1 : 0);
+}
+
+// browse_rank = tier digit + name — একক TEXT কলাম, lexicographic sort দিয়েই
+// টিয়ার-তারপর-নাম অর্ডার পাওয়া যায় (schema.sql-এর কমেন্ট দ্রষ্টব্য)।
+export function computeBrowseRank(p) {
+  return `${computeBrowseTier(p)}${p.name ?? ""}`;
+}
+
+// 🆕 এন্ট্রি ৪১ (ধাপ ৬, computeSupplierDueMap) — logic.js-এর computeSupplierDueMap()-এর
+// ঠিক একই raw-name resolution + amount গণনা, শুধু extract() টাইমে JS-এ প্রিকম্পিউট
+// করে ফ্ল্যাট কলামে বসানো হচ্ছে (schema.sql-এর "supplier due-map" কমেন্ট দ্রষ্টব্য)।
+// প্রতিটা হেল্পার নিজে থেকেই null/"" রিটার্ন করে raw name খালি হলে (JS-এর
+// "if (!name) return;" early-return-এর সাথে মিলিয়ে — SQL WHERE ক্লজে
+// supplier_due_key IS NOT NULL AND supplier_due_key != '' দিয়ে বাদ দেওয়া হয়)।
+function productSupplierDueRaw(p) {
+  return (p.company || p.supplier || "").trim();
+}
+function poSupplierDueRaw(po) {
+  return (po.supplier || po.company || "").trim();
+}
+function paymentSupplierDueRaw(pay) {
+  return (pay.supplierName || "").trim();
+}
+function supplierDueKeyOf(raw) {
+  return raw ? (normalizeSupplierKey(raw) || raw.toLowerCase()) : null;
+}
+// (po.items||[]).reduce((s,it)=>s+(it.qty||0)*(it.costPrice||it.price||0),0) —
+// logic.js-এর computeSupplierDueMap()-এর ঠিক একই এক্সপ্রেশন
+function poPurchaseAmount(po) {
+  return (po.items || []).reduce((s, it) => s + (it.qty || 0) * (it.costPrice || it.price || 0), 0);
+}
+
 const HOT_FIELDS = {
   products: {
     columns: [
       "id", "name", "name_norm", "barcode", "stock", "cost_price", "price", "updated_at", "deleted", "demand_type",
       "min_stock_alert", "nearest_expiry_date", "supplier_key", // 🆕 এন্ট্রি ৩৬ (ধাপ ২)
+      "product_type", "category", "browse_rank", // 🆕 এন্ট্রি ৪০ (ধাপ ৫)
+      "supplier_due_key", "supplier_due_raw", // 🆕 এন্ট্রি ৪১ (ধাপ ৬)
     ],
     extract: (p) => [
       String(p.id),
@@ -257,6 +330,11 @@ const HOT_FIELDS = {
       numOrNull(p.minStockAlert), // 🆕 এন্ট্রি ৩৬ — NULL হলে কোয়েরিতে COALESCE(min_stock_alert, 5) (JS p.minStockAlert||5-এর সাথে মিলিয়ে)
       computeNearestExpiryDate(p), // 🆕 এন্ট্রি ৩৬
       p.company || p.category || "অজ্ঞাত", // 🆕 এন্ট্রি ৩৬ — App.jsx-এর productsBySupplier/supplierMap-এর ঠিক একই key logic
+      p.productType ?? null, // 🆕 এন্ট্রি ৪০
+      p.category ?? null, // 🆕 এন্ট্রি ৪০
+      computeBrowseRank(p), // 🆕 এন্ট্রি ৪০
+      (() => { const r = productSupplierDueRaw(p); return supplierDueKeyOf(r); })(), // 🆕 এন্ট্রি ৪১
+      productSupplierDueRaw(p) || null, // 🆕 এন্ট্রি ৪১
     ],
   },
   customers: {
@@ -292,6 +370,86 @@ const HOT_FIELDS = {
       numOrNull(e.amount),
       e.dateKey ?? e.date ?? null,
       e.updatedAt ?? null,
+    ],
+  },
+  // 🆕 এন্ট্রি ৩৮ — বাকি ৪টা ডেটা-সোর্স (schema.sql-এর কমেন্ট দ্রষ্টব্য)
+  cashLogs: {
+    columns: ["id", "type", "amount", "date_key", "updated_at"],
+    extract: (c) => [
+      String(c.id),
+      c.type ?? null,
+      numOrNull(c.amount),
+      c.dateKey ?? null,
+      c.createdAt ?? null,
+    ],
+  },
+  purchaseOrders: {
+    columns: ["id", "entry_type", "total_cost", "date_key", "updated_at", "supplier_due_key", "supplier_due_raw", "purchase_amount"],
+    extract: (p) => [
+      String(p.id),
+      p._type ?? null,
+      numOrNull(p.totalCost),
+      // App.jsx-এর "p.dateKey === todayKey || (p.createdAt && p.createdAt.startsWith(todayKey))"
+      // ফলব্যাক লজিকের সাথে সামঞ্জস্যপূর্ণ — dateKey না থাকলে createdAt-এর প্রথম ১০ ক্যারেক্টার
+      // (YYYY-MM-DD অংশ) date_key কলামে বসানো হচ্ছে, যাতে পরে শুধু exact-match WHERE দিয়েই
+      // দুটো ক্ষেত্রই কভার হয়।
+      p.dateKey ?? (p.createdAt ? String(p.createdAt).slice(0, 10) : null),
+      p.at ?? p.createdAt ?? null,
+      (() => { const r = poSupplierDueRaw(p); return supplierDueKeyOf(r); })(), // 🆕 এন্ট্রি ৪১
+      poSupplierDueRaw(p) || null, // 🆕 এন্ট্রি ৪১
+      poPurchaseAmount(p), // 🆕 এন্ট্রি ৪১
+    ],
+  },
+  txns: {
+    columns: ["id", "type", "source", "amount", "invoice_id", "date_key", "updated_at"],
+    extract: (t) => [
+      String(t.id),
+      t.type ?? null,
+      t.source ?? null,
+      numOrNull(t.amount),
+      t.invoiceId != null ? String(t.invoiceId) : null,
+      t.dateKey ?? null,
+      t.time ?? null,
+    ],
+  },
+  returns: {
+    columns: ["id", "invoice_id", "refund_amount", "cost_price", "qty", "refund_mode", "date_key", "updated_at"],
+    extract: (r) => [
+      String(r.id),
+      r.invoiceId != null ? String(r.invoiceId) : null,
+      numOrNull(r.refundAmount),
+      numOrNull(r.costPrice),
+      numOrNull(r.qty),
+      r.refundMode ?? null,
+      r.dateKey ?? null,
+      r.createdAt ?? null,
+    ],
+  },
+  // 🆕 এন্ট্রি ৩৯ — useKpiStats-এর monthExpiredValue/monthExpiredCount-এর জন্য
+  // (schema.sql-এর কমেন্ট দ্রষ্টব্য — শুধু source='expired_removal' প্রাসঙ্গিক)
+  stockMovements: {
+    columns: ["id", "source", "month_key", "value", "updated_at"],
+    extract: (mv) => [
+      String(mv.id),
+      mv.source ?? null,
+      mv.monthKey ?? (mv.dateKey ? String(mv.dateKey).slice(0, 7) : null),
+      numOrNull(mv.value),
+      mv.at ?? null,
+    ],
+  },
+  // 🆕 এন্ট্রি ৪১ (ধাপ ৬, SupplierPaymentModule) — schema.sql-এর "supplier due-map" কমেন্ট দ্রষ্টব্য
+  supplierPayments: {
+    columns: ["id", "supplier_due_key", "supplier_due_raw", "type", "amount", "signed_amount", "date_key", "updated_at"],
+    extract: (pay) => [
+      String(pay.id),
+      (() => { const r = paymentSupplierDueRaw(pay); return supplierDueKeyOf(r); })(),
+      paymentSupplierDueRaw(pay) || null,
+      pay.type ?? null,
+      numOrNull(pay.amount),
+      // logic.js-এর computeSupplierDueMap()-এর ঠিক একই sign convention: due → ঋণাত্মক, payment → ধনাত্মক
+      pay.type === "due" ? -(pay.amount || 0) : (pay.amount || 0),
+      pay.dateKey ?? null,
+      pay.createdAt ?? null,
     ],
   },
 };
@@ -564,14 +722,23 @@ export async function aggregate(businessType, store, { select, where = "1=1", pa
 // কিন্তু নিরাপত্তার জন্য একটা ক্যাপ — এর বেশি হলে শুধু প্রথম N-টা রিটার্ন হবে।
 const INVENTORY_LIST_LIMIT = 5000;
 
-/** ৩টা KPI কার্ডের কাউন্ট — একটা কোয়েরিতে conditional SUM, ৩টা আলাদা COUNT() না। */
+/**
+ * ৩টা KPI কার্ডের কাউন্ট + স্টক মূল্য — একটা কোয়েরিতে conditional SUM, ৩টা
+ * আলাদা COUNT() না। 🆕 এন্ট্রি ৩৯ — stock_value যোগ হলো (useKpiStats-এর
+ * stockValue-এর জন্য, App.jsx-এর "p.costPrice || p.price || 0) * (p.stock || 0)"
+ * ফলব্যাক লজিকের CASE-WHEN সমতুল্য — costPrice শূন্য/NULL হলে price, সেটাও না
+ * থাকলে ০)। critical কাউন্টই useKpiStats-এর lowStockItems.length-এর সমতুল্য
+ * (একই "stock>0 AND stock<=minStockAlert" শর্ত — তাই আলাদা কোনো নতুন কাউন্ট
+ * লাগেনি)।
+ */
 export async function getInventoryCounts(businessType) {
   const db = await getDb(businessType);
   const sql = `
     SELECT
       SUM(CASE WHEN stock > 0 THEN 1 ELSE 0 END) AS all_stock_count,
       SUM(CASE WHEN stock > 0 AND stock <= COALESCE(min_stock_alert, 5) THEN 1 ELSE 0 END) AS critical_count,
-      SUM(CASE WHEN stock IS NULL OR stock = 0 THEN 1 ELSE 0 END) AS stock_out_count
+      SUM(CASE WHEN stock IS NULL OR stock = 0 THEN 1 ELSE 0 END) AS stock_out_count,
+      SUM(COALESCE(NULLIF(cost_price, 0), NULLIF(price, 0), 0) * COALESCE(stock, 0)) AS stock_value
     FROM products WHERE deleted = 0
   `;
   const res = await db.query(sql);
@@ -580,6 +747,7 @@ export async function getInventoryCounts(businessType) {
     allStock: row.all_stock_count || 0,
     critical: row.critical_count || 0,
     stockOut: row.stock_out_count || 0,
+    stockValue: row.stock_value || 0,
   };
 }
 
@@ -676,6 +844,199 @@ export async function getDateRangeAggregate(businessType, store, opts = {}) {
   const res = await db.query(sql, params);
   const row = res.values?.[0] || {};
   return { count: row.cnt || 0, total: row.total || 0 };
+}
+
+// ── এন্ট্রি ৩৮ (useKpiStats-এর বাকি ৪টা ডেটা-সোর্স) ──────────────────────────
+// এখানে expenses-এর জেনেরিক getDateRangeAggregate() পুনর্ব্যবহার করা হয়নি —
+// এই চারটার প্রতিটাতেই একটা অতিরিক্ত type/source শর্ত বা invoices-এর সাথে
+// voided-বাদ NOT EXISTS সাব-কোয়েরি লাগে, যা জেনেরিক ফাংশনটাকে অপ্রয়োজনীয়
+// জটিল করে ফেলত (getInventoryCounts/getSupplierSummary-এর মতোই ডোমেইন-স্পেসিফিক
+// আলাদা ফাংশন প্যাটার্ন অনুসরণ করা হলো)।
+
+/** cashLogs — নির্দিষ্ট date_key + type-এর SUM(amount)। */
+export async function getCashLogTotal(businessType, { dateKey, type }) {
+  const db = await getDb(businessType);
+  const res = await db.query(
+    `SELECT SUM(COALESCE(amount, 0)) AS total FROM cashLogs WHERE date_key = ? AND type = ?`,
+    [dateKey, type]
+  );
+  return res.values?.[0]?.total || 0;
+}
+
+/** purchaseOrders — 'pe' এন্ট্রির আজকের cost/count + এই মাসের cost। */
+export async function getPurchaseOrderTotals(businessType, { todayKey, monthStartKey }) {
+  const db = await getDb(businessType);
+  const [todayRes, monthRes] = await Promise.all([
+    db.query(
+      `SELECT COUNT(*) AS cnt, SUM(COALESCE(total_cost, 0)) AS total FROM purchaseOrders WHERE entry_type = 'pe' AND date_key = ?`,
+      [todayKey]
+    ),
+    db.query(
+      `SELECT SUM(COALESCE(total_cost, 0)) AS total FROM purchaseOrders WHERE entry_type = 'pe' AND date_key >= ?`,
+      [monthStartKey]
+    ),
+  ]);
+  return {
+    todayCost: todayRes.values?.[0]?.total || 0,
+    todayCount: todayRes.values?.[0]?.cnt || 0,
+    monthCost: monthRes.values?.[0]?.total || 0,
+  };
+}
+
+/**
+ * txns — todayBakiIncurred (invoice_id থাকা লাগবে, ওই ইনভয়েস voided হলে বাদ) +
+ * todayJoma (source নির্দিষ্ট কিছু ভ্যালুর একটা হলে বাদ) — App.jsx-এর useKpiStats-এর
+ * ঠিক একই দুই ফিল্টারের SQL সমতুল্য।
+ */
+export async function getTxnTotals(businessType, todayKey) {
+  const db = await getDb(businessType);
+  const [bakiRes, jomaRes] = await Promise.all([
+    db.query(
+      `SELECT SUM(COALESCE(t.amount, 0)) AS total FROM txns t
+       WHERE t.date_key = ? AND t.type = 'baki' AND t.invoice_id IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.id = t.invoice_id AND i.status = 'voided')`,
+      [todayKey]
+    ),
+    db.query(
+      `SELECT SUM(COALESCE(t.amount, 0)) AS total FROM txns t
+       WHERE t.date_key = ? AND t.type = 'joma'
+         AND (t.source IS NULL OR t.source NOT IN ('partial-sale', 'void-reversal', 'cash-sale', 'return-adjust'))`,
+      [todayKey]
+    ),
+  ]);
+  return {
+    todayBakiIncurred: bakiRes.values?.[0]?.total || 0,
+    todayJoma: jomaRes.values?.[0]?.total || 0,
+  };
+}
+
+/**
+ * returns — today/month refund + profit-impact + today cash-refund, voided
+ * ইনভয়েসের সাথে যুক্ত রিটার্ন বাদ (getVoidedInvoiceIds/filterReturnsExcludingVoided-এর
+ * SQL সমতুল্য — NOT EXISTS সাব-কোয়েরি, invoice_id NULL হলে সবসময় active ধরা হয়)।
+ */
+export async function getReturnsTotals(businessType, { todayKey, monthStartKey }) {
+  const db = await getDb(businessType);
+  const activeWhere = `(r.invoice_id IS NULL OR NOT EXISTS (SELECT 1 FROM invoices i WHERE i.id = r.invoice_id AND i.status = 'voided'))`;
+  const [todayRes, monthRes] = await Promise.all([
+    db.query(
+      `SELECT
+         SUM(COALESCE(r.refund_amount, 0)) AS refund,
+         SUM(COALESCE(r.refund_amount, 0) - COALESCE(r.cost_price, 0) * COALESCE(r.qty, 0)) AS profit_impact,
+         SUM(CASE WHEN r.refund_mode = 'cash' THEN COALESCE(r.refund_amount, 0) ELSE 0 END) AS cash_refund
+       FROM returns r WHERE r.date_key = ? AND ${activeWhere}`,
+      [todayKey]
+    ),
+    db.query(
+      `SELECT
+         SUM(COALESCE(r.refund_amount, 0)) AS refund,
+         SUM(COALESCE(r.refund_amount, 0) - COALESCE(r.cost_price, 0) * COALESCE(r.qty, 0)) AS profit_impact
+       FROM returns r WHERE r.date_key >= ? AND ${activeWhere}`,
+      [monthStartKey]
+    ),
+  ]);
+  const t = todayRes.values?.[0] || {};
+  const m = monthRes.values?.[0] || {};
+  return {
+    todayRefund: t.refund || 0,
+    todayProfitImpact: t.profit_impact || 0,
+    todayCashRefund: t.cash_refund || 0,
+    monthRefund: m.refund || 0,
+    monthProfitImpact: m.profit_impact || 0,
+  };
+}
+
+// ── এন্ট্রি ৩৯ (useKpiStats-এর products-নির্ভর অবশিষ্ট অংশ: monthExpiredValue/Count) ──
+/** stockMovements — নির্দিষ্ট মাসে সরানো মেয়াদোত্তীর্ণ ব্যাচের মোট মূল্য + সংখ্যা। */
+export async function getExpiredRemovalTotals(businessType, monthKey) {
+  const db = await getDb(businessType);
+  const res = await db.query(
+    `SELECT COUNT(*) AS cnt, SUM(COALESCE(value, 0)) AS total FROM stockMovements WHERE source = 'expired_removal' AND month_key = ?`,
+    [monthKey]
+  );
+  const row = res.values?.[0] || {};
+  return { value: row.total || 0, count: row.cnt || 0 };
+}
+
+// ── এন্ট্রি ৪১ (ধাপ ৬, computeSupplierDueMap SQL cutover) ────────────────────
+/**
+ * products+purchaseOrders+supplierPayments জুড়ে ফাজি-নাম-merge সাপ্লায়ার
+ * due-map — logic.js-এর computeSupplierDueMap()+uniqueSupplierRows()-এর SQL
+ * সমতুল্য। schema.sql-এর "supplier due-map" কমেন্ট-ব্লকে ডিজাইন বিস্তারিত।
+ *
+ * রিটার্ন: [{ name, productCount, totalStock, totalPurchased, paid, due }, ...]
+ * (canonical নাম অনুযায়ী ইতিমধ্যে ডিডুপ্লিকেটেড — আলাদা uniqueSupplierRows()
+ * লাগে না, প্রতিটা normalized key-এর জন্য একটাই রো)।
+ */
+export async function getSupplierDueRows(businessType) {
+  const db = await getDb(businessType);
+  const sql = `
+    WITH raw_names AS (
+      SELECT DISTINCT supplier_due_key AS key, supplier_due_raw AS raw FROM products
+        WHERE deleted = 0 AND supplier_due_key IS NOT NULL AND supplier_due_key != ''
+      UNION
+      SELECT DISTINCT supplier_due_key, supplier_due_raw FROM purchaseOrders
+        WHERE supplier_due_key IS NOT NULL AND supplier_due_key != ''
+      UNION
+      SELECT DISTINCT supplier_due_key, supplier_due_raw FROM supplierPayments
+        WHERE supplier_due_key IS NOT NULL AND supplier_due_key != ''
+    ),
+    canonical AS (
+      -- প্রতিটা key-এর সবচেয়ে লম্বা raw ভ্যারিয়েন্ট বাছাই (টাই হলে SQLite যেটা
+      -- আগে পায় সেটা — schema.sql-এর কমেন্টে ব্যাখ্যা করা non-financial edge-case)
+      SELECT key, raw AS canonical_name
+      FROM raw_names r1
+      WHERE LENGTH(raw) = (SELECT MAX(LENGTH(raw)) FROM raw_names r2 WHERE r2.key = r1.key)
+      GROUP BY key
+    ),
+    raw_variants AS (
+      -- প্রতিটা key-এর সবগুলো raw নাম-ভ্যারিয়েন্ট \u001F (unit separator) দিয়ে জোড়া —
+      -- JS-এর backward-compat "প্রতিটা raw নামও merged রো পয়েন্ট করে" আচরণের জন্য
+      -- (computeSupplierDueMap()-এর finalMap[raw] = ... লজিকের সমতুল্য, নিচে
+      -- App.jsx-এর useSupplierDueRows()-এ split করে map বানানো হয়)
+      SELECT key, group_concat(raw, char(31)) AS raws FROM raw_names GROUP BY key
+    ),
+    prod_agg AS (
+      SELECT supplier_due_key AS key, COUNT(*) AS product_count, SUM(COALESCE(stock, 0)) AS total_stock
+      FROM products WHERE deleted = 0 AND supplier_due_key IS NOT NULL AND supplier_due_key != ''
+      GROUP BY supplier_due_key
+    ),
+    po_agg AS (
+      SELECT supplier_due_key AS key, SUM(COALESCE(purchase_amount, 0)) AS total_purchased
+      FROM purchaseOrders WHERE supplier_due_key IS NOT NULL AND supplier_due_key != ''
+      GROUP BY supplier_due_key
+    ),
+    pay_agg AS (
+      SELECT supplier_due_key AS key, SUM(COALESCE(signed_amount, 0)) AS paid
+      FROM supplierPayments WHERE supplier_due_key IS NOT NULL AND supplier_due_key != ''
+      GROUP BY supplier_due_key
+    )
+    SELECT
+      c.canonical_name AS name,
+      COALESCE(pr.product_count, 0) AS product_count,
+      COALESCE(pr.total_stock, 0) AS total_stock,
+      COALESCE(po.total_purchased, 0) AS total_purchased,
+      COALESCE(pay.paid, 0) AS paid,
+      MAX(0, -COALESCE(pay.paid, 0)) AS due,
+      rv.raws AS raw_variants
+    FROM canonical c
+    LEFT JOIN prod_agg pr ON pr.key = c.key
+    LEFT JOIN po_agg   po ON po.key = c.key
+    LEFT JOIN pay_agg  pay ON pay.key = c.key
+    LEFT JOIN raw_variants rv ON rv.key = c.key
+  `;
+  const res = await db.query(sql);
+  return (res.values || []).map(r => ({
+    name: r.name,
+    productCount: r.product_count || 0,
+    totalStock: r.total_stock || 0,
+    totalPurchased: r.total_purchased || 0,
+    paid: r.paid || 0,
+    due: r.due || 0,
+    // backward-compat raw-নাম ভ্যারিয়েন্ট তালিকা (App.jsx-এর useSupplierDueRows()-এ
+    // ব্যবহৃত — computeSupplierDueMap()-এর finalMap[raw]=... আচরণের সমতুল্য)
+    rawVariants: r.raw_variants ? r.raw_variants.split("\u001F") : [r.name],
+  }));
 }
 
 // ── Phase 2: Resumable migration runner ─────────────────────────────────────
