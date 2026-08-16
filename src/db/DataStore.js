@@ -569,6 +569,41 @@ export async function getById(businessType, store, id) {
   return row ? JSON.parse(row.data) : null;
 }
 
+// ── এন্ট্রি ৪২ (ধাপ ৭ প্রস্তুতি) — ব্যাচ id-লুকআপ ──────────────────────────
+// কেন দরকার: getById() একবারে ১টা রেকর্ডই আনে — POS পিকার/Products লিস্ট
+// পেজিনেটেড ভিউতে (queryPage()) প্রতি পেজে ৫০-১০০টা id ফেরত আসে, সেই id-গুলোর
+// জন্য পূর্ণ product অবজেক্ট রেন্ডার করতে হলে getById() ৫০-১০০ বার আলাদা query()
+// কল করলে (n+1 প্যাটার্ন) real device-এ (limited I/O) স্লো হতে পারে। এই ফাংশন
+// একটাই `WHERE id IN (...)` কোয়েরিতে সবগুলো রেকর্ড আনে।
+//
+// ⚠️ SQLite-এ একটাই statement-এ প্যারামিটারাইজড `IN (...)`-এর ডিফল্ট সীমা আছে
+// (SQLITE_MAX_VARIABLE_NUMBER, সাধারণত ৯৯৯-৩২৭৬৬ বিল্ড-নির্ভর) — বড় id-লিস্টে
+// নিরাপদ থাকতে CHUNK_SIZE-এ ভেঙে একাধিক কোয়েরি চালানো হচ্ছে, ফলাফল একসাথে
+// জোড়া লাগানো হচ্ছে।  রিটার্ন-অর্ডার ইনপুট id-লিস্টের অর্ডারের সাথে মিলিয়ে
+// দেওয়া হয় (কলার সাধারণত queryPage()-এর id-অর্ডার বজায় রাখতে চাইবে)।
+const GET_BY_IDS_CHUNK_SIZE = 500;
+
+export async function getByIds(businessType, store, ids) {
+  const uniqueIds = [...new Set((ids || []).map(String))];
+  if (uniqueIds.length === 0) return [];
+
+  const db = await getDb(businessType);
+  const byId = new Map();
+
+  for (let i = 0; i < uniqueIds.length; i += GET_BY_IDS_CHUNK_SIZE) {
+    const chunk = uniqueIds.slice(i, i + GET_BY_IDS_CHUNK_SIZE);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const res = await db.query(`SELECT data FROM ${store} WHERE id IN (${placeholders})`, chunk);
+    for (const row of res.values || []) {
+      const rec = JSON.parse(row.data);
+      byId.set(String(rec.id), rec);
+    }
+  }
+
+  // ইনপুট অর্ডার বজায় রাখা হচ্ছে (কলার-এক্সপেক্টেশন), না-পাওয়া id চুপচাপ বাদ
+  return uniqueIds.map((id) => byId.get(id)).filter(Boolean);
+}
+
 export async function remove(businessType, store, id) {
   const db = await getDb(businessType);
   await db.run(`DELETE FROM ${store} WHERE id = ?`, [String(id)]);
