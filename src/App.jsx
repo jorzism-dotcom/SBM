@@ -48,6 +48,7 @@ import { getCashLogTotal as dsGetCashLogTotal, getPurchaseOrderTotals as dsGetPu
 import { getInventoryCounts as dsGetInventoryCounts, getExpiredRemovalTotals as dsGetExpiredRemovalTotals } from "./db/DataStore.js";
 // 🆕 এন্ট্রি ৪১ — ধাপ ৬ (computeSupplierDueMap SQL cutover)
 import { getSupplierDueRows as dsGetSupplierDueRows } from "./db/DataStore.js";
+import { getDistinctCategories as dsGetDistinctCategories, getDistinctSuppliers as dsGetDistinctSuppliers, getDistinctDosageForms as dsGetDistinctDosageForms, findProductByNameNorm as dsFindProductByNameNorm, normName as dsNormName } from "./db/DataStore.js";
 
 // 🆕 এন্ট্রি ৪২-৪৩ (ধাপ ৭.২, PRODUCTS_ONDEMAND_MIGRATION_PLAN.md) — lazy/async
 // id-ভিত্তিক product লুকআপের জন্য ব্যাচ-হেল্পার
@@ -9337,6 +9338,140 @@ function useSupplierDueRows(products, purchaseOrders, supplierPayments, business
   }, [sql, jsMap, jsRows]);
 }
 
+// 🆕 এন্ট্রি ৪৪ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ৭.৩-এর ব্লকার, ক্যাটাগরি ③ FULL-SCAN)
+// ৪টা আইটেমের মধ্যে ৩টা এখানে — একই sql-state/seqRef/fallback প্যাটার্ন
+// (useProductStockTotals/useSupplierDueRows-এর মতো)। dup-name check নিচে
+// আলাদা (per-keystroke debounce লাগে, list না, একক-রেকর্ড lookup)।
+
+/** SmartInvoiceBuilder-এর ক্যাটাগরি-ফিল্টার চিপ লিস্ট। */
+function useKnownCategories(products, businessType) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const cats = await dsGetDistinctCategories(businessType);
+        if (cancelled || seqRef.current !== seq) return;
+        setSql(cats);
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("ক্যাটাগরি-লিস্ট SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, products]);
+
+  const jsCats = useMemo(() => {
+    const cats = ["সব", "সার্ভিস", ...new Set(products.filter(p => p.productType !== "service").map(p => p.category || "অন্যান্য"))];
+    return cats;
+  }, [products]);
+
+  return useMemo(() => {
+    if (sql) return ["সব", "সার্ভিস", ...sql.map(c => c || "অন্যান্য")];
+    return jsCats;
+  }, [sql, jsCats]);
+}
+
+/** getKnownSuppliers()-এর SQL-ভিত্তিক প্রতিস্থাপন — SupplierPicker অটো-সাজেশন। */
+function useKnownSuppliers(products, purchaseOrders, businessType) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await dsGetDistinctSuppliers(businessType);
+        if (cancelled || seqRef.current !== seq) return;
+        setSql(rows);
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("সাপ্লায়ার-লিস্ট SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, products, purchaseOrders]);
+
+  const jsList = useMemo(() => getKnownSuppliers(products, purchaseOrders), [products, purchaseOrders]);
+
+  return sql || jsList;
+}
+
+/** getKnownCustomDosageForms()-এর SQL-ভিত্তিক প্রতিস্থাপন — dosage-chip অটো-সাজেশন। */
+function useKnownDosageForms(products, businessType) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await dsGetDistinctDosageForms(businessType);
+        if (cancelled || seqRef.current !== seq) return;
+        setSql(rows.filter(df => !DOSAGE_FORM_CHIPS.includes(df)));
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("dosage-form লিস্ট SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, products]);
+
+  const jsList = useMemo(() => getKnownCustomDosageForms(products), [products]);
+
+  return sql || jsList;
+}
+
+// 🆕 এন্ট্রি ৪৪ — liveDupProduct-এর SQL-ভিত্তিক প্রতিস্থাপন। PeFtsIds-এর মতোই
+// ১৫০ms ডিবাউন্স করা useEffect (প্রতি কি-স্ট্রোকে না, টাইপ থামলে) — SQL name_norm
+// exact lookup ইনডেক্সড হলেও প্রতি কি-স্ট্রোকে ফায়ার করার দরকার নেই, আর ছোট
+// ডেটাসেটে (SQL বন্ধ থাকলে) সরাসরি JS ফলব্যাক আগের liveDupProduct আচরণই।
+function useLiveDupProduct(name, editId, products, businessType) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null); // { id, name } | null | undefined(=এখনো ফেচ হয়নি)
+  const [sqlQuery, setSqlQuery] = useState(null);
+
+  const nm = (name || "").trim();
+  const target = dsNormName(nm);
+
+  useEffect(() => {
+    if (editId || !sqliteOn || !businessType || !target) { setSql(null); setSqlQuery(null); return undefined; }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      dsFindProductByNameNorm(businessType, target)
+        .then((row) => { if (!cancelled) { setSql(row); setSqlQuery(target); } })
+        .catch((e) => { if (!cancelled) { console.warn("ডুপ্লিকেট-নাম SQL চেক ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e); setSql(null); setSqlQuery(null); } });
+    }, 150);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [target, editId, sqliteOn, businessType]);
+
+  const jsResult = useMemo(() => {
+    if (editId || !nm) return null;
+    return products.find(p => dsNormName(p.name) === target) || null;
+  }, [nm, target, products, editId]);
+
+  // SQL চালু + এই query-র জন্য রেজাল্ট এসে গেছে হলে সেটাই সত্য (name_norm ইনডেক্সড এক্সাক্ট
+  // ম্যাচ — dual-write cycle-এর মধ্যে stale হওয়ার ঝুঁকি সামান্য, JS-এরও একই ঝুঁকি আছে যেহেতু
+  // products state-ও দুই সিস্টেমের মধ্যে একই cadence-এ সিঙ্ক হয়)।
+  if (editId) return null;
+  if (sqliteOn && target && sqlQuery === target) return sql;
+  return jsResult;
+}
+
 function useKpiStats({ customers, invoices, products, txns, expenses = [], cashLogs = [], purchaseOrders = [], stockMovements = [], returns = [], refDayKey, refMonthKey, businessType }) {
   // 🆕 এন্ট্রি ৩৭ — নিচের বড় useMemo-এর বাইরে (React-এর hook-নিয়ম অনুযায়ী
   // useMemo-এর ভেতরে হুক কল করা যায় না) todayKey/monthStartKey হালকাভাবে
@@ -18431,10 +18566,9 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     [customersWithSerial, custSearch]
   );
 
-  const categories = useMemo(() => {
-    const cats = ["সব", "সার্ভিস", ...new Set(products.filter(p => p.productType !== "service").map(p => p.category || "অন্যান্য"))];
-    return cats;
-  }, [products]);
+  // 🆕 এন্ট্রি ৪৪ (৭.৩-এর ব্লকার, ক্যাটাগরি ③ FULL-SCAN) — SQL চালু থাকলে
+  // DISTINCT কোয়েরি, নাহলে আগের মতোই পুরো products অ্যারে JS-স্ক্যান।
+  const categories = useKnownCategories(products, businessType);
 
   const productsWithSerial = useMemo(() =>
     products.map((p, i) => ({ ...p, serial: i + 1, serialStr: String(i + 1) })),
@@ -22307,7 +22441,8 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   // হয়েছে") দেখাত, যদিও বাস্তবে দোকান/স্টকে একবারই সরানো হয়েছিল। এই ref দিয়ে
   // একই ব্যাচের জন্য কয়েক সেকেন্ডের মধ্যে দ্বিতীয়বার কল ব্লক করা হয়।
   // 🆕 কাস্টমার অর্ডার ফর্মের ডোজ-ফর্ম চিপ পিকারের জন্য — আগে "নিজে লিখুন" দিয়ে টাইপ করা কাস্টম প্রিফিক্স
-  const knownCustomDosageForms = useMemo(() => getKnownCustomDosageForms(products), [products]);
+  // 🆕 এন্ট্রি ৪৪ (৭.৩-এর ব্লকার) — SQL চালু থাকলে DISTINCT কোয়েরি, নাহলে JS ফলব্যাক
+  const knownCustomDosageForms = useKnownDosageForms(products, businessType);
   const expRemoveInFlight = useRef(new Set());
   const [expRemoveToast,   setExpRemoveToast]   = useState(null);
   // মাসিক মেয়াদোত্তীর্ণ হিসাব — নির্দিষ্ট মাসের জন্য (Firestore থাকলে) সম্পূর্ণ ইতিহাস আনা হয়, নাহলে লোকাল stockMovements থেকে
@@ -27887,9 +28022,10 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const [demandFilter, setDemandFilter] = useState("সব"); // "সব" | "common" | "uncommon"
 
   // আগে ম্যানুয়ালি লেখা সাপ্লায়ারের নাম — SupplierPicker-এ সাজেশন হিসেবে দেওয়ার জন্য ("অটো-সেভ")
-  const knownSuppliers = useMemo(() => getKnownSuppliers(products, purchaseOrders), [products, purchaseOrders]);
+  // 🆕 এন্ট্রি ৪৪ (৭.৩-এর ব্লকার) — SQL চালু থাকলে DISTINCT কোয়েরি, নাহলে JS ফলব্যাক
+  const knownSuppliers = useKnownSuppliers(products, purchaseOrders, businessType);
   // 🆕 আগে "নিজে লিখুন" দিয়ে টাইপ করা কাস্টম ধরন/প্রিফিক্স — চিপ-লিস্টে সাজেশন হিসেবে দেওয়ার জন্য ("অটো-সেভ")
-  const knownCustomDosageForms = useMemo(() => getKnownCustomDosageForms(products), [products]);
+  const knownCustomDosageForms = useKnownDosageForms(products, businessType);
 
 
   // 🆕 Phase ৪ (হাইব্রিড সার্চ) — SmartInvoiceBuilder-এর filteredProducts-এ ব্যবহৃত একই
@@ -28181,17 +28317,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     setNameSuggestOpen(false);
   };
   // 🔴 ফিক্স: আগে ডুপ্লিকেট পণ্যের নাম শুধু "যোগ করুন" চাপার পরে (পুরো ফর্ম পূরণ
-  // করার পরে) ধরা পড়ত। এখন টাইপ করার সাথে সাথেই (প্রতি কি-স্ট্রোকে) নাম হুবহু
-  // (case/space-insensitive) মিলে গেলে সাথে সাথে জানিয়ে দেয় — বাকি ফিল্ড পূরণ
-  // করার আগেই, যাতে সময় নষ্ট না হয়।
-  const liveDupProduct = useMemo(() => {
-    if (editId) return null; // এডিটের সময় নিজের সাথে মিলবেই — চেক দরকার নেই
-    const nm = (form.name || "").trim();
-    if (!nm) return null;
-    const normName = (s) => String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
-    const target = normName(nm);
-    return products.find(p => normName(p.name) === target) || null;
-  }, [form.name, products, editId]);
+  // করার পরে) ধরা পড়ত। এখন টাইপ করার সাথে সাথেই নাম হুবহু (case/space-insensitive)
+  // মিলে গেলে সাথে সাথে জানিয়ে দেয় — বাকি ফিল্ড পূরণ করার আগেই, যাতে সময় নষ্ট না হয়।
+  // 🆕 এন্ট্রি ৪৪ (৭.৩-এর ব্লকার, ক্যাটাগরি ③ FULL-SCAN) — SQL চালু থাকলে name_norm
+  // ইনডেক্সড exact lookup (১৫০ms ডিবাউন্স), নাহলে আগের মতোই পুরো products অ্যারে JS-স্ক্যান।
+  const liveDupProduct = useLiveDupProduct(form.name, editId, products, businessType);
   // ── #৭ AI ফিচার — এক লাইনে বাংলা টেক্সট থেকে ফর্ম ফিল্ড অটো-পার্স (পর্যায় ১) ──
   const [showAiQuickEntry, setShowAiQuickEntry] = useState(false);
   const [aiQuickText, setAiQuickText] = useState("");
@@ -28222,7 +28352,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const lowStock = useMemo(() => products.filter(p => (p.stock || 0) <= 5 && (p.stock || 0) > 0), [products]);
   const outOfStock = useMemo(() => products.filter(p => (p.stock || 0) === 0), [products]);
 
-  const saveProduct = () => {
+  const saveProduct = async () => {
     const errs = {};
     if (!form.name.trim()) errs.name = true;
     if (!form.price || parseFloat(form.price) <= 0) errs.price = true;
@@ -28237,9 +28367,25 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     // তৈরি — একই পণ্যের নতুন স্টক এলে নতুন প্রোডাক্ট বানানোর বদলে বিদ্যমান
     // পণ্যে "ক্রয় এন্ট্রি" থেকে ব্যাচ যোগ করা উচিত)। case/space-insensitive
     // তুলনা করে — নতুন পণ্য তৈরির সময়ই শুধু চেক হয় (এডিটে না, নিজের সাথে মিলবেই)
-    const normName = (s) => String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
+    // 🆕 এন্ট্রি ৪৪ (৭.৩-এর ব্লকার, ক্যাটাগরি ③ FULL-SCAN, সেভ-টাইম ফাইনাল গার্ড):
+    // liveDupProduct (উপরে, ১৫০ms ডিবাউন্সড) সাধারণত এতক্ষণে রেজাল্ট দিয়ে দেয়,
+    // কিন্তু ইউজার টাইপ করে সাথে সাথেই সেভ চাপলে ডিবাউন্স উইন্ডো মিস হতে পারে —
+    // তাই সেভ-টাইমে SQL চালু থাকলে একটা তাজা, non-debounced authoritative চেক
+    // (dsFindProductByNameNorm সরাসরি await), এটাই আসল ডেটা-ইন্টেগ্রিটি গ্যারান্টি।
+    // SQL বন্ধ থাকলে (products পূর্ণ মেমরিতে) আগের মতোই সরাসরি JS-স্ক্যান ফলব্যাক।
     if (!editId && form.name.trim()) {
-      const dup = products.find(p => p.id !== editId && normName(p.name) === normName(form.name));
+      const target = dsNormName(form.name);
+      let dup = null;
+      if (isSqliteEnabled() && businessType) {
+        try {
+          dup = await dsFindProductByNameNorm(businessType, target);
+        } catch (e) {
+          console.warn("সেভ-টাইম ডুপ্লিকেট-নাম SQL চেক ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+          dup = products.find(p => p.id !== editId && dsNormName(p.name) === target) || null;
+        }
+      } else {
+        dup = products.find(p => p.id !== editId && dsNormName(p.name) === target) || null;
+      }
       if (dup) {
         setFormErrors(e => ({ ...e, name: true }));
         showToast(`"${dup.name}" নামে পণ্য আগে থেকেই আছে — নতুন স্টক এলে "ক্রয় এন্ট্রি" থেকে ব্যাচ যোগ করুন`, "#ef4444");
