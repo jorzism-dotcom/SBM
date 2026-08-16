@@ -217,6 +217,11 @@ export async function getDb(businessType) {
   try {
     await db.execute(`ALTER TABLE purchaseOrders ADD COLUMN purchase_amount REAL;`);
   } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
+  // 🆕 এন্ট্রি ৪৪ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ৭.৩-এর ব্লকার) — একই কারণে
+  // ALTER TABLE গার্ড এই কলামের জন্যও (schema.sql-এর dosage_form কমেন্ট দ্রষ্টব্য)।
+  try {
+    await db.execute(`ALTER TABLE products ADD COLUMN dosage_form TEXT;`);
+  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
   // schema.sql-এ multiple statements আছে — execute() মাল্টি-স্টেটমেন্ট সাপোর্ট করে
   await db.execute(restOfSchema);
 
@@ -315,6 +320,7 @@ const HOT_FIELDS = {
       "min_stock_alert", "nearest_expiry_date", "supplier_key", // 🆕 এন্ট্রি ৩৬ (ধাপ ২)
       "product_type", "category", "browse_rank", // 🆕 এন্ট্রি ৪০ (ধাপ ৫)
       "supplier_due_key", "supplier_due_raw", // 🆕 এন্ট্রি ৪১ (ধাপ ৬)
+      "dosage_form", // 🆕 এন্ট্রি ৪৪ (৭.৩-এর ব্লকার)
     ],
     extract: (p) => [
       String(p.id),
@@ -335,6 +341,7 @@ const HOT_FIELDS = {
       computeBrowseRank(p), // 🆕 এন্ট্রি ৪০
       (() => { const r = productSupplierDueRaw(p); return supplierDueKeyOf(r); })(), // 🆕 এন্ট্রি ৪১
       productSupplierDueRaw(p) || null, // 🆕 এন্ট্রি ৪১
+      (p.dosageForm || "").trim() || null, // 🆕 এন্ট্রি ৪৪
     ],
   },
   customers: {
@@ -1072,6 +1079,69 @@ export async function getSupplierDueRows(businessType) {
     // ব্যবহৃত — computeSupplierDueMap()-এর finalMap[raw]=... আচরণের সমতুল্য)
     rawVariants: r.raw_variants ? r.raw_variants.split("\u001F") : [r.name],
   }));
+}
+
+// 🆕 এন্ট্রি ৪৪ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ৭.৩-এর ব্লকার, ক্যাটাগরি ③
+// FULL-SCAN — ৪টার মধ্যে ৩টা এখানে, dup-name check নিচে আলাদা কারণ ওটা লিস্ট না
+// একক-রেকর্ড lookup)। প্রতিটাই পুরো `products` অ্যারে JS-স্ক্যানের বদলে DISTINCT
+// কোয়েরি — dup-name-এর মতোই SupplierPicker/dosage-chip/ক্যাটাগরি-ফিল্টারের
+// অটো-সাজেশন লিস্ট, প্রতিবার re-render-এ রিকম্পিউট করার দরকার নেই।
+
+/** SmartInvoiceBuilder-এর ক্যাটাগরি-ফিল্টার চিপ লিস্টের জন্য — service বাদে distinct category। */
+export async function getDistinctCategories(businessType) {
+  const db = await getDb(businessType);
+  const sql = `
+    SELECT DISTINCT category FROM products
+    WHERE deleted = 0 AND product_type != 'service' AND category IS NOT NULL AND category != ''
+    ORDER BY category ASC
+  `;
+  const res = await db.query(sql);
+  return (res.values || []).map((r) => r.category);
+}
+
+/** getKnownSuppliers()-এর SQL সমতুল্য — products.supplier_due_raw (এন্ট্রি ৪১-এ প্রি-কম্পিউটেড,
+ * (p.company||p.supplier).trim()) UNION purchaseOrders.supplier_due_raw ((po.supplier||po.company).trim()) —
+ * দুটোই আগে থেকে বিদ্যমান কলাম, নতুন কোনো কলাম/write-time কাজ লাগেনি। */
+export async function getDistinctSuppliers(businessType) {
+  const db = await getDb(businessType);
+  const sql = `
+    SELECT DISTINCT supplier_due_raw AS raw FROM products
+      WHERE supplier_due_raw IS NOT NULL AND supplier_due_raw != ''
+    UNION
+    SELECT DISTINCT supplier_due_raw FROM purchaseOrders
+      WHERE supplier_due_raw IS NOT NULL AND supplier_due_raw != ''
+  `;
+  const res = await db.query(sql);
+  return (res.values || []).map((r) => r.raw);
+}
+
+/** getKnownCustomDosageForms()-এর SQL সমতুল্য — DOSAGE_FORM_CHIPS-এ নেই এমন ফিল্টার App.jsx-এই হয় (JS constant,
+ * SQL-এ আনার দরকার নেই), এখানে শুধু distinct raw dosage_form ভ্যালু ফেরত। */
+export async function getDistinctDosageForms(businessType) {
+  const db = await getDb(businessType);
+  const sql = `
+    SELECT DISTINCT dosage_form FROM products
+    WHERE deleted = 0 AND dosage_form IS NOT NULL AND dosage_form != ''
+    ORDER BY dosage_form ASC
+  `;
+  const res = await db.query(sql);
+  return (res.values || []).map((r) => r.dosage_form);
+}
+
+/** liveDupProduct-এর SQL সমতুল্য — name_norm ইনডেক্সড কলামে exact lookup (schema-তে এন্ট্রি ৯ থেকেই
+ * বিদ্যমান, তাই এই ৪টার মধ্যে সবচেয়ে সহজ কনভার্শন)। excludeId এডিট-মোডে নিজের রেকর্ড বাদ দিতে
+ * (App.jsx-এর "if (editId) return null" আচরণের সমতুল্য, তবে এখানে বাদ দিয়ে বাকি সব চেক করা — ভবিষ্যতে
+ * এডিট-মোডেও অন্য পণ্যের সাথে নাম-সংঘর্ষ ধরতে চাইলে কাজে লাগবে)। */
+export async function findProductByNameNorm(businessType, nameNorm, excludeId = null) {
+  if (!nameNorm) return null;
+  const db = await getDb(businessType);
+  const sql = excludeId
+    ? `SELECT id, name FROM products WHERE name_norm = ? AND deleted = 0 AND id != ? LIMIT 1`
+    : `SELECT id, name FROM products WHERE name_norm = ? AND deleted = 0 LIMIT 1`;
+  const params = excludeId ? [nameNorm, String(excludeId)] : [nameNorm];
+  const res = await db.query(sql, params);
+  const row = (res.values || [])[0];
+  return row ? { id: row.id, name: row.name } : null;
 }
 
 // ── Phase 2: Resumable migration runner ─────────────────────────────────────

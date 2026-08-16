@@ -52,6 +52,10 @@ CREATE TABLE IF NOT EXISTS products (
   -- ফলব্যাক নেই) দিয়ে normalizeSupplierKey()-এর ফলাফল।
   supplier_due_key      TEXT,    -- normalizeSupplierKey(p.company || p.supplier || "") — খালি হলে NULL
   supplier_due_raw      TEXT,    -- (p.company || p.supplier || "").trim() — canonical নাম বাছাইয়ের জন্য raw ভ্যারিয়েন্ট
+  -- 🆕 এন্ট্রি ৪৪ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ৭.৩-এর ব্লকার, ক্যাটাগরি ③)
+  -- p.dosageForm — getKnownCustomDosageForms()-এর DISTINCT কোয়েরির জন্য (আগে
+  -- এই ফিল্ড শুধু data JSON-এর ভেতরে ছিল, কোনো ফ্ল্যাট কলাম ছিল না)
+  dosage_form           TEXT,
   data        TEXT NOT NULL      -- পুরো product object JSON (batches, dosageForm, unit, সব বাকি ফিল্ড)
 );
 CREATE INDEX IF NOT EXISTS idx_products_name_norm ON products(name_norm);
@@ -64,6 +68,8 @@ CREATE INDEX IF NOT EXISTS idx_products_stock            ON products(stock);
 CREATE INDEX IF NOT EXISTS idx_products_stock_minalert    ON products(stock, min_stock_alert);
 CREATE INDEX IF NOT EXISTS idx_products_nearest_expiry    ON products(nearest_expiry_date);
 CREATE INDEX IF NOT EXISTS idx_products_supplier_key      ON products(supplier_key);
+-- 🆕 এন্ট্রি ৪৪ — getKnownCustomDosageForms()-এর DISTINCT dosage_form কোয়েরির জন্য
+CREATE INDEX IF NOT EXISTS idx_products_dosage_form       ON products(dosage_form);
 -- 🆕 keyset pagination কম্পোজিট ইনডেক্স (DataStore.js queryPage(), ব্লকার #২ ফিক্স) —
 -- (sortColumn, id) দুটো কলামই একসাথে ইনডেক্সে থাকায় "WHERE (updated_at, id) < (?, ?)
 -- ORDER BY updated_at DESC, id DESC LIMIT N" কোয়েরি single covering-index seek-এ
