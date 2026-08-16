@@ -48,6 +48,10 @@ import { getCashLogTotal as dsGetCashLogTotal, getPurchaseOrderTotals as dsGetPu
 import { getInventoryCounts as dsGetInventoryCounts, getExpiredRemovalTotals as dsGetExpiredRemovalTotals } from "./db/DataStore.js";
 // 🆕 এন্ট্রি ৪১ — ধাপ ৬ (computeSupplierDueMap SQL cutover)
 import { getSupplierDueRows as dsGetSupplierDueRows } from "./db/DataStore.js";
+
+// 🆕 এন্ট্রি ৪২-৪৩ (ধাপ ৭.২, PRODUCTS_ONDEMAND_MIGRATION_PLAN.md) — lazy/async
+// id-ভিত্তিক product লুকআপের জন্য ব্যাচ-হেল্পার
+import { getByIds as dsGetByIds } from "./db/DataStore.js";
 // 🆕 Repository লেয়ার (Phase ২, PHASE_3_4_5_FINAL_PLAN_v2.md) — এখনো array-ভিত্তিক,
 // শুধু ইন্টারফেস। প্রথম ওয়্যার্ড কল-সাইট: detailCust (নিচে)।
 import { getCustomerById } from "./db/Repository.js";
@@ -9135,6 +9139,82 @@ function useReturnsTotals(returns, invoices, businessType, todayKey, monthStartK
     todayProfitImpact: jsTodayProfitImpact, monthProfitImpact: jsMonthProfitImpact,
     todayCashRefund: jsTodayCashRefund,
   };
+}
+
+// 🆕 এন্ট্রি ৪২-৪৩ (ধাপ ৭.২, PRODUCTS_ONDEMAND_MIGRATION_PLAN.md) — lazy/async
+// id-ভিত্তিক product লুকআপ hook (`useProductsByIds`)।
+//
+// **কেন**: ধাপ ৭-এর অডিটে (এন্ট্রি ৪২) ধরা পড়েছে — POS পিকার/Products main
+// list-এ SQL (`browse_rank`) শুধু id-অর্ডার ঠিক করে, কিন্তু প্রতিটা কার্ড
+// রেন্ডারের পূর্ণ product object এখনো সবসময় সিঙ্ক্রোনাস `productsById`
+// (পুরো `products` অ্যারে থেকে রিবিল্ড হওয়া global Map) থেকে আসে — এটাই
+// `products`-কে সবসময় পূর্ণ মেমরিতে রাখতে বাধ্য করছে। এই হুক সেই সিঙ্ক
+// নির্ভরতা ভাঙার প্রথম বিল্ডিং-ব্লক: একটা নির্দিষ্ট id-তালিকার জন্য
+// (যেমন — বর্তমান পেজের ৫০টা id) `getByIds()` দিয়ে ব্যাচ-ফেচ করে, ইতিমধ্যে
+// লোড হওয়া id রিফেচ না করে (ইনক্রিমেন্টাল ক্যাশ)।
+//
+// **ডিজাইন — মাইগ্রেশনের established fallback প্যাটার্ন অনুসরণ করে**:
+//   - `isSqliteEnabled()` false হলে বা `products` (in-memory) থেকেই id
+//     পাওয়া গেলে — SQL ফেচ করারই দরকার নেই, সরাসরি `productsById.get(id)`
+//     রিটার্ন হয় (zero SQL কল, বিদ্যমান আচরণ ১০০% অপরিবর্তিত)।
+//   - শুধু তখনই SQL ফেচ ট্রিগার হয় যখন `products` (in-memory) খালি/লেজি
+//     এবং সেই id এখনো ক্যাশে নেই — অর্থাৎ ভবিষ্যতে (ধাপ ৭.৩) বুট lazy হলেই
+//     এই পাথ সক্রিয় হবে, আপাতত `products` সবসময় পূর্ণ থাকায় (৭.৩ এখনো হয়নি)
+//     এই effect বাস্তবে কখনো ফায়ারই করবে না।
+//   - রিটার্ন `{ get(id), loadingIds: Set, missingIds: Set }` — কলার
+//     সিঙ্ক্রোনাসভাবে `get()` কল করে; না-পাওয়া গেলে `null` পায় (loading
+//     অবস্থায় স্কেলিটন/প্লেসহোল্ডার দেখানোর সুযোগ দেয়, ক্র্যাশ না)।
+//
+// ⚠️ **এই হুক এখনো App.jsx-এর কোনো রেন্ডার-পাথে wire করা হয়নি** — শুধু
+// সংজ্ঞায়িত+টেস্টেড (নিচে দেখুন)। wire করা (POS card/Products list card
+// রেন্ডারে ব্যবহার) হলো ধাপ ৭.৩-এর অংশ, কিন্তু ৭.৩ (বুট সিকোয়েন্স পরিবর্তন)
+// এখনো ইচ্ছাকৃতভাবে অস্পৃষ্ট (এন্ট্রি ৪২ দ্রষ্টব্য — কারণ ব্যাখ্যা করা আছে)।
+function useProductsByIds(ids, businessType, productsByIdMap) {
+  const [cache, setCache] = useState(() => new Map());
+  const cacheRef = useRef(cache);
+  cacheRef.current = cache;
+  const inFlightRef = useRef(new Set());
+  const sqliteOn = isSqliteEnabled();
+
+  const idsKey = (ids || []).join(",");
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType) return undefined;
+    const wanted = (ids || []).map(String);
+    // যেগুলো ইতিমধ্যে in-memory productsByIdMap-এ আছে (products এখনো পূর্ণ
+    // থাকা অবস্থায়, বর্তমান বাস্তবতা), সেগুলোর জন্য SQL ফেচ করার দরকার নেই।
+    const missing = wanted.filter(
+      (id) => !productsByIdMap?.has(id) && !cacheRef.current.has(id) && !inFlightRef.current.has(id)
+    );
+    if (missing.length === 0) return undefined;
+
+    let cancelled = false;
+    missing.forEach((id) => inFlightRef.current.add(id));
+    (async () => {
+      try {
+        const rows = await dsGetByIds(businessType, "products", missing);
+        if (cancelled) return;
+        setCache((prev) => {
+          const next = new Map(prev);
+          for (const row of rows) next.set(String(row.id), row);
+          return next;
+        });
+      } catch (e) {
+        console.warn("useProductsByIds() SQL ব্যাচ-ফেচ ব্যর্থ:", e);
+      } finally {
+        missing.forEach((id) => inFlightRef.current.delete(id));
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idsKey, sqliteOn, businessType, productsByIdMap]);
+
+  const get = useCallback(
+    (id) => productsByIdMap?.get(String(id)) || cacheRef.current.get(String(id)) || null,
+    [productsByIdMap, cache] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
+  return { get, cache };
 }
 
 // 🆕 এন্ট্রি ৩৯ — useKpiStats-এর products-নির্ভর অবশিষ্ট অংশ: stockValue/lowStockCount
