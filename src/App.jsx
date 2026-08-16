@@ -28251,6 +28251,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     [products]
   );
 
+  // 🆕 ধাপ ৭.৩ প্রস্তুতি (POS-এর productsByIdMap-এর সাথে সামঞ্জস্যপূর্ণ প্যাটার্ন) —
+  // id → লাইভ product অবজেক্ট Map, useProductsByIds() হুকের জন্য। যতক্ষণ products
+  // পুরোপুরি মেমরিতে থাকে, এই Map থেকেই সবসময় সিঙ্ক্রোনাস লুকআপ হয় (SQL ফেচ না)।
+  const productsByIdMap = useMemo(() => new Map(products.map(p => [String(p.id), p])), [products]);
+
   const [demandFilter, setDemandFilter] = useState("সব"); // "সব" | "common" | "uncommon"
 
   // আগে ম্যানুয়ালি লেখা সাপ্লায়ারের নাম — SupplierPicker-এ সাজেশন হিসেবে দেওয়ার জন্য ("অটো-সেভ")
@@ -28324,9 +28329,17 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   // দুটো আলাদা single-column queryPage() কল ব্যবহার হচ্ছে — common বাকেট আগে
   // (name ASC), শেষ হলে uncommon বাকেটে সিমলেসলি চলে যায়। SQLite কল ব্যর্থ হলে
   // filteredAll (JS ফলব্যাক)-এ সাইলেন্টলি ফিরে যায়।
+  // 🆕 ধাপ ৭.৩ প্রস্তুতি — আগে এখানে SQL থেকে পুরো row-স্ন্যাপশট (`data` JSON
+  // ব্লব, dual-write-এর সময়কার) সরাসরি রাখা হতো (`browseRows`)। এখন POS-এর
+  // (এন্ট্রি ৪০/৫০) সাথে সামঞ্জস্যপূর্ণ প্যাটার্নে — SQL শুধু এই পেজের
+  // product-id অর্ডার দেয় (`browseIds`), প্রতিটা কার্ড তারপরও লাইভ
+  // `productsByIdMap`/`useProductsByIds()` থেকে হাইড্রেট হয়ে রেন্ডার হয়।
+  // stale dual-write স্ন্যাপশট (এডিট ফর্মের ডিফল্ট ভ্যালু/স্টক ব্যাজ) দেখানোর
+  // সম্ভাবনা এতে দূর হয় — POS-এর মতোই zero এক্সট্রা SQL কল যতক্ষণ products
+  // পুরোপুরি মেমরিতে থাকে (productsByIdMap-এই সবসময় মিলে যাবে)।
   const BROWSE_PAGE_SIZE = 40;
   const isSearchActive = !!(deferredSearch && deferredSearch.trim() && !deferredSearch.trim().startsWith("__"));
-  const [browseRows,    setBrowseRows]    = useState([]);
+  const [browseIds,     setBrowseIds]     = useState([]);
   const [browseTotal,   setBrowseTotal]   = useState(null);
   const [browseDone,    setBrowseDone]    = useState(false);
   const [browseLoading, setBrowseLoading] = useState(false);
@@ -28361,7 +28374,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       browsePhaseRef.current = nextPhase;
       browseCursorRef.current = nextCursor;
       setBrowseDone(nextPhase === "done");
-      setBrowseRows(prev => reset ? r.rows : [...prev, ...r.rows]);
+      const ids = r.rows.map(p => String(p.id));
+      setBrowseIds(prev => reset ? ids : [...prev, ...ids]);
     } catch {
       setBrowseFailed(true); // SQLite ব্যর্থ → পরের রেন্ডারে filteredAll ফলব্যাকে চলে যাবে
     } finally {
@@ -28374,7 +28388,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     if (!useSqliteBrowse) return;
     browsePhaseRef.current = demandFilter === "uncommon" ? "uncommon" : "common";
     browseCursorRef.current = null;
-    setBrowseRows([]);
+    setBrowseIds([]);
     setBrowseDone(false);
     loadBrowsePage(true);
     (async () => {
@@ -28389,6 +28403,14 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [useSqliteBrowse, demandFilter, businessType]);
+
+  // 🆕 ধাপ ৭.৩ প্রস্তুতি — `browseIds`-এর প্রতিটা id লাইভ `productsByIdMap`
+  // (products পুরোপুরি মেমরিতে থাকা অবস্থায় সবসময় সিঙ্ক্রোনাস) দিয়ে হাইড্রেট।
+  const { get: getBrowseProductRow } = useProductsByIds(browseIds, businessType, productsByIdMap);
+  const browseProducts = useMemo(
+    () => browseIds.map(id => getBrowseProductRow(id)).filter(Boolean),
+    [browseIds, getBrowseProductRow]
+  );
 
   // ── FIFO active-batch map — প্রোডাক্ট লিস্টের ব্যাচ ব্যাজ দেখানোর জন্য (prodBatchMap fix) ──
   const prodBatchMap = useMemo(() => {
@@ -30314,17 +30336,19 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {/* 🆕 এন্ট্রি ৩০ — ব্রাউজ-মোডে (useSqliteBrowse) SQLite-পেজিনেটেড browseRows,
-            নাহলে/সার্চ-অ্যাক্টিভ হলে আগের মতোই filteredAll (JS, পুরো array) */}
-        {(useSqliteBrowse ? browseRows.length === 0 && browseDone : filteredAll.length === 0) && (
+        {/* 🆕 ধাপ ৭.৩ প্রস্তুতি — ব্রাউজ-মোডে (useSqliteBrowse) SQLite-পেজিনেটেড
+            browseIds → productsByIdMap/useProductsByIds() দিয়ে হাইড্রেটেড
+            browseProducts, নাহলে/সার্চ-অ্যাক্টিভ হলে আগের মতোই filteredAll
+            (JS, পুরো array) */}
+        {(useSqliteBrowse ? browseProducts.length === 0 && browseDone : filteredAll.length === 0) && (
           <div style={S.empty}>
             কোনো পণ্য নেই
           </div>
         )}
-        {(useSqliteBrowse ? browseRows.length > 0 : filteredAll.length > 0) && (
+        {(useSqliteBrowse ? browseProducts.length > 0 : filteredAll.length > 0) && (
         <Virtuoso
           style={{ height: "calc(100dvh - 260px)" }}
-          data={useSqliteBrowse ? browseRows.map((p, i) => ({ ...p, serial: i + 1, serialStr: String(i + 1) })) : filteredAll}
+          data={useSqliteBrowse ? browseProducts.map((p, i) => ({ ...p, serial: i + 1, serialStr: String(i + 1) })) : filteredAll}
           endReached={useSqliteBrowse ? () => { if (!browseDone && !browseLoading) loadBrowsePage(false); } : undefined}
           increaseViewportBy={{ top: 400, bottom: 600 }}
           computeItemKey={(_, p) => p.id}
