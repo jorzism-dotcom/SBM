@@ -23,16 +23,17 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৪৪-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৪৭-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
 
-**🟡 এন্ট্রি ৪৪**: এন্ট্রি ৪৩-এ চিহ্নিত ৪টা FULL-SCAN ব্লকারের মধ্যে **৩টা সম্পূর্ণ SQL cutover** (কোড-সম্পূর্ণ, sandbox esbuild-ভেরিফায়েড — এই সেশনের sandbox-এ npm নেটওয়ার্ক ব্লকড থাকায় `npm test`/lint চালানো যায়নি, **পরের সেশনে সবার আগে করণীয়**):
-1. **ডুপ্লিকেট-নাম চেক** — নতুন `findProductByNameNorm()` (name_norm ইনডেক্সড exact lookup)। `liveDupProduct` (টাইপ করার সময়কার লাইভ হিন্ট, ১৫০ms ডিবাউন্স) → নতুন `useLiveDupProduct()` হুক। **এছাড়াও সেভ-বাটনের ফাইনাল গার্ড** (`saveProduct()`, আগে সবসময় JS array-scan) এখন `async` করে SQL চালু থাকলে একটা fresh non-debounced authoritative চেক করে (ডিবাউন্স উইন্ডো মিস হওয়ার এজ-কেস কভার করতে) — এটাই আসল ডেটা-ইন্টেগ্রিটি গ্যারান্টি, লাইভ হিন্টটা শুধু UX।
-2. **ক্যাটাগরি-লিস্ট** (SmartInvoiceBuilder চিপ ফিল্টার) — নতুন `getDistinctCategories()` + `useKnownCategories()` হুক।
-3. **সাপ্লায়ার/dosageForm অটো-সাজেস্ট** — সাপ্লায়ার-লিস্ট এন্ট্রি ৪১-এর বিদ্যমান `supplier_due_raw` কলাম পুনর্ব্যবহার করেছে (নতুন কলাম লাগেনি, শুধু নতুন `getDistinctSuppliers()` DISTINCT+UNION কোয়েরি)। dosageForm-এর জন্য schema-তে নতুন `dosage_form TEXT` কলাম+ইনডেক্স+ALTER TABLE গার্ড যোগ হয়েছে (আগে শুধু `data` JSON-এর ভেতরে ছিল)। দুটোই `useKnownSuppliers()`/`useKnownDosageForms()` হুকে, Dashboard ও Products দুই জায়গাতেই wire করা হয়েছে।
+**🟡 এন্ট্রি ৪৭**: AIPage_-এর ৪টা সাব-প্যাটার্নের মধ্যে ৩য়টা (expired/near-expiry স্ক্যান) SQL cutover সম্পূর্ণ — কোড-সম্পূর্ণ, sandbox-ভেরিফায়েড (`npm test` ১৯৬ কেস, `npm run lint` 0 error, `npm run build` ক্লিন)। নতুন SQL/DataStore ফাংশন লাগেনি — InventorySection-এ (এন্ট্রি ৩৬) বানানো `dsGetExpiryCandidates()` (নতুন কিছু না, `nearest_expiry_date` ইনডেক্স-সিক করে candidate সেট ছোট করা) সরাসরি পুনর্ব্যবহার করে নতুন `useExpiryCandidates()` হুক। এই হুক শুধু candidate সেট (SQL চালু থাকলে ছোট narrowed সেট, নাহলে পুরো `prodAll`) রিটার্ন করে — আসল expired/near বিভাজন (read-time `new Date()` তুলনা) আগের মতোই `ruleBasedAnswer()`-এর ভেতরে JS-এই থাকছে (InventorySection-এর প্যাটার্নের সাথে সামঞ্জস্যপূর্ণ — staleness ঝুঁকি নেই)। **বাকি ১টা সাব-প্যাটার্ন**: `forecastData`/`productSales` জয়েন (বেস্টসেলার র‍্যাংকিং) — সবচেয়ে জটিল, আলাদা সেশন হতে পারে।
 
-**৪. AIPage_ forecast/expired-scan — এখনো বাকি (ইচ্ছাকৃতভাবে এই সেশনে করা হয়নি)**: এই একটাই বাকি ৭.৩-এর আসল ব্লকার হিসেবে। AIPage_-এর `prodAll`-নির্ভর ব্যবহার কয়েকটা আলাদা প্যাটার্নে ভাগ করা যায় — `stockValue`/`lowStockItems` (এন্ট্রি ৪১-এই "ডুপ্লিকেট JS লজিক" হিসেবে ফ্ল্যাগড, `useProductStockTotals()` হুক দিয়ে সরাসরি রিপ্লেসেবল, সবচেয়ে সহজ অংশ), `outOfStock`/`prodAll.length` কাউন্ট (নতুন SQL COUNT দরকার), `forecastData`/`productSales` জয়েন (বেস্টসেলার র‍্যাংকিং, per-product sales-এর সাথে জয়েন — জটিল, কাস্টম ডিজাইন লাগবে), আর expired/near-expiry স্ক্যান (`nearest_expiry_date` কলাম এন্ট্রি ৩৬-এই আছে, কিন্তু AIPage_-এর নিজস্ব কপি এখনো JS)। **প্রস্তাবিত পরের ক্রম**: প্রথমে সবচেয়ে সহজ অংশ (stockValue/lowStockItems হুক-রিইউজ) দিয়ে শুরু, তারপর outOfStock/length কাউন্ট, তারপর expired-scan (nearest_expiry_date রিইউজ করে), সবশেষে forecastData (সবচেয়ে জটিল, আলাদা সেশন হতে পারে)।
+**পরের সেশনে সবার আগে করণীয়**: (১) real-device স্মোক-টেস্ট — AI চ্যাটে "মেয়াদ"/"এক্সপায়ার" ও "ফার্মেসি কেমন চলছে" জিজ্ঞেস করে SQL চালু অবস্থায় আগের মতোই দেখাচ্ছে কিনা যাচাই (এন্ট্রি ৪৪-৪৭-এর সব real-device টেস্ট এখনো বাকি — একসাথে করা যেতে পারে), (২) তারপর AIPage_-এর শেষ সাব-প্যাটার্ন `forecastData` (সবচেয়ে জটিল — বেস্টসেলার র‍্যাংকিং, per-product sales-এর সাথে জয়েন, কাস্টম ডিজাইন লাগবে)।
 
-**পরের সেশনে সবার আগে করণীয়**: (১) এই এন্ট্রির ৩টা কাজ `npm test`+lint+build দিয়ে ভেরিফাই করা (sandbox নেটওয়ার্ক ব্লকড থাকায় এখনো করা যায়নি), (২) real-device স্মোক-টেস্ট — বিশেষত সেভ-বাটনের নতুন async ডুপ্লিকেট-চেক গার্ড (নতুন পণ্য সেভ করে দেখা যে ডুপ্লিকেট এখনো ব্লক হচ্ছে এবং স্বাভাবিক সেভ কাজ করছে), (৩) তারপরই AIPage_-এর ৪টা সাব-প্যাটার্নে হাত দেওয়া।
+**🟢 এন্ট্রি ৪৬**: AIPage_ সাব-প্যাটার্ন ২/৪ (`outOfStock`/`prodAll.length`) SQL cutover সম্পূর্ণ, এন্ট্রি ৪৭-এ `npm test`+lint+build দিয়ে পুনরায় কনফার্মড। বিস্তারিত এন্ট্রি ৪৬ দ্রষ্টব্য।
+
+**🟢 এন্ট্রি ৪৫**: AIPage_ সাব-প্যাটার্ন ১/৪ (`stockValue`/`lowStockItems`) SQL cutover সম্পূর্ণ। বিস্তারিত এন্ট্রি ৪৫ দ্রষ্টব্য।
+
+**🟢 এন্ট্রি ৪৪**: এন্ট্রি ৪৩-এ চিহ্নিত ৪টা FULL-SCAN ব্লকারের মধ্যে ৩টা সম্পূর্ণ SQL cutover — কোড-সম্পূর্ণ। বিস্তারিত এন্ট্রি ৪৪ দ্রষ্টব্য।
 
 **📌 স্থায়ী নির্দেশনা (ব্যবহারকারীর ফাইনাল সিদ্ধান্ত, ১৫ আগস্ট ২০২৬)**: "আমি অ্যাপের সব SQL করব, এটাই ফাইনাল।" — অর্থাৎ কোনো ফিচার/হিসাব "in-memory থেকে যথেষ্ট লাভ নেই" বা "ঝুঁকিপূর্ণ" বলে স্কিপ করার প্রস্তাব দেওয়া চলবে না; বরং safest ইমপ্লিমেন্টেশন-স্ট্র্যাটেজি বেছে এগোতে হবে (যেমন এন্ট্রি ৪১-এ: normalizeSupplierKey()-এর মতো regex/fuzzy-matching লজিক SQL-এ regex দিয়ে রেপ্লিকেট না করে, JS-এই write-time-এ প্রিকম্পিউট করে ফ্ল্যাট কলামে বসানো, শুধু GROUP BY/SUM SQL-এ)। প্রতিটা নতুন ধাপে এই নীতি মাথায় রাখা জরুরি।
 
@@ -95,6 +96,59 @@ Schema+FTS5 · dual-write (shadow) · resumable batch backfill · row-count veri
 ---
 
 ## এন্ট্রি লগ
+
+### [এন্ট্রি ৪৭] — AIPage_ সাব-প্যাটার্ন ৩/৪: expired/near-expiry স্ক্যান হুক-রিইউজ সম্পূর্ণ
+
+**অবস্থা**: কোড-সম্পূর্ণ, sandbox-ভেরিফায়েড — `npm test` (১৯৬ কেস, সব পাস) + `npm run lint` (0 error) + `npm run build` (ক্লিন)।
+
+**যা করা হয়েছে**:
+- নতুন `useExpiryCandidates(products, businessType)` হুক (App.jsx) — কোনো নতুন SQL/DataStore ফাংশন লাগেনি, InventorySection-এর জন্য এন্ট্রি ৩৬-এ বানানো `dsGetExpiryCandidates(businessType)` (nearest_expiry_date ইনডেক্স-সিক করে candidate সেট ছোট করে) সরাসরি পুনর্ব্যবহার করা হলো।
+- এই হুক শুধু candidate-সেট রিটার্ন করে (SQL চালু থাকলে narrowed, নাহলে পুরো `prodAll`) — InventorySection-এর বিদ্যমান `expirySource` প্যাটার্নের সাথে সামঞ্জস্যপূর্ণ: আসল expired/near বিভাজন এখনো read-time `new Date()` তুলনা দিয়ে JS-এই হয়, ইনপুট-সোর্স শুধু বদলায়। এতে staleness ঝুঁকি নেই (তুলনাটা সবসময় লাইভ ডেটার উপর)।
+- `AIPage_`-এ `useExpiryCandidates(prodAll, businessType)` কল করে `expiryCandidatesAI` তৈরি হয়, `ruleBasedAnswer()`-এর `data` অবজেক্টে `expiryCandidates` নামে পাস হয় (ঠিক `stockValue`/`lowStockItems`/`outOfStockItems`-এর বিদ্যমান প্যাটার্নের মতোই — `ruleBasedAnswer()` প্লেইন ফাংশন, হুক কল করতে পারে না)।
+- `ruleBasedAnswer()`-এর ভেতরে ২ জায়গায় ("মেয়াদ/এক্সপায়ার" ও "ফার্মেসি পরামর্শ" ব্লক) `(prodAll||[]).filter(...)` → `(expiryCandidates||[]).filter(...)` রিপ্লেস হয়েছে, ফিল্টার-শর্ত ও ৯০-দিন থ্রেশহোল্ড হুবহু অপরিবর্তিত।
+- `prodAll` এখনো ব্যবহৃত হচ্ছে `ruleBasedAnswer()`-এর "overstock" ব্লকে (forecastData-নির্ভর জয়েন — পরের/শেষ সাব-প্যাটার্নের অংশ, ইচ্ছাকৃতভাবে অস্পৃষ্ট)।
+
+**যাচাই**: `npm test`+lint+build তিনটাই ক্লিন — এন্ট্রি ৪৬-এর ভুল (bulk sed-এ ভ্যারিয়েবল স্কোপ মিক্স-আপ) এই সেশনে পুনরাবৃত্তি হয়নি, প্রতিটা এডিটের পরই lint চালিয়ে চেক করা হয়েছে। **real-device টেস্ট এখনো বাকি**।
+
+**পরের ধাপ (শেষ সাব-প্যাটার্ন, সবচেয়ে জটিল)**: `forecastData`/`productSales` — বেস্টসেলার র‍্যাংকিং, per-product sales-এর সাথে জয়েন লাগবে, নতুন কাস্টম SQL ডিজাইন করতে হবে (এখন পর্যন্ত ৩টা সাব-প্যাটার্নের মতো বিদ্যমান ফাংশন রিইউজ করে সহজে হয়নি) — সম্ভবত আলাদা সেশন।
+
+---
+
+### [এন্ট্রি ৪৬] — AIPage_ সাব-প্যাটার্ন ২/৪: outOfStock/prodAll.length হুক-রিইউজ সম্পূর্ণ
+
+**অবস্থা**: কোড-সম্পূর্ণ, sandbox-ভেরিফায়েড — `npm test` (১৯৬ কেস, নতুন `totalCount` টেস্টসহ, সব পাস) + `npm run lint` (0 error) + `npm run build` (ক্লিন) — সব সরাসরি চালানো হয়েছে।
+
+**যা করা হয়েছে**:
+- `DataStore.js`-এর `getInventoryCounts()`-এ নতুন `total_count` কলাম (`COUNT(*)`) যোগ হলো — বিদ্যমান ফাংশন, breaking change না (additive রিটার্ন-ফিল্ড, বিদ্যমান ৩টা কল-সাইট অপ্রভাবিত)।
+- নতুন `useOutOfStockCount(products, businessType)` হুক (App.jsx) — `getInventoryCounts()` রিইউজ করে `{ outOfStock, totalProducts }` রিটার্ন করে, JS ফলব্যাক আগের `prodAll.filter(p=>(p.stock||0)===0).length`/`prodAll.length`-এর সাথে হুবহু।
+- নতুন `useOutOfStockItems(products, businessType)` হুক — কারণ `ruleBasedAnswer()`-এর "কম স্টক" চ্যাট-উত্তরে (`out.slice(0,5).map(p=>p.name)`) স্টকশূন্য পণ্যের পূর্ণ তালিকা লাগে, শুধু কাউন্ট না (ঠিক এন্ট্রি ৪৫-এর `lowStockItems`-এর মতোই সমস্যা)। বিদ্যমান `dsGetInventoryList(businessType, "out")` (এন্ট্রি ৩৬-এ "kind" প্যারামিটারে ইতিমধ্যেই সমর্থিত) রিইউজ করা হলো — নতুন SQL লেখা লাগেনি।
+- `AIPage_`-এ `const outOfStock = prodAll.filter(...).length` রিমুভ হয়ে `useOutOfStockCount()`-এর `.outOfStock`/`.totalProducts` (নাম `totalProductsAI`) দিয়ে রিপ্লেস হয়েছে; healthScore useMemo dep-এ `prodAll.length` → `totalProductsAI`।
+- `ruleBasedAnswer()` একটা প্লেইন ফাংশন (React হুক কল করতে পারে না, event handler থেকে সরাসরি কল হয়) — তাই AIPage_ থেকে `outOfStockItems`/`totalProducts` `data` অবজেক্টে পাস করা হয়েছে (ঠিক `stockValue`/`lowStockItems`-এর বিদ্যমান প্যাটার্নের মতোই)। ফাংশনের ভেতরে ৩ জায়গায় লোকাল `prodAll.filter(p=>(p.stock||0)===0)`/`prodAll.length` রিপ্লেস হয়েছে প্যারামিটার দিয়ে — "স্টক সারসংক্ষেপ" ও "পণ্য সারসংক্ষেপ" quick-reply টেক্সট, আর "কম স্টক" তালিকা।
+
+**⚠️ একটা ভুল ধরা পড়ে ফিক্স হয়েছে**: প্রথম sed রিপ্লেস AIPage_-স্কোপের ভ্যারিয়েবল নাম (`totalProductsAI`) ভুলে `ruleBasedAnswer()`-এর ভেতরেও বসিয়ে দিয়েছিল (যেখানে destructured প্যারামিটার নাম `totalProducts`, `AI` সাফিক্স ছাড়া) — `npx eslint` `no-undef` error ধরেছে, তাৎক্ষণিক ফিক্স হয়েছে। এই ধরনের copy-paste/sed ভুল এড়াতে ভবিষ্যতে বাল্ক-রিপ্লেসের পর সবসময় lint (শুধু test না) চালানো জরুরি — এই সেশনে সেটাই আসল ধরার উপায় ছিল।
+
+**প্রোডাক্ট-সাইড অপরিবর্তিত**: `overstock` (forecastData জয়েন-নির্ভর) ও expired/near-expiry স্ক্যান — দুটোই `prodAll` এখনো ব্যবহার করে, ইচ্ছাকৃতভাবে এই সেশনে টাচ করা হয়নি (পরের ২টা সাব-প্যাটার্নের কাজ)।
+
+**যাচাই**: `npm test`+lint+build তিনটাই ক্লিন। **real-device টেস্ট এখনো বাকি** — SQL মোডে AI চ্যাটে "কম স্টক" জিজ্ঞেস করে স্টকশূন্য/মোট পণ্য সংখ্যা আগের JS-মোডের সাথে মিলছে কিনা যাচাই করা দরকার।
+
+**পরের ধাপ**: expired/near-expiry স্ক্যান (`nearest_expiry_date` কলাম এন্ট্রি ৩৬-এই আছে, প্রাথমিক candidate-narrowing-এর জন্য `dsGetExpiryCandidates()`-ও এন্ট্রি ৩৬-এই বানানো — সম্ভবত সরাসরি রিইউজযোগ্য, ব্যাচ-লেভেল এক্সপায়ার্ড/near-expiry বিভাজন JS-এই থাকবে ছোট candidate সেটের উপর)।
+
+---
+
+### [এন্ট্রি ৪৫] — AIPage_ সাব-প্যাটার্ন ১/৪: stockValue/lowStockItems হুক-রিইউজ সম্পূর্ণ
+
+**অবস্থা**: কোড-সম্পূর্ণ, sandbox-ভেরিফায়েড — `npm install` + `npm test` (১৯৫ কেস, সব পাস) + `npm run lint` (0 error, 558 pre-existing warning) + `npm run build` (ক্লিন, ৮৭২ মডিউল) — এই সেশনে npm নেটওয়ার্ক আনব্লকড ছিল, তিনটাই সরাসরি চালানো হয়েছে।
+
+**যা করা হয়েছে**:
+- `useProductStockTotals(prodAll, businessType)` (এন্ট্রি ৩৯-এ `useKpiStats`-এর জন্য বানানো হুক) এখন `AIPage_`-এও কল হয়, `.stockValue` ব্যবহার করে — আগের লোকাল `prodAll.reduce(...)` মুছে ফেলা হয়েছে।
+- নতুন `useLowStockItems(products, businessType)` হুক (App.jsx, `useProductStockTotals`-এর ঠিক পরে) — কেন নতুন হুক লাগলো: `useProductStockTotals` শুধু `lowStockCount` (সংখ্যা) দেয়, কিন্তু `AIPage_`-এ `lowStockItems` ৮+ জায়গায় ব্যবহৃত হয় পূর্ণ আইটেম-অবজেক্ট হিসেবে (`.slice(0,3).map(p=>p.name)`, `.slice(0,5).map(p=>`• ${p.name} — ${p.stock}টি বাকি`)` ইত্যাদি) — শুধু কাউন্ট দিয়ে হয় না। SQL চালু থাকলে বিদ্যমান `dsGetInventoryList(businessType, "critical")` (এন্ট্রি ৩৬, InventorySection-এর জন্য বানানো, একই ফাংশন পুনর্ব্যবহার — নতুন SQL লেখা লাগেনি) কল করে পূর্ণ product-অবজেক্ট-অ্যারে রিটার্ন করে; SQL অফ/এরর হলে JS ফলব্যাক (`prodAll.filter(p => (p.stock||0)>0 && (p.stock||0)<=(p.minStockAlert||5))`) — ঠিক আগের শর্তই, আচরণ অপরিবর্তিত।
+- `AIPage_`-এ `const stockValue = prodAll.reduce(...)` ও `const lowStockItems = prodAll.filter(...)` — দুই লাইন রিপ্লেস হয়ে হুক-কল হয়েছে। ডাউনস্ট্রিম ৮+ ব্যবহার-সাইট (healthScore useMemo dep, insights প্যানেল, chat summary টেক্সট, ইত্যাদি) কোনোটাই বদলাতে হয়নি — variable নাম/শেপ অপরিবর্তিত (এখনো array, `.length`/`.map`/`.slice` সবই কাজ করে)।
+
+**যাচাই**: `npm test`+lint+build তিনটাই ক্লিন (উপরে বিস্তারিত)। **real-device টেস্ট এখনো বাকি** — SQL মোডে AI পেজের ড্যাশবোর্ড ট্যাবে স্টক-মূল্য কার্ড ও "কম স্টক" সংখ্যা/তালিকা আগের JS-মোডের সাথে মিলছে কিনা যাচাই করা দরকার।
+
+**পরের ধাপ**: `outOfStock`/`prodAll.length` কাউন্ট (নতুন SQL COUNT প্রয়োজন — `getInventoryCounts()`-এ ইতিমধ্যেই `allStock`/`stockOut` কলাম আছে এন্ট্রি ৩৬ থেকে, সম্ভবত সরাসরি রিইউজযোগ্য, পরের সেশনে যাচাই করতে হবে)।
+
+---
 
 ### [এন্ট্রি ৪৩] — ধাপ ৭.১ (ব্যবহার-সাইট ক্যাটাগরাইজেশন) + ৭.২ (async cache hook) সম্পূর্ণ — ৭.৩ (বুট পরিবর্তন) ইচ্ছাকৃতভাবে ব্লকড
 
