@@ -18,7 +18,7 @@ import { CapacitorSQLite, SQLiteConnection } from "@capacitor-community/sqlite";
 // dateKey লজিক আনা হচ্ছে, App.jsx-এর _dateKeyOf()/scripts/generate-synthetic-
 // dataset.mjs-এর bdDateKey()-এর সাথে ১০০% সিঙ্কড রাখতে (SQLITE_MIGRATION_LOG.md
 // এন্ট্রি ২-এ ধরা পড়া টাইমজোন বাগের ফিক্স)।
-import { _bdParts, getSellableStock, normalizeSupplierKey } from "../logic.js";
+import { _bdParts, getSellableStock, normalizeSupplierKey, calcLineDiscountedRevenue, _itemCostPrice } from "../logic.js";
 
 // ── Feature flag ─────────────────────────────────────────────────────────
 // এই ফ্ল্যাগ বন্ধ থাকলে (ডিফল্ট) পুরো অ্যাপ আগের মতোই IndexedDB blob-array
@@ -1004,6 +1004,105 @@ export async function getExpiredRemovalTotals(businessType, monthKey) {
   return { value: row.total || 0, count: row.cnt || 0 };
 }
 
+// ── এন্ট্রি ৪৮ (AIPage_-এর ৪র্থ সাব-প্যাটার্ন, forecastData/productSales জয়েন) ──
+// schema.sql-এর invoiceItems কমেন্ট-ব্লকে ডিজাইন বিস্তারিত। এখানে দুটো অংশ:
+// (১) ইনভয়েস dual-write-এর পাশাপাশি লাইন-আইটেম রো লেখা/মোছা, (২) SQL অ্যাগ্রিগেট
+// (productSales-এর সমতুল্য, src/logic.js-এর computeProductSales()-এর SQL সংস্করণ)।
+
+const INVOICE_ITEM_COLS = ["id", "invoice_id", "product_name", "qty", "revenue", "cost", "date_key", "status", "updated_at"];
+
+/**
+ * একটা ইনভয়েসের সব লাইন-আইটেম রো বানায়। self-use ইনভয়েসের কোনো রো তৈরি হয় না
+ * (App.jsx-এর invAll ফিল্টারের সাথে মিলিয়ে — dsRemoveInvoiceItems() দিয়ে পুরনো
+ * রো (যদি থাকে, যেমন কোনো ইনভয়েস পরে self-use হিসেবে মার্ক হলে) মুছে ফেলা হয়)।
+ */
+function extractInvoiceItemRows(inv, prodMap) {
+  if (inv.isSelfUse) return [];
+  const items = inv.items || [];
+  // 🔴 বাগ ফিক্স নোট (এন্ট্রি ৪৮, logic.js computeProductSales()-এর কমেন্ট দ্রষ্টব্য):
+  // inv.date (M/D/YYYY ডিসপ্লে-স্ট্রিং) না, inv.dateKey (YYYY-MM-DD) ব্যবহার করা
+  // হচ্ছে — cutoff তুলনার সাথে ফরম্যাট মিলিয়ে।
+  const dateKey = inv.dateKey || dateKeyFromTs(inv.createdAt);
+  const status = inv.status ?? "active";
+  const updatedAt = inv.createdAt ?? Date.now();
+  return items.map((it, idx) => ({
+    id: `${inv.id}#${idx}`,
+    invoice_id: String(inv.id),
+    product_name: it.name ?? "",
+    qty: it.qty || 1,
+    revenue: calcLineDiscountedRevenue(it, items, inv.discount || 0),
+    cost: (it.qty || 1) * _itemCostPrice(it, prodMap),
+    date_key: dateKey,
+    status,
+    updated_at: updatedAt,
+  }));
+}
+
+/**
+ * একটা ইনভয়েসের পুরনো সব invoiceItems রো মুছে নতুন করে বসায় (full replace) —
+ * এডিট/আইটেম-বদল/qty-বদল/ভয়েড — সব কেস একই পাথে কভার হয়, আলাদা partial-diff
+ * লজিক লাগে না (একটা ইনভয়েসে সাধারণত অল্প কয়েকটা লাইন-আইটেম থাকে)।
+ * dual-write ফেজে App.jsx-এর dualWriteInvoiceItems() থেকে কল হবে, invoices
+ * dual-write-এর ঠিক পাশাপাশি (স্বাধীন, invoices টেবিলের upsert()-কে ছোঁয় না)।
+ */
+export async function upsertInvoiceItems(businessType, inv, prodMap) {
+  const db = await getDb(businessType);
+  const invoiceId = String(inv.id);
+  const rows = extractInvoiceItemRows(inv, prodMap);
+  const set = [{ statement: `DELETE FROM invoiceItems WHERE invoice_id = ?`, values: [invoiceId] }];
+  if (rows.length) {
+    const placeholders = `(${INVOICE_ITEM_COLS.map(() => "?").join(", ")})`;
+    for (const r of rows) {
+      set.push({
+        statement: `INSERT OR REPLACE INTO invoiceItems (${INVOICE_ITEM_COLS.join(", ")}) VALUES ${placeholders}`,
+        values: INVOICE_ITEM_COLS.map((c) => r[c] ?? null),
+      });
+    }
+  }
+  await db.executeSet(set);
+}
+
+/** ইনভয়েস মুছে গেলে (archiveOldInvoices() বা অন্য কোনো removal পাথ) সংশ্লিষ্ট সব লাইন-আইটেম রোও মুছে যায়। */
+export async function removeInvoiceItems(businessType, invoiceId) {
+  const db = await getDb(businessType);
+  await db.run(`DELETE FROM invoiceItems WHERE invoice_id = ?`, [String(invoiceId)]);
+}
+
+/**
+ * logic.js-এর computeProductSales()-এর SQL সমতুল্য — m1/m2/m3 (৩০/৬০/৯০-দিনের
+ * রোলিং বাকেট) + rev/cost/qty (৯০-দিনের টোটাল), একই সেমান্টিক্স। cutoff
+ * (d30/d60/d90, YYYY-MM-DD) কলার থেকে আসে — DataStore.js framework-agnostic
+ * রাখতে "আজ কোন তারিখ" লজিক এখানে ডুপ্লিকেট করা হয়নি।
+ * @returns {Promise<Array<{name, m1, m2, m3, rev, cost, qty}>>}
+ */
+export async function getProductSalesRows(businessType, { d30, d60, d90 }) {
+  const db = await getDb(businessType);
+  const sql = `
+    SELECT
+      product_name AS name,
+      SUM(CASE WHEN date_key >= ? THEN qty ELSE 0 END) AS m1,
+      SUM(CASE WHEN date_key >= ? AND date_key < ? THEN qty ELSE 0 END) AS m2,
+      SUM(CASE WHEN date_key >= ? AND date_key < ? THEN qty ELSE 0 END) AS m3,
+      SUM(revenue) AS rev,
+      SUM(cost) AS cost,
+      SUM(qty) AS qty
+    FROM invoiceItems
+    WHERE status = 'active' AND date_key >= ?
+    GROUP BY product_name
+    HAVING SUM(qty) > 0
+  `;
+  const res = await db.query(sql, [d30, d60, d30, d90, d60, d90]);
+  return (res.values || []).map((r) => ({
+    name: r.name,
+    m1: r.m1 || 0,
+    m2: r.m2 || 0,
+    m3: r.m3 || 0,
+    rev: r.rev || 0,
+    cost: r.cost || 0,
+    qty: r.qty || 0,
+  }));
+}
+
 // ── এন্ট্রি ৪১ (ধাপ ৬, computeSupplierDueMap SQL cutover) ────────────────────
 /**
  * products+purchaseOrders+supplierPayments জুড়ে ফাজি-নাম-merge সাপ্লায়ার
@@ -1091,12 +1190,19 @@ export async function getSupplierDueRows(businessType) {
 // কোয়েরি — dup-name-এর মতোই SupplierPicker/dosage-chip/ক্যাটাগরি-ফিল্টারের
 // অটো-সাজেশন লিস্ট, প্রতিবার re-render-এ রিকম্পিউট করার দরকার নেই।
 
-/** SmartInvoiceBuilder-এর ক্যাটাগরি-ফিল্টার চিপ লিস্টের জন্য — service বাদে distinct category। */
+/** SmartInvoiceBuilder-এর ক্যাটাগরি-ফিল্টার চিপ লিস্টের জন্য — service বাদে distinct category।
+ * 🔴 বাগ ফিক্স (এন্ট্রি ৪৯, টেস্ট লেখার সময় ধরা পড়ল): `product_type != 'service'`
+ * SQL-এর three-valued logic-এ `product_type IS NULL` রো-গুলো বাদ দিয়ে দেয় (NULL != 'service'
+ * SQL-এ UNKNOWN, WHERE-এ true না) — আর বেশিরভাগ প্রোডাক্টেরই productType সেট করা থাকে না
+ * (শুধু service আইটেমে explicit "service" বসে)। ফলে আগের কোয়েরিতে প্রায় সব প্রোডাক্টই
+ * বাদ পড়ে যেত — production-এ SQL চালু থাকলে ক্যাটাগরি-চিপ লিস্ট প্রায় খালি দেখাত।
+ * JS ফলব্যাক (`p.productType !== "service"`) ঠিকই ছিল, undefined !== "service" জাভাস্ক্রিপ্টে
+ * true — তাই এই বাগ শুধু SQL পাথে ছিল, JS ফলব্যাকে ছিল না। */
 export async function getDistinctCategories(businessType) {
   const db = await getDb(businessType);
   const sql = `
     SELECT DISTINCT category FROM products
-    WHERE deleted = 0 AND product_type != 'service' AND category IS NOT NULL AND category != ''
+    WHERE deleted = 0 AND (product_type IS NULL OR product_type != 'service') AND category IS NOT NULL AND category != ''
     ORDER BY category ASC
   `;
   const res = await db.query(sql);

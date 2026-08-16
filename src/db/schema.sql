@@ -184,6 +184,58 @@ CREATE INDEX IF NOT EXISTS idx_invoices_dashboard   ON invoices(date_key, status
 -- DataStore.js DEFAULT_SORT_COLUMN আর queryPage()-এর কমেন্ট।
 CREATE INDEX IF NOT EXISTS idx_invoices_created_id  ON invoices(created_at, id);
 
+-- ── invoiceItems ─────────────────────────────────────────────────────────
+-- 🆕 এন্ট্রি ৪৮ (AIPage_-এর ৪র্থ ও শেষ সাব-প্যাটার্ন — forecastData/productSales
+-- জয়েন, বেস্টসেলার র‍্যাংকিং)। App.jsx-এর productSales (এখন src/logic.js-এর
+-- computeProductSales()) প্রতিটা ইনভয়েসের প্রতিটা লাইন-আইটেমকে product *name*-এ
+-- গ্রুপ করে ৩০/৬০/৯০-দিনের বিক্রয়-বাকেট বানায়। invoices টেবিলে items শুধু
+-- নেস্টেড `data` JSON-এ আছে (এই স্কিমায় কোনো লাইন-আইটেম টেবিল নেই), তাই
+-- per-product GROUP BY সরাসরি SQL-এ করা যায় না।
+--
+-- এন্ট্রি ৪১-এর নীতি অনুসরণ করে (নেস্টেড/লাইন-আইটেম-নির্ভর হিসাব write-time-এ
+-- JS দিয়ে ফ্ল্যাট রো-তে প্রিকম্পিউট, শুধু SUM/GROUP BY SQL-এ) — এই টেবিল একটা
+-- normalized "one row per invoice line-item" টেবিল, DataStore.js-এর
+-- upsertInvoiceItems() ইনভয়েস dual-write-এর পাশাপাশি ভরে (App.jsx-এর
+-- dualWriteInvoiceItems())।
+--
+-- revenue/cost লেখা-সময়ে computeProductSales()-এর ঠিক একই সোর্স-অফ-ট্রুথ
+-- ফাংশন দিয়ে প্রিকম্পিউট হয় (calcLineDiscountedRevenue()/_itemCostPrice(),
+-- logic.js — কোনো কপি-পেস্ট লজিক না):
+--   revenue = calcLineDiscountedRevenue(item, items, invoice.discount||0)
+--   cost    = qty * _itemCostPrice(item, prodMap)
+--
+-- ⚠️ ছোট, স্বীকৃত edge-case (entry ৪১-এর canonical-name tie-break-এর মতোই):
+-- _itemCostPrice() মূলত item.costPrice (ইনভয়েস-সময়ে-স্টোর্ড, বেশিরভাগ আইটেমেই
+-- থাকে) ব্যবহার করে — শুধু সেই আইটেমটার costPrice মিসিং থাকলেই (পুরনো/legacy
+-- ইনভয়েস) fallback হিসেবে dual-write-এর *তখনকার* prodMap.costPrice ব্যবহার
+-- হয়, যা সেই মুহূর্তেই fix হয়ে যায়। পরে সেই প্রোডাক্টের costPrice বদলালে,
+-- live JS হিসাব (প্রতিবার prodMap দিয়ে রিকম্পিউট করে) নতুন cost দেখাবে কিন্তু
+-- SQL রো পুরনো cost-ই ধরে রাখবে — শুধু legacy আইটেমে (item.costPrice নেই)
+-- প্রভাব ফেলে, self-correcting (ইনভয়েসটা কোনো কারণে আবার touch হলে রিফ্রেশ হয়)।
+--
+-- is_self_use ইনভয়েসের item লেখাই হয় না (App.jsx-এর invAll ফিল্টারের সাথে মিলিয়ে
+-- upsertInvoiceItems()-এ স্কিপড)। status কলাম রো-তে থাকে (ইনভয়েস ভয়েড হলে সেই
+-- ইনভয়েসের সব রো-র status রিফ্রেশ হয়, রো ডিলিট হয় না) — WHERE status='active'
+-- দিয়ে ফিল্টার হয়। ৬-মাস আর্কাইভিং (archiveOldInvoices)-এ এই রো ডিলিট হয়ে গেলেও
+-- ক্ষতি নেই — productSales-এর window সর্বোচ্চ ৯০ দিন, তাই ৬-মাস-পুরনো ডেটা এমনিতেও
+-- কখনো এই কোয়েরিতে ব্যবহৃত হতো না (invoices টেবিলের মতো lifetime history রাখার
+-- দরকার নেই এখানে)।
+CREATE TABLE IF NOT EXISTS invoiceItems (
+  id            TEXT PRIMARY KEY,   -- invoice_id || '#' || item-index
+  invoice_id    TEXT NOT NULL,
+  product_name  TEXT NOT NULL,
+  qty           REAL,
+  revenue       REAL,
+  cost          REAL,
+  date_key      TEXT NOT NULL,      -- inv.dateKey (YYYY-MM-DD) — inv.date (M/D/YYYY ডিসপ্লে-স্ট্রিং) না
+  status        TEXT NOT NULL DEFAULT 'active',
+  updated_at    INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_invoiceitems_invoice ON invoiceItems(invoice_id);
+-- productSales/forecastData-র মূল কোয়েরি প্যাটার্ন: WHERE status='active' AND
+-- date_key >= ? GROUP BY product_name — এই কম্পোজিট ইনডেক্স কভার করে
+CREATE INDEX IF NOT EXISTS idx_invoiceitems_status_date_name ON invoiceItems(status, date_key, product_name);
+
 -- ── expenses ─────────────────────────────────────────────────────────────
 -- 🆕 এন্ট্রি ৩৭ (useKpiStats-এর ৫টা এখনো-SQL-না-হওয়া ডেটা-সোর্সের প্রথমটা)।
 -- expenses সবচেয়ে সরল শেপ (batches/nested আইটেম নেই) বলে প্রথমে বেছে নেওয়া হলো।
