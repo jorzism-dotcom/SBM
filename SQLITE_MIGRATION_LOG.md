@@ -23,7 +23,19 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৪৯-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৫১-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟢 এন্ট্রি ৫১**: এন্ট্রি ৪৯-এর প্ল্যানে "CustomerDetail → InvoiceVoidModal" কে দ্বিতীয় (কম-ঝুঁকির) `useProductsByIds()` টার্গেট বলা হয়েছিল — কোড অডিটে ধরা পড়ল এটা **ভুল ছিল**: `InvoiceVoidModal`-এ `products` prop পাস হয় কিন্তু ফাংশন-বডিতে কোথাও ব্যবহারই হয় না (dead prop, grep দিয়ে নিশ্চিত)। আসল কার্যকর টার্গেট পাওয়া গেল `AuditTrailModule → DailySalesStockCard` (দৈনিক বিক্রয়/লাভ কোলাপ্সিবল প্যানেল, ডিফল্ট বন্ধ, বিলিং না) — এখানে সত্যিকারের `prodMap = new Map(products.map(...))` (পূর্ণ অ্যারে থেকে বিল্ড) ছিল, `calcProfitTotal()` আর soldRows-এর name-fallback-এ ব্যবহৃত হতো। এই কম্পোনেন্টে আগে `businessType` prop-ই ছিল না (হুক চালাতে দরকার) — কল-চেইনে ইতিমধ্যে scope-এ থাকা `businessType` ২টা লেয়ার (App→AuditTrailModule→DailySalesStockCard) দিয়ে প্লাম্ব করা হলো। `neededProductIds` (শুধু নির্বাচিত দিনের stockMovements+dayInvoices থেকে বের করা বাউন্ডেড id-সেট) দিয়ে `useProductsByIds()` কল করা হলো, আর `calcProfitTotal()`-এর জন্য একটা ছোট `{ get: getProductById }` wrapper (Map-সদৃশ ইন্টারফেস) পাস করা হলো যাতে `calcProfitTotal()`/`logic.js`-এর নিজস্ব কোড কিছুই বদলাতে না হয়। soldRows-এর `prodMap.get()`ও একই হুকের `getProductById()`-এ রুট করা হয়েছে।
+- একই সিঙ্ক-ফলব্যাক ডিজাইন (এন্ট্রি ৪২/৫০): বুট সিকোয়েন্স অপরিবর্তিত থাকায় SQL-ফেচ এখনো ফায়ার করবে না, আচরণ কাগজে-কলমে অপরিবর্তিত।
+- ⚠️ সততার নোট (এন্ট্রি ৫০-এর মতোই প্রযোজ্য): এখানেও কোনো React-হুক-লেভেল automated প্যারিটি-টেস্ট নেই (অবকাঠামোর অভাব) — শুধু কোড-রিভিউ যুক্তি। real-device টেস্টই আসল প্রমাণ।
+- যাচাই: `npm test` ২২৭/২২৭ পাস, `npm run lint` 0 error (৫৭৭ প্রি-এক্সিস্টিং warning, নতুন কিছু না), `npm run build` ক্লিন।
+- **এখন পর্যন্ত ৭.৩-এ ২টা রেন্ডার-পাথ wire হয়েছে (POS + AuditTrail), কোনোটাই real-device-এ টেস্ট হয়নি এখনো।**
+
+**🟡 এন্ট্রি ৫০**: ব্যবহারকারী সরাসরি ঝুঁকি নিয়ে ৭.৩-এর প্রথম কোড-ধাপ **POS product picker (SmartInvoiceBuilder)-এই** করতে বললেন (এন্ট্রি ৪৯-এর প্রস্তাবিত নিরাপদ (ক)/(খ) না বেছে)। `useProductsByIds()` হুক POS-এর ব্রাউজ-রেন্ডার সাইটে (`browseProducts` memo, আগে সরাসরি `productsByIdMap.get(id)`) wire করা হলো — বুট সিকোয়েন্স অপরিবর্তিত থাকায় (products পুরোপুরি মেমরিতে) হুকের নিজস্ব ডিজাইন অনুযায়ী SQL-ফেচ পাথ এখনো কখনো ফায়ার করবে না, সবসময় সিঙ্ক্রোনাস `productsByIdMap` লুকআপই হবে — কিন্তু **এটা এখনো real-device-এ প্রমাণিত না**, শুধু sandbox+কোড-রিভিউ দিয়ে যুক্তি।
+- **⚠️ সততার নোট — প্রতিশ্রুত "প্যারিটি টেস্ট" পুরোপুরি দেওয়া যায়নি**: এই প্রজেক্টে React হুক টেস্ট করার কোনো অবকাঠামো নেই (`@testing-library/react` বা অনুরূপ কিছু `devDependencies`-এ নেই — শুধু plain-Node লজিক/DataStore টেস্ট, entry ৪৪-এর `getKnownSuppliers()`-এর মতোই App.jsx-এর ভেতরের ফাংশন/হুক সরাসরি ইম্পোর্ট-টেস্টেবল না)। তাই আলাদা কোনো নতুন টেস্ট ফাইল যোগ হয়নি — বদলে কোড-রিভিউ দিয়ে যাচাই করা হয়েছে যে `get(id) = productsByIdMap?.get(id) || cache.get(id) || null`-এ যেহেতু `productsByIdMap` সবসময় পূর্ণ থাকে, প্রথম শর্তেই মিলে যায় এবং ফলাফল আগের কোডের সাথে গঠনগতভাবে অভিন্ন। এটা প্রকৃত রিগ্রেশন-টেস্ট না, শুধু যুক্তি — তাই real-device টেস্টই একমাত্র আসল প্রমাণ।
+- `useProductsByIds()`-এর নিজস্ব SQL-লেয়ার (`dsGetByIds`) আগে থেকেই `tests/datastore-getbyids-tests.mjs` (৮ কেস) দিয়ে টেস্টেড — পুনরায় চালিয়ে কনফার্ম করা হয়েছে (নিচে দেখুন), তবে এই সেশনে সেটা অপরিবর্তিত।
+- যাচাই: `npm test` — **২২৭/২২৭ পাস** ✅ (নতুন কোনো কেস যোগ হয়নি, উপরের কারণে)। `npm run lint` — **0 error** ✅ (৫৭৭টা প্রি-এক্সিস্টিং warning, নতুন কিছু যোগ হয়নি, পরিবর্তিত লাইনগুলোতে কোনো warning নেই)। `npm run build` — vite build ক্লিন ✅।
+- **পরের ধাপ অনুযায়ী পরিকল্পনা (অপরিবর্তিত)**: (১) POS-এ এই পরিবর্তনসহ real-device স্মোক-টেস্ট — প্রোডাক্ট ব্রাউজ, ক্যাটাগরি ফিল্টার, স্ক্রল-পেজিনেশন, স্টক-আউট আইটেম, কার্টে যোগ করে বিক্রি সম্পন্ন করা, দাম/স্টক সঠিকতা; (২) কনফার্ম হলে একই প্যাটার্ন Products main list card ও CustomerDetail-এও বসানো; (৩) তারপর আসল ৭.৩ (বুট সিকোয়েন্স থেকে `products` সরানো, যেখানে SQL-ফেচ পাথ সত্যিই সক্রিয় হবে) — ফের real-device টেস্ট আবশ্যক; (৪) এরপর AIPage_-এর অবশিষ্ট JS অংশ ও Customers SQL cutover।
 
 **🟢 এন্ট্রি ৪৯**: "ধাপ ৭ শুরু করুন" — কিন্তু সততার সাথে প্রথমেই: **আসল ৭.৩ (বুট সিকোয়েন্স থেকে `products` সম্পূর্ণ সরানো) এই সেশনে শুরু করা হয়নি।** কারণ যাচাই করতে গিয়ে নিশ্চিত হলো এন্ট্রি ৪২/৪৩-এর নিজস্ব ঝুঁকি-মূল্যায়ন সঠিক ছিল — `grep`-এ App.jsx-এ `products.map/filter/find/forEach/some/reduce/sort(...)` প্যাটার্নের **৫১টা সরাসরি full-array-scan সাইট** পাওয়া গেছে (এটা `productsById`/Map-লুকআপ বাদ দিয়েই, শুধু plain array method কল)। এতগুলো লাইভ রেন্ডার-পাথ একসাথে async-এ কনভার্ট করে একই সেশনে responsible-ভাবে ভেরিফাই করা বাস্তবসম্মত না — বিশেষ করে POS বিলিং কাউন্টার-সংশ্লিষ্ট জায়গাগুলোতে ভুল হলে PRODUCTS_ONDEMAND_MIGRATION_PLAN.md-এর চিরস্থায়ী নিয়ম #৪ ("পণ্য না-পাওয়া/ভুল দেখানো") সরাসরি লঙ্ঘন হয়ে যেত। তাই এই সেশনে যা করা হলো:
 
@@ -119,6 +131,42 @@ Schema+FTS5 · dual-write (shadow) · resumable batch backfill · row-count veri
 ---
 
 ## এন্ট্রি লগ
+
+### [এন্ট্রি ৫১] — CustomerDetail টার্গেট ভুল প্রমাণিত (dead prop) → আসল টার্গেট AuditTrailModule/DailySalesStockCard-এ wire করা হলো
+
+**তারিখ**: ১৬ আগস্ট ২০২৬। **ট্রিগার**: "নেক্সট কাজ শুরু করুন" — এন্ট্রি ৫০-এর প্ল্যান অনুযায়ী পরের কম-ঝুঁকির সাইট।
+
+**আবিষ্কার**: এন্ট্রি ৪৯-এ (আগের একটা শেয়ার্ড-স্ক্রিনশট সেশনে) `CustomerDetail → InvoiceVoidModal`-কে দ্বিতীয় টার্গেট বলা হয়েছিল। কোড দেখে ধরা পড়ল `InvoiceVoidModal({ ..., products = [], ... })`-এর `products` prop পুরো ফাংশন বডিতে একবারও ব্যবহৃত হয় না — সম্পূর্ণ dead prop। তাই ওখানে কিছু করার নেই।
+
+**আসল কাজ**: `AuditTrailModule → DailySalesStockCard` (দিনের বিক্রয়/লাভ কোলাপ্সিবল কার্ড) — এখানে বাস্তবিক `prodMap` (পূর্ণ `products` অ্যারে থেকে বিল্ড) `calcProfitTotal()`-এ ও soldRows-এর নাম-ফলব্যাকে ব্যবহৃত হতো।
+- `businessType` prop-চেইন প্লাম্ব করা হলো: App() → `<AuditTrailModule businessType={businessType}>` → `<DailySalesStockCard businessType={businessType}>` (দুটোই আগে এই prop নিত না)।
+- নতুন `neededProductIds` (useMemo) — শুধু নির্বাচিত তারিখের `stockMovements`(source='sale') + `dayInvoices`-এর আইটেম থেকে id সংগ্রহ (বাউন্ডেড, বড় না)।
+- `useProductsByIds(neededProductIds, businessType, prodMap)` কল করে `{ get: getProductById }` — `calcProfitTotal(dayInvoices, hookProdMap)`-এ পাস করা হলো (`hookProdMap = { get: getProductById }`, `logic.js`-এর `calcProfitTotal()`/`calcInvoiceProfit()` অপরিবর্তিত, শুধু Map-ইন্টারফেস duck-typing দিয়ে satisfy করা হলো)। soldRows-এর `prodMap.get(productId)`ও `getProductById(productId)`-এ বদলানো হলো।
+- পুরনো পূর্ণ-অ্যারে `prodMap` মুছে ফেলা হয়নি — শুধু হুকের সিঙ্ক-ফলব্যাক আর্গুমেন্ট হিসেবে রয়ে গেছে (এন্ট্রি ৫০-এর প্যাটার্নের মতোই)।
+
+**⚠️ সততার নোট**: React-হুক অবকাঠামোর অভাবে এখানেও কোনো automated প্যারিটি-টেস্ট নেই — শুধু কোড-রিভিউ যুক্তি (duck-typed `.get()` ইন্টারফেস সমতুল্য)। real-device টেস্টই বাকি একমাত্র প্রকৃত প্রমাণ।
+
+**যাচাই**: `npm test` ২২৭/২২৭ পাস, `npm run lint` 0 error (নতুন warning নেই), `npm run build` ক্লিন।
+
+**পরের ধাপ**: (POS + এই প্যানেল দুটোরই) real-device স্মোক-টেস্ট এখনো বাকি → তারপর আসল ৭.৩ (বুট চেঞ্জ) → AIPage_ বাকি অংশ/Customers SQL cutover।
+
+---
+
+### [এন্ট্রি ৫০] — POS-এ ঝুঁকি নিয়ে `useProductsByIds()` প্রথম wire করা (এন্ট্রি ৪৯-এর নিরাপদ (ক)/(খ) না বেছে সরাসরি POS)
+
+**তারিখ**: ১৬ আগস্ট ২০২৬। **ট্রিগার**: ব্যবহারকারী স্পষ্টভাবে বললেন "ঝুকি নিতে রাজি আছি" এবং POS-এ সরাসরি করতে বললেন।
+
+**কী করা হলো**: `src/App.jsx`-এর `SmartInvoiceBuilder`-এ (POS product picker) `browseProducts` memo আগে সরাসরি `productsByIdMap.get(id)` (in-memory Map, `productsWithSerial` থেকে বিল্ট) ব্যবহার করত। এখন `useProductsByIds(browseIds, businessType, productsByIdMap)` হুক কল করে তার `get()` ফাংশন দিয়ে লুকআপ হয় (`productsByIdMap` এখনো হুকের নিজের সিঙ্ক-ফলব্যাক আর্গুমেন্ট হিসেবে দেওয়া হচ্ছে, তাই as-is)। `productsByIdMap`-এর এই একমাত্র ব্যবহারের জায়গাই ছিল (grep দিয়ে যাচাই করা)।
+
+**কেন এই মুহূর্তে আচরণ বদলাবে না**: `useProductsByIds()`-এর নিজস্ব ডিজাইনে (এন্ট্রি ৪২) `get(id)` প্রথমে `productsByIdMap?.get(id)` চেক করে — শুধু সেটা `undefined` হলেই cache/SQL-ফেচে যায়। যেহেতু বুট সিকোয়েন্স এখনো অপরিবর্তিত (products পুরো অ্যারে হিসেবেই মেমরিতে), `productsByIdMap`-এ সবসময় সব id থাকে — তাই এই ওয়্যারিং এখন কার্যত no-op, শুধু কোড-পাথ বদলেছে।
+
+**⚠️ সততার নোট**: পূর্বপ্রতিশ্রুত "প্যারিটি টেস্ট" আক্ষরিক অর্থে যোগ করা যায়নি — এই প্রজেক্টে কোনো React-হুক টেস্ট অবকাঠামো নেই (App.jsx-এর ভেতরের হুক/ফাংশন plain Node থেকে import করা যায় না, শুধু browser bundle-এ থাকে)। প্যারিটি নিশ্চিত করা হয়েছে কোড-রিভিউ দিয়ে (উপরের যুক্তি) — এটা automated regression-প্রুফ না। **তাই real-device টেস্টই এখন একমাত্র বাকি যাচাই।**
+
+**যাচাই**: `npm test` ২২৭/২২৭ পাস, `npm run lint` 0 error (পরিবর্তিত লাইনে নতুন warning নেই), `npm run build` ক্লিন। real-device টেস্ট এখনো বাকি (নিচে দেখুন)।
+
+**পরের ধাপ**: real-device স্মোক-টেস্ট (POS ব্রাউজ/ফিল্টার/পেজিনেশন/স্টক-আউট/চেকআউট) → Products list ও CustomerDetail-এও একই প্যাটার্ন → আসল ৭.৩ (বুট চেঞ্জ) → real-device টেস্ট আবার → AIPage_ বাকি অংশ/Customers SQL cutover।
+
+---
 
 ### [এন্ট্রি ৪৯] — "ধাপ ৭ শুরু করুন" → বাস্তবতা-যাচাই: এন্ট্রি ৪৪-এর গ্যাপ পূরণ + রিয়েল বাগ ফিক্স, আসল ৭.৩ (বুট চেঞ্জ) ইচ্ছাকৃতভাবে শুরু করা হয়নি
 
