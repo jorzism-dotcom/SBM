@@ -17794,7 +17794,20 @@ function ViewerDashboardScreen({ onReconfigure, onExit }) {
     return s;
   }, 0) - todayReturnsCashRefund, [todayInvs, todayReturnsCashRefund]);
   const todayProfit = useMemo(() => calcProfitTotal(todayInvs, globalProdMap) - todayReturnsProfitImpact, [todayInvs, globalProdMap, todayReturnsProfitImpact]);
-  const reorderAlerts = useMemo(() => products.filter(p => (p.stock || 0) > 0 && (p.stock || 0) <= (p.minStockAlert || 5)), [products]);
+  // 🔴 ফিক্স (এন্ট্রি ৬০ — এন্ট্রি ৫৯-এর রিগ্রেশন, লিন্ট দিয়ে ধরা পড়েছে):
+  // এন্ট্রি ৫৯-এ এখানে ভুলবশত `useLowStockItems(products, businessType)` বসানো
+  // হয়েছিল, কিন্তু এটা `ViewerDashboardScreen`-এর ভেতরে — এখানে `businessType`
+  // কোনো prop/variable হিসেবে সংজ্ঞায়িতই না (এই স্ক্রিন সম্পূর্ণ snapshot-ভিত্তিক
+  // আলাদা ডেটা-সোর্স, শুধু local `prefix` variable আছে) — ফলে ESLint `no-undef`
+  // error + রানটাইমে ReferenceError, Viewer Dashboard ওপেন করলেই ক্র্যাশ করত।
+  // এন্ট্রি ৫৭-এই স্পষ্ট লেখা ছিল এই সাইট ইচ্ছাকৃতভাবে out-of-scope রাখা হয়েছে
+  // ঠিক এই কারণেই। ফিক্স: আগের মতোই সরাসরি local filter (useLowStockItems()-এর
+  // jsLowStockItems ফলব্যাকের সাথে identical লজিক) — কোনো businessType/SQL
+  // dependency ছাড়া।
+  const reorderAlerts = useMemo(
+    () => (products || []).filter(p => (p.stock || 0) > 0 && (p.stock || 0) <= (p.minStockAlert || 5)),
+    [products]
+  );
 
   // ── UI state — মূল অ্যাপের মতোই ট্যাব + মোডাল + "অন্যান্য" ড্রয়ার ──
   const [vTab, setVTab] = useState("dashboard");
@@ -19159,7 +19172,11 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     const q = parseFloat(qty) || 0;
     setItems(prev => {
       if (q <= 0) return prev.filter(i => i.productId !== pid);
-      const prod = products.find(p => p.id === pid);
+      // 🆕 এন্ট্রি ৬১ — O(n) find() থেকে ইতিমধ্যে-বিদ্যমান productsByIdMap
+      // (লাইন ~১৮৮৮৫, একই products state থেকে সিঙ্ক্রোনাসভাবে বিল্ড, serial/serialStr-সহ
+      // সব ফিল্ড আছে) দিয়ে O(1) lookup — prod.serial নিচে ব্যবহৃত হয় বলে এটা জরুরি ছিল
+      // যে productsByIdMap-এও serial থাকে, যাচাই করা হয়েছে।
+      const prod = productsByIdMap.get(String(pid));
       const maxStock = getSellableStock(prod);
       if (maxStock <= 0) {
         showToast?.("এই পণ্যের সচল (অ-মেয়াদোত্তীর্ণ) স্টক নেই — বিক্রি করা যাবে না", "#ef4444");
@@ -19397,8 +19414,12 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     const soldBatchMap = {};
     const sellableItems = items.filter(i => i.productType !== "service");
     const stockUpdates = sellableItems.map((sold) => {
+      // 🆕 এন্ট্রি ৬১ — প্রাইমারি lookup (getState().productsById) অপরিবর্তিত রাখা
+      // হয়েছে (এটাই freshest স্ন্যাপশট, উপরের কমেন্টে ব্যাখ্যা করা কারণেই জরুরি)।
+      // শুধু ফলব্যাক O(n) find() → productsByIdMap O(1) — একই render-এর একই
+      // products closure থেকে, তাই freshness অপরিবর্তিত, শুধু দ্রুত।
       const freshP = useAppStore.getState().productsById.get(String(sold.productId))
-        || products.find(p => p.id === sold.productId);
+        || productsByIdMap.get(String(sold.productId));
       if (!freshP || freshP.productType === "service") return null;
       const { newStock, updatedBatches, batchNo, costPrice, expiryDate, batchBreakdown } = computeStockDeductionFIFO(freshP, sold.qty);
       soldBatchMap[sold.productId] = { batchNo, costPrice, expiryDate: expiryDate || "", batchBreakdown };
@@ -20686,7 +20707,8 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
                                 }}>{item.qty}</div>
                                 <button type="button"
                                   onClick={() => {
-                                    const prod = products.find(p => p.id === item.productId);
+                                    // 🆕 এন্ট্রি ৬১ — একই কারণে (উপরে setQty দ্রষ্টব্য), O(1) Map lookup
+                                    const prod = productsByIdMap.get(String(item.productId));
                                     const maxStock = prod ? getSellableStock(prod) : Infinity;
                                     setQty(item.productId, maxStock !== Infinity ? Math.min(maxStock, item.qty + 1) : item.qty + 1);
                                   }}
@@ -22864,17 +22886,36 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   // যদিও ইনভয়েস আসলে আর্কাইভে ঠিকই আছে। এখন রেঞ্জ ৬-মাসের কাটঅফের আগে গেলে
   // InvoiceArchive থেকে ওই রেঞ্জের রেকর্ড টেনে (নিচে allItems-এ) merge করা হয়।
   const [dmArchiveRows, setDmArchiveRows] = React.useState([]);
+  // 🆕 এন্ট্রি ৫৯ (⚠️ আনভেরিফায়েড — sandbox নেটওয়ার্কহীন, real-device-এই প্রথম
+  // যাচাই): loadInvHistPage()/loadVoidHist()-এর প্রতিষ্ঠিত প্যাটার্নই এখানে —
+  // isSqliteEnabled() হলে dsQueryPage() (invoices, date_key রেঞ্জ) চেষ্টা, ব্যর্থ
+  // হলে/flag বন্ধ থাকলে আগের InvoiceArchive.queryPage() ফলব্যাক অপরিবর্তিত। এটা
+  // শুধু archive-অংশ (৬ মাসের বেশি পুরনো) — cutoff-এর আগে হলে কিছুই fetch হয় না,
+  // সেই গার্ড অপরিবর্তিত রাখা হয়েছে।
   React.useEffect(() => {
     if (!dashModal || dashModal.type !== "invoices") { setDmArchiveRows([]); return; }
     const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 6);
     const cutoffKey = _dateKeyOf(cutoff);
     if (dmRange.startKey >= cutoffKey) { setDmArchiveRows([]); return; } // সম্পূর্ণ রেঞ্জই লাইভ ডেটায় আছে, আর্কাইভ লাগবে না
     let cancelled = false;
-    InvoiceArchive.queryPage({ dateFrom: dmRange.startKey, dateTo: dmRange.endKey, pageSize: 100000 })
-      .then(res => { if (!cancelled) setDmArchiveRows(res?.rows || []); })
-      .catch(() => { if (!cancelled) setDmArchiveRows([]); });
+    (async () => {
+      if (isSqliteEnabled()) {
+        try {
+          const r = await dsQueryPage(businessType, "invoices", {
+            where: "date_key >= ? AND date_key <= ?",
+            params: [dmRange.startKey, dmRange.endKey],
+            sortColumn: "created_at", sortDir: "DESC", limit: 100000,
+          });
+          if (!cancelled) setDmArchiveRows(r.rows || []);
+          return;
+        } catch { /* নিচে ফলব্যাক */ }
+      }
+      InvoiceArchive.queryPage({ dateFrom: dmRange.startKey, dateTo: dmRange.endKey, pageSize: 100000 })
+        .then(res => { if (!cancelled) setDmArchiveRows(res?.rows || []); })
+        .catch(() => { if (!cancelled) setDmArchiveRows([]); });
+    })();
     return () => { cancelled = true; };
-  }, [dashModal, dmRange.startKey, dmRange.endKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dashModal, dmRange.startKey, dmRange.endKey, businessType]); // eslint-disable-line react-hooks/exhaustive-deps
   // ক্যাশ হিস্ট্রি Print/WhatsApp বাটনের busy-state — আগে cashModal==="history" ব্লকের ভিতরে conditionally call হতো যা Rules of Hooks ভঙ্গ করে React error #310 (Rendered more hooks than during the previous render) সৃষ্টি করছিল
   const [cashHistBusy, setCashHistBusy] = React.useState(false);
 
@@ -27229,14 +27270,31 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
   // "ক্রয় ইনভয়েস দেখুন" বাটনটাই (নতুন ইনভয়েস-নাম্বার ব্যাজসহ) উধাও হয়ে যেত।
   // এখন এই কাস্টমারের আর্কাইভড ইনভয়েসও (customerId দিয়ে) টেনে merge করা হচ্ছে।
   const [archivedCustInvs, setArchivedCustInvs] = useState([]);
+  // 🆕 এন্ট্রি ৫৯ (⚠️ আনভেরিফায়েড, real-device-এই প্রথম যাচাই হবে): dashModal-এর
+  // archive fetch-এর মতোই — SQL হলে dsQueryPage(customer_id) চেষ্টা, ব্যর্থ/বন্ধ
+  // হলে আগের InvoiceArchive.queryPage() ফলব্যাক। invoiceMap-এ ইতিমধ্যে
+  // `!m.has(iv.id)` dedup আছে (নিচে), তাই live+archive ওভারল্যাপে ডুপ্লিকেট ঝুঁকি নেই।
+  const businessTypeForArchive = useAppStore(s => s.businessType) || "pharmacy";
   useEffect(() => {
     let cancelled = false;
     if (!customer?.id) { setArchivedCustInvs([]); return; }
-    InvoiceArchive.queryPage({ customerId: customer.id, pageSize: 100000 })
-      .then(res => { if (!cancelled) setArchivedCustInvs(res?.rows || []); })
-      .catch(() => { if (!cancelled) setArchivedCustInvs([]); });
+    (async () => {
+      if (isSqliteEnabled()) {
+        try {
+          const r = await dsQueryPage(businessTypeForArchive, "invoices", {
+            where: "customer_id = ?", params: [customer.id],
+            sortColumn: "created_at", sortDir: "DESC", limit: 100000,
+          });
+          if (!cancelled) setArchivedCustInvs(r.rows || []);
+          return;
+        } catch { /* নিচে ফলব্যাক */ }
+      }
+      InvoiceArchive.queryPage({ customerId: customer.id, pageSize: 100000 })
+        .then(res => { if (!cancelled) setArchivedCustInvs(res?.rows || []); })
+        .catch(() => { if (!cancelled) setArchivedCustInvs([]); });
+    })();
     return () => { cancelled = true; };
-  }, [customer?.id]);
+  }, [customer?.id, businessTypeForArchive]);
   const invoiceMap = useMemo(() => {
     const m = new Map((invoices || []).map(iv => [iv.id, iv]));
     for (const iv of archivedCustInvs) if (!m.has(iv.id)) m.set(iv.id, iv);
@@ -29061,7 +29119,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
         // ── একটা পণ্যে একটা ব্যাচ যোগ করার কেন্দ্রীয় লজিক (Weighted Average Cost) —
         // এককভাবে savePE (নিচে) থেকে, আর বাল্ক চালান-কনফার্ম থেকেও এই একই ফাংশন কল হয় ──
         const applyPurchaseBatch = async ({ productId, qty, unitCost, unitSell, expiryDate, supplier, note, isFreeStock, spPrice, awaitServer = true }) => {
-          const prod = products.find(p => p.id === productId);
+          // 🆕 এন্ট্রি ৬০ — `products.find()` (O(n) স্ক্যান) থেকে ইতিমধ্যে-বিদ্যমান
+          // `productsByIdMap` (লাইন ~২৮৪২২, একই `products` state থেকে সিঙ্ক্রোনাসভাবে
+          // বিল্ড করা Map, কোনো async/SQL fetch না) দিয়ে O(1) lookup — শূন্য আচরণ-পরিবর্তন,
+          // শুধু পারফরম্যান্স। costPrice/stock হিসাব অপরিবর্তিত।
+          const prod = productsByIdMap.get(String(productId));
           if (!prod || !qty || qty <= 0) return null;
           const cost    = isFreeStock ? 0 : (unitCost || prod.costPrice || 0);
           const sell    = unitSell || prod.price || 0;
@@ -29316,7 +29378,9 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             showToast(msg, "#ef4444");
             return;
           }
-          const prod = products.find(p => p.id === peForm.productId);
+          // 🆕 এন্ট্রি ৬০ — একই কারণে (উপরে applyPurchaseBatch দ্রষ্টব্য), O(n) find()
+          // থেকে productsByIdMap O(1) lookup।
+          const prod = productsByIdMap.get(String(peForm.productId));
           if (!prod) return;
           const result = await applyPurchaseBatch({
             productId: peForm.productId,
