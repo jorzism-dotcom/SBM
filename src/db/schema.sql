@@ -335,18 +335,29 @@ CREATE INDEX IF NOT EXISTS idx_supplierpayments_key ON supplierPayments(supplier
 -- 🆕 এন্ট্রি ৩৮। todayBakiIncurred/todayJoma অ্যাগ্রিগেটে invoice_id দিয়ে
 -- invoices.status='voided' চেক করতে হয় (invoices টেবিলের সাথে সাব-কোয়েরি) —
 -- তাই invoice_id প্রমোট করা হলো।
+-- 🆕 এন্ট্রি ৫৭ (Customers RFM/LTV SQL cutover-এর ব্লকার হিসেবে ধরা পড়া) —
+-- customer_id কলাম আগে ছিল না, শুধু data JSON-এ থাকত। invoice_id দিয়ে
+-- invoices জোড়া দিয়ে customerId বের করার চেষ্টা করা হয়েছিল, কিন্তু
+-- কাস্টমার-ডিটেইল পেজ থেকে সরাসরি "বাকি আদায়" (addTxn(..., invoiceId=null,
+-- "collection")) কোনো ইনভয়েসের সাথে যুক্ত না — invoice_id দিয়ে JOIN করলে এই
+-- ধরনের টাকা silently বাদ পড়ে যেত, RFM-এর recentPaid/at_risk সেগমেন্ট ভুল
+-- হতো। তাই সরাসরি কলাম হিসেবে রাখা হলো, JOIN-নির্ভরতা নেই।
 CREATE TABLE IF NOT EXISTS txns (
-  id          TEXT PRIMARY KEY,
-  type        TEXT,        -- baki | joma
-  source      TEXT,
-  amount      REAL,
-  invoice_id  TEXT,
-  date_key    TEXT,
-  updated_at  TEXT,        -- t.time (bookkeeping only)
-  data        TEXT NOT NULL
+  id           TEXT PRIMARY KEY,
+  type         TEXT,        -- baki | joma
+  source       TEXT,
+  amount       REAL,
+  invoice_id   TEXT,
+  customer_id  TEXT,
+  date_key     TEXT,
+  updated_at   TEXT,        -- t.time (bookkeeping only)
+  data         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_txns_type_date ON txns(type, date_key);
 CREATE INDEX IF NOT EXISTS idx_txns_invoice   ON txns(invoice_id);
+-- 🆕 এন্ট্রি ৫৭ — RFM-এর recentPaid কোয়েরি প্যাটার্নের জন্য (customer_id +
+-- type='joma' + date_key>=d30 — GROUP BY customer_id)
+CREATE INDEX IF NOT EXISTS idx_txns_customer  ON txns(customer_id, type, date_key);
 
 -- ── returns ──────────────────────────────────────────────────────────────
 -- 🆕 এন্ট্রি ৩৮। todayReturnsRefund/profit-impact-এও invoice_id দিয়ে ভয়েডেড

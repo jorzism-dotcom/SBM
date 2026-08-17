@@ -120,7 +120,23 @@ export async function markEventsSynced(businessType, ids) {
 
 // ── Connection cache — প্রতি business type-এর জন্য আলাদা DB, একবার খুলে রাখি ──
 const sqlite = new SQLiteConnection(CapacitorSQLite);
-const _dbCache = new Map(); // businessType -> SQLiteDBConnection
+const _dbCache = new Map(); // businessType -> SQLiteDBConnection (resolved)
+// 🔴 ফিক্স (এন্ট্রি ৫৭, real-device-এ ধরা পড়া cold-boot race): আগে শুধু
+// resolved connection cache হতো (_dbCache), promise না। বুট-এ একই businessType-এর
+// জন্য একাধিক হুক (useInventoryData/useKpiStats-এর একাধিক সোর্স/useProductSalesRows
+// ইত্যাদি) প্রায় একই সময়ে getDb() কল করলে সবাই একসাথে cache-miss পেত, আর সবাই
+// সমান্তরালে db.open()+schema execute()+১২টা ALTER TABLE চালানো শুরু করে দিত —
+// একই আন্ডারলাইং SQLite ফাইলে concurrent DDL/connection-open রেস কন্ডিশনে একটা
+// কল থ্রো করত, caller-এর catch ব্লকে পড়ে sqlStatus:'error' দেখাত (ব্যবহারকারীর
+// রিপোর্ট করা "স্টক ডেটা লোড করা যায়নি (SQL ব্যর্থ)" ব্যানার)। কয়েক সেকেন্ড পরে
+// দ্বিতীয়বার কল হলে ততক্ষণে _dbCache পপুলেটেড থাকত বলে সফল হতো — ঠিক যেমনটা
+// পর্যবেক্ষণ করা হয়েছে (৫:০২-এ error, ৫:১৬-এ সঠিক সংখ্যা)।
+// ফিক্স: in-flight প্রমিজ নিজেই cache করা হচ্ছে (resolve হওয়ার আগেই সিঙ্ক্রোনাসভাবে
+// Map-এ বসানো) — যেকোনো সংখ্যক concurrent caller একই init-প্রমিজেই await করবে,
+// দ্বিতীয় db.open()/schema-execution কখনো শুরুই হবে না। ব্যর্থ হলে cache থেকে
+// entry সরিয়ে দেওয়া হচ্ছে যাতে পরের কল আবার রিট্রাই করতে পারে (স্টাক ব্যর্থ
+// promise চিরস্থায়ীভাবে cache-এ আটকে না থাকে)।
+const _dbPromiseCache = new Map(); // businessType -> Promise<SQLiteDBConnection>, in-flight
 
 let _schemaSql = null; // schema.sql-এর কনটেন্ট lazy-load হয়ে এখানে ক্যাশ হবে
 
@@ -140,7 +156,23 @@ async function loadSchemaSql() {
 export async function getDb(businessType) {
   if (!businessType) throw new Error("getDb(): businessType আবশ্যক");
   if (_dbCache.has(businessType)) return _dbCache.get(businessType);
+  // 🆕 এন্ট্রি ৫৭: ইতিমধ্যে এই businessType-এর জন্য init চলছে (in-flight) —
+  // নতুন করে db.open()/schema শুরু না করে একই promise-এ যোগ দাও।
+  if (_dbPromiseCache.has(businessType)) return _dbPromiseCache.get(businessType);
 
+  const initPromise = _initDb(businessType).then((db) => {
+    _dbCache.set(businessType, db);
+    _dbPromiseCache.delete(businessType); // সফল — resolved cache-ই যথেষ্ট এখন থেকে
+    return db;
+  }).catch((err) => {
+    _dbPromiseCache.delete(businessType); // ব্যর্থ — cache-এ আটকে না রেখে পরের কল রিট্রাই করতে দাও
+    throw err;
+  });
+  _dbPromiseCache.set(businessType, initPromise); // সিঙ্ক্রোনাসভাবেই বসানো হলো, যেন কোনো concurrent caller miss না করে
+  return initPromise;
+}
+
+async function _initDb(businessType) {
   const dbName = `sbm_${businessType}`; // ফাইল হবে sbm_pharmacy SQLite.db ইত্যাদি
   const isConn = (await sqlite.isConnection(dbName, false)).result;
   const consistent = (await sqlite.checkConnectionsConsistency()).result;
@@ -222,10 +254,18 @@ export async function getDb(businessType) {
   try {
     await db.execute(`ALTER TABLE products ADD COLUMN dosage_form TEXT;`);
   } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
+  // 🆕 এন্ট্রি ৫৭ (Customers RFM/LTV cutover-এর ব্লকার) — পুরনো ইনস্টলে txns
+  // টেবিলে customer_id কলাম নেই, নতুন CREATE TABLE-এই আছে (নতুন ইনস্টল আক্রান্ত
+  // না)। schema.sql-এর txns কমেন্ট-ব্লকে কারণ বিস্তারিত (invoice_id-নির্ভর JOIN
+  // কেন যথেষ্ট না)। CREATE INDEX ... (customer_id, ...) restOfSchema-এর নিচের
+  // execute()-এ চলবে বলে কলাম আগে যোগ করা আবশ্যক, নাহলে ইনডেক্স-তৈরি ব্যর্থ হবে।
+  try {
+    await db.execute(`ALTER TABLE txns ADD COLUMN customer_id TEXT;`);
+  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
   // schema.sql-এ multiple statements আছে — execute() মাল্টি-স্টেটমেন্ট সাপোর্ট করে
   await db.execute(restOfSchema);
 
-  _dbCache.set(businessType, db);
+  // (cache-সেট এখন getDb() wrapper-এই হয় — এখানে সরাসরি সেট করার দরকার নেই)
   return db;
 }
 
@@ -408,13 +448,14 @@ const HOT_FIELDS = {
     ],
   },
   txns: {
-    columns: ["id", "type", "source", "amount", "invoice_id", "date_key", "updated_at"],
+    columns: ["id", "type", "source", "amount", "invoice_id", "customer_id", "date_key", "updated_at"],
     extract: (t) => [
       String(t.id),
       t.type ?? null,
       t.source ?? null,
       numOrNull(t.amount),
       t.invoiceId != null ? String(t.invoiceId) : null,
+      t.customerId != null ? String(t.customerId) : null, // 🆕 এন্ট্রি ৫৭ — RFM/LTV cutover
       t.dateKey ?? null,
       t.time ?? null,
     ],
@@ -1236,6 +1277,48 @@ export async function getDistinctDosageForms(businessType) {
   `;
   const res = await db.query(sql);
   return (res.values || []).map((r) => r.dosage_form);
+}
+
+// ── এন্ট্রি ৫৭ (Customers RFM/LTV cutover, App.jsx-এর Customers কম্পোনেন্টের
+// rfmData-এর SQL সমতুল্য) ──────────────────────────────────────────────────
+/**
+ * customer_id দিয়ে GROUP BY করে ৩টা আলাদা aggregate কোয়েরি — invoices থেকে
+ * ltv/frequency/lastDateKey, txns থেকে recentPaid, আর গ্লোবাল totalSales/monthSale
+ * (সেগমেন্ট-থ্রেশহোল্ডে ব্যবহার হয়)। ⚠️ ইচ্ছাকৃতভাবে দুটো আলাদা GROUP BY কোয়েরি —
+ * invoices আর txns-কে সরাসরি JOIN করলে প্রতি কাস্টমারের প্রতিটা invoice-row ×
+ * প্রতিটা txn-row মিলে cross-product হয়ে SUM ভুল (গুণিতক) হয়ে যেত। App.jsx-এ
+ * customerId দিয়ে দুটো ফলাফল Map-এ মার্জ হয় (O(customers), rfmData-এর আগের
+ * O(customers×invoices) স্ক্যানের বদলে)। txns.customer_id কলাম নতুন (দেখুন
+ * schema.sql-এর txns কমেন্ট — কেন invoice_id-নির্ভর JOIN যথেষ্ট ছিল না)।
+ *
+ * রিটার্ন: { byCustomer: [{id,ltv,frequency,lastDateKey}], recentPaidByCustomer:
+ * [{id,recentPaid}], totals: {totalSales, monthSale} }
+ */
+export async function getCustomerRfmAggregates(businessType, { d30 }) {
+  const db = await getDb(businessType);
+  const [invRes, txnRes, totalsRes] = await Promise.all([
+    db.query(`
+      SELECT customer_id AS id, SUM(total) AS ltv, COUNT(*) AS frequency, MAX(date_key) AS lastDateKey
+      FROM invoices WHERE status = 'active' AND customer_id IS NOT NULL
+      GROUP BY customer_id
+    `),
+    db.query(`
+      SELECT customer_id AS id, SUM(amount) AS recentPaid
+      FROM txns WHERE type = 'joma' AND customer_id IS NOT NULL AND date_key >= ?
+      GROUP BY customer_id
+    `, [d30]),
+    db.query(`
+      SELECT SUM(total) AS totalSales,
+             SUM(CASE WHEN date_key >= ? THEN total ELSE 0 END) AS monthSale
+      FROM invoices WHERE status = 'active'
+    `, [d30]),
+  ]);
+  const t = totalsRes.values?.[0] || {};
+  return {
+    byCustomer: (invRes.values || []).map((r) => ({ id: r.id, ltv: r.ltv || 0, frequency: r.frequency || 0, lastDateKey: r.lastDateKey || null })),
+    recentPaidByCustomer: (txnRes.values || []).map((r) => ({ id: r.id, recentPaid: r.recentPaid || 0 })),
+    totals: { totalSales: t.totalSales || 0, monthSale: t.monthSale || 0 },
+  };
 }
 
 /** liveDupProduct-এর SQL সমতুল্য — name_norm ইনডেক্সড কলামে exact lookup (schema-তে এন্ট্রি ৯ থেকেই
