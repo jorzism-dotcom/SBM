@@ -198,70 +198,69 @@ async function _initDb(businessType) {
   for (const pragma of pragmaLines) {
     await db.query(pragma.trim());
   }
-  // 🆕 এন্ট্রি ৩০ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ৪) — ALTER TABLE
-  // মাইগ্রেশন গার্ড: নিচের `CREATE TABLE IF NOT EXISTS` আগে-থেকে-তৈরি DB
-  // ফাইলে (এই কলাম যোগ হওয়ার আগে তৈরি) নতুন কলাম যোগ করে না (no-op), আর
-  // schema.sql-এর নতুন `CREATE INDEX ... ON products(demand_type, ...)` তখন
-  // "no such column" এরর দিয়ে পুরো restOfSchema execute()-টাই ভেঙে দিত।
-  // তাই CREATE TABLE/INDEX ব্যাচ চালানোর *আগে* আলাদা ALTER TABLE — কলাম আগে
-  // থেকেই থাকলে ("duplicate column") বা টেবিলই এখনো তৈরি না হলে ("no such
-  // table", একেবারে নতুন DB-তে) দুটো ক্ষেত্রেই এরর silently ignore করা হচ্ছে,
-  // কারণ দুটোই নিরাপদ/প্রত্যাশিত অবস্থা।
-  try {
-    await db.execute(`ALTER TABLE products ADD COLUMN demand_type TEXT;`);
-  } catch (_) { /* কলাম আগে থেকেই আছে, অথবা টেবিলই এখনো নেই — উভয়ই নিরাপদ */ }
-  // 🆕 এন্ট্রি ৩৬ (ধাপ ২) — একই কারণে (দেখুন উপরের কমেন্ট) demand_type-এর মতোই
-  // ALTER TABLE গার্ড লাগবে এই তিনটা নতুন কলামের জন্যও।
-  try {
-    await db.execute(`ALTER TABLE products ADD COLUMN min_stock_alert REAL;`);
-  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
-  try {
-    await db.execute(`ALTER TABLE products ADD COLUMN nearest_expiry_date TEXT;`);
-  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
-  try {
-    await db.execute(`ALTER TABLE products ADD COLUMN supplier_key TEXT;`);
-  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
-  // 🆕 এন্ট্রি ৪০ (ধাপ ৫, POS product picker) — একই কারণে ALTER TABLE গার্ড
-  // এই ৩টা নতুন কলামের জন্যও (schema.sql-এর browse_rank কমেন্ট দ্রষ্টব্য)।
-  try {
-    await db.execute(`ALTER TABLE products ADD COLUMN product_type TEXT;`);
-  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
-  try {
-    await db.execute(`ALTER TABLE products ADD COLUMN category TEXT;`);
-  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
-  try {
-    await db.execute(`ALTER TABLE products ADD COLUMN browse_rank TEXT;`);
-  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
-  // 🆕 এন্ট্রি ৪১ (ধাপ ৬, computeSupplierDueMap) — একই কারণে ALTER TABLE গার্ড
-  // (schema.sql-এর "supplier due-map" কমেন্ট-ব্লক দ্রষ্টব্য)।
-  try {
-    await db.execute(`ALTER TABLE products ADD COLUMN supplier_due_key TEXT;`);
-  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
-  try {
-    await db.execute(`ALTER TABLE products ADD COLUMN supplier_due_raw TEXT;`);
-  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
-  try {
-    await db.execute(`ALTER TABLE purchaseOrders ADD COLUMN supplier_due_key TEXT;`);
-  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
-  try {
-    await db.execute(`ALTER TABLE purchaseOrders ADD COLUMN supplier_due_raw TEXT;`);
-  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
-  try {
-    await db.execute(`ALTER TABLE purchaseOrders ADD COLUMN purchase_amount REAL;`);
-  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
-  // 🆕 এন্ট্রি ৪৪ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ৭.৩-এর ব্লকার) — একই কারণে
-  // ALTER TABLE গার্ড এই কলামের জন্যও (schema.sql-এর dosage_form কমেন্ট দ্রষ্টব্য)।
-  try {
-    await db.execute(`ALTER TABLE products ADD COLUMN dosage_form TEXT;`);
-  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
-  // 🆕 এন্ট্রি ৫৭ (Customers RFM/LTV cutover-এর ব্লকার) — পুরনো ইনস্টলে txns
-  // টেবিলে customer_id কলাম নেই, নতুন CREATE TABLE-এই আছে (নতুন ইনস্টল আক্রান্ত
-  // না)। schema.sql-এর txns কমেন্ট-ব্লকে কারণ বিস্তারিত (invoice_id-নির্ভর JOIN
-  // কেন যথেষ্ট না)। CREATE INDEX ... (customer_id, ...) restOfSchema-এর নিচের
-  // execute()-এ চলবে বলে কলাম আগে যোগ করা আবশ্যক, নাহলে ইনডেক্স-তৈরি ব্যর্থ হবে।
-  try {
-    await db.execute(`ALTER TABLE txns ADD COLUMN customer_id TEXT;`);
-  } catch (_) { /* নিরাপদ — উপরের কমেন্ট দ্রষ্টব্য */ }
+  // 🔴 ফিক্স (এন্ট্রি ৫৮, real-device-এ ধরা পড়া দ্বিতীয় লেটেন্সি বাগ — flag বন্ধ
+  // করে টেস্টে "লেট নেই" কনফার্ম হওয়ায় প্রমাণিত এটা SQL-লেয়ারেরই সমস্যা): আগে
+  // এখানে ১৩টা আলাদা ALTER TABLE কল ছিল, প্রতিটা নিজের try/catch-এ ব্লাইন্ডলি
+  // চালানো হতো এই ধরে নিয়ে যে বেশিরভাগ ডিভাইসে কলাম আগে থেকেই আছে, তাই
+  // "duplicate column" এরর দিয়ে catch-এ ধরা পড়বে। কিন্তু প্রতিটা ALTER —
+  // ব্যর্থ হলেও — একটা সম্পূর্ণ JS↔Native bridge round-trip খরচ করত, আর এই
+  // ১৩টা কল sequentially await হতো (পরের ALTER আগেরটা শেষ না হওয়া পর্যন্ত শুরু
+  // হতো না)। পুরনো ডিভাইসে (মাসের পর মাস dual-write চলছে) সব কলামই আগে থেকে
+  // আছে, তাই প্রতি cold-boot-এ পুরো ১৩টা round-trip-ই নিরর্থক খরচ হতো — এটাই
+  // ব্যবহারকারীর রিপোর্ট করা "প্রতিবার লেট, তারপর ইনস্ট্যান্ট" প্যাটার্নের root
+  // cause (getDb() promise-cache ফিক্সের (এন্ট্রি ৫৭) পরেও persist করছিল, কারণ
+  // ওটা শুধু *সমান্তরাল duplicate* init রেস আটকেছিল, প্রতিটা single init-এর
+  // ভেতরের এই sequential ALTER খরচ কমায়নি)।
+  //
+  // ফিক্স: ব্লাইন্ডলি ১৩ বার ALTER চেষ্টা না করে, প্রতিটা টেবিলের জন্য একবার
+  // PRAGMA table_info() দিয়ে আসলেই কী কলাম আছে তা পড়ে নিয়ে শুধু সত্যিই
+  // অনুপস্থিত কলামের জন্যই ALTER চালানো হচ্ছে। PRAGMA table_info() একটা টেবিল
+  // এখনো তৈরি না হলে (একেবারে নতুন DB) খালি রেজাল্ট দেয় (এরর থ্রো করে না) —
+  // সেক্ষেত্রে কলাম-সেট খালি থাকবে, needed[] থেকে কিছুই ALTER হবে না (ঠিক
+  // আগের try/catch-এর "no such table" নিরাপদ-স্কিপ আচরণের মতোই), কারণ নিচের
+  // CREATE TABLE IF NOT EXISTS-এই কলামগুলো থাকবে। পুরনো ইনস্টলে এখন থেকে
+  // প্রতিটা বুটে ৩টা fast metadata query (SELECT না, তাই সস্তা) + দরকার হলে
+  // শুধু সত্যিকারের অনুপস্থিত কলামের ALTER — সাধারণত ০টা।
+  const _existingCols = async (table) => {
+    try {
+      const res = await db.query(`PRAGMA table_info(${table});`);
+      return new Set((res.values || []).map((r) => r.name));
+    } catch (_) {
+      return new Set(); // টেবিল/কোয়েরি সমস্যা হলে খালি সেট — নিচের CREATE TABLE-ই ভরসা
+    }
+  };
+  const _addMissingCols = async (table, colDefs) => {
+    const existing = await _existingCols(table);
+    for (const [col, ddlType] of colDefs) {
+      if (existing.has(col)) continue;
+      try {
+        await db.execute(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddlType};`);
+      } catch (_) { /* নিরাপদ — রেস/টেবিল-না-থাকা এজ কেস, CREATE TABLE-ই ভরসা */ }
+    }
+  };
+  // এন্ট্রি ৩০/৩৬/৪০/৪১/৪৪ — products টেবিলের সব incremental কলাম একসাথে চেক
+  await _addMissingCols("products", [
+    ["demand_type", "TEXT"],
+    ["min_stock_alert", "REAL"],
+    ["nearest_expiry_date", "TEXT"],
+    ["supplier_key", "TEXT"],
+    ["product_type", "TEXT"],
+    ["category", "TEXT"],
+    ["browse_rank", "TEXT"],
+    ["supplier_due_key", "TEXT"],
+    ["supplier_due_raw", "TEXT"],
+    ["dosage_form", "TEXT"],
+  ]);
+  // এন্ট্রি ৪১ — purchaseOrders টেবিলের supplier due-map কলামগুলো
+  await _addMissingCols("purchaseOrders", [
+    ["supplier_due_key", "TEXT"],
+    ["supplier_due_raw", "TEXT"],
+    ["purchase_amount", "REAL"],
+  ]);
+  // এন্ট্রি ৫৭ — Customers RFM/LTV cutover-এর জন্য txns.customer_id (CREATE
+  // INDEX ... (customer_id, ...) নিচের restOfSchema execute()-এ চলে বলে কলাম
+  // আগে থাকা আবশ্যক)
+  await _addMissingCols("txns", [["customer_id", "TEXT"]]);
   // schema.sql-এ multiple statements আছে — execute() মাল্টি-স্টেটমেন্ট সাপোর্ট করে
   await db.execute(restOfSchema);
 
