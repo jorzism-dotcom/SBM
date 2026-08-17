@@ -23,7 +23,41 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৫৬-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৫৭-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟢 এন্ট্রি ৫৭**: এই সেশনে sandbox-এ প্রথমবার নেটওয়ার্ক কাজ করেছে (`npm install` সফল) — তাই এই এন্ট্রি থেকে প্রতিটা পরিবর্তনের পর সত্যিই `npm test`+`lint`+`typecheck`+`build` sandbox-এই চালানো গেছে (আগের এন্ট্রিগুলোতে এই ক্ষমতা ছিল না)।
+
+ব্যবহারকারী এক সেশনে "Phase ৩ সম্পূর্ণ" চাইলেন। **সম্পূর্ণ করা হয়নি, ইচ্ছাকৃতভাবে** — কারণ তদন্তে দেখা গেল Phase ৩-এর বাকি অংশ প্রাথমিক অনুমানের চেয়ে বড়/জটিল। যা আসলে হলো:
+
+**✅ সম্পূর্ণ + ভেরিফায়েড:**
+1. **`getDb()` cold-boot race কন্ডিশন ফিক্স** (ব্যবহারকারীর রিপোর্ট করা "স্টক ডেটা লোড করা যায়নি (SQL ব্যর্থ)" ব্যানার-এর root cause) — আগে `_dbCache` শুধু resolved connection cache করত, promise না; বুট-এ একই businessType-এর জন্য একাধিক হুক একসাথে cache-miss পেয়ে সমান্তরালে db.open()+schema-execute চালাতে গিয়ে সংঘর্ষ করত। ফিক্স: in-flight promise-ই cache করা হচ্ছে (`_dbPromiseCache`), সব concurrent caller একই init-এ await করে।
+2. **`allSupplierNames`** (Dashboard) — ডুপ্লিকেট full-scan সরিয়ে ইতিমধ্যে-কম্পিউটেড `inv.supplierList` পুনর্ব্যবহার (Bengali-locale সর্ট অপরিবর্তিত রাখা হয়েছে আউটপুট-প্যারিটির জন্য)।
+3. **Customers RFM/LTV SQL cutover** (`getCustomerRfmAggregates()`, নতুন DataStore ফাংশন) — ৩টা আলাদা GROUP BY কোয়েরি (invoices→ltv/frequency/lastDateKey, txns→recentPaid, গ্লোবাল totalSales/monthSale)। ⚠️ ইচ্ছাকৃতভাবে JOIN না — invoices×txns cross-product হয়ে SUM ভুল হওয়ার ঝুঁকি এড়াতে। `App.jsx`-এর `Customers` কম্পোনেন্টে `jsRfmData` (আগের) + নতুন SQL-preferred `rfmData` — SQL সফল হলে override, নাহলে/লোডিং/এরর অবস্থায় `jsRfmData`-ই ফলব্যাক (এন্ট্রি ৫৪-এর "সাইলেন্ট ফলব্যাক না" নীতি থেকে **ইচ্ছাকৃত ব্যতিক্রম** — কারণ ব্যাখ্যা কোডের কমেন্টে: Dashboard-এর widget-এ শূন্য দেখানো নিরাপদ, কিন্তু Customers-এ পুরো লিস্ট খালি দেখালে workflow ব্লক হয়ে যায়, আর jsRfmData যেহেতু এমনিতেও কম্পিউট হয় তাই নতুন ঝুঁকি নেই)।
+   - নতুন টেস্ট সুইট (`tests/datastore-customer-rfm-tests.mjs`, ৭ কেস) — সবচেয়ে গুরুত্বপূর্ণ কেসটা: `invoiceId=null`-এর সরাসরি "বাকি আদায়" txn-ও recentPaid-এ ধরা পড়ে কিনা (আসল ব্লকার, নিচে দেখুন)।
+   - ম্যানুয়াল parity-চেক — ব্যবহারকারীর নিজের ডেটা (রুবেল বাদশা, ইনভয়েস ৳৮৩২+৳৫+৳১৬২০=৳২৪৫৭) দিয়ে পুরনো JS বনাম নতুন SQL — **বাইট-বাই-বাইট মিলেছে**।
+
+**🔴 স্কিমা-চেঞ্জ (এই এন্ট্রিতেই করা হয়েছে, RFM cutover-এর ব্লকার হিসেবে ধরা পড়েছিল):**
+`txns` টেবিলে নতুন `customer_id TEXT` কলাম (+ইনডেক্স) — আগে ছিল না। `invoice_id` দিয়ে `invoices` জোড়া লাগিয়ে customerId বের করার চেষ্টা প্রথমে করা হয়েছিল, কিন্তু কাস্টমার-ডিটেইল পেজ থেকে সরাসরি "বাকি আদায়" করলে (`addTxn(customerId, ..., invoiceId=null, ..., "collection")`) কোনো ইনভয়েসের সাথে যুক্ত থাকে না — JOIN দিয়ে এই টাকা silently বাদ পড়ে যেত, `recentPaid`/`at_risk` সেগমেন্ট ভুল হতো। তাই সরাসরি কলাম। নতুন ইনস্টলে `schema.sql`-এর CREATE TABLE থেকেই আসবে; পুরনো ইনস্টলে `getDb()`-এ নতুন `ALTER TABLE txns ADD COLUMN customer_id TEXT` গার্ড। `HOT_FIELDS.txns.extract()`-এ `t.customerId` থেকে পপুলেট হয় (dual-write স্বয়ংক্রিয়ভাবে কভার করে, আলাদা backfill স্ক্রিপ্ট লাগেনি — পরের resumable backfill রান-এই নতুন কলাম পপুলেট হয়ে যাবে)।
+
+**🔍 নতুন যা বোঝা গেল (মূল প্ল্যান ডকুমেন্টে ভুল ক্যাটাগরাইজড ছিল, স্পর্শ করা হয়নি):**
+- **`reorderAlerts`** (Dashboard) আসলে sales-velocity পূর্বাভাস অ্যালগরিদম (avgDaily consumption + daysLeft projection), Web Worker-এ (`worker.js`) ইতিমধ্যে main-thread-এর বাইরে চলে, `invoices` হিস্ট্রি লাগে — সাধারণ "site swap" না, SQL-এ পুরো অ্যালগরিদম রিডিজাইনের কাজ। ViewerDashboardScreen-এর আলাদা local `reorderAlerts` (সাধারণ minStockAlert ফিল্টার) স্পর্শ করা হয়নি কারণ ওটা snapshot-ভিত্তিক আলাদা ডেটা-সোর্স (businessType থ্রেডই করা নেই), global store-এর সাথে সরাসরি সম্পর্কিত না।
+- **"১২+ Map বিল্ডার" (`new Map(products.map(...))`)** — পরীক্ষা করে দেখা গেল বেশিরভাগই bug/ডুপ্লিকেট না, **ইচ্ছাকৃত ডকুমেন্টেড সিদ্ধান্ত** (যেমন লাইন ~১১৬৭৭-এ কমেন্টে স্পষ্ট লেখা "দুই কম্পোনেন্ট আলাদা স্কোপ হওয়ায় ESLint no-undef error + build fail" হয়েছিল বলেই local রাখা হয়েছে)। এগুলো কনভার্ট করলে আগের সঠিক সিদ্ধান্ত উল্টে যেত — স্পর্শ করা হয়নি।
+
+**⚠️ যা এখনো বাকি, প্রতিটাই নিজেই একটা পূর্ণ সেশনের কাজ:**
+- **বিলিং-ক্রিটিক্যাল ৭টা সাইট** (`SmartInvoiceBuilder`-এর ইনভয়েস-সেভ লজিক) — টাকা+স্টক সরাসরি
+- **ক্রয়-খরচ-ক্রিটিক্যাল** — `applyPurchaseBatch()`, `savePE()`-এর productId lookup
+- **Invoice history পুরো read-path** — এখনো in-memory React-state filtering
+- **Products list boot-lazy চূড়ান্ত ধাপ (৭.৩)** — উপরের সব শেষ না হলে করা যাবে না
+
+**⚠️ সততার সাথে**: real-device স্মোক-টেস্ট এন্ট্রি ৫৩ থেকেই জমে আছে (এখন এন্ট্রি ৫৫+৫৬+৫৭ যোগ হওয়ায় আরও বেড়েছে)। **পরের যেকোনো কোড-কাজের আগে এবার সত্যিই বাধ্যতামূলক করা উচিত।**
+
+যাচাই: `npm test` — ১২টা সুইট সব পাস (নতুন `datastore-customer-rfm-tests.mjs`-সহ), `npm run lint` 0 error (৫৭৮, নতুন `catch(_)` ব্লকের জন্য +১ warning, একই established প্যাটার্ন), `npm run typecheck` ক্লিন, `npm run build` ক্লিন।
+
+**পরের সেশনে করণীয়**: (ক) real-device স্মোক-টেস্ট (এন্ট্রি ৫৩+৫৫+৫৬+৫৭ সব একসাথে — Products list, ক্রয় এন্ট্রি ব্যাচ-লেবেল, পণ্য-এডিট সেভ, BatchSyncTool, allSupplierNames, Customers RFM), (খ) টেস্ট-শপে flag চালু করে RFM parity live-verify, (গ) তারপর বিলিং-ক্রিটিক্যাল সাইট (সবচেয়ে সতর্কতার সাথে, একটার বেশি একসাথে না), (ঘ) `reorderAlerts`-এর জন্য আলাদা SQL-ভিত্তিক sales-velocity ডিজাইন বসা।
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৫৬)
 
 **🟢 এন্ট্রি ৫৬**: ব্যবহারকারী স্পষ্টভাবে অনুরোধ করলেন ৭.৩-এর বাকি ~৫০টা সাইট একসাথে এই সেশনে শেষ করতে। **এটা আংশিক করা হলো, ইচ্ছাকৃতভাবে সম্পূর্ণ না** — কারণ ব্যাখ্যা নিচে।
 
@@ -172,6 +206,33 @@ Schema+FTS5 · dual-write (shadow) · resumable batch backfill · row-count veri
 ---
 
 ## এন্ট্রি লগ
+
+### [এন্ট্রি ৫৭] — getDb() cold-boot race ফিক্স + allSupplierNames dedup + Customers RFM/LTV SQL cutover (txns.customer_id স্কিমা-অ্যাড সহ)
+
+**তারিখ**: ১৭ আগস্ট ২০২৬। **প্রসঙ্গ**: ব্যবহারকারী এক সেশনে সম্পূর্ণ Phase ৩ চাইলেন। প্রথমবার sandbox-এ নেটওয়ার্ক কাজ করায় (`npm install` সফল) — পুরো সেশন real `npm test`/`lint`/`typecheck`/`build` দিয়ে ভেরিফায়েড করা গেছে (আগে সম্ভব ছিল না)।
+
+**১. `getDb()` cold-boot race ফিক্স (`src/db/DataStore.js`)** — ব্যবহারকারীর রিপোর্ট করা "স্টক ডেটা লোড করা যায়নি (SQL ব্যর্থ)" ব্যানারের root cause। আগে `_dbCache` শুধু resolved connection cache করত, in-flight promise না — বুট-এ একই businessType-এর জন্য একাধিক হুক (useInventoryData, useKpiStats-এর একাধিক সোর্স ইত্যাদি) প্রায় একই সময়ে `getDb()` কল করলে সবাই cache-miss পেয়ে সমান্তরালে `db.open()`+schema-execute+১২টা ALTER TABLE চালানো শুরু করে দিত — সংঘর্ষে একটা কল থ্রো করত। ফিক্স: নতুন `_dbPromiseCache` Map — in-flight promise সিঙ্ক্রোনাসভাবেই cache-এ বসানো হয়, সব concurrent caller একই promise-এ await করে; ব্যর্থ হলে cache থেকে সরানো হয় (retry-able)।
+
+**২. `allSupplierNames` dedup (Dashboard, `src/App.jsx`)** — আগে পুরো `products` অ্যারে আবার স্ক্যান করে সাপ্লায়ার নাম বের করা হতো, যদিও ঠিক একই key (`company||category||"অজ্ঞাত"`) `useInventoryData()`-এর `inv.supplierList`-এ ইতিমধ্যে কম্পিউট হয়েই থাকে। Bengali-locale sort অপরিবর্তিত রাখা হয়েছে আউটপুট-প্যারিটির জন্য।
+
+**৩. Customers RFM/LTV SQL cutover** — সবচেয়ে বড় অংশ। App.jsx-এর `Customers` কম্পোনেন্টের `rfmData` (আগে O(কাস্টমার×ইনভয়েস+txns) সিঙ্গল-পাস JS স্ক্যান) এখন SQL-প্রেফার্ড।
+
+- **নতুন DataStore ফাংশন**: `getCustomerRfmAggregates(businessType, {d30})` — ৩টা আলাদা GROUP BY কোয়েরি (invoices→ltv/frequency/lastDateKey, txns→recentPaid, গ্লোবাল totalSales/monthSale)। **ইচ্ছাকৃতভাবে JOIN না** — invoices×txns সরাসরি জোড়া দিলে প্রতি কাস্টমারের প্রতিটা invoice-row × প্রতিটা txn-row মিলে cross-product হয়ে SUM ভুল (গুণিতক) হয়ে যেত।
+- **স্কিমা ব্লকার + ফিক্স**: `txns` টেবিলে `customer_id` কলামই ছিল না। `invoice_id` দিয়ে `invoices` জোড়া লাগিয়ে customerId বের করার কথা প্রথমে ভাবা হয়েছিল, কিন্তু কোড-অডিটে ধরা পড়ল কাস্টমার-ডিটেইল পেজ থেকে সরাসরি "বাকি আদায়" করলে (`addTxn(customerId, ..., invoiceId=null, ..., "collection")`) কোনো ইনভয়েসের সাথে যুক্ত থাকে না — JOIN দিয়ে এই টাকা silently বাদ পড়ে যেত, `recentPaid`/`at_risk` সেগমেন্ট ভুল হতো। তাই নতুন `customer_id TEXT` কলাম + ইনডেক্স যোগ করা হলো (`schema.sql`-এর CREATE TABLE + `getDb()`-এর ALTER TABLE গার্ড পুরনো ইনস্টলের জন্য), `HOT_FIELDS.txns.extract()`-এ `t.customerId` থেকে পপুলেট (dual-write স্বয়ংক্রিয়ভাবে কভার করে)।
+- **App.jsx ওয়্যারিং**: নতুন `useCustomerRfm(businessType)` হুক (`useInventoryData()`-এর এন্ট্রি-৫৪ কনভেনশন মেনে — sqliteOn/loading/error/ok স্টেট)। `Customers` কম্পোনেন্টে আগের computation `jsRfmData`-য় রিনেম, তার উপর নতুন `rfmData` useMemo — SQL সফল (`sqlStatus==='ok'`) হলে override, নাহলে `jsRfmData`-ই থাকে। **⚠️ এন্ট্রি ৫৪-এর "সাইলেন্ট JS-ফলব্যাক না" নীতি থেকে ইচ্ছাকৃত ব্যতিক্রম** (কোডে কারণ কমেন্টে লেখা) — InventorySection-এর ছোট ড্যাশবোর্ড-widget-এ শূন্য দেখানো নিরাপদ, কিন্তু Customers-এ ইউজার সরাসরি পুরো লিস্ট ব্রাউজ/ফিল্টার করে কাজ করে, loading/error অবস্থায় পুরো লিস্ট খালি দেখালে workflow ব্লক হয়ে যায়। jsRfmData যেহেতু এমনিতেও কম্পিউট হচ্ছে (সরানো হয়নি), এই ফলব্যাকে নতুন ঝুঁকি নেই — শুধু SQL সফল হলে ভারী স্ক্যান এড়ানো যায় (CPU সাশ্রয়; বড় মেমরি-সাশ্রয় এখানে প্রযোজ্য না, কারণ `invoices`/`txns` এমনিতেই অন্য কারণে props হিসেবে মেমরিতে থাকে — এটা মূলত CPU-দক্ষতার কাজ, `products`-বুট-মেমরির মতো memory-reduction না)।
+- `<MemoCustomers>` (main app কল-সাইট, লাইন ~১৬০৩২) `businessType` প্রপ পেল প্রথমবার। ViewerDashboardScreen-এর আলাদা `<Customers>` কল-সাইট (লাইন ~১৭৯৩২) স্পর্শ করা হয়নি — সেখানে businessType আদৌ থ্রেড করা নেই, হুক নিজেই `!businessType` গার্ড করে `disabled` স্টেটে থাকবে (নিরাপদ, jsRfmData-ই ব্যবহার হবে, আগের মতোই)।
+- **নতুন টেস্ট**: `tests/datastore-customer-rfm-tests.mjs` (৭ কেস) — voided-ইনভয়েস বাদ, walk-in (customerId=null) বাদ, d30-উইন্ডো ফিল্টার, আর সবচেয়ে গুরুত্বপূর্ণ কেসটা: `invoiceId=null`-এর সরাসরি "বাকি আদায়" txn recentPaid-এ ধরা পড়ে কিনা (আসল ব্লকার)। `package.json`-এর `test` স্ক্রিপ্টে যোগ করা হলো।
+- **ম্যানুয়াল parity-চেক**: ব্যবহারকারীর নিজের screenshot-ডেটা (রুবেল বাদশা, ইনভয়েস ৳৮৩২+৳৫+৳১৬২০=৳২৪৫৭, joma ৳৪৬০.৮০) দিয়ে jsRfmData-লজিক বনাম SQL-রেজাল্ট সরাসরি তুলনা — **বাইট-বাই-বাইট মিলেছে** (ltv/frequency/daysSince/avgOrder/recentPaid/totalSales/monthSale সব)।
+
+**যা এই সেশনে তদন্ত করে ইচ্ছাকৃতভাবে বাদ রাখা হলো** (মূল প্ল্যান ডকুমেন্টে ভুল ক্যাটাগরাইজড ছিল বলে ধরা পড়ল):
+- `reorderAlerts` (Dashboard) — sales-velocity পূর্বাভাস অ্যালগরিদম (Worker-এ, invoices-হিস্ট্রি লাগে), সাধারণ "site swap" না।
+- "১২+ Map বিল্ডার" সাইট — বেশিরভাগ ইচ্ছাকৃত ডকুমেন্টেড সিদ্ধান্ত (স্কোপ-আইসোলেশন, ESLint ইস্যু এড়াতে), bug/ডুপ্লিকেট না — কনভার্ট করলে আগের সঠিক সিদ্ধান্ত উল্টে যেত।
+
+**যাচাই**: `npm test` — ১২টা সুইট সব পাস (নতুন সুইটসহ), `npm run lint` — 0 error (৫৭৮, নতুন `catch(_)` ব্লকের জন্য +১ warning, established প্যাটার্ন), `npm run typecheck` — ক্লিন, `npm run build` — ক্লিন। **real-device স্মোক-টেস্ট এখনো বাকি** (এন্ট্রি ৫৩ থেকে জমে থাকা ঋণ, এই এন্ট্রির ৩টা পরিবর্তনসহ)।
+
+**পরের ধাপ**: real-device স্মোক-টেস্ট (সব জমে থাকা সাইট) → টেস্ট-শপে flag চালু করে RFM live-parity → তারপর বিলিং-ক্রিটিক্যাল সাইট (সতর্কতার সাথে, একটা একটা করে)।
+
+---
 
 ### [এন্ট্রি ৫৩] — Products main list card: SQL row-স্ন্যাপশট রেন্ডারিং থেকে POS-এর id+hydrate প্যাটার্নে কনভার্ট
 
