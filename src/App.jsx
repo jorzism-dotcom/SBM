@@ -21801,12 +21801,26 @@ function useCustomerRfm(businessType) {
 }
 
 
-function InventorySection({ T, S, products, setDashModal, shopName, setInvModal, purchaseOrders = [], businessType = "pharmacy", reorderAlerts = [] }) {
+function InventorySection({ T, S, products, setDashModal, shopName, setInvModal, purchaseOrders = [], businessType = "pharmacy", reorderAlerts = [], invData = null }) {
   // setInvModal triggers full-page navigation in Dashboard
   const openPage = setInvModal || (() => {});
   const DT = getDashTokens(T);
 
-  const inv = useInventoryData(products, businessType);
+  // 🔴 ফিক্স (এন্ট্রি ৬৭, real-device-এ ধরা পড়া ডুপ্লিকেট-কোয়েরি বাগ): আগে এখানে
+  // নিজস্ব useInventoryData(products, businessType) কল হতো, কিন্তু এই কম্পোনেন্টের
+  // প্যারেন্ট Dashboard নিজেও ঠিক একই hook একই আর্গুমেন্ট দিয়ে কল করে (নিচে
+  // supplier-detail/expiry ইত্যাদির জন্য দরকার)। ফলে প্রতিটা Dashboard মাউন্টে
+  // useInventoryData-এর ভেতরের ৫-কোয়েরি Promise.all (dsGetInventoryList×৩,
+  // dsGetExpiryCandidates, dsGetSupplierSummary) **দুইবার** একই সাথে চলত — sandbox
+  // বেঞ্চমার্কে (ms-স্কেল) অদৃশ্য ছিল, কিন্তু real ডিভাইসে Capacitor SQLite bridge
+  // + একই businessType-এর single DB connection-এ ১০টা concurrent bridge round-trip
+  // (৫+৫) সিরিয়ালাইজ/কনটেন্ড করে ব্যবহারকারীর রিপোর্ট করা ১৫-২০ সেকেন্ড স্লো-লোডের
+  // প্রধান কারণ ছিল বলে ধারণা। ফিক্স: Dashboard-এ আগে থেকেই কম্পিউটেড inv অবজেক্ট
+  // এখন props দিয়ে (`invData`) পাস করা হচ্ছে — এই কম্পোনেন্ট নিজে হুক কল করে না,
+  // শুধু allStock/criticalStock/stockOut/sqlStatus পড়ে (এই ৪টাই এই কম্পোনেন্ট
+  // আসলে ব্যবহার করে, লাইন-বাই-লাইন যাচাই করা হয়েছে) — ডেটা-সোর্স/মান অপরিবর্তিত,
+  // শুধু একই কোয়েরি-রেজাল্ট এখন শেয়ার্ড, দ্বিতীয়বার ফেচ হয় না।
+  const inv = invData || { allStock: [], criticalStock: [], stockOut: [], sqlStatus: "disabled" };
   const allStock      = inv.allStock;
   const criticalStock = inv.criticalStock;
   const stockOut       = inv.stockOut;
@@ -27056,7 +27070,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             ছাড়া অচল। salon-এ ফিজিক্যাল স্টক/ব্যাচ/ক্রয় প্রাসঙ্গিক না বলে বাকি তিনটা
             কার্ডও (স্টক/ক্রিটিক্যাল/স্টক-আউট) সবসময় ০ দেখাত — তাই পুরো সেকশনটাই হাইড। */}
         {businessType !== "salon" && (
-          <InventorySection T={T} S={S} products={products} setDashModal={setDashModal} shopName={shopName} setInvModal={setInvModal} purchaseOrders={purchaseOrders || []} businessType={businessType} reorderAlerts={reorderAlerts} />
+          <InventorySection T={T} S={S} products={products} setDashModal={setDashModal} shopName={shopName} setInvModal={setInvModal} purchaseOrders={purchaseOrders || []} businessType={businessType} reorderAlerts={reorderAlerts} invData={inv} />
         )}
 
       </div>
