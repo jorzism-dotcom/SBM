@@ -1143,6 +1143,35 @@ export async function getProductSalesRows(businessType, { d30, d60, d90 }) {
   }));
 }
 
+/**
+ * worker.js-এর PREDICT_REORDER হ্যান্ডলারের SQL অংশের সমতুল্য (এন্ট্রি ৬২,
+ * Phase ৩ শেষ বাকি আইটেম — reorderAlerts sales-velocity)।
+ * getProductSalesRows()-এর মতোই invoiceItems-এর প্রি-কম্পিউটেড লাইন-আইটেম রো
+ * থেকে ৩০-দিনের রোলিং SUM(qty), product_name-কী করে গ্রুপড — ইচ্ছাকৃতভাবে SQL-এ
+ * products-এর সাথে জয়েন করা হয়নি। কারণ: invoiceItems-এ product_id নেই, শুধু
+ * raw product_name (schema.sql-এর কমেন্ট, ইচ্ছাকৃত সিদ্ধান্ত), আর SQLite-এ
+ * normName()-এর multi-space-collapse রেপ্লিকেট করার নির্ভরযোগ্য উপায় নেই (ঠিক
+ * এই ক্লাসের bug আগে একবার FTS5 সিঙ্কে ধরা পড়েছিল, উপরের normName()-এর কমেন্ট
+ * দ্রষ্টব্য) — SQL-সাইড LOWER(TRIM())-ভিত্তিক আনুমানিক ম্যাচ stale/মিসড alert
+ * তৈরি করতে পারত, যা inventory-critical। তাই এখানে শুধু নাম-কী aggregate
+ * ফেরত, আসল products জয়েন কলার (App.jsx হুক)-এ normName() দিয়ে হয় — এতে
+ * getProductSalesRows()-এর ব্যবহারকারীদের সাথেও কনভেনশন এক থাকে।
+ *
+ * @returns {Promise<Array<{name, sold30}>>}
+ */
+export async function getReorderSalesRows(businessType, d30) {
+  const db = await getDb(businessType);
+  const sql = `
+    SELECT product_name AS name, SUM(qty) AS sold30
+    FROM invoiceItems
+    WHERE status = 'active' AND date_key >= ?
+    GROUP BY product_name
+    HAVING SUM(qty) > 0
+  `;
+  const res = await db.query(sql, [d30]);
+  return (res.values || []).map((r) => ({ name: r.name, sold30: r.sold30 || 0 }));
+}
+
 // ── এন্ট্রি ৪১ (ধাপ ৬, computeSupplierDueMap SQL cutover) ────────────────────
 /**
  * products+purchaseOrders+supplierPayments জুড়ে ফাজি-নাম-merge সাপ্লায়ার
