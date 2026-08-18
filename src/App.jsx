@@ -49,7 +49,7 @@ import { getCashLogTotal as dsGetCashLogTotal, getPurchaseOrderTotals as dsGetPu
 import { getInventoryCounts as dsGetInventoryCounts, getExpiredRemovalTotals as dsGetExpiredRemovalTotals } from "./db/DataStore.js";
 // 🆕 এন্ট্রি ৪১ — ধাপ ৬ (computeSupplierDueMap SQL cutover)
 import { getSupplierDueRows as dsGetSupplierDueRows } from "./db/DataStore.js";
-import { getDistinctCategories as dsGetDistinctCategories, getDistinctSuppliers as dsGetDistinctSuppliers, getDistinctDosageForms as dsGetDistinctDosageForms, findProductByNameNorm as dsFindProductByNameNorm, normName as dsNormName } from "./db/DataStore.js";
+import { getDistinctCategories as dsGetDistinctCategories, getDistinctSuppliers as dsGetDistinctSuppliers, getDistinctDosageForms as dsGetDistinctDosageForms, findProductByNameNorm as dsFindProductByNameNorm, normName as dsNormName, getReorderSalesRows as dsGetReorderSalesRows } from "./db/DataStore.js";
 // 🆕 এন্ট্রি ৪৮ — AIPage_-এর ৪র্থ সাব-প্যাটার্ন (forecastData/productSales জয়েন, বেস্টসেলার র‍্যাংকিং)
 import { upsertInvoiceItems as dsUpsertInvoiceItems, removeInvoiceItems as dsRemoveInvoiceItems, getProductSalesRows as dsGetProductSalesRows } from "./db/DataStore.js";
 
@@ -9546,6 +9546,79 @@ function useProductSalesRows(invAll, prodMap, businessType, cutoffs) {
   return sql ? sql : jsProductSales;
 }
 
+// 🆕 এন্ট্রি ৬২ (Phase ৩ শেষ বাকি আইটেম — reorderAlerts sales-velocity SQL cutover)
+// worker.js-এর PREDICT_REORDER-এর সাথে বাইট-বাই-বাইট সমান ফলাফল প্রোডিউস করতে
+// হবে (একই thresholds/status/sort — নিচে অবিকল কপি করা হয়েছে)। এখানে শুধু
+// sold30 SQL থেকে আসে (dsGetReorderSalesRows() — কেন products-এর সাথে জয়েন
+// SQL-এ না করে এখানে JS-এ normName() দিয়ে করা হচ্ছে, তার ব্যাখ্যা DataStore.js-এর
+// getReorderSalesRows()-এর কমেন্টে)। জয়েন-লজিকটা আলাদা pure ফাংশনে যাতে
+// পরে ইউনিট-টেস্ট করা যায় (getProductSalesRows-এর computeProductSales()-এর
+// মতোই কনভেনশন)।
+function computeReorderAlertsFromSalesRows(salesRows, products) {
+  const soldMap = new Map();
+  (salesRows || []).forEach((r) => {
+    const key = dsNormName(r.name);
+    soldMap.set(key, (soldMap.get(key) || 0) + (r.sold30 || 0));
+  });
+  const alerts = [];
+  (products || []).forEach((p) => {
+    if ((p.stock || 0) <= 0) return; // আউট অফ স্টক আলাদা (worker.js-এর সাথে অভিন্ন)
+    const sold30 = soldMap.get(dsNormName(p.name)) || 0;
+    if (sold30 === 0) return; // বিক্রি হয়নি, আলার্ট নেই
+    const avgDaily = sold30 / 30;
+    const daysLeft = Math.round(p.stock / avgDaily);
+    if (daysLeft > 30) return; // ৩০ দিনের বেশি আছে, alert নেই
+    alerts.push({
+      id: p.id,
+      name: p.name,
+      stock: p.stock,
+      daysLeft,
+      avgDaily: Math.round(avgDaily * 10) / 10,
+      suggestedQty: Math.ceil(avgDaily * 30),
+      status: daysLeft <= 7 ? "red" : daysLeft <= 14 ? "yellow" : "green",
+    });
+  });
+  alerts.sort((a, b) => a.daysLeft - b.daysLeft);
+  return alerts;
+}
+
+/**
+ * Dashboard-এর reorderAlerts — SQL-প্রেফার্ড, ব্যর্থ/বন্ধ হলে Worker-কম্পিউটেড
+ * jsReorderAlerts (worker.js-এর PREDICT_REORDER, কলার-এ postMessage-এর মাধ্যমে
+ * populate হয়) ফলব্যাক। SQL পাথ পুরো `invoices` অ্যারে Worker-এ postMessage
+ * করার দরকার এড়ায় — শুধু prekomputed invoiceItems GROUP BY, তাই বড় ইনভয়েস
+ * হিস্ট্রিতেও প্রতি products/invoices বদলে ভারী structured-clone সিরিয়ালাইজেশন
+ * হয় না। `products` এখনো dependency/fallback হিসেবে থেকে যাচ্ছে (categories/
+ * suppliers হুকগুলোর মতোই) — এটা ৭.৩ (boot-lazy) ধাপের কাজ না, শুধু
+ * invoices-নির্ভরতা কমানো।
+ */
+function useReorderAlerts(products, businessType, jsReorderAlerts) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const d30 = _dateKeyOf(new Date(Date.now() - 30 * 86400000));
+        const rows = await dsGetReorderSalesRows(businessType, d30);
+        if (cancelled || seqRef.current !== seq) return;
+        setSql(computeReorderAlertsFromSalesRows(rows, products));
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("reorderAlerts SQL ফেচ ব্যর্থ, Worker ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, products]);
+
+  return sql ? sql : jsReorderAlerts;
+}
+
 // 🆕 এন্ট্রি ৪৪ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ৭.৩-এর ব্লকার, ক্যাটাগরি ③ FULL-SCAN)
 // ৪টা আইটেমের মধ্যে ৩টা এখানে — একই sql-state/seqRef/fallback প্যাটার্ন
 // (useProductStockTotals/useSupplierDueRows-এর মতো)। dup-name check নিচে
@@ -11949,7 +12022,10 @@ function SmartBusinessMgmt() {
   // ── Web Worker Setup — ভারী calculation main thread-এ নয় ─────────────────
   const workerRef = useRef(null);
   const [dashStats, setDashStats] = useState(null);
-  const [reorderAlerts, setReorderAlerts] = useState([]);
+  const [jsReorderAlerts, setReorderAlerts] = useState([]);
+  // 🆕 এন্ট্রি ৬২ — SQL-প্রেফার্ড, Worker-কম্পিউটেড jsReorderAlerts ফলব্যাক
+  // (নিচের Worker useEffect অপরিবর্তিত রাখা হয়েছে, সবসময় "গরম" ফলব্যাক রাখতে)
+  const reorderAlerts = useReorderAlerts(products, businessType, jsReorderAlerts);
 
   useEffect(() => {
     try {
