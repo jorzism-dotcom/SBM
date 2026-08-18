@@ -11747,7 +11747,12 @@ function SmartBusinessMgmt() {
   // "'productsById' is not defined", src/App.jsx দুই জায়গায়)। এখানে SmartBusinessMgmt-এর
   // নিজস্ব products ক্লোজার থেকে একই useMemo-ভিত্তিক Map বানানো হলো, যাতে processReturn()
   // ঠিক স্কোপ থেকেই এটা পড়ে। আচরণ অপরিবর্তিত (শুধু স্কোপ ফিক্স, নতুন লজিক না)।
-  const productsById     = useMemo(() => new Map(products.map(p => [String(p.id), p])), [products]);
+  // 🆕 এন্ট্রি ৬৪ (৭.৩ প্রস্তুতি, ধাপ ১ Map consolidation): এই কম্পোনেন্টই (SmartBusinessMgmt)
+  // `products = useAppStore(s => s.products)` থেকে সরাসরি পড়ে, তাই গ্লোবাল write-through
+  // Map (App.jsx লাইন ~৩৮৯) এখানে সবসময় ঠিক এই একই ডেটা দিয়েই সিঙ্কড — লোকাল রিবিল্ড
+  // অপ্রয়োজনীয় ডুপ্লিকেট ছিল (মূল কারণ ছিল ViewerDashboardScreen-এর আলাদা স্কোপ থেকে
+  // ভুলে রেফারেন্স করা, সেই বাগ এখন গ্লোবাল Map দিয়েই ঠিকভাবে সমাধান)।
+  const productsById     = useAppStore(s => s.productsById);
   const invoices         = useAppStore(s => s.invoices);
   const txns             = useAppStore(s => s.txns);
   const suppliers        = useAppStore(s => s.suppliers);
@@ -12076,10 +12081,8 @@ function SmartBusinessMgmt() {
   const [cashFlow,   setCashFlow]   = React.useState(null); // Cash Flow Forecast
 
   // Global prodMap — একবার তৈরি, সব জায়গায় ব্যবহার
-  const globalProdMap = useMemo(
-    () => new Map(products.map(p => [p.id, p])),
-    [products]
-  );
+  // 🆕 এন্ট্রি ৬৪: productsById-এর সাথে ডুপ্লিকেট ছিল (একই key/value) — এখন সরাসরি সেটাই পুনর্ব্যবহার
+  const globalProdMap = productsById;
 
   useEffect(() => {
     (async () => {
@@ -19508,8 +19511,10 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
       }
     }
 
+    // 🆕 এন্ট্রি ৬৫: products.find() (O(n), প্রতি আইটেমে) → বিদ্যমান invProdMap.get() (O(1)) —
+    // একই component (SmartInvoiceBuilder)-এর একই products ক্লোজার থেকেই বিল্ড করা, আচরণ অপরিবর্তিত।
     const selfUseCost = isSelfUse ? items.reduce((s, it) => {
-      const p = products.find(pp => pp.id === it.productId);
+      const p = invProdMap.get(it.productId);
       const cp = it.costPrice || p?.costPrice || 0;
       return s + cp * (it.qty || 1);
     }, 0) : 0;
@@ -22761,6 +22766,13 @@ const MemoSmartInvoiceBuilder = React.memo(SmartInvoiceBuilder);
 
 // ── Dashboard ──────────────────────────────────────────────────────────────────
 function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, todayBaki, todayJoma, todayTotal, todayInvs, setTab, txns, dashModal, setDashModal, invModal, setInvModal, cashModal, setCashModal, invoices, paymentInvoices, shopName, showToast, todayCashSale, todayProfit, products, purchaseOrders, voidInvoice, processReturn, currentUser, setProducts, stockMovements = [], setStockMovements, setPurchaseOrders, cashLogs, setCashLogs, reorderAlerts = [], expenses = [], cashFlow = null, fssReady = false, loaded = true, supplierPayments = [], setSupplierPayments, returns = [], serialQueue = [], users = [] }) {
+  // 🆕 এন্ট্রি ৬৪ (৭.৩ প্রস্তুতি, ধাপ ১ Map consolidation, PRODUCTS_ONDEMAND_MIGRATION_PLAN.md):
+  // এই কম্পোনেন্ট সবসময় SmartBusinessMgmt থেকে `products={products}` (গ্লোবাল store-এর
+  // অবিকৃত রেফারেন্স) পায় — তাই নিচের ৫টা লোকাল `new Map(products.map(...))` (আগে প্রতিটা
+  // আলাদাভাবে products বদলালেই পুরো অ্যারে থেকে রিবিল্ড হতো) এখন গ্লোবাল write-through
+  // Map (App.jsx লাইন ~৩৮৯-এর subscribe, id ইতিমধ্যেই সবসময় string) পুনর্ব্যবহার করে —
+  // ডুপ্লিকেট O(n) রিবিল্ড বাদ। আচরণ ১০০% অপরিবর্তিত (একই key/value, শুধু rebuild বাদ)।
+  const _globalProductsById = useAppStore(s => s.productsById);
   const [viewInv,    setViewInv]    = useState(null);
   const [viewPayInv, setViewPayInv] = useState(null);
   // 🆕 ফিক্স (৯ আগস্ট ২০২৬ — ইনভয়েস ডিটেইলস থেকে ফিরলে লিস্টের স্ক্রল টপে চলে যাওয়া):
@@ -22856,7 +22868,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   // Dashboard-এর top-level-এ রাখা হয়েছে — IIFE-এর ভেতরে conditionally-called useState/
   // useEffect বসালে rules-of-hooks ভাঙত (মডাল খোলা/বন্ধ হলে hook-count বদলে যেত)।
   const [supFtsIds, setSupFtsIds]   = useState(null);
-  const [supFtsQuery, setSupFtsQuery] = useState("");
+  const [supFtsQuery, setSupFtsQuery] = useState(""); 
   useEffect(() => {
     const q = supSearchQuery.trim();
     if (!q || !isSqliteEnabled() || products.length <= FTS_NARROW_THRESHOLD) {
@@ -22871,6 +22883,28 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     }, 150);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [supSearchQuery, businessType, products.length]);
+  // 🆕 এন্ট্রি ৬৫ (ক্যাটাগরি ③ FULL-SCAN, PRODUCTS_ONDEMAND_MIGRATION_PLAN.md) — কাস্টমার
+  // অর্ডার ফর্মের "পণ্যের নাম" ইনপুট (নিচে custOrderProductSuggestions-এ ব্যবহৃত) আগে
+  // প্রতি keystroke-এ পুরো products অ্যারেতে smartMatch() স্কোর করত (বড় ক্যাটালগে এই
+  // IIFE-টা প্রতি render-এ পুরো O(n) স্ক্যান চালাত)। supFtsIds-এর ঠিক একই প্যাটার্ন
+  // (হাইব্রিড FTS candidate narrowing) এখানে আলাদা state দিয়ে — কারণ এটা ভিন্ন
+  // ইনপুট/query (custOrderName, supSearchQuery না)।
+  const [custOrderFtsIds, setCustOrderFtsIds] = useState(null);
+  const [custOrderFtsQuery, setCustOrderFtsQuery] = useState("");
+  useEffect(() => {
+    const q = custOrderName.trim();
+    if (q.length < 2 || !isSqliteEnabled() || products.length <= FTS_NARROW_THRESHOLD) {
+      setCustOrderFtsIds(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      hybridSearchCandidateIds(businessType, "products", q, 300)
+        .then((ids) => { if (!cancelled) { setCustOrderFtsIds(ids); setCustOrderFtsQuery(q); } })
+        .catch(() => { if (!cancelled) setCustOrderFtsIds(null); });
+    }, 150);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [custOrderName, businessType, products.length]);
   // 🔴 ফিক্স: touchscreen-এ দ্রুত ডাবল-ট্যাপ করলে (বা কোনো কারণে দুইবার ইভেন্ট
   // fire করলে) removeExpiredBatch() দুইবার চলে একই ব্যাচের জন্য দুইটা আলাদা
   // stockMovement (source: "expired_removal") রেকর্ড তৈরি করে ফেলত — ফলে
@@ -23360,7 +23394,8 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     [invoices, todayKeyStr]
   );
   // 🏠 আজকের নিজের ব্যবহারের পণ্যের মোট ক্রয়মূল্য (খরচমূল্য)
-  const _selfUseProdMap = useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
+  // 🆕 এন্ট্রি ৬৪: গ্লোবাল _globalProductsById পুনর্ব্যবহার (উপরে দ্রষ্টব্য)
+  const _selfUseProdMap = _globalProductsById;
   const todaySelfUseCost = useMemo(() => todaySelfUseInvs.reduce((s, inv) => {
     if (inv.selfUseCost != null) return s + inv.selfUseCost;
     return s + (inv.items || []).reduce((cs, item) => cs + _itemCostPrice(item, _selfUseProdMap) * (item.qty || 1), 0);
@@ -23453,7 +23488,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
         // থাকবে, এই রেঞ্জ-রিপোর্টের বাকিতে আসবে না (আগে t.invoiceId-এর truthy চেক
         // না থাকায় এই এন্ট্রিগুলোও ঢুকে যেত)।
         const baki = txns.filter(t => inRepRange(t.dateKey) && t.type === "baki" && t.invoiceId && !voidedInvIds.has(t.invoiceId)).reduce((s, t) => s + t.amount, 0);
-        const prodMap = new Map(products.map(p => [p.id, p]));
+        const prodMap = _globalProductsById; // 🆕 এন্ট্রি ৬৪: গ্লোবাল Map পুনর্ব্যবহার
         const profit = calcProfitTotal(invs, prodMap) - repReturnsProfitImpact;
         // range-ভুক্ত baki-txn আছে এমন invoiceId-গুলোর Set — O(1) lookup, .find() এড়ানো হলো
         const bakiTxnInvIds = new Set();
@@ -24732,8 +24767,14 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     // অপরিবর্তিত রাখতে) — আউটপুট আগের মতোই অভিন্ন, শুধু সোর্স-স্ক্যান একটাই এখন।
     const allSupplierNames = inv.supplierList.map(s => s.name).filter(Boolean).sort((a,b)=>a.localeCompare(b,"bn"));
     // 🆕 কাস্টমার অর্ডার ফর্মের জন্য — পণ্যের নাম টাইপ করলে ক্যাটালগ থেকে সাজেশন, কাস্টমারের নাম টাইপ করলে বিদ্যমান কাস্টমার তালিকা থেকে সাজেশন
-    const custOrderProductSuggestions = custOrderName.trim().length >= 2
-      ? products.map(p => ({ p, score: smartMatch(p.name, custOrderName.trim()) })).filter(x => x.score > 0).sort((a,b)=>b.score-a.score || a.p.name.length-b.p.name.length || a.p.name.localeCompare(b.p.name)).slice(0,6)
+    // 🆕 এন্ট্রি ৬৫: custOrderFtsIds রেডি + query মিললে (উপরে দ্রষ্টব্য) পুরো products না,
+    // শুধু FTS-narrowed candidate পুল স্ক্যান হয় — বড় ক্যাটালগে O(n) smartMatch এড়ানো।
+    // SQL বন্ধ/candidate না-থাকা/ছোট ক্যাটালগ অবস্থায় আগের মতোই পুরো products (আচরণ অপরিবর্তিত)।
+    const custOrderNameTrimmed = custOrderName.trim();
+    const useCustOrderNarrowing = custOrderNameTrimmed && custOrderFtsIds && custOrderFtsQuery === custOrderNameTrimmed;
+    const custOrderProductPool = useCustOrderNarrowing ? products.filter(p => custOrderFtsIds.has(String(p.id))) : products;
+    const custOrderProductSuggestions = custOrderNameTrimmed.length >= 2
+      ? custOrderProductPool.map(p => ({ p, score: smartMatch(p.name, custOrderNameTrimmed) })).filter(x => x.score > 0).sort((a,b)=>b.score-a.score || a.p.name.length-b.p.name.length || a.p.name.localeCompare(b.p.name)).slice(0,6)
       : [];
     const custOrderCustomerSuggestions = custOrderCustomerName.trim().length >= 1
       ? (customers||[]).map(c => ({ c, score: smartMatch(c.name||"", custOrderCustomerName.trim()) })).filter(x => x.score > 0).sort((a,b)=>b.score-a.score || (a.c.name||"").length-(b.c.name||"").length || (a.c.name||"").localeCompare(b.c.name||"")).slice(0,6)
@@ -25872,7 +25913,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     }
     if (dashModal.type === "product-profit-loss") {
       // লাভ ও লস আলাদা দুই সেকশনে — discount-adjusted revenue, it.costPrice প্রাধান্য পাবে
-      const prodMap2 = new Map(products.map(p => [p.id, p]));
+      const prodMap2 = _globalProductsById; // 🆕 এন্ট্রি ৬৪: গ্লোবাল Map পুনর্ব্যবহার
       // রেঞ্জ অনুযায়ী ইনভয়েস ফিল্টার
       const allInvSrc  = dashModal.allInvs || dashModal.invs || [];
       const rangedInvs = allInvSrc.filter(i => dmRange.inRange(i.dateKey));
@@ -26210,7 +26251,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
         if (_isBakiModal && i.payType === "partial") return s + (i.bakiAmount || 0);
         return s + (i.total || 0);
       }, 0);
-      const _cashProdMap = new Map(products.map(p => [p.id, p]));
+      const _cashProdMap = _globalProductsById; // 🆕 এন্ট্রি ৬৪: গ্লোবাল Map পুনর্ব্যবহার
       const _cashProfit  = _isCashModal ? calcProfitTotal(rangedItems, _cashProdMap) : 0;
       const pdfHtml = buildPdfHtml(
         buildDailyListHtml(rangedItems, "invoices", shopName),
@@ -26683,7 +26724,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
               )}
               {/* লাভ/লস কার্ড — বাম লাভ, ডান লস, নিচে নেট */}
               {c.isProfit ? (() => {
-                const _prodMap = new Map(products.map(p => [p.id, p]));
+                const _prodMap = _globalProductsById; // 🆕 এন্ট্রি ৬৪: গ্লোবাল Map পুনর্ব্যবহার
                 const _rawProfit = (repData.invs || []).reduce((s, inv) => {
                   const p = calcInvoiceProfit(inv, _prodMap);
                   return s + (p > 0 ? p : 0);
