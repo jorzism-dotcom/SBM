@@ -24,7 +24,40 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৬৫-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৬৬-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟢 এন্ট্রি ৬৬ (✅ sandbox নেটওয়ার্ক কাজ করেছে, পুরো chain সত্যিকারের ভাবে চালানো হয়েছে)**: ব্যবহারকারী "বাকি কাজগুলো শুরু করুন" বললেন (আগের সেশনের \"মোট যা বাকি\" সামারি অনুযায়ী)। **🔴 সবচেয়ে জরুরি দুটো আইটেম (real-device-এ `sbm_products_boot_lazy` টেস্ট, POS বিলিং-কার্ট real-device টেস্ট) এই সেশনেও করা হয়নি** — sandbox কখনো real Android device/Capacitor SQLite bridge simulate করতে পারে না, এই দুটোই নিজস্ব সংজ্ঞা অনুযায়ী শুধু ব্যবহারকারীই করতে পারবেন। এর বদলে জমে থাকা তালিকার দুটো 🟡 "ছোট বাকি আইটেম" (কোনো real-device নির্ভরতা নেই, নিরাপদে sandbox-এই সম্পূর্ণ করা যায়) নেওয়া হলো:
+
+1. **`reorderAlerts` dead prop — এখন লাইভ UI**: এন্ট্রি ৬৩.১-এ চিহ্নিত হয়েছিল Dashboard-এ `reorderAlerts` prop পৌঁছায় কিন্তু কোথাও রেন্ডার হয় না। `InventorySection`-এ নতুন "রিঅর্ডার সাজেশন" কার্ড যোগ হলো (stockOut/critical কার্ডগুলোর ঠিক নিচে, শুধু `reorderAlerts.length > 0` হলেই দৃশ্যমান — খালি থাকলে UI-তে জায়গা নেয় না) — জরুরি (red status) কাউন্ট ব্যাজ + প্রথম ৩টা পণ্যের নাম প্রিভিউ, ট্যাপ করলে নতুন ফুলপেজ (`invModal === 'reorder'`) খোলে যেখানে প্রতিটা পণ্যের স্টক/দৈনিক গড় বিক্রয়/আনুমানিক দিন/সাজেস্টেড অর্ডার-কোয়ান্টিটি রঙ-কোডেড (red/yellow/green) তালিকায় দেখা যায়। `reorderAlerts` prop `Dashboard` → `InventorySection` কল-সাইটে (আগে পাস হতো না) ও পাশাপাশি নতুন `invModal==='reorder'` ব্লক Dashboard-এর existing all/critical/out/expired/near-expiry ফুলপেজ-মডাল কন্ডিশনের ঠিক আগে বসানো হয়েছে (আলাদা ডেটা-শেপ বলে একটা আলাদা early-return ব্লক, বিদ্যমান সাপ্লায়ার-গ্রুপিং লজিক স্পর্শ করা হয়নি)।
+
+2. **Invoice history-র `payType` SQL-WHERE গ্যাপ — ফিক্স**: আগে `loadInvHistPage()`-এ SQL WHERE শুধু `customer_id`/`date_key` কভার করত, `payType` ফিল্টার সবসময় বড়-limit (১ লাখ) fetch করে JS-এ (`matchesFilter()`) প্রয়োগ হতো — কারণ `invoices` টেবিলে কোনো `pay_type` কলামই ছিল না (শুধু নেস্টেড `data` JSON-এ)। **স্কিমা-চেঞ্জ**: `schema.sql`-এ নতুন `pay_type TEXT` কলাম + `idx_invoices_pay_type (pay_type, date_key)` ইনডেক্স, `HOT_FIELDS.invoices.extract()`-এ `inv.payType ?? null` যোগ (dual-write স্বয়ংক্রিয়ভাবে নতুন/এডিটেড ইনভয়েসে পপুলেট করবে), পুরনো ইনস্টলের জন্য `getDb()`-এ এন্ট্রি ৫৭/৫৮-এর প্রতিষ্ঠিত `_addMissingCols()` প্যাটার্নেই `invoices` টেবিলে `pay_type` ALTER TABLE গার্ড। **⚠️ ইচ্ছাকৃত নিরাপত্তা-সিদ্ধান্ত**: এই ফিক্সের আগে dual-write হওয়া পুরনো রো-গুলোতে `pay_type` এখনো NULL (backfill এখনো চালানো হয়নি) — তাই SQL WHERE-এ সরাসরি `pay_type = ?` না দিয়ে `(pay_type = ? OR pay_type IS NULL)` ব্যবহার করা হয়েছে, যাতে ব্যাকফিল-না-হওয়া পুরনো রো ভুলবশত ফিল্টার-আউট না হয়ে যায় (`matchesFilter()`-ই এখনো চূড়ান্ত সঠিকতার উৎস, SQL শুধু narrowing/performance optimization)। ব্যাকফিল/resumable-migration চলার পর সব রো-তে `pay_type` পপুলেটেড হয়ে গেলে এই OR-শর্ত কার্যত no-op হয়ে যাবে এবং আসল পারফরম্যান্স-লাভ (কম রো ফেচ, কম bridge round-trip) পুরোপুরি মিলবে।
+
+**⚠️ যা এখনো বাকি (অপরিবর্তিত, এই সেশনে ছোঁয়া হয়নি)**:
+   - real-device-এ `sbm_products_boot_lazy` ফ্ল্যাগ টেস্ট (আসল ব্লকার)
+   - POS বিলিং-কার্ট flow real-device টেস্ট (boot-lazy চালু অবস্থায়)
+   - জমে থাকা real-device স্মোক-টেস্ট তালিকা (dup-name-চেক, ক্যাটাগরি-চিপ, reorder-widget **সহ** এখন নতুন হওয়ায় প্রথমবার, BatchSyncTool, Customers RFM, invoice history read-path) — এই সেশনের ২টা পরিবর্তনও (reorder-widget UI, payType SQL narrowing) এই তালিকায় যোগ হলো
+   - বুট সিকোয়েন্স থেকে `products` সম্পূর্ণ সরানো (৭.৩ চূড়ান্ত ধাপ) — উপরের real-device টেস্ট ছাড়া নিরাপদ না
+   - দীর্ঘমেয়াদি Phase আইটেম (dual-write প্রোডাকশন পর্যবেক্ষণ, ৫০০ দোকানে ধাপে ধাপে rollout, Phase 8 reconciliation, Phase 5 পুরনো কোড অপসারণ)
+
+**যাচাই সম্পূর্ণ**: `npm install` (নেটওয়ার্ক কাজ করেছে) → `npm test` সব সুইট (৭৮+১৪+১০+২৪+১০+১৮+৭+১১+১৩+৮+১০+১১+৭+৪ কেস) সব পাস ✅ → `npm run lint` 0 error (৫৬৬ প্রি-এক্সিস্টিং warning, অপরিবর্তিত) ✅ → `npm run typecheck` ক্লিন ✅ → `npm run build` ক্লিন ✅ → `test:golden-master` (৭/৭) ও `test:fuzz` (সব প্রপার্টি) পাস ✅।
+
+**পরের সেশনে করণীয় (ক্রমানুসারে, অপরিবর্তিত)**:
+1. **real-device-এ boot-lazy ফ্ল্যাগ (`sbm_products_boot_lazy`, এন্ট্রি ৬৩) চালু করে টেস্ট** — এটাই আসল ব্লকার, এখনো কখনো real-device-এ যাচাই হয়নি।
+2. তারপর POS বিলিং-কার্ট flow পুরোপুরি real-device-এ (আইটেম যোগ, qty +/-, self-use টগল, ইনভয়েস সেভ, স্টক-ডিডাকশন সঠিকতা) boot-lazy চালু অবস্থায়।
+3. দুটোই ক্লিন হলে — তারপরই বুট সিকোয়েন্স থেকে `products` আসলে সরানো (৭.৩ চূড়ান্ত ধাপ) বিবেচনা করা যায়, ধাপে ধাপে flag-controlled রোলআউটসহ।
+4. এর পাশাপাশি (কম জরুরি): জমে থাকা real-device স্মোক-টেস্ট (নতুন reorder-widget-সহ), invoice history-র payType SQL narrowing-এর ফলাফল টেস্ট-শপে যাচাই।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — `InventorySection`-এ `reorderAlerts` prop + নতুন "রিঅর্ডার সাজেশন" কার্ড, `Dashboard`-এর `<InventorySection>` কল-সাইটে prop পাস, নতুন `invModal==='reorder'` ফুলপেজ ব্লক; `loadInvHistPage()`-এর SQL WHERE-এ payType শর্ত যোগ
+- `src/db/schema.sql` — `invoices` টেবিলে নতুন `pay_type TEXT` কলাম + `idx_invoices_pay_type` ইনডেক্স
+- `src/db/DataStore.js` — `HOT_FIELDS.invoices` (columns+extract)-এ `pay_type` যোগ, `getDb()`-এ `invoices` টেবিলের জন্য `_addMissingCols()` ALTER TABLE গার্ড
+- `SQLITE_MIGRATION_LOG.md` — এন্ট্রি ৬৬ যোগ
+
+কোনো নতুন ফাইল তৈরি হয়নি এই সেশনে।
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৬৫)
 
 **🟢 এন্ট্রি ৬৫ (✅ sandbox নেটওয়ার্ক কাজ করেছে, পুরো chain সত্যিকারের ভাবে চালানো হয়েছে)**: ব্যবহারকারী "আসল ৭.৩" (৬৭-সাইট on-demand + বুট থেকে products সম্পূর্ণ সরানো) করতে বললেন। **আবারও সম্পূর্ণ করা হয়নি, ইচ্ছাকৃতভাবে** — কারণ ব্যাখ্যা নিচে। যা আসলে হলো:
 
@@ -338,6 +371,30 @@ Schema+FTS5 · dual-write (shadow) · resumable batch backfill · row-count veri
 ---
 
 ## এন্ট্রি লগ
+
+### [এন্ট্রি ৬৬] — reorderAlerts dead-prop UI + invoice history payType SQL-WHERE গ্যাপ ফিক্স
+
+**তারিখ**: ১৮ আগস্ট ২০২৬। **প্রসঙ্গ**: ব্যবহারকারী "বাকি কাজগুলো শুরু করুন" বললেন। ২টা 🔴 জরুরি আইটেম (boot-lazy real-device টেস্ট, POS real-device টেস্ট) নিজেদের সংজ্ঞা অনুযায়ীই sandbox-এ করা যায় না — sandbox কখনো real Android device/Capacitor SQLite bridge simulate করতে পারে না। এর বদলে জমে থাকা তালিকার দুটো নিরাপদ, sandbox-এই সম্পূর্ণযোগ্য 🟡 আইটেম নেওয়া হলো।
+
+**১. `reorderAlerts` dead prop → লাইভ UI**: `InventorySection`-এ নতুন কার্ড (stockOut/critical কার্ডগুলোর নিচে, শর্তসাপেক্ষে দৃশ্যমান — `reorderAlerts.length > 0`) — red-status কাউন্ট ব্যাজ + প্রথম ৩টা পণ্যের নাম প্রিভিউ। ট্যাপে নতুন ফুলপেজ (`invModal==='reorder'`, Dashboard-এর বিদ্যমান all/critical/out/expired/near-expiry কন্ডিশনের ঠিক আগে আলাদা early-return ব্লক হিসেবে — ডেটা-শেপ ভিন্ন বলে সাপ্লায়ার-গ্রুপিং লজিকে মেশানো হয়নি) যেখানে প্রতিটা আইটেমের stock/avgDaily/daysLeft/suggestedQty status-কালার-কোডেড (red ≤7 দিন, yellow ≤14, green) লিস্টে দেখা যায়। `reorderAlerts` prop `Dashboard`-এর `<InventorySection>` কল-সাইটে (আগে পাস হতো না) যোগ করা হলো।
+
+**২. Invoice history `payType` SQL-WHERE গ্যাপ ফিক্স**: `loadInvHistPage()`-এ আগে SQL WHERE শুধু customer_id/date_key কভার করত — payType সবসময় বড়-limit (১ লাখ) fetch + JS `matchesFilter()`-এই প্রয়োগ হতো, কারণ `invoices` টেবিলে `pay_type` কলামই ছিল না। **স্কিমা-চেঞ্জ**: `schema.sql`-এ নতুন `pay_type TEXT` কলাম + `idx_invoices_pay_type(pay_type, date_key)` ইনডেক্স। `HOT_FIELDS.invoices`-এ `columns`/`extract()` দুটোতেই `pay_type`/`inv.payType ?? null` যোগ — dual-write স্বয়ংক্রিয়ভাবে নতুন/এডিটেড ইনভয়েসে পপুলেট করবে। পুরনো ইনস্টলের জন্য এন্ট্রি ৫৭/৫৮-এর প্রতিষ্ঠিত `_addMissingCols()` প্যাটার্নেই `getDb()`-এ `invoices` টেবিলের ALTER TABLE গার্ড।
+
+**⚠️ ইচ্ছাকৃত নিরাপত্তা-সিদ্ধান্ত (দুই নম্বর আইটেমে)**: এই ফিক্সের আগে dual-write হওয়া পুরনো রো-গুলোতে `pay_type` এখনো NULL (resumable backfill এখনো চালানো হয়নি এই কলামের জন্য) — তাই SQL WHERE-এ সরাসরি `pay_type = ?` না দিয়ে `(pay_type = ? OR pay_type IS NULL)` ব্যবহার করা হয়েছে, যাতে ব্যাকফিল-না-হওয়া পুরনো রো ভুলবশত বাদ না পড়ে। `matchesFilter()` (JS) এখনো চূড়ান্ত সঠিকতার উৎস অপরিবর্তিত রাখা হয়েছে — SQL শুধু narrowing/performance optimization, কোনো নতুন correctness ঝুঁকি নেই। ব্যাকফিল সম্পূর্ণ হলে এই OR-শর্ত কার্যত no-op হয়ে যাবে এবং আসল speed-up (কম রো ফেচ) পুরোপুরি সক্রিয় হবে।
+
+**যাচাই**: `npm install` (নেটওয়ার্ক কাজ করেছে) → `npm test` সব ১৪টা সুইট সব পাস ✅ → `npm run lint` 0 error (৫৬৬ প্রি-এক্সিস্টিং warning, অপরিবর্তিত) ✅ → `npm run typecheck` ক্লিন ✅ → `npm run build` ক্লিন ✅ → `test:golden-master` (৭/৭) ও `test:fuzz` (সব প্রপার্টি) পাস ✅।
+
+**⚠️ real-device স্মোক-টেস্ট এখনো বাকি** এই দুটো পরিবর্তনেরও — জমে থাকা তালিকায় যোগ হলো (বিশেষত নতুন reorder-widget UI প্রথমবার দেখা হবে)।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — `InventorySection` (নতুন `reorderAlerts` prop + কার্ড), `Dashboard`-এর `<InventorySection>` কল-সাইট (prop পাস), নতুন `invModal==='reorder'` ব্লক, `loadInvHistPage()`-এর SQL WHERE
+- `src/db/schema.sql` — `invoices` টেবিলে `pay_type` কলাম + ইনডেক্স
+- `src/db/DataStore.js` — `HOT_FIELDS.invoices`, `getDb()`-এর ALTER TABLE গার্ড
+- `SQLITE_MIGRATION_LOG.md` — এই এন্ট্রি
+
+কোনো নতুন ফাইল তৈরি হয়নি।
+
+---
 
 ### [এন্ট্রি ৫৮] — sequential ALTER TABLE লেটেন্সি ফিক্স (PRAGMA table_info() গার্ড)
 
