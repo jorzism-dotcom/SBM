@@ -21801,7 +21801,7 @@ function useCustomerRfm(businessType) {
 }
 
 
-function InventorySection({ T, S, products, setDashModal, shopName, setInvModal, purchaseOrders = [], businessType = "pharmacy" }) {
+function InventorySection({ T, S, products, setDashModal, shopName, setInvModal, purchaseOrders = [], businessType = "pharmacy", reorderAlerts = [] }) {
   // setInvModal triggers full-page navigation in Dashboard
   const openPage = setInvModal || (() => {});
   const DT = getDashTokens(T);
@@ -22049,6 +22049,49 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
                   sub লাইনেই একই তথ্য আছে। value-এর marginBottom 3→4 করা হয়েছে যাতে
                   বাকি সব কার্ডের মতো দূরত্ব একই থাকে। */}
               <div style={{ color: DT.dark?"#64748b":nearTtc.sub, fontWeight:800, fontSize:11, textAlign:"center" }}>৩ মাসের মধ্যে মেয়াদ শেষ</div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* 🆕 এন্ট্রি ৬৬ — রিঅর্ডার সাজেশন উইজেট (আগে reorderAlerts prop ছিল কিন্তু
+          কোনো UI ছিল না, dead prop; এখন এখানে দৃশ্যমান করা হলো)। শুধু তখনই কার্ড
+          দেখানো হয় যখন অন্তত ১টা সাজেশন আছে — খালি থাকলে UI-তে অপ্রয়োজনীয় জায়গা
+          নেওয়া এড়াতে সম্পূর্ণ কার্ডটাই লুকানো থাকে। */}
+      {reorderAlerts.length > 0 && (() => {
+        const redCount = reorderAlerts.filter(a => a.status === "red").length;
+        const preview = reorderAlerts.slice(0, 3);
+        const reorderTint = DT.tint(1); // অ্যাম্বার-ঘেঁষা, ক্রিটিক্যাল স্টকের মতোই
+        const reorderTtc = tintTextColors(reorderTint.hex);
+        return (
+          <div className="tap-card"
+            style={{
+              background: reorderTint.bg, borderRadius:16, padding:"13px 14px", marginBottom:9,
+              border: redCount > 0 ? "2px solid #ef4444" : reorderTint.border,
+              backdropFilter: DT.dark ? "blur(16px)" : "none",
+              animation: redCount > 0 ? "cardBlinkRed 0.85s ease-in-out infinite" : "fadeUp 0.3s ease both",
+              cursor:"pointer", position:"relative", overflow:"hidden",
+            }}
+            onClick={() => setInvModal('reorder')}>
+            <div style={{ position:"absolute", bottom:-24, right:-24, width:80, height:80, borderRadius:"50%", background: DT.dark ? "radial-gradient(circle,#f59e0b1a 0%,transparent 70%)" : "rgba(255,255,255,0.10)" }} />
+            <div style={{ display:"flex", alignItems:"center", gap:9, position:"relative" }}>
+              <div style={{ background: DT.dark ? "#f59e0b18" : "rgba(255,255,255,0.22)", border: DT.dark ? "1px solid #f59e0b33" : "1px solid rgba(255,255,255,0.3)", borderRadius:9, padding:"7px 8px", flexShrink:0 }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={DT.dark?"#fde68a":reorderTtc.icon} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3h2l.4 2M7 13h10l3-8H6.4M7 13L5.4 5M7 13l-2.3 4.6A1 1 0 0 0 5.6 19H17M17 19a2 2 0 1 0 0 4 2 2 0 0 0 0-4ZM9 19a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z"/></svg>
+              </div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                  <span style={{ color: DT.dark ? "#fff" : "#000", fontWeight:900, fontSize:14 }}>রিঅর্ডার সাজেশন</span>
+                  {redCount > 0 && (
+                    <span style={{ display:"inline-flex", alignItems:"center", gap:4, background:"#ef4444", color:"#fff", fontWeight:900, fontSize:10, borderRadius:20, padding:"2px 8px", letterSpacing:0.5 }}>
+                      {redCount}টি জরুরি
+                    </span>
+                  )}
+                </div>
+                <div style={{ color: DT.dark ? "#94a3b8" : "#fff", fontWeight:700, fontSize:11, marginTop:2, opacity: DT.dark?1:0.9 }}>
+                  {reorderAlerts.length}টি পণ্যের স্টক দ্রুত শেষ হয়ে আসছে — {preview.map(a => a.name).join(", ")}{reorderAlerts.length > 3 ? " ..." : ""}
+                </div>
+              </div>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={DT.dark?"#fde68a":reorderTtc.icon} strokeWidth="2.5" strokeLinecap="round" style={{ flexShrink:0 }}><polyline points="9 18 15 12 9 6"/></svg>
             </div>
           </div>
         );
@@ -24032,6 +24075,39 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             );
           })}
         </div>
+      </div>
+    );
+  }
+
+  // ── 🆕 এন্ট্রি ৬৬ — রিঅর্ডার সাজেশন ফুলপেজ (সাপ্লায়ার-গ্রুপিং ছাড়া, expired-batch
+  // ফ্ল্যাট-লিস্ট প্যাটার্নের মতোই) — নিচের সাধারণ all/critical/out/expired/near-expiry
+  // ব্লকের আগেই আলাদাভাবে হ্যান্ডলড, কারণ ডেটা-শেপ (reorderAlerts item) সম্পূর্ণ ভিন্ন।
+  if (invModal === 'reorder') {
+    const sortedAlerts = reorderAlerts; // ইতিমধ্যে daysLeft অনুযায়ী সর্টেড (computeReorderAlertsFromSalesRows)
+    const statusColor = (st) => st === "red" ? "#ef4444" : st === "yellow" ? "#f59e0b" : "#22c55e";
+    return (
+      <div style={{ ...S.page, padding:"0 14px 16px" }}>
+        <button style={S.textBtn} onClick={() => setInvModal(null)}>← ড্যাশবোর্ডে ফিরুন</button>
+        <div style={{ color:"#e2e8f0", fontWeight:900, fontSize:16, marginBottom:2 }}>রিঅর্ডার সাজেশন</div>
+        <div style={{ color:"#64748b", fontSize:12, marginBottom:10 }}>গত ৩০ দিনের বিক্রয়-গতি অনুযায়ী — {sortedAlerts.length}টি পণ্য</div>
+        {sortedAlerts.length === 0 ? (
+          <div style={{ color:"#64748b", fontSize:13, textAlign:"center", padding:"30px 0" }}>এই মুহূর্তে কোনো রিঅর্ডার সাজেশন নেই</div>
+        ) : (
+          <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+            {sortedAlerts.map((a) => (
+              <div key={a.id} style={{ background:"#111827", border:`1px solid ${statusColor(a.status)}44`, borderLeft:`3px solid ${statusColor(a.status)}`, borderRadius:12, padding:"10px 12px", display:"flex", alignItems:"center", gap:10 }}>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ color:"#e2e8f0", fontWeight:800, fontSize:13 }}>{a.name}</div>
+                  <div style={{ color:"#94a3b8", fontSize:11, marginTop:2 }}>বর্তমান স্টক: {a.stock} · দৈনিক গড় বিক্রয়: {a.avgDaily} · প্রায় {a.daysLeft} দিন চলবে</div>
+                </div>
+                <div style={{ textAlign:"right", flexShrink:0 }}>
+                  <div style={{ color:statusColor(a.status), fontWeight:900, fontSize:15 }}>+{a.suggestedQty}</div>
+                  <div style={{ color:"#64748b", fontSize:10, fontWeight:700 }}>সাজেস্টেড</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -26980,7 +27056,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
             ছাড়া অচল। salon-এ ফিজিক্যাল স্টক/ব্যাচ/ক্রয় প্রাসঙ্গিক না বলে বাকি তিনটা
             কার্ডও (স্টক/ক্রিটিক্যাল/স্টক-আউট) সবসময় ০ দেখাত — তাই পুরো সেকশনটাই হাইড। */}
         {businessType !== "salon" && (
-          <InventorySection T={T} S={S} products={products} setDashModal={setDashModal} shopName={shopName} setInvModal={setInvModal} purchaseOrders={purchaseOrders || []} businessType={businessType} />
+          <InventorySection T={T} S={S} products={products} setDashModal={setDashModal} shopName={shopName} setInvModal={setInvModal} purchaseOrders={purchaseOrders || []} businessType={businessType} reorderAlerts={reorderAlerts} />
         )}
 
       </div>
@@ -31876,6 +31952,13 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
           if (ihCustId) { whereParts.push("customer_id = ?"); params.push(ihCustId); }
           if (dateFrom) { whereParts.push("date_key >= ?"); params.push(dateFrom); }
           if (dateTo)   { whereParts.push("date_key <= ?"); params.push(dateTo); }
+          // 🆕 এন্ট্রি ৬৬ — pay_type কলাম এখন আছে, কিন্তু এই ফিক্সের আগে dual-write
+          // হওয়া পুরনো রো-গুলোতে এখনো NULL (backfill এখনো চালানো হয়নি) — তাই
+          // "pay_type = ? OR pay_type IS NULL" দিয়ে নিরাপদে narrow করা হচ্ছে, NULL
+          // রো বাদ পড়বে না (নিচের matchesFilter()-ই এখনো চূড়ান্ত সঠিকতার উৎস)।
+          // backfill/resumable-migration চলার পর pay_type সব রো-তে পপুলেটেড হয়ে
+          // গেলে এই OR শর্তটা কার্যত no-op হয়ে যাবে, তখনই আসল পারফরম্যান্স-লাভ পুরোপুরি মিলবে।
+          if (ihPayType !== "all") { whereParts.push("(pay_type = ? OR pay_type IS NULL)"); params.push(ihPayType); }
           const where = whereParts.length ? whereParts.join(" AND ") : "1=1";
           // pageSize-এর মতোই বড় limit — পুরো ম্যাচিং সেট আনা হচ্ছে, নিচে
           // ম্যানুয়ালি offset-ভিত্তিক স্লাইস হবে (আগের InvoiceArchive.queryPage()
