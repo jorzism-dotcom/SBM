@@ -23,7 +23,27 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৬১-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৬২-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟢 এন্ট্রি ৬২ (✅ sandbox-এ নেটওয়ার্ক কাজ করেছে, পুরো chain সত্যিকারের ভাবে চালানো হয়েছে)**: ব্যবহারকারী "Phase ৩ কমপ্লিট" চাইলেন। **সম্পূর্ণ করা হয়নি এই সেশনেও, ইচ্ছাকৃতভাবে** — কারণ real-device স্মোক-টেস্ট এখনো Phase ৩-এর সবচেয়ে ঝুঁকিপূর্ণ (বিলিং-কার্ট) অংশ ছাড়া বাকি সব সাইটে সম্পন্ন হয়নি, আর নিচের ২টা আইটেম নিজেরাই পূর্ণ সেশনের কাজ। যা হলো:
+
+1. **প্রথমে স্ব-বিরোধী লগ-দাবি ধরা পড়ল ও যাচাই করা হলো**: এন্ট্রি ৪৪/৪৭/৪৮ দাবি করেছিল ক্যাটাগরি ③-এর ৪টা full-scan সাইট (dup-name/category/supplier/dosageForm-list + expiry/forecast) সম্পূর্ণ SQL-cutover হয়ে গেছে, কিন্তু এন্ট্রি ৫৯-এর মাস্টার-স্ট্যাটাস আবার বলেছিল এটা "এখনো অসম্পূর্ণ"। কোড সরাসরি অডিট করে (৪টা হুক — `useKnownCategories`/`useKnownSuppliers`/`useKnownDosageForms`/`useLiveDupProduct` + `useExpiryCandidates` — সব SQL-primary/JS-fallback প্যাটার্নে সঠিকভাবে wired) নিশ্চিত হওয়া গেছে **এন্ট্রি ৫৯-এর দাবিটাই stale ছিল, ৪৪/৪৭/৪৮ সঠিক** — ক্যাটাগরি ③ আসলেই সম্পূর্ণ। (তবে এটা শুধু ৭.৩-এর *প্রি-রিকুইজিট* — `products` array এখনো এই সব হুকেই fallback/dependency হিসেবে বাধ্যতামূলক আছে, বুট থেকে সরানো হয়নি।)
+
+2. **`reorderAlerts` sales-velocity SQL cutover** (Phase ৩-এর শেষ ডিজাইন-বাকি আইটেম, এন্ট্রি ৫৯/৫৭-এ বারবার "স্কোপের বাইরে" রাখা হয়েছিল): নতুন `getReorderSalesRows(businessType, d30)` (DataStore.js) — `getProductSalesRows()`-এর প্যাটার্নে `invoiceItems`-এর প্রি-কম্পিউটেড রো থেকে ৩০-দিনের `SUM(qty)`, `product_name`-কী। **⚠️ ইচ্ছাকৃত সিদ্ধান্ত**: products-এর সাথে জয়েনটা SQL-এ না করে App.jsx-এর `computeReorderAlertsFromSalesRows()`-এ JS-এ (`normName()` দিয়ে) — কারণ `invoiceItems`-এ `product_id` নেই (শুধু raw name), আর SQLite-এ `normName()`-এর multi-space-collapse রেপ্লিকেট করার নির্ভরযোগ্য উপায় নেই (ঠিক এই ক্লাসের বাগ আগে একবার FTS5 সিঙ্কে ধরা পড়েছিল, `normName()`-এর কমেন্টে লেখা আছে) — SQL-সাইড আনুমানিক ম্যাচ inventory-critical stale/মিসড-alert তৈরি করতে পারত। নতুন `useReorderAlerts()` হুক — SQL সফল হলে ব্যবহার, নাহলে/বন্ধ থাকলে Worker-কম্পিউটেড `jsReorderAlerts` (আগের `PREDICT_REORDER` পাথ, অপরিবর্তিত রাখা হয়েছে fallback হিসেবে) ফলব্যাক। thresholds/status/sort worker.js-এর সাথে অবিকল রাখা হয়েছে।
+   - নতুন টেস্ট সুইট (`tests/datastore-reorder-alerts-tests.mjs`, ৪ কেস) — cutoff বিভাজন, multi-invoice SUM, voided-status বাদ পড়া, খালি-রেজাল্ট কেস। **সীমাবদ্ধতা**: `computeReorderAlertsFromSalesRows()` App.jsx-এর ভেতরে (browser-only, Node-এ import অযোগ্য) বলে এন্ট্রি ৪৯-এর মতোই শুধু DataStore-অংশ (SQL aggregate) সরাসরি টেস্ট করা হয়েছে, পূর্ণ worker.js-এর সাথে বাইট-বাই-বাইট parity-টেস্ট এখনো নেই।
+
+**⚠️ যা এখনো বাকি (Phase ৩ সম্পূর্ণ ধরার আগে)**:
+   - উপরের `reorderAlerts` পরিবর্তন sandbox-এ verified কিন্তু **real-device-এ কখনো টেস্ট হয়নি** (Dashboard-এর reorder-alert widget সঠিক তালিকা দেখাচ্ছে কিনা)
+   - **Products list boot-lazy চূড়ান্ত ধাপ (৭.৩)** — প্রি-রিকুইজিট (ক্যাটাগরি ③) কোড-স্তরে সম্পূর্ণ প্রমাণিত হলেও, বুট-সিকোয়েন্স থেকে `products`-এর eager full-load আসলে সরানোর কাজ **এখনো শুরুই হয়নি** — এটা এখনো নিজেই একটা পূর্ণ সেশনের কাজ, আর বিলিং-কার্ট real-device টেস্ট শেষ না হলে এটাতে হাত দেওয়া অনিরাপদ (একই সেশনে বুট-সিকোয়েন্স + বিলিং দুটোই বদলালে সমস্যা এলে root-cause আলাদা করা কঠিন হয়ে যাবে)
+   - **Invoice history read-path** — এন্ট্রি ৫৯ অনুযায়ী ৪টা সাইটের ৪টাই SQL-cutover হয়ে গেছে বলে দাবি ছিল; এই সেশনে পুনঃযাচাই করা হয়নি (পরের সেশনে করণীয় তালিকায় যোগ)
+
+**যাচাই সম্পূর্ণ**: `npm install` (নেটওয়ার্ক কাজ করেছে) → `npm test` ১৫টা সুইট সব পাস ✅ (নতুন `datastore-reorder-alerts-tests.mjs`-সহ) → `npm run lint` 0 error (৫৬৬ প্রি-এক্সিস্টিং warning, অপরিবর্তিত) ✅ → `npm run typecheck` ক্লিন ✅ → `npm run build` ক্লিন ✅।
+
+**পরের সেশনে করণীয়**: (ক) real-device স্মোক-টেস্ট — এখনো এন্ট্রি ৫৩+৫৫+৫৬+৫৭+৬০+৬১+৬২ সব একসাথে জমে আছে (ব্যবহারকারী বিলিং-কার্ট/ক্রয়-এন্ট্রির মূল অংশ ইতিমধ্যে হাতে-কলমে যাচাই করেছেন — এন্ট্রি ৬১-এর ঝুঁকি অনেকটা কমেছে, কিন্তু dup-name-চেক/ক্যাটাগরি-চিপ/reorder-widget/BatchSyncTool/Customers RFM এখনো real-device-এ দেখা হয়নি), (খ) Invoice history read-path-এর current state পুনঃযাচাই, (গ) সবশেষে Products boot-lazy (৭.৩) — সবচেয়ে বড় ও ঝুঁকিপূর্ণ বাকি আইটেম, একা একটা সেশনে, ধাপে-ধাপে flag-controlled রোলআউটসহ করা উচিত।
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৬১)
 
 **🟢 এন্ট্রি ৬১**: এন্ট্রি ৬০-এ চিহ্নিত SmartInvoiceBuilder-এর ৩টা `products.find()` সাইট এখন কনভার্ট — ব্যবহারকারীর স্পষ্ট অনুমোদনের পর।
 
