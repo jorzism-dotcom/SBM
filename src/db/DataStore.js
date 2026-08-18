@@ -40,6 +40,30 @@ export function setSqliteEnabled(v) {
   } catch {}
 }
 
+// ── Feature flag: Products boot-lazy (৭.৩, নিরাপদ/সীমিত সংস্করণ) ───────────
+// ⚠️ এটা "সম্পূর্ণ on-demand products" (আসল ৭.৩ ডিজাইন, ৬৭টা কল-সাইট বদলাতে
+// হতো) না — সেটা এখনো করা হয়নি, কারণ এক সেশনে নিরাপদে সম্ভব না। এই ফ্ল্যাগ
+// শুধু বুট-টাইম *লোডিং* নন-ব্লকিং করে: products এখনো পুরোপুরি মেমরিতে লোড
+// হয় (তাই ৬৭টা কল-সাইটের কোনোটাই ভাঙে না), শুধু সেই লোড আর প্রথম রেন্ডারকে
+// (লগইন/স্প্ল্যাশ স্ক্রিন) ব্লক করে না — বড় products ব্লব read+JSON-parse
+// ব্যাকগ্রাউন্ডে হয়, রেডি হলে state-এ প্যাচ হয়ে যায়। ডিফল্ট বন্ধ — বন্ধ
+// থাকলে App.jsx-এর বুট সিকোয়েন্স ১০০% আগের মতোই আচরণ করে।
+const PRODUCTS_BOOT_LAZY_FLAG_KEY = "sbm_products_boot_lazy";
+
+export function isProductsBootLazyEnabled() {
+  try {
+    return localStorage.getItem(PRODUCTS_BOOT_LAZY_FLAG_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setProductsBootLazyEnabled(v) {
+  try {
+    localStorage.setItem(PRODUCTS_BOOT_LAZY_FLAG_KEY, v ? "1" : "0");
+  } catch {}
+}
+
 // ── Phase ১ (foundation, sync-ready): event device id ───────────────────────
 // লাইসেন্স সিস্টেমের deviceId (getOrCreateLicenseDeviceId, async + IndexedDB,
 // অ্যাপ রিসেট করলে ইচ্ছাকৃতভাবে বদলে যায়) থেকে ইচ্ছাকৃতভাবে আলাদা — event log-এর
