@@ -285,6 +285,8 @@ async function _initDb(businessType) {
   // INDEX ... (customer_id, ...) নিচের restOfSchema execute()-এ চলে বলে কলাম
   // আগে থাকা আবশ্যক)
   await _addMissingCols("txns", [["customer_id", "TEXT"]]);
+  // এন্ট্রি ৬৬ — Invoice history payType ফিল্টার SQL-WHERE-এ পুশ করার জন্য পুরনো ইনস্টলে কলাম-অ্যাড
+  await _addMissingCols("invoices", [["pay_type", "TEXT"]]);
   // schema.sql-এ multiple statements আছে — execute() মাল্টি-স্টেটমেন্ট সাপোর্ট করে
   await db.execute(restOfSchema);
 
@@ -420,7 +422,7 @@ const HOT_FIELDS = {
     ],
   },
   invoices: {
-    columns: ["id", "invoice_no", "date_key", "customer_id", "status", "total", "created_at"],
+    columns: ["id", "invoice_no", "date_key", "customer_id", "status", "total", "created_at", "pay_type"], // 🆕 এন্ট্রি ৬৬
     extract: (inv) => [
       String(inv.id),
       inv.invoiceNo ?? null,
@@ -429,6 +431,7 @@ const HOT_FIELDS = {
       inv.status ?? "active",
       numOrNull(inv.total),
       inv.createdAt ?? Date.now(),
+      inv.payType ?? null, // 🆕 এন্ট্রি ৬৬
     ],
   },
   // 🆕 এন্ট্রি ৩৭ — useKpiStats-এর ৫টা ডেটা-সোর্সের প্রথমটা (schema.sql-এর কমেন্ট দ্রষ্টব্য)

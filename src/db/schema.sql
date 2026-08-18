@@ -167,6 +167,9 @@ CREATE TABLE IF NOT EXISTS invoices (
   status       TEXT NOT NULL DEFAULT 'active',  -- active | voided
   total        REAL,
   created_at   INTEGER NOT NULL,
+  pay_type     TEXT,                -- 🆕 এন্ট্রি ৬৬ (cash/baki/partial) — আগে শুধু data JSON-এ ছিল, তাই
+                                     -- Invoice history-র payType ফিল্টার SQL WHERE-এ পুশ করা যেত না
+                                     -- (বড়-limit fetch + JS-filter দিয়ে ঘোরানো হতো)
   data         TEXT NOT NULL       -- পুরো invoice object JSON (items, discount, payType সব)
 );
 CREATE INDEX IF NOT EXISTS idx_invoices_date_key    ON invoices(date_key);
@@ -175,6 +178,8 @@ CREATE INDEX IF NOT EXISTS idx_invoices_status      ON invoices(status);
 CREATE INDEX IF NOT EXISTS idx_invoices_created_at  ON invoices(created_at);
 -- কম্বাইন্ড ইনডেক্স: "নির্দিষ্ট কাস্টমারের, নির্দিষ্ট তারিখ-রেঞ্জের, ভয়েডেড বাদে" — এটাই সবচেয়ে সাধারণ কোয়েরি প্যাটার্ন
 CREATE INDEX IF NOT EXISTS idx_invoices_cust_date   ON invoices(customer_id, date_key, status);
+-- 🆕 এন্ট্রি ৬৬ — Invoice history-র payType ফিল্টার SQL-এ ঠেলে দেওয়ার জন্য
+CREATE INDEX IF NOT EXISTS idx_invoices_pay_type    ON invoices(pay_type, date_key);
 -- covering index: Dashboard-এর "আজকের বিক্রি" SUM(total) কোয়েরি (date_key + status ফিল্টার)
 -- total-ও ইনডেক্সে থাকায় মূল টেবিলে row lookup ছাড়াই শুধু ইনডেক্স থেকে aggregate বের হয়
 -- (১ কোটি স্কেলে বেঞ্চমার্কে ৮,৯৮২ms থেকে ১.৪ms — ~৬,৪০০ গুণ দ্রুত)
