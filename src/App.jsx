@@ -39,7 +39,7 @@ import {
 // তৈরি DataStore abstraction layer। isSqliteEnabled() ফ্ল্যাগ ডিফল্ট বন্ধ, তাই
 // এই import নিজে থেকে কোনো আচরণ পাল্টায় না — শুধু নিচের debouncedSave effect-
 // গুলোতে diff-based upsert/remove যোগ হয়েছে (দেখুন সেখানকার কমেন্ট)।
-import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite, queryPage as dsQueryPage } from "./db/DataStore.js";
+import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite, queryPage as dsQueryPage, isProductsBootLazyEnabled, setProductsBootLazyEnabled } from "./db/DataStore.js";
 // 🆕 এন্ট্রি ৩৬ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ২) — InventorySection/
 // Dashboard-এর KPI কাউন্ট + ডিটেইল লিস্ট + সাপ্লায়ার-গ্রুপিং SQL cutover
 import { getInventoryList as dsGetInventoryList, getExpiryCandidates as dsGetExpiryCandidates, getSupplierSummary as dsGetSupplierSummary, getProductsBySupplierKey as dsGetProductsBySupplierKey, getDateRangeAggregate as dsGetDateRangeAggregate, getCustomerRfmAggregates as dsGetCustomerRfmAggregates } from "./db/DataStore.js";
@@ -12137,8 +12137,18 @@ function SmartBusinessMgmt() {
       setLocalBusinessPrefix(_bootBizPrefix);
       FSS.setBusinessPrefix(_bootBizPrefix);
 
+      // ── ৭.৩ (নিরাপদ/সীমিত সংস্করণ) — products boot-lazy ফ্ল্যাগ ──────────────
+      // ডিফল্ট বন্ধ (isProductsBootLazyEnabled() === false) হলে productsKeyLazy
+      // false-ই থাকে আর CRITICAL_KEYS-এ LK(SK.products) আগের মতোই সিঙ্ক্রোনাসভাবে
+      // থাকে — নিচের পুরো বুট-সিকোয়েন্স ১০০% অপরিবর্তিত। ফ্ল্যাগ চালু থাকলে
+      // products key CRITICAL_KEYS থেকে বাদ দিয়ে আলাদাভাবে (নিচে) নন-ব্লকিং
+      // লোড করা হয় — প্রথম রেন্ডার (লগইন/স্প্ল্যাশ) বড় products ব্লবের
+      // read+JSON-parse-এর জন্য আর অপেক্ষা করবে না। ⚠️ products state এখনো
+      // পুরোপুরি লোড হয় (শুধু কখন হয় সেটাই বদলাচ্ছে) — এই ৬৭টা কল-সাইট
+      // নির্ভরশীল কোড কিছুই বদলাতে হয়নি/ভাঙেনি।
+      const productsKeyLazy = isProductsBootLazyEnabled();
       const CRITICAL_KEYS = [
-        LK(SK.customers), LK(SK.products), LK(SK.invoices), LK(SK.txns), SK.users,
+        LK(SK.customers), ...(productsKeyLazy ? [] : [LK(SK.products)]), LK(SK.invoices), LK(SK.txns), SK.users,
         SK.shopName, LK(SK.darkMode), LK(SK.activeTheme), LK(SK.fontSize),
         LK(SK.paymentInvoices), SK.firebaseConfig, SK.firebaseEnabled,
         SK.authSession, SK.devContact, SK.masterResetHash,
@@ -12176,8 +12186,14 @@ function SmartBusinessMgmt() {
       // Migration)। এখন সেটা SchemaMigration মডিউলে সাধারণীকরণ করা হয়েছে —
       // ভবিষ্যতে অন্য যেকোনো collection-এ নতুন migration লাগলে এই কোড বদলাতে
       // হবে না, শুধু SCHEMA_MIGRATIONS রেজিস্ট্রিতে এন্ট্রি যোগ করলেই চলবে।
+      // productsKeyLazy চালু থাকলে rawProds এখানে undefined-ই থাকবে (key
+      // CRITICAL_KEYS-এ নেই) — সেক্ষেত্রে SEED_PRODUCTS দিয়ে সাময়িকভাবে
+      // migrate না করে (যেটা ভুলভাবে demo/seed পণ্য মুহূর্তের জন্য দেখিয়ে
+      // দিত), products-কে নিচের আলাদা নন-ব্লকিং লোডের জন্য সম্পূর্ণ বাদ
+      // রাখা হচ্ছে — স্টোরের ডিফল্ট products:[] অপরিবর্তিত থাকবে যতক্ষণ না
+      // আসল ডেটা রেডি হয়ে প্যাচ হয়।
       const { data: migratedData, stats: schemaStats } = SchemaMigration.runAll({
-        products: rawProds || SEED_PRODUCTS,
+        products: productsKeyLazy ? [] : (rawProds || SEED_PRODUCTS),
       });
       const migratedProds = migratedData.products;
 
@@ -12274,6 +12290,31 @@ function SmartBusinessMgmt() {
       // ব্যাখ্যা ঠিক উপরে (allInvoicesForBoot/recentInvoicesForBoot ডিফাইন করা
       // জায়গায়)। allInvoicesForBoot ভ্যারিয়েবলটা নিচে কোথাও আর ব্যবহার হচ্ছে না —
       // ইচ্ছাকৃতভাবে রাখা হয়েছে শুধু উপরের cutoff-ফিল্টার হিসাব করতে।
+
+      // ── ৭.৩ (নিরাপদ/সীমিত সংস্করণ) — products নন-ব্লকিং লোড ─────────────────
+      // productsKeyLazy চালু থাকলেই শুধু চলে — বন্ধ থাকলে products ইতিমধ্যে
+      // উপরের সিঙ্ক্রোনাস প্যাচেই বসে গেছে, এই ব্লক কিছুই করে না। এটা wave 2
+      // (নিচে) থেকে ইচ্ছাকৃতভাবে আলাদা রাখা হলো — wave 2 একটাই loadMany()-তে
+      // ~২০টা key ব্যাচ করে, সেটার সাথে products জুড়লে অন্য কালেকশনগুলোর
+      // অপেক্ষায় products-ও পিছিয়ে যেতে পারত। এখানে products একাই, নিজের
+      // transaction-এ, যত দ্রুত সম্ভব লোড হয়।
+      if (productsKeyLazy) {
+        setTimeout(async () => {
+          const prodBoot = await loadMany([LK(SK.products)]);
+          const rawProdsLazy = prodBoot[LK(SK.products)];
+          const { data: lazyMigratedData, stats: lazySchemaStats } = SchemaMigration.runAll({
+            products: rawProdsLazy || SEED_PRODUCTS,
+          });
+          _patch({
+            products: lazyMigratedData.products,
+            // ৬৭টা কল-সাইট products.length/ইত্যাদির উপর নির্ভর করে বলে schema
+            // মাইগ্রেশন স্ট্যাটাস কার্ড (আগে থেকে থাকা UI) এখানেও আপডেট হওয়া
+            // উচিত, উপরের সিঙ্ক্রোনাস প্যাচের মতোই — নাহলে lazy মোডে মাইগ্রেশন
+            // নোটিশ কখনো দেখানো হতো না।
+            schemaMigrationStats: lazySchemaStats.totalMigrated > 0 ? lazySchemaStats : null,
+          });
+        }, 0);
+      }
 
       // ── Wave 2 — প্রথম পেইন্টের জন্য জরুরি নয় এমন কালেকশন, পেইন্টের পরে ──────
       // (auditLogs/cashLogs/stockMovements/expenses/returns/quotations/
@@ -36342,6 +36383,49 @@ function BackupDiagnosticsCard({ T, S, expanded, onToggle }) {
   );
 }
 
+// ── ৭.৩ (নিরাপদ/সীমিত সংস্করণ) — Products boot-lazy টগল ─────────────────────
+// SQLITE_MIGRATION_LOG.md-এর আলোচনা অনুযায়ী: এটা সম্পূর্ণ "on-demand products"
+// (৬৭টা কল-সাইট বদলাতে হতো) না — শুধু বুট-টাইম products লোডকে নন-ব্লকিং করে।
+// products এখনো ১০০% মেমরিতে লোড হয়, তাই কোনো কল-সাইট ভাঙে না — শুধু বুট আর
+// products-এর জন্য অপেক্ষা করে না। ফ্ল্যাগ পরিবর্তনের প্রভাব শুধু *পরের* বুটে
+// (অ্যাপ রিস্টার্ট) কার্যকর হয় — চলমান সেশনে কিছু বদলায় না।
+function ProductsBootLazyToggle({ T, showToast }) {
+  const [enabled, setEnabled] = useState(() => isProductsBootLazyEnabled());
+
+  const handleToggle = () => {
+    const next = !enabled;
+    setProductsBootLazyEnabled(next);
+    setEnabled(next);
+    showToast?.(
+      next
+        ? "✅ Products boot-lazy চালু হলো — পরের অ্যাপ রিস্টার্টে কার্যকর হবে"
+        : "Products boot-lazy বন্ধ হলো — পরের অ্যাপ রিস্টার্টে আগের (সবসময় সিঙ্ক্রোনাস) আচরণে ফিরবে"
+    );
+  };
+
+  return (
+    <div style={{ marginTop: 12, padding: 10, borderRadius: 8, border: `1.5px solid ${T.border}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: T.text }}>
+          🐢 Products Boot-Lazy (৭.৩, পরীক্ষামূলক)
+        </div>
+        <button onClick={handleToggle} style={{
+          padding: "5px 12px", borderRadius: 20,
+          border: `1.5px solid ${enabled ? "#22c55e" : T.border}`,
+          background: enabled ? "#22c55e" : "transparent",
+          color: enabled ? "#fff" : T.sub, fontWeight: 700, fontSize: 11, cursor: "pointer",
+        }}>{enabled ? "চালু" : "বন্ধ"}</button>
+      </div>
+      <div style={{ marginTop: 6, fontSize: 10.5, color: T.sub, lineHeight: 1.7 }}>
+        চালু করলে বুটের সময় products (ব্যাচ/দাম/স্টকসহ বড় ব্লব) আর লগইন/স্প্ল্যাশ
+        স্ক্রিনকে ব্লক করবে না — ব্যাকগ্রাউন্ডে লোড হয়ে রেডি হলে state-এ বসবে। products
+        এখনো পুরোপুরি মেমরিতে লোড হয় (কোনো কল-সাইট ভাঙবে না), শুধু কখন লোড হয় সেটাই
+        বদলাচ্ছে। ⚠️ পরিবর্তন কার্যকর হতে অ্যাপ রিস্টার্ট লাগবে। ডিফল্ট বন্ধ।
+      </div>
+    </div>
+  );
+}
+
 // ── 🧪 SQLite মাইগ্রেশন — Phase 1 dev/সাপোর্ট প্যানেল ─────────────────────────
 // (SQLITE_MIGRATION_LOG.md এন্ট্রি ৬-এর "যা এখনো বাকি" #১-এর ফিক্স)। BackupDiagnosticsCard-এর
 // একই collapsible-card প্যাটার্ন। গার্ড: Settings_-এর devPanelUnlocked state (AppVersionCard-এ
@@ -36666,6 +36750,8 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
               fontSize: 11.5, cursor: analyzeRunning ? "default" : "pointer", marginTop: 8,
             }}>{analyzeRunning ? "⏳ ANALYZE চলছে..." : "📊 ANALYZE চালান (ম্যানুয়াল)"}</button>
           </div>
+
+          <ProductsBootLazyToggle T={T} showToast={showToast} />
 
           <div style={{ marginTop: 12, fontSize: 10.5, color: T.sub, lineHeight: 1.7 }}>
             ⚠️ dual-write চালু থাকলেও পুরনো IndexedDB blob-array-ই একমাত্র সোর্স-অফ-ট্রুথ থাকে (App-এর
