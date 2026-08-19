@@ -45,8 +45,8 @@
   "devDependencies": {
     "@capacitor/cli": "^6.2.0",
     "@eslint/js": "^9.39.5",
-    "@stryker-mutator/core": "^8.6.0",
-    "@vitejs/plugin-react": "^4.3.1",
+    "@stryker-mutator/core": "^10.0.0",
+    "@vitejs/plugin-react": "^6.0.5",
     "c8": "^10.1.2",
     "eslint": "^9.39.5",
     "eslint-plugin-react-hooks": "^5.2.0",
