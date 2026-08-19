@@ -15,7 +15,7 @@ import {
   getActiveBatch, getSellableStock, computeSupplierDueMap, calcNextBatch,
   runInvariantChecks, getReturnedQtyForInvoice, getReturnedAmountForInvoice,
   calcReturnRefundAmount, calcLineDiscountedRevenue, scaleBatchBreakdownForVoid,
-  computeProductSales,
+  computeProductSales, mergeItemsIntoIdMap,
 } from "../src/logic.js";
 
 let passCount = 0;
@@ -554,6 +554,59 @@ t("ইনভ্যারিয়েন্ট-চেক", "opening/cashSale/joma
 t("ইনভ্যারিয়েন্ট-চেক", "খালি state দিলে ক্র্যাশ না করে খালি array ফেরত দেয়", () => {
   const violations = runInvariantChecks();
   return { pass: Array.isArray(violations) && violations.length === 0, expected: 0, actual: violations.length };
+});
+
+// ── mergeItemsIntoIdMap (এন্ট্রি ৭৭, productsById merge-patch ফিক্স) ─────────
+t("mergeItemsIntoIdMap", "সাধারণ কেস — নতুন আইটেম Map-এ যোগ হয়", () => {
+  const { map } = mergeItemsIntoIdMap(new Map(), new Set(), [{ id: "p1", name: "A" }, { id: "p2", name: "B" }]);
+  const pass = map.size === 2 && map.get("p1").name === "A" && map.get("p2").name === "B";
+  return { pass, expected: 2, actual: map.size };
+});
+t("mergeItemsIntoIdMap", "পুরনো Map পূর্ণ থাকা অবস্থায় ছোট আপডেট (products আংশিক) — বাকি এন্ট্রি হারায় না", () => {
+  const prevMap = new Map([["p1", { id: "p1", name: "A" }], ["p2", { id: "p2", name: "B" }], ["p3", { id: "p3", name: "C" }]]);
+  // শুধু p1 এডিট হলো (boot-lazy বাস্তবতায় products অ্যারেতে শুধু ছোঁয়া আইটেমই থাকে)
+  const { map } = mergeItemsIntoIdMap(prevMap, new Set(["p1"]), [{ id: "p1", name: "A-edited" }]);
+  const pass = map.size === 3 && map.get("p1").name === "A-edited" && map.get("p2").name === "B" && map.get("p3").name === "C";
+  return { pass, expected: 3, actual: map.size };
+});
+t("mergeItemsIntoIdMap", "ইচ্ছাকৃত ডিলিট — আগের items-এ ছিল, এখন নেই, তাই Map থেকে সরে", () => {
+  const prevMap = new Map([["p1", { id: "p1" }], ["p2", { id: "p2" }]]);
+  const { map, ids } = mergeItemsIntoIdMap(prevMap, new Set(["p1", "p2"]), [{ id: "p1" }]);
+  const pass = map.size === 1 && map.has("p1") && !map.has("p2") && ids.has("p1") && !ids.has("p2");
+  return { pass, expected: 1, actual: map.size };
+});
+t("mergeItemsIntoIdMap", "কখনো items-এ না-আসা id (SQL fallback দিয়ে হাইড্রেট করা) ভুলভাবে মুছে যায় না", () => {
+  const prevMap = new Map([["p1", { id: "p1" }], ["sql-hydrated-99", { id: "sql-hydrated-99" }]]);
+  // prevIds-এ "sql-hydrated-99" নেই কারণ এটা কখনো products অ্যারে দিয়ে আসেনি
+  const { map } = mergeItemsIntoIdMap(prevMap, new Set(["p1"]), [{ id: "p1" }]);
+  const pass = map.size === 2 && map.has("sql-hydrated-99");
+  return { pass, expected: true, actual: map.has("sql-hydrated-99") };
+});
+t("mergeItemsIntoIdMap", "পুরো অ্যারে-ভিত্তিক পুরনো আচরণের সাথে সমতুল্য যখন প্রতিবার সম্পূর্ণ products পাঠানো হয়", () => {
+  let prevIds = new Set();
+  let map = new Map();
+  const boot = [{ id: "p1", stock: 5 }, { id: "p2", stock: 0 }];
+  ({ map, ids: prevIds } = mergeItemsIntoIdMap(map, prevIds, boot));
+  const afterDelete = [{ id: "p1", stock: 5 }]; // p2 ডিলিট হলো, পুরো অ্যারে ফের পাঠানো হচ্ছে
+  ({ map, ids: prevIds } = mergeItemsIntoIdMap(map, prevIds, afterDelete));
+  const pass = map.size === 1 && map.has("p1") && !map.has("p2");
+  return { pass, expected: 1, actual: map.size };
+});
+t("mergeItemsIntoIdMap", "id null/undefined আইটেম স্কিপ হয়, ক্র্যাশ করে না", () => {
+  const { map } = mergeItemsIntoIdMap(new Map(), new Set(), [{ id: "p1" }, { name: "no-id" }, null, { id: "p2" }]);
+  const pass = map.size === 2 && map.has("p1") && map.has("p2");
+  return { pass, expected: 2, actual: map.size };
+});
+t("mergeItemsIntoIdMap", "খালি/undefined items অ্যারে দিলে ক্র্যাশ না করে (boot-lazy চালু, products=[] শুরুতে)", () => {
+  const { map } = mergeItemsIntoIdMap(new Map([["p1", { id: "p1" }]]), new Set(), undefined);
+  const pass = map.size === 1 && map.has("p1");
+  return { pass, expected: 1, actual: map.size };
+});
+t("mergeItemsIntoIdMap", "prevMap অপরিবর্তিত থাকে (নতুন Map রেফারেন্স রিটার্ন হয়, mutation না)", () => {
+  const prevMap = new Map([["p1", { id: "p1", v: 1 }]]);
+  const { map } = mergeItemsIntoIdMap(prevMap, new Set(["p1"]), [{ id: "p1", v: 2 }]);
+  const pass = prevMap.get("p1").v === 1 && map.get("p1").v === 2 && map !== prevMap;
+  return { pass, expected: 1, actual: prevMap.get("p1").v };
 });
 
 // ── ফলাফল ────────────────────────────────────────────────────────────────────
