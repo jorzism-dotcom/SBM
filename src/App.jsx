@@ -20,7 +20,7 @@ import {
   runInvariantChecks, getReturnedQtyForInvoice, getReturnedAmountForInvoice,
   calcReturnRefundAmount, calcLineDiscountedRevenue, scaleBatchBreakdownForVoid,
   getVoidedInvoiceIds, filterReturnsExcludingVoided, filterTodayInvoices,
-  computeProductSales,
+  computeProductSales, mergeItemsIntoIdMap,
 } from "./logic.js";
 // 🧪 Schema validation (zod) — Firestore write-এর আগে টাকা/স্টক-সংক্রান্ত
 // ফিল্ডে NaN/undefined ঢুকে যাচ্ছে কিনা যাচাই করে। দেখুন src/schemas.js-এর
@@ -377,16 +377,43 @@ const useAppStore = create(subscribeWithSelector((set) => ({
 
 // 🆕 Phase ৫ — getState()-সিঙ্কড write-through Map। subscribeWithSelector দিয়ে
 // products/customers/invoices array বদলালেই (set() বা patch() যেভাবেই বদলাক না
-// কেন) নতুন Map রিবিল্ড হয়ে store-এ ফিরে বসে। এটা render-cycle-এর বাইরে, তাই
+// কেন) Map আপডেট হয়ে store-এ ফিরে বসে। এটা render-cycle-এর বাইরে, তাই
 // useAppStore.getState().productsById.get(id) সবসময়-ফ্রেশ (getState() ঠিক এই
 // গ্যারান্টির জন্যই আগে ব্যবহার হতো, .find() দিয়ে) — কিন্তু এখন O(1)।
 // ⚠️ eternal rule অনুযায়ী নোট: এই তিনটা subscribe শুধুমাত্র নিজ নিজ selector
 // (products/customers/invoices) বদলালেই ফায়ার করে (subscribeWithSelector-এর
 // কাজই এটা), productsById/customersById/invoicesById নিজে সেট করাটা নতুন করে
 // products/customers/invoices বদলায় না — তাই ইনফিনিট লুপের ঝুঁকি নেই।
+//
+// 🔴 এন্ট্রি ৭৭ (৭.৩ বুট-রিমুভাল অডিট থেকে ধরা পড়া রিয়েল বাগ) — productsById
+// আগে **সম্পূর্ণ রিবিল্ড** হতো (`new Map(products.map(...))`) প্রতিবার
+// `products` বদলালেই। products সবসময় বুটে পূর্ণ থাকা অবস্থায় এটা নিরাপদ ছিল।
+// কিন্তু `sbm_products_boot_lazy` সত্যিকারভাবে "কখনো পুরোপুরি লোড না করা"-য়
+// গেলে `products` React state আর সবসময় পূর্ণ থাকবে না (শুধু যেসব আইটেম
+// সরাসরি ছোঁয়া হয়েছে/লোকালি স্পর্শ করা হয়েছে সেগুলোই থাকবে) — তখন যেকোনো
+// সাধারণ এডিট/ডিলিট/নতুন-এন্ট্রি (`setProducts(prev => ...)`) এই পুরো-রিবিল্ড
+// লজিকের কারণে আগে SQLite থেকে হাইড্রেট করা বাকি সব পণ্যের এন্ট্রি
+// productsById থেকে মুছে ফেলত (products array-তে না থাকা মানেই আগে "মুছে
+// ফেলো" ধরে নেওয়া হতো) — অর্থাৎ প্রতিটা সাধারণ এডিটেই বাকি পুরো ক্যাটালগ
+// হারিয়ে যেত। এটা শুধু সাময়িক UI-glitch না, নিয়মিত ডেটা-করাপশন ঝুঁকি ছিল।
+// ফিক্স: এখন **merge-patch** — নতুন/বদলানো আইটেমগুলো Map-এ বসে (পুরনো
+// এন্ট্রি অক্ষত থাকে), আর ডিলিশন শুধু তখনই propagate হয় যখন কোনো id আগের
+// `products` অ্যারেতে ছিল কিন্তু এখন নেই (প্রকৃত/ইচ্ছাকৃত ডিলিট — অ্যারেতে
+// কখনো না-থাকা id-কে কখনো "ডিলিটেড" ধরা হবে না)। products সবসময় পূর্ণ থাকা
+// বর্তমান বাস্তবতায় (boot-lazy বন্ধ, ৫০০ দোকানের অবস্থা) এই পরিবর্তনে কোনো
+// আচরণ বদলায় না — পুরো অ্যারেই সবসময় "বর্তমান" আর "আগের" দুটোতেই সমান থাকে,
+// তাই diff-based delete আর wholesale rebuild একই ফলাফল দেয়। boot-lazy সত্যিই
+// চালু হলেই শুধু এই ফিক্সের আসল সুবিধা আসবে।
+// মূল merge-patch লজিক src/logic.js-এর mergeItemsIntoIdMap()-এ (pure, unit-টেস্টেড
+// — দেখুন tests/logic-tests.mjs) — এখানে শুধু thin wrapper, state ধরে রাখা।
+let _prevProductIdsForMap = new Set();
 useAppStore.subscribe(
   (s) => s.products,
-  (products) => { useAppStore.getState().set("productsById", new Map(products.map(p => [String(p.id), p]))); },
+  (products) => {
+    const { map, ids } = mergeItemsIntoIdMap(useAppStore.getState().productsById, _prevProductIdsForMap, products);
+    _prevProductIdsForMap = ids;
+    useAppStore.getState().set("productsById", map);
+  },
   { fireImmediately: true }
 );
 useAppStore.subscribe(
@@ -6191,7 +6218,18 @@ async function getProductByIdWithSqlFallback(businessType, productId, productsBy
   if (!isSqliteEnabled() || !businessType) return undefined;
   try {
     const rows = await dsGetByIds(businessType, "products", [productId]);
-    return rows[0] || undefined;
+    const found = rows[0] || undefined;
+    // 🆕 এন্ট্রি ৭৭ — fetch করা রেকর্ড global productsById cache-এও বসিয়ে দেওয়া
+    // হলো (merge-patch subscribe-এর সাথে সামঞ্জস্যপূর্ণ, দেখুন উপরের subscribe
+    // কমেন্ট) — একই id বারবার লাগলে (একই ইনভয়েসের একাধিক লাইন-আইটেম ইত্যাদি)
+    // প্রতিবার নতুন SQL রাউন্ড-ট্রিপ লাগবে না, আর `products` কখনো-না-ছোঁয়া
+    // থাকলেও (boot-lazy) এই id-টা এখন থেকে সিঙ্ক্রোনাস lookup-এও পাওয়া যাবে।
+    if (found) {
+      const nextMap = new Map(useAppStore.getState().productsById);
+      nextMap.set(String(productId), found);
+      useAppStore.getState().set("productsById", nextMap);
+    }
+    return found;
   } catch (e) {
     console.warn("getProductByIdWithSqlFallback() SQL fallback ব্যর্থ:", e);
     return undefined;
@@ -12394,6 +12432,50 @@ function SmartBusinessMgmt() {
       // অপেক্ষায় products-ও পিছিয়ে যেতে পারত। এখানে products একাই, নিজের
       // transaction-এ, যত দ্রুত সম্ভব লোড হয়।
       if (productsKeyLazy) {
+        // 🆕 এন্ট্রি ৭৮ (৭.৩ প্রস্তুতি — SQLite বাল্ক-হাইড্রেট) — নিচের setTimeout
+        // ব্লকটা এখনো পুরো IndexedDB blob (LK(SK.products)) থেকে পূর্ণ `products`
+        // React array লোড করে (এই সেশনে সেটা সরানো হয়নি, ইচ্ছাকৃতভাবে — সেটাই
+        // ৬৬টা bulk-scan কল-সাইট রূপান্তরের বড় কাজ, এন্ট্রি ৭৭-এ বর্ণিত)। কিন্তু
+        // সেই লোড শেষ না হওয়া পর্যন্ত `productsById` (Zustand global Map) খালি
+        // থাকত — POS/বিক্রি/ভয়েড ফ্লোর bounded `.get(id)` lookup ও
+        // `getProductByIdWithSqlFallback()` এই মুহূর্তে SQL fallback-এ যেতে বাধ্য
+        // হতো, যদিও SQLite-এ ডেটা তখনই রেডি। এই ব্লক সেই ফাঁকটা বন্ধ করে —
+        // `products` React state স্পর্শ না করেই (তাই কোনো bulk-scan কল-সাইট
+        // প্রভাবিত হয় না) সরাসরি SQLite থেকে সব প্রোডাক্ট পড়ে `productsById`
+        // বাল্ক-হাইড্রেট করে দেয়, যতক্ষণে উপরের setTimeout(0) ব্লক তার IndexedDB
+        // blob লোড শেষ করে। দুটো স্বাধীনভাবে সমান্তরালে চলে (কোনো একটা আরেকটার
+        // অপেক্ষায় থাকে না)।
+        //
+        // ⚠️ **এখনো `productsKeyLazy`-কে "কখনো লোড না করা"-য় আপগ্রেড করে না** —
+        // নিচের products blob-load ব্লক অপরিবর্তিত রেখে দেওয়া হয়েছে (dual-write
+        // চিরস্থায়ী নিয়ম অনুযায়ী, নতুন path পুরনোটা প্রতিস্থাপন করার আগে যথেষ্ট
+        // প্রমাণিত হতে হবে)। এই বাল্ক-হাইড্রেট নিজে থেকেই productsById-কে দ্রুত
+        // রেডি করে দেয় (সুবিধা), কিন্তু bulk-scan-নির্ভর ৬৬টা কল-সাইট এখনো
+        // `products` array-এর উপরই নির্ভরশীল — সেগুলো এখনো অপরিবর্তিত/অরূপান্তরিত।
+        // মূল `products` blob লোড শেষ হলে (নিচের setTimeout ব্লক) merge-patch
+        // subscribe (লাইন ~৪১৩) স্বয়ংক্রিয়ভাবে productsById-কে reconcile করে
+        // দেবে — SQL-হাইড্রেটেড কিন্তু blob-এ আসলে ডিলিটেড কোনো id থাকলে তখনই
+        // সঠিকভাবে সরে যাবে।
+        if (isSqliteEnabled() && businessTypeVal) {
+          (async () => {
+            try {
+              const sqlProductsForHydrate = await dsGetAllRows(businessTypeVal, "products");
+              if (sqlProductsForHydrate.length > 0) {
+                const { map: hydratedMap, ids: hydratedIds } = mergeItemsIntoIdMap(
+                  useAppStore.getState().productsById,
+                  _prevProductIdsForMap,
+                  sqlProductsForHydrate
+                );
+                _prevProductIdsForMap = hydratedIds;
+                useAppStore.getState().set("productsById", hydratedMap);
+              }
+            } catch (e) {
+              // নিরাপদ ফেইলিওর — ব্যর্থ হলে শুধু নিচের পুরনো blob-load পথের
+              // (ধীর কিন্তু প্রমাণিত) অপেক্ষা করা হবে, কোনো এরর ইউজারকে দেখানো হয় না।
+              console.warn("productsById SQLite বাল্ক-হাইড্রেট ব্যর্থ (নন-ফেটাল, blob-load ফলব্যাক চলছে):", e);
+            }
+          })();
+        }
         setTimeout(async () => {
           const prodBoot = await loadMany([LK(SK.products)]);
           const rawProdsLazy = prodBoot[LK(SK.products)];
@@ -13638,8 +13720,28 @@ function SmartBusinessMgmt() {
   // ফিল্ডের নাম হার্ডকোড ছিল (buildBackupData-এর থেকেও আলাদা লিস্ট)। এখন একই
   // BACKUP_FIELDS রেজিস্ট্রি থেকে বানানো হয় — নতুন কোনো collection যোগ হলে এই
   // ম্যানুয়াল প্যানেল দুটোও নিজে থেকেই কভার হয়ে যাবে।
-  const buildManualBackupData = useCallback(() => {
-    const stateMap = { customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, staffLedger, serialQueue };
+  // 🆕 এন্ট্রি ৭৬ (products SQLite-primary, ধাপ ৪ প্রস্তুতি — বাকি ২টা ছোট
+  // ব্লকারের ১ম) — এতদিন এই ফাংশন সরাসরি in-memory `products` React state
+  // থেকে সিঙ্ক্রোনাসভাবে পড়ত। `products` বুটে সবসময় পূর্ণ লোড হতো বলে এটা
+  // নিরাপদ ছিল, কিন্তু `sbm_products_boot_lazy` "কখনোই লোড না করা"-য় গেলে
+  // in-memory state আংশিক/খালি থাকতে পারত — ম্যানুয়াল export তখন নীরবে
+  // অসম্পূর্ণ ফাইল দিত। এখন `buildBackupData()`-এর ঠিক একই "SQLite-এ
+  // reconcile-প্রমাণিত পূর্ণ সোর্স থাকলে সেটাই ব্যবহার করো" প্যাটার্ন —
+  // async হয়ে গেছে (তাই আর সরাসরি render-এ কল করা যাবে না, দেখুন
+  // gdManualBackupData/ldManualBackupData state+effect নিচে)।
+  const buildManualBackupData = useCallback(async () => {
+    let fullProducts = products;
+    if (isSqliteEnabled() && businessType) {
+      try {
+        const sqlProducts = await dsGetAllRows(businessType, "products");
+        // নিরাপদ দিকে ভুল — in-memory state এখনো পূর্ণ/বেশি থাকলে সেটাই প্রাধান্য পায়
+        if (sqlProducts.length >= products.length) fullProducts = sqlProducts;
+      } catch (e) {
+        console.warn("buildManualBackupData() SQLite products fetch ব্যর্থ, in-memory state ব্যবহার হচ্ছে:", e);
+        fullProducts = products;
+      }
+    }
+    const stateMap = { customers, products: fullProducts, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, staffLedger, serialQueue };
     const out = {};
     BACKUP_FIELDS.forEach(f => { out[f] = stateMap[f]; });
     // 🆕 Multi-Business RestoreGuard: buildBackupData-এর মতোই businessType ট্যাগ,
@@ -13655,6 +13757,12 @@ function SmartBusinessMgmt() {
     };
     return out;
   }, [customers, products, invoices, txns, smsLog, paymentInvoices, purchaseOrders, stockMovements, users, cashLogs, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, staffLedger, serialQueue, businessType, enabledBusinessTypes, license.deviceId, license.unlockedUntil, license.history]);
+
+  // 🆕 এন্ট্রি ৭৬ — buildManualBackupData() async হয়ে যাওয়ায় আর সরাসরি render-এ
+  // কল করা যাবে না। resolve হওয়া object রাখার state+effect showGdExpanded/
+  // showLdExpanded declare হওয়ার পরে (নিচে, ~লাইন ৩৭৬৬৭) রাখা হয়েছে — এখানে
+  // রাখলে সেই দুটো variable তখনো TDZ-তে থাকত (একই ফাংশন কম্পোনেন্ট, কিন্তু
+  // অনেক পরে declare হয়), রানটাইম ReferenceError হতো।
   const manualBackupSetters = useMemo(() => {
     const setterMap = { customers: setCustomers, products: setProducts, invoices: setInvoices, txns: setTxns, smsLog: setSmsLog, paymentInvoices: setPaymentInvoices, purchaseOrders: setPurchaseOrders, stockMovements: setStockMovements, users: setUsers, cashLogs: setCashLogs, suppliers: setSuppliers, expenses: setExpenses, returns: setReturns, auditLogs: setAuditLogs, quotations: setQuotations, supplierPayments: setSupplierPayments, deletedProducts: setDeletedProducts, deletedCustomers: setDeletedCustomers, staffLedger: setStaffLedger, serialQueue: setSerialQueue };
     const out = {};
@@ -13814,12 +13922,31 @@ function SmartBusinessMgmt() {
       }
 
       // ২. Firestore collections — ইতিমধ্যে local state-এ আছে (onSnapshot দিয়ে sync)
+      // 🆕 এন্ট্রি ৭৬ (products SQLite-primary, ধাপ ৪ প্রস্তুতি — বাকি ২টা ছোট
+      // ব্লকারের ২য়/শেষ) — merge তুলনার জন্য `products` in-memory state সরাসরি
+      // ব্যবহার হতো। `products` বুটে সবসময় পূর্ণ থাকত বলে নিরাপদ ছিল, কিন্তু
+      // `sbm_products_boot_lazy` "কখনোই লোড না করা"-য় গেলে in-memory এখানে
+      // আংশিক/খালি থাকতে পারত — তখন merge ভুলভাবে সব Drive রেকর্ডকেই "লোকালে
+      // নেই" ধরে নিত, ফলে সম্প্রতি local-এ হওয়া (এখনো Drive-এ push না-হওয়া)
+      // পরিবর্তন Drive-এর পুরনো ডেটা দিয়ে ওভাররাইট হয়ে যাওয়ার ঝুঁকি ছিল।
+      // buildBackupData()-এর ঠিক একই SQLite-fallback প্যাটার্ন — শুধু merge-এর
+      // তুলনার জন্য (Firestore/setProducts পাথ অপরিবর্তিত)।
+      let fullProductsForSync = products;
+      if (isSqliteEnabled() && businessType) {
+        try {
+          const sqlProducts = await dsGetAllRows(businessType, "products");
+          if (sqlProducts.length >= products.length) fullProductsForSync = sqlProducts;
+        } catch (e) {
+          console.warn("performMasterSync() SQLite products fetch ব্যর্থ, in-memory state ব্যবহার হচ্ছে:", e);
+          fullProductsForSync = products;
+        }
+      }
       // ── merge-যোগ্য ফিল্ডের state+setter ম্যাপ। users/deletedProducts/
       // deletedCustomers ইচ্ছাকৃতভাবে এখানে নেই (আগের মতোই merge হয় না, সরাসরি
       // local state ব্যবহার হয়) — কিন্তু নামের লিস্ট এখন BACKUP_FIELDS থেকেই
       // filter হয়ে আসে, তাই দুই জায়গার নাম আলাদা হয়ে ড্রিফট করার সুযোগ নেই।
       const mergeStateSetters = {
-        customers: [customers, setCustomers], products: [products, setProducts],
+        customers: [customers, setCustomers], products: [fullProductsForSync, setProducts],
         invoices: [invoices, setInvoices], txns: [txns, setTxns],
         smsLog: [smsLog, setSmsLog], paymentInvoices: [paymentInvoices, setPaymentInvoices],
         purchaseOrders: [purchaseOrders, setPurchaseOrders], stockMovements: [stockMovements, setStockMovements],
@@ -13986,7 +14113,7 @@ function SmartBusinessMgmt() {
       setCustomers, setProducts, setInvoices, setTxns, setSmsLog,
       setPaymentInvoices, setPurchaseOrders, setStockMovements, setCashLogs, setSuppliers,
       setExpenses, setReturns, setAuditLogs, setQuotations, setSupplierPayments,
-      setLastMasterSync, setBackupFailStreak, setLastBackupError,
+      setLastMasterSync, setBackupFailStreak, setLastBackupError, businessType,
       restoreTestAt, setRestoreTestAt, setRestoreTestOk, setRestoreTestDetail, setRestoreTestFailStreak]);
 
   // ── Hourly Auto Master Sync (Admin ফোনে, toggle on থাকলে) ──
@@ -37605,6 +37732,28 @@ function Settings_({ T, S, shopName,
   const [ldUnlocked,     setLdUnlocked]     = useState(false);
   const [showGdExpanded, setShowGdExpanded] = useState(false);
   const [showLdExpanded, setShowLdExpanded] = useState(false);
+  // 🆕 এন্ট্রি ৭৬ (products SQLite-primary, ধাপ ৪ প্রস্তুতি) — buildManualBackupData()
+  // এখন async (SQLite fallback থাকায়), তাই GoogleDriveSection/LocalStorageSection-এ
+  // `data` prop হিসেবে সরাসরি render-এ কল করা যায় না। প্যানেল খোলা হলেই (উপরের
+  // showGdExpanded/showLdExpanded true হলে) resolve হওয়া object এখানে state-এ
+  // রাখা হয়; বন্ধ থাকলে কোনো অহেতুক fetch হয় না। BRS_DataSummary/hasAnyBackupRecords
+  // ইত্যাদি সব `!data`-নিরাপদ (দেখুন sync.js), আর handleBackup/handleSaveSnapshot/
+  // handleDownloadFile-এ এই এন্ট্রিতেই নতুন `if (!data) return;` গার্ড যোগ হয়েছে —
+  // তাই resolve হওয়ার আগে data={null} পাঠালে কোনো ক্র্যাশ হয় না।
+  const [gdManualBackupData, setGdManualBackupData] = useState(null);
+  const [ldManualBackupData, setLdManualBackupData] = useState(null);
+  useEffect(() => {
+    if (!showGdExpanded) return;
+    let cancelled = false;
+    buildManualBackupData().then(d => { if (!cancelled) setGdManualBackupData(d); });
+    return () => { cancelled = true; };
+  }, [showGdExpanded, buildManualBackupData]);
+  useEffect(() => {
+    if (!showLdExpanded) return;
+    let cancelled = false;
+    buildManualBackupData().then(d => { if (!cancelled) setLdManualBackupData(d); });
+    return () => { cancelled = true; };
+  }, [showLdExpanded, buildManualBackupData]);
   const [showFbDevices,  setShowFbDevices]  = useState(false);
   // 🗑️ Master Delete — সব ব্যাকআপ (Firebase + Google Drive + Local) মুছার ৩-স্তর ফ্লো
   const [delBkStep,      setDelBkStep]      = useState(0); // 0=বন্ধ, 1=সতর্কতা, 2=টাইপ-নিশ্চিতকরণ, 3=শেষ নিশ্চিতকরণ
@@ -38544,7 +38693,7 @@ function Settings_({ T, S, shopName,
             <span style={{ color:"#a78bfa", fontSize:11, fontWeight:700 }}>Master Key Verified — Google Drive Configuration</span>
           </div>
           <GoogleDriveSection
-            data={buildManualBackupData()}
+            data={gdManualBackupData}
             setters={manualBackupSetters}
             showToast={showToast} T={T} S={S}
             googleDriveToken={googleDriveToken}
@@ -38570,7 +38719,7 @@ function Settings_({ T, S, shopName,
             <span style={{ color:"#a78bfa", fontSize:11, fontWeight:700 }}>Master Key Verified — Local Storage Configuration</span>
           </div>
           <LocalStorageSection
-            data={buildManualBackupData()}
+            data={ldManualBackupData}
             setters={manualBackupSetters}
             showToast={showToast} T={T} S={S}
             currentBusinessType={businessType} currentEnabledTypes={enabledBusinessTypes}
@@ -39519,6 +39668,15 @@ function GoogleDriveSection({ data, setters, showToast, T, S, googleDriveToken, 
   };
 
   const handleBackup = async () => {
+    // 🆕 এন্ট্রি ৭৬ — `data` এখন async SQLite fetch থেকে আসে (buildManualBackupData()
+    // আর সিঙ্ক্রোনাস না), তাই প্যানেল খোলার পরপরই (fetch resolve হওয়ার আগে) কেউ
+    // দ্রুত ট্যাপ করলে `data` তখনো null থাকতে পারে। আগে এই কেস কখনো হতোই না
+    // (সিঙ্ক্রোনাস কল সবসময় object দিত), তাই কোনো গার্ড ছিল না — এখন দরকার,
+    // নাহলে নিচে `data._meta`/`data._license` অ্যাক্সেসে ক্র্যাশ করবে।
+    if (!data) {
+      showToast("⏳ ডেটা লোড হচ্ছে, একটু পরে আবার চেষ্টা করুন", "#f59e0b");
+      return;
+    }
     setSyncing(true);
     setStatus("idle");
     try {
@@ -40129,6 +40287,13 @@ function LocalStorageSection({ data, setters, showToast, T, S, currentBusinessTy
     }, [autoEnabled, schedule, data]);
 
   const handleSaveSnapshot = async () => {
+    // 🆕 এন্ট্রি ৭৬ — `data` এখন async SQLite fetch থেকে আসে, প্যানেল খোলার
+    // ঠিক পরপরই (resolve হওয়ার আগে) ট্যাপ করলে null থাকতে পারে — আগে কখনো
+    // হতো না (সিঙ্ক্রোনাস কল), তাই গার্ড ছিল না।
+    if (!data) {
+      showToast("⏳ ডেটা লোড হচ্ছে, একটু পরে আবার চেষ্টা করুন", "#f59e0b");
+      return;
+    }
     setSaving(true);
     // 🆕 (২ আগস্ট ২০২৬) দেখুন handleBackup-এর একই কমেন্ট।
     if (!hasAnyBackupRecords(data)) {
@@ -40167,6 +40332,11 @@ function LocalStorageSection({ data, setters, showToast, T, S, currentBusinessTy
   };
 
   const handleDownloadFile = async () => {
+    // 🆕 এন্ট্রি ৭৬ — handleSaveSnapshot-এর ঠিক একই কারণে গার্ড দরকার
+    if (!data) {
+      showToast("⏳ ডেটা লোড হচ্ছে, একটু পরে আবার চেষ্টা করুন", "#f59e0b");
+      return;
+    }
     const backupData = {
       ...pickBackupFields(data),
       _meta: data._meta, // 🆕 businessType ট্যাগ সংরক্ষণ (RestoreGuard)
