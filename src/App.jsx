@@ -39,10 +39,10 @@ import {
 // তৈরি DataStore abstraction layer। isSqliteEnabled() ফ্ল্যাগ ডিফল্ট বন্ধ, তাই
 // এই import নিজে থেকে কোনো আচরণ পাল্টায় না — শুধু নিচের debouncedSave effect-
 // গুলোতে diff-based upsert/remove যোগ হয়েছে (দেখুন সেখানকার কমেন্ট)।
-import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite, queryPage as dsQueryPage, isProductsBootLazyEnabled, setProductsBootLazyEnabled } from "./db/DataStore.js";
+import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite, queryPage as dsQueryPage, isProductsBootLazyEnabled, setProductsBootLazyEnabled, isPosOndemandCartEnabled, setPosOndemandCartEnabled } from "./db/DataStore.js";
 // 🆕 এন্ট্রি ৩৬ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ২) — InventorySection/
 // Dashboard-এর KPI কাউন্ট + ডিটেইল লিস্ট + সাপ্লায়ার-গ্রুপিং SQL cutover
-import { getInventoryList as dsGetInventoryList, getExpiryCandidates as dsGetExpiryCandidates, getSupplierSummary as dsGetSupplierSummary, getProductsBySupplierKey as dsGetProductsBySupplierKey, getDateRangeAggregate as dsGetDateRangeAggregate, getCustomerRfmAggregates as dsGetCustomerRfmAggregates } from "./db/DataStore.js";
+import { getInventoryList as dsGetInventoryList, getExpiryCandidates as dsGetExpiryCandidates, getSupplierSummary as dsGetSupplierSummary, getProductsBySupplierKey as dsGetProductsBySupplierKey, getDateRangeAggregate as dsGetDateRangeAggregate, getCustomerRfmAggregates as dsGetCustomerRfmAggregates, getRiskProducts as dsGetRiskProducts } from "./db/DataStore.js";
 // 🆕 এন্ট্রি ৩৮ — useKpiStats-এর বাকি ৪টা ডেটা-সোর্স (cashLogs/purchaseOrders/txns/returns)
 import { getCashLogTotal as dsGetCashLogTotal, getPurchaseOrderTotals as dsGetPurchaseOrderTotals, getTxnTotals as dsGetTxnTotals, getReturnsTotals as dsGetReturnsTotals } from "./db/DataStore.js";
 // 🆕 এন্ট্রি ৩৯ — useKpiStats-এর products-নির্ভর অবশিষ্ট অংশ (stockValue/lowStockItems/monthExpiredValue/monthExpiredCount)
@@ -9659,6 +9659,44 @@ function useKnownCategories(products, businessType) {
   }, [sql, jsCats]);
 }
 
+// 🆕 এন্ট্রি ৭২ (৭.৩, POS-বহির্ভূত) — BatchSyncTool-এর "লস-ঝুঁকি পণ্য" ট্যাব।
+// useKnownCategories()-এর ঠিক একই SQL-primary/JS-fallback প্যাটার্ন — SQL চালু
+// থাকলে dsGetRiskProducts() (indexed cost_price/price কলাম, category ③
+// FULL-SCAN কনভার্শন), নাহলে আগের JS ফুল-স্ক্যান ফলব্যাক (আচরণ অপরিবর্তিত)।
+function useRiskProducts(products, businessType) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await dsGetRiskProducts(businessType);
+        if (cancelled || seqRef.current !== seq) return;
+        setSql(rows.map(p => ({ ...p, margin: (p.price || 0) - (p.costPrice || 0) })));
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("লস-ঝুঁকি পণ্য SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, products]);
+
+  const jsRisk = useMemo(() => {
+    return (products || [])
+      .filter(p => p.productType !== "service" && (p.costPrice || 0) > 0 && (p.price || 0) > 0 && p.price <= p.costPrice)
+      .map(p => ({ ...p, margin: (p.price || 0) - (p.costPrice || 0) }))
+      .sort((a, b) => a.margin - b.margin);
+  }, [products]);
+
+  if (sqliteOn && sql) return sql;
+  return jsRisk;
+}
+
 /** getKnownSuppliers()-এর SQL-ভিত্তিক প্রতিস্থাপন — SupplierPicker অটো-সাজেশন। */
 function useKnownSuppliers(products, purchaseOrders, businessType) {
   const sqliteOn = isSqliteEnabled();
@@ -10690,9 +10728,9 @@ function AIPage_({ T, S, customers, invoices, products, txns, paymentInvoices, s
         <div style={{ padding: "8px 12px", display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={{ color: T.text, fontWeight: 700, fontSize: 14, marginBottom: 4 }}>📈 Analytics & Report</div>
           <React.Suspense fallback={<div style={{ padding:16, color:T.sub, fontSize:13 }}>📊 Analytics লোড হচ্ছে...</div>}>
-            <AnalyticsSection T={T} S={{}} invoices={invAll} products={prodAll} customers={custAll} paymentInvoices={paymentInvoices||[]} />
+            <AnalyticsSection T={T} S={{}} invoices={invAll} products={prodAll} customers={custAll} paymentInvoices={paymentInvoices||[]} businessType={businessType} />
           </React.Suspense>
-          <ProfitStatementCard T={T} S={{card:{background:T.card,borderRadius:16,padding:"14px 16px",marginBottom:12,border:`1px solid ${T.border}`},label:{fontSize:12,color:T.sub,fontWeight:700,display:"block",marginBottom:5}}} invoices={invAll} products={prodAll} shopName={shopName} expenses={expenses} />
+          <ProfitStatementCard T={T} S={{card:{background:T.card,borderRadius:16,padding:"14px 16px",marginBottom:12,border:`1px solid ${T.border}`},label:{fontSize:12,color:T.sub,fontWeight:700,display:"block",marginBottom:5}}} invoices={invAll} products={prodAll} shopName={shopName} expenses={expenses} businessType={businessType} />
         </div>
       )}
 
@@ -19073,10 +19111,32 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
 
   const getQty = (pid) => (items.find(i => i.productId === pid)?.qty || 0);
 
+  // 🆕 এন্ট্রি ৬৮ (৭.৩, POS on-demand cart — ফ্ল্যাগ-গার্ডেড, ডিফল্ট বন্ধ) —
+  // নিচের `productBatchMap`/`invProdMap` আগে সবসময় পুরো `products` অ্যারে স্ক্যান
+  // করত (boot-lazy অবস্থায় `products` খালি/আংশিক থাকলে এই দুটোও খালি/ভুল হয়ে
+  // যেত)। `isPosOndemandCartEnabled()` চালু থাকলে এই দুটো এখন শুধু বর্তমানে-
+  // দরকারি id-সেট (কার্টে থাকা আইটেম + গ্রিডে দৃশ্যমান পণ্য) নিয়ে
+  // `useProductsByIds()` (এন্ট্রি ৪২-৪৩, ইতিমধ্যে POS ব্রাউজ-গ্রিডে প্রমাণিত,
+  // এন্ট্রি ৪০) দিয়ে কাজ করে — id in-memory `products`-এ থাকলে সিঙ্ক্রোনাস
+  // (SQL কল ছাড়াই), না থাকলে (products লেজি/খালি) ব্যাচ-ফেচ করে। ফ্ল্যাগ বন্ধ
+  // থাকলে (ডিফল্ট) নিচের কোড ১০০% আগের মতোই — পুরো `products` অ্যারে থেকেই।
+  // ⚠️ real-device বিলিং-কার্ট যাচাই ছাড়া এই ফ্ল্যাগ কখনো চালু করবেন না।
+  const posOndemandCart = isPosOndemandCartEnabled();
+  const cartProductIds = useMemo(() => items.map(it => String(it.productId)), [items]);
+  const gridVisibleIds = useMemo(() => (gridProducts || []).map(p => String(p.id)), [gridProducts]);
+  const posNeededIds = useMemo(
+    () => posOndemandCart ? Array.from(new Set([...cartProductIds, ...gridVisibleIds])) : [],
+    [posOndemandCart, cartProductIds, gridVisibleIds]
+  );
+  const { get: getPosOndemandProduct } = useProductsByIds(posNeededIds, businessType, productsByIdMap);
+
   // ── FIFO active-batch: শুধু p.batches (qty>0) // ── FIFO active-batch: শুধু p.batches (qty>0) থেকে — PE history source নয় ──
   const productBatchMap = useMemo(() => {
     const map = {};
-    products.forEach(p => {
+    const source = posOndemandCart
+      ? posNeededIds.map(id => getPosOndemandProduct(id)).filter(Boolean)
+      : products;
+    source.forEach(p => {
       const fifo = getActiveBatch(p);
       if (fifo) {
         const daysLeft = fifo.expiryDate ? Math.ceil((new Date(fifo.expiryDate) - new Date()) / 86400000) : null;
@@ -19089,11 +19149,20 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
       }
     });
     return map;
-  }, [products]);
+  }, [products, posOndemandCart, posNeededIds, getPosOndemandProduct]);
 
   // 🔴 ফিক্স: p.stock-এর বদলে getSellableStock(p) — এতে মেয়াদোত্তীর্ণ ব্যাচের
   // qty বাদ দিয়ে হিসেব হয়, তাই মেয়াদোত্তীর্ণ পণ্য/ব্যাচ ইনভয়েসে যোগ করা যায় না
-  const invProdMap = useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
+  const invProdMap = useMemo(() => {
+    // ⚠️ key হিসেবে সবসময় `p.id`-এর নিজস্ব (native) টাইপ ব্যবহার করা হচ্ছে
+    // (String() করে না) — কল-সাইটগুলো (`invProdMap.get(it.productId)`) কোনো
+    // String() wrapping ছাড়াই কল করে, তাই মূল আচরণের key-টাইপ অবিকল রাখা জরুরি।
+    if (posOndemandCart) {
+      const resolved = posNeededIds.map(id => getPosOndemandProduct(id)).filter(Boolean);
+      return new Map(resolved.map(p => [p.id, p]));
+    }
+    return new Map(products.map(p => [p.id, p]));
+  }, [products, posOndemandCart, posNeededIds, getPosOndemandProduct]);
 
   // 🏠 নিজের ব্যবহার টগল — Payment স্টেপে অন/অফ করলে কার্টের সব আইটেমের দাম
   // বিক্রয়মূল্য ⇄ ক্রয়মূল্যের মধ্যে রিক্যালকুলেট হবে
@@ -21285,7 +21354,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
 }
 
 // ── AnalyticsSection (Home page) ─────────────────────────────────────────────
-function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [], paymentInvoices = [] }) {
+function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [], paymentInvoices = [], businessType }) {
   const [period, setPeriod] = useState("month"); // "week" | "month" | "year"
   const recharts = useRecharts(); // লেজি-লোড — এই সেকশন মাউন্ট হলেই ফেচ শুরু হয়
 
@@ -21307,11 +21376,28 @@ function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [],
     part: invoices.filter(i => i.payType==="partial").reduce((s,i)=>s+(i.total||0),0),
   }), [invoices]);
 
+  // 🆕 এন্ট্রি ৬৯ (৭.৩, POS-বহির্ভূত, read-only রিপোর্ট — সবচেয়ে কম-ঝুঁকির
+  // ক্যাটাগরি) — নিচের chartData আগে পুরো `products` অ্যারে থেকে `prodMap`
+  // বানাত, শুধু নির্বাচিত পিরিয়ডের ইনভয়েস-আইটেমের productId কস্ট-লুকআপের জন্য।
+  // এখন সেই বাউন্ডেড id-সেট নিয়ে `useProductsByIds()` — id in-memory
+  // `products`-এ থাকলে সিঙ্ক্রোনাস, ফলাফল অপরিবর্তিত। name-fallback
+  // (`products.find(pr=>pr.name===it.name)`, প্রোডাক্টআইডি-বিহীন পুরনো
+  // আইটেমের জন্য বিরল edge-case) ইচ্ছাকৃতভাবে অপরিবর্তিত রাখা হয়েছে — এটা id-
+  // ভিত্তিক না, তাই useProductsByIds()-এ প্রতিস্থাপনযোগ্য না, আর যথেষ্ট বিরল
+  // বলে এই মুহূর্তে আলাদা name-based SQL ডিজাইনের দরকার নেই।
+  const analyticsProductIds = useMemo(() => {
+    const ids = new Set();
+    invoices.forEach(inv => (inv.items || []).forEach(it => { if (it.productId != null) ids.add(String(it.productId)); }));
+    return Array.from(ids);
+  }, [invoices]);
+  const analyticsProductsByIdMap = useMemo(() => new Map(products.map(p => [String(p.id), p])), [products]);
+  const { get: getAnalyticsProduct } = useProductsByIds(analyticsProductIds, businessType, analyticsProductsByIdMap);
+
   // ── Revenue + Profit chart data ───────────────────────────────────────────
   const chartData = useMemo(() => {
     const map = {};
     const labels = [];
-    const prodMap = new Map(products.map(p => [p.id, p]));
+
 
     if (period === "week") {
       for (let i = 6; i >= 0; i--) {
@@ -21348,14 +21434,14 @@ function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [],
       if (!map[k]) return;
       map[k].revenue += (inv.total || 0);
       const cost = (inv.items || []).reduce((s, it) => {
-        const p = prodMap.get(it.productId) || products.find(pr => pr.name === it.name);
+        const p = getAnalyticsProduct(it.productId) || products.find(pr => pr.name === it.name);
         return s + _itemCostPrice(it, new Map([[it.productId, p]])) * (it.qty || 1);
       }, 0);
       map[k].profit += (inv.total || 0) - cost;
     });
 
     return { labels, revenue: labels.map(l => map[l.key]?.revenue || 0), profit: labels.map(l => Math.max(0, map[l.key]?.profit || 0)) };
-  }, [period, invoices, products]);
+  }, [period, invoices, products, getAnalyticsProduct]);
 
   // ── Top Products (30 days) ────────────────────────────────────────────────
   const topProducts = useMemo(() => {
@@ -22115,14 +22201,29 @@ function InventorySection({ T, S, products, setDashModal, shopName, setInvModal,
 }
 
 // ── Profit Statement Card ─────────────────────────────────────────────────────
-function ProfitStatementCard({ T, S, invoices, products, shopName, expenses = [] }) {
+function ProfitStatementCard({ T, S, invoices, products, shopName, expenses = [], businessType }) {
   const pnlNav = useUnifiedDayMonthNav(); // 🆕 একক দিন/মাস নেভিগেটর (আগের today/week/month/3m/6m/year/all চিপ বাদ)
   const [showDetail, setShowDetail] = React.useState(false);
 
   const fmt  = n => fmtMoney(n);
   const fmtD = n => (n || 0).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 
-  const prodMap = React.useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
+  // 🆕 এন্ট্রি ৬৯ (৭.৩, POS-বহির্ভূত অংশ) — আগে এখানে পুরো `products` অ্যারে থেকে
+  // `prodMap` বানানো হতো, শুধু বাছাই-করা তারিখ-রেঞ্জের ইনভয়েস-আইটেমের productId
+  // লুকআপের জন্য। এখন সেই বাউন্ডেড id-সেট (`pnlProductIds`, filtInv থেকেই বের
+  // করা) নিয়ে `useProductsByIds()` ব্যবহার হচ্ছে — id in-memory `products`-এ
+  // থাকলে (বর্তমানে সবসময় সত্যি) সিঙ্ক্রোনাস, ফলাফল ১০০% অপরিবর্তিত। এই কার্ড
+  // read-only রিপোর্ট (কোনো স্টক/ক্যাশ লেখা হয় না) — সবচেয়ে কম-ঝুঁকির রূপান্তর,
+  // কোনো নতুন ফ্ল্যাগের দরকার নেই।
+  const productsByIdMap = React.useMemo(() => new Map(products.map(p => [String(p.id), p])), [products]);
+  const pnlProductIds = React.useMemo(() => {
+    const filtInv = invoices.filter(inv => pnlNav.inRange(inv.dateKey || (inv.createdAt||"").split("T")[0]));
+    const ids = new Set();
+    filtInv.forEach(inv => (inv.items || []).forEach(it => { if (it.productId != null) ids.add(String(it.productId)); }));
+    return Array.from(ids);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [invoices, pnlNav.mode, pnlNav.label]);
+  const { get: getPnlProduct } = useProductsByIds(pnlProductIds, businessType, productsByIdMap);
 
   // ── নির্বাচিত দিন/মাসের লেবেল ─────────────────────────────────────────────
   const label = pnlNav.mode === "day" ? `${pnlNav.label}` : `${pnlNav.label} মাসের`;
@@ -22159,7 +22260,7 @@ function ProfitStatementCard({ T, S, invoices, products, shopName, expenses = []
       // নিজস্ব itemDiscount সেই লাইনেই বসানো হচ্ছে।
       const invItems = inv.items || [];
       invItems.forEach(it => {
-        const p = prodMap.get(it.productId);
+        const p = getPnlProduct(it.productId);
         const lineRevenue = calcLineDiscountedRevenue(it, invItems, inv.discount || 0);
         const cost = (p?.costPrice||0) * (it.qty||1);
         cogs += cost;
@@ -22195,7 +22296,7 @@ function ProfitStatementCard({ T, S, invoices, products, shopName, expenses = []
       invoiceCount: filtInv.length, expenseCount: filtExp.length,
       dailyRows, topProds, expByCat,
     };
-  }, [invoices, expenses, prodMap, pnlNav.mode, pnlNav.dateKey, pnlNav.monthKey]);
+  }, [invoices, expenses, getPnlProduct, pnlNav.mode, pnlNav.dateKey, pnlNav.monthKey]);
 
   // ── Print ─────────────────────────────────────────────────────────────────
   const handlePrint = React.useCallback(() => {
@@ -22868,6 +22969,15 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   // 🆕 দুটি ক্রয় অর্ডার ফ্লো ("সকল পণ্য থেকে" ও "সাপ্লায়ার থেকে") সম্পূর্ণ আলাদা ও
   // স্বয়ংসম্পূর্ণ — তাই প্রতিটির নিজস্ব স্বতন্ত্র সিলেকশন-স্টেট, একটা আরেকটাকে প্রভাবিত করে না।
   const [orderQtysAll, setOrderQtysAll] = useState({});
+  // 🆕 এন্ট্রি ৭০ (৭.৩, POS-বহির্ভূত, মাঝারি-ঝুঁকি) — নিচে (`invModal==='order...'`
+  // ব্লকে) `allSelectedItems` আগে পুরো `products` অ্যারে ফিল্টার করত, শুধু
+  // orderQtysAll-এ যে id-গুলোর জন্য কোয়ান্টিটি সিলেক্ট করা হয়েছে সেগুলোর জন্য। এখানে
+  // hook টপ-লেভেলে (কন্ডিশনাল ব্লকের বাইরে, React-এর Rules of Hooks মেনে) কল করা
+  // হচ্ছে — `orderQtysAll` (উপরে) থেকেই বাউন্ডেড id-সেট, আর ইতিমধ্যে-বিদ্যমান
+  // `_globalProductsById` (উপরে, এন্ট্রি ৬৪-এর write-through Map) fast-path হিসেবে
+  // ব্যবহার হচ্ছে — id in-memory থাকলে সিঙ্ক্রোনাস, ফলাফল অপরিবর্তিত।
+  const orderQtysAllIds = useMemo(() => Object.keys(orderQtysAll), [orderQtysAll]);
+  const { get: getPOSelectedProduct } = useProductsByIds(orderQtysAllIds, businessType, _globalProductsById);
   // 🆕 "ক্রয় অর্ডার তৈরি করুন" পেজে সাপ্লায়ার সার্চ (নাম টাইপ করলে অটো-সাজেস্ট, সিলেক্ট করলে
   // শুধু ওই সাপ্লায়ারের পণ্য স্টক-আউট → ক্রিটিক্যাল → কম স্টক → বেশি স্টক সিরিয়ালে দেখানো হয়)
   const [poSupplierQuery, setPoSupplierQuery] = useState("");
@@ -24843,7 +24953,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
       ...[...criticalStock].sort((a,b)=>(a.stock||0)-(b.stock||0)),
       ...allStock.filter(p=>!criticalStock.find(c=>c.id===p.id)).sort((a,b)=>(a.stock||0)-(b.stock||0)),
     ];
-    const allSelectedItems = products.filter(p => Object.prototype.hasOwnProperty.call(orderQtysAll, p.id));
+    const allSelectedItems = orderQtysAllIds.map(id => getPOSelectedProduct(id)).filter(Boolean);
 
     // 🆕 এন্ট্রি ৫৭ (Phase 3): সাপ্লায়ার সার্চের জন্য ইউনিক নামের তালিকা — আগে এখানে
     // পুরো products অ্যারে আবার স্ক্যান হতো (supplierOf ম্যাপ + Set + sort), যদিও
@@ -28834,23 +28944,14 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
     [browseIds, getBrowseProductRow]
   );
 
-  // ── FIFO active-batch map — প্রোডাক্ট লিস্টের ব্যাচ ব্যাজ দেখানোর জন্য (prodBatchMap fix) ──
-  const prodBatchMap = useMemo(() => {
-    const map = {};
-    products.forEach(p => {
-      const fifo = getActiveBatch(p);
-      if (fifo) {
-        const daysLeft = fifo.expiryDate ? Math.ceil((new Date(fifo.expiryDate) - new Date()) / 86400000) : null;
-        map[p.id] = {
-          batch: fifo.batchNo || "",
-          expiryDate: fifo.expiryDate || "",
-          daysLeft,
-          expWarn: daysLeft !== null && daysLeft <= 30,
-        };
-      }
-    });
-    return map;
-  }, [products]);
+  // 🆕 এন্ট্রি ৭১ (৭.৩, POS-বহির্ভূত) — আগে এখানে পুরো `products` অ্যারে স্ক্যান করে
+  // `prodBatchMap` (id → FIFO active-batch) বানানো হতো, কিন্তু নিচে রেন্ডার-সাইটে
+  // (৩০৯২৩ লাইন এলাকা) এটা সবসময় একটামাত্র নির্দিষ্ট `p` (যেই কার্ড রেন্ডার হচ্ছে)-এর
+  // জন্যই পড়া হতো — `getActiveBatch(p)` একটা pure ফাংশন যেকোনো একক product object
+  // থেকেই batch বের করতে পারে, তাই পুরো ক্যাটালগ প্রি-কম্পিউট করার কোনো দরকারই ছিল
+  // না। পুরো `prodBatchMap` useMemo সরিয়ে রেন্ডার-সাইটে সরাসরি `getActiveBatch(p)`
+  // কল করা হচ্ছে — ফলাফল ১০০% অভিন্ন (একই ফাংশন, একই ইনপুট), কিন্তু এখন `products`
+  // পুরো অ্যারে-নির্ভরতা এই জায়গা থেকে সম্পূর্ণ বাদ।
 
   const [activeTab,    setActiveTab]    = useState(initialTab || "retail"); // "retail" | "purchase"
 
@@ -29036,8 +29137,9 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   useBackHandler(peSearchOpen,       () => { setPeSearchOpen(false); return true; });
   useBackHandler(peShowForm,         () => { setPeShowForm(false); return true; });
   // Virtuoso — pagination সরানো
-  const lowStock = useMemo(() => products.filter(p => (p.stock || 0) <= 5 && (p.stock || 0) > 0), [products]);
-  const outOfStock = useMemo(() => products.filter(p => (p.stock || 0) === 0), [products]);
+  // 🆕 এন্ট্রি ৭১ — `lowStock`/`outOfStock` (নিচে ছিল) পুরো `products` অ্যারে স্ক্যান
+  // করত, কিন্তু গোটা ফাইলে কোথাও ব্যবহৃতই হতো না (dead code, গ্রেপ করে যাচাই করা
+  // হয়েছে) — তাই নতুন করে SQL-এ কনভার্ট না করে সরাসরি সরানো হলো।
 
   const saveProduct = async () => {
     const errs = {};
@@ -30848,7 +30950,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                         if (bx.expiryDate) return 1;
                         return new Date(a.at||0) - new Date(bx.at||0);
                       })
-                    : prodBatchMap[p.id]?.batch ? [{ batchNo: prodBatchMap[p.id].batch, qty: p.stock||0, expiryDate: prodBatchMap[p.id].expiryDate || "" }] : [];
+                    : (() => { const fifo = getActiveBatch(p); return fifo?.batchNo ? [{ batchNo: fifo.batchNo, qty: p.stock||0, expiryDate: fifo.expiryDate || "" }] : []; })();
                   if (activeBatches.length === 0) return null;
                   // 🔴 ফিক্স: আগে একই পণ্যের একাধিক ব্যাচে হুবহু একই মেয়াদ থাকলে ⚠️ "রিস্ক"
                   // মার্ক দেখানো হতো — কিন্তু একই দিনে/একই চালানে কেনা ব্যাচের মেয়াদ
@@ -31091,12 +31193,11 @@ function BatchSyncTool({ T, S, products = [], setProducts, invoices = [], setInv
   const [editCost, setEditCost] = React.useState("");
 
   // ── (A) লস-ঝুঁকি পণ্য ──────────────────────────────────────────────────
-  const riskProducts = React.useMemo(() => {
-    return (products || [])
-      .filter(p => p.productType !== "service" && (p.costPrice || 0) > 0 && (p.price || 0) > 0 && p.price <= p.costPrice)
-      .map(p => ({ ...p, margin: (p.price || 0) - (p.costPrice || 0) }))
-      .sort((a, b) => a.margin - b.margin);
-  }, [products]);
+  // 🆕 এন্ট্রি ৭২ (৭.৩, POS-বহির্ভূত) — আগে এখানে সরাসরি পুরো `products` অ্যারে
+  // ফিল্টার/সর্ট হতো (genuine FULL-SCAN)। এখন `useRiskProducts()` — SQL চালু
+  // থাকলে indexed cost_price/price কলামে SQL কোয়েরি (dsGetRiskProducts),
+  // নাহলে ঠিক এই একই JS লজিক ফলব্যাক হিসেবে — শর্ত/সর্ট-অর্ডার হুবহু অপরিবর্তিত।
+  const riskProducts = useRiskProducts(products, businessType);
 
   // ── (B) ব্যাচ costPrice মিসম্যাচ ───────────────────────────────────────
   // 🔴 ফিক্স (True Batch/FIFO costing — ২০২৬): আগে "সব ব্যাচের costPrice
@@ -36564,6 +36665,48 @@ function ProductsBootLazyToggle({ T, showToast }) {
   );
 }
 
+// 🆕 এন্ট্রি ৬৮ (৭.৩, POS on-demand cart) — ProductsBootLazyToggle-এর ঠিক একই
+// প্যাটার্ন। ⚠️ এই ফ্ল্যাগ চালু হলে POS বিলিং-কার্ট (SmartInvoiceBuilder)-এর
+// কার্ট/ব্যাচ-লুকআপ id-বাউন্ডেড হয়ে যায় — real-device বিলিং যাচাই ছাড়া কখনো
+// চালু করা উচিত না।
+function PosOndemandCartToggle({ T, showToast }) {
+  const [enabled, setEnabled] = useState(() => isPosOndemandCartEnabled());
+
+  const handleToggle = () => {
+    const next = !enabled;
+    setPosOndemandCartEnabled(next);
+    setEnabled(next);
+    showToast?.(
+      next
+        ? "✅ POS on-demand cart চালু হলো — বিলিং-কার্ট এখন id-বাউন্ডেড লুকআপ ব্যবহার করবে, ভালোভাবে টেস্ট করুন"
+        : "POS on-demand cart বন্ধ হলো — বিলিং-কার্ট আগের (পুরো products অ্যারে) আচরণে ফিরল"
+    );
+  };
+
+  return (
+    <div style={{ marginTop: 12, padding: 10, borderRadius: 8, border: `1.5px solid ${enabled ? "#ef4444" : T.border}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: T.text }}>
+          🛒 POS On-Demand Cart (৭.৩, ঝুঁকিপূর্ণ — শুধু টেস্ট)
+        </div>
+        <button onClick={handleToggle} style={{
+          padding: "5px 12px", borderRadius: 20,
+          border: `1.5px solid ${enabled ? "#ef4444" : T.border}`,
+          background: enabled ? "#ef4444" : "transparent",
+          color: enabled ? "#fff" : T.sub, fontWeight: 700, fontSize: 11, cursor: "pointer",
+        }}>{enabled ? "চালু" : "বন্ধ"}</button>
+      </div>
+      <div style={{ marginTop: 6, fontSize: 10.5, color: T.sub, lineHeight: 1.7 }}>
+        চালু করলে POS বিলিং-কার্টের `productBatchMap`/`invProdMap` পুরো products অ্যারে
+        স্ক্যান না করে শুধু কার্টে-থাকা+গ্রিডে-দৃশ্যমান id-এর জন্যই (useProductsByIds()
+        দিয়ে) কাজ করবে — products লেজি/খালি থাকা অবস্থাতেও কাজ করার কথা। ⚠️ কার্টে
+        আইটেম যোগ, qty বদল, self-use টগল, ব্যাচ/মেয়াদ-সতর্কতা, স্টক-ডিডাকশন — সব
+        real-device-এ ভালোভাবে টেস্ট করে তবেই ব্যবহার করুন। ডিফল্ট বন্ধ।
+      </div>
+    </div>
+  );
+}
+
 // ── 🧪 SQLite মাইগ্রেশন — Phase 1 dev/সাপোর্ট প্যানেল ─────────────────────────
 // (SQLITE_MIGRATION_LOG.md এন্ট্রি ৬-এর "যা এখনো বাকি" #১-এর ফিক্স)। BackupDiagnosticsCard-এর
 // একই collapsible-card প্যাটার্ন। গার্ড: Settings_-এর devPanelUnlocked state (AppVersionCard-এ
@@ -36890,6 +37033,7 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
           </div>
 
           <ProductsBootLazyToggle T={T} showToast={showToast} />
+          <PosOndemandCartToggle T={T} showToast={showToast} />
 
           <div style={{ marginTop: 12, fontSize: 10.5, color: T.sub, lineHeight: 1.7 }}>
             ⚠️ dual-write চালু থাকলেও পুরনো IndexedDB blob-array-ই একমাত্র সোর্স-অফ-ট্রুথ থাকে (App-এর
