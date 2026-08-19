@@ -64,6 +64,33 @@ export function setProductsBootLazyEnabled(v) {
   } catch {}
 }
 
+// ── Feature flag: POS on-demand cart lookups (এন্ট্রি ৬৮, ৭.৩-এর POS অংশের
+// প্রথম real ধাপ) ───────────────────────────────────────────────────────────
+// ⚠️ এই ফ্ল্যাগ **ডিফল্ট বন্ধ**, আর `sbm_products_boot_lazy` থেকে সম্পূর্ণ
+// স্বাধীন — চালু করলেও `products` এখনো পুরোপুরি মেমরিতেই থাকে (এই ফ্ল্যাগ একাই
+// কিছু বদলায় না)। শুধু `sbm_products_boot_lazy` **এবং** এই ফ্ল্যাগ দুটোই চালু
+// থাকলে SmartInvoiceBuilder (POS)-এর কার্ট-লুকআপ/ব্যাচ-ম্যাপ `products`-এর
+// পুরো অ্যারে স্ক্যান না করে বরং বর্তমানে-দৃশ্যমান/কার্টে-থাকা id-গুলোর জন্যই
+// (useProductsByIds()-এর মাধ্যমে) কাজ করবে — products খালি/লেজি থাকা অবস্থাতেও
+// সঠিক কাজ করার কথা (ইতিমধ্যে-প্রমাণিত useProductsByIds()/dsGetByIds() পাথ,
+// POS ব্রাউজ-গ্রিডে এন্ট্রি ৪০-এ একই প্যাটার্নে চালু আছে)। ⚠️ **real-device
+// বিলিং-কার্ট যাচাই ছাড়া কখনো চালু করবেন না** — বন্ধ থাকলে ১০০% আগের আচরণ।
+const POS_ONDEMAND_CART_FLAG_KEY = "sbm_pos_ondemand_cart";
+
+export function isPosOndemandCartEnabled() {
+  try {
+    return localStorage.getItem(POS_ONDEMAND_CART_FLAG_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setPosOndemandCartEnabled(v) {
+  try {
+    localStorage.setItem(POS_ONDEMAND_CART_FLAG_KEY, v ? "1" : "0");
+  } catch {}
+}
+
 // ── Phase ১ (foundation, sync-ready): event device id ───────────────────────
 // লাইসেন্স সিস্টেমের deviceId (getOrCreateLicenseDeviceId, async + IndexedDB,
 // অ্যাপ রিসেট করলে ইচ্ছাকৃতভাবে বদলে যায়) থেকে ইচ্ছাকৃতভাবে আলাদা — event log-এর
@@ -877,6 +904,29 @@ export async function getInventoryList(businessType, kind, opts = {}) {
   else if (kind === "out") { where = "deleted = 0 AND (stock IS NULL OR stock = 0)"; }
   else throw new Error(`getInventoryList(): অজানা kind "${kind}"`);
   const sql = `SELECT data FROM products WHERE ${where} ${orderBy} LIMIT ?`;
+  const res = await db.query(sql, [limit]);
+  return (res.values || []).map((r) => JSON.parse(r.data));
+}
+
+/**
+ * 🆕 এন্ট্রি ৭২ (৭.৩, POS-বহির্ভূত) — BatchSyncTool-এর "লস-ঝুঁকি পণ্য" ট্যাবের
+ * জন্য: বিক্রয়মূল্য ≤ ক্রয়মূল্য এমন পণ্য (নেগেটিভ/শূন্য মার্জিন)। এটা genuine
+ * FULL-SCAN (কোন পণ্যগুলো ঝুঁকিপূর্ণ তা *খুঁজে বের করতে হয়*, বাউন্ডেড id-সেট
+ * দিয়ে সম্ভব না) — তাই getInventoryList()-এর মতোই SQL WHERE + margin অনুযায়ী
+ * ORDER BY। App.jsx-এর JS ফলব্যাক লজিকের সাথে শর্ত হুবহু মিলিয়ে রাখা হয়েছে:
+ * productType !== "service" && costPrice > 0 && price > 0 && price <= costPrice,
+ * sort by margin ascending (সবচেয়ে খারাপ মার্জিন আগে)।
+ */
+export async function getRiskProducts(businessType, opts = {}) {
+  const { limit = INVENTORY_LIST_LIMIT } = opts;
+  const db = await getDb(businessType);
+  const sql = `
+    SELECT data FROM products
+    WHERE deleted = 0 AND (product_type IS NULL OR product_type != 'service')
+      AND cost_price > 0 AND price > 0 AND price <= cost_price
+    ORDER BY (price - cost_price) ASC
+    LIMIT ?
+  `;
   const res = await db.query(sql, [limit]);
   return (res.values || []).map((r) => JSON.parse(r.data));
 }
