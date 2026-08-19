@@ -64,6 +64,24 @@ single `useEffect`-এর মধ্য দিয়ে যায় (App.jsx ল
 বদলাতে হবে না। তবে নিশ্চিত হতে হবে যে **কোনো কোড path products state বাইপাস করে সরাসরি
 localStorage/IndexedDB-তে লেখে না** (grep দিয়ে যাচাই, এই সেশনে করা হয়নি)।
 
+### ধাপ ২ (✅ এই সেশনে সম্পন্ন) — write path অডিট
+২২টা `setProducts()` কল-সাইট গ্রেপ করে যাচাই করা হয়েছে — সবগুলোই React state → single
+`useEffect([products, loaded])`-এ গিয়ে পড়ে (App.jsx, `debouncedSave()`+`dualWriteSqlite()`
+একসাথে কল হয়)। **কোনো bypass পাওয়া যায়নি।**
+
+৩টা জায়গায় (বিক্রি/checkout, নতুন পণ্য তৈরি, পার্চেজ এন্ট্রি) ইচ্ছাকৃত `save(LK(SK.products),
+...)` immediate-write প্যাটার্ন আছে (debounce-window crash-safety-র জন্য, প্রতিটাই
+`setProducts()`-এর ঠিক পরে, একই ডেটা) — এগুলো সেই মুহূর্তে `dualWriteSqlite()` ট্রিগার
+করে না, কিন্তু যেহেতু `_dsProductsRef` (App.jsx লাইন ~১৩১৯৯) প্রতি অ্যাপ-বুটে খালি `Map`
+দিয়ে শুরু হয়, বুটের প্রথম `products` পরিবর্তনেই পুরো অ্যারে সম্পূর্ণ re-upsert হয়ে যায় SQLite-এ
+— crash-window-এর যেকোনো গ্যাপ পরের বুটেই স্বয়ংক্রিয়ভাবে সেরে যায়। **কোনো কোড পরিবর্তন
+লাগেনি এই ধাপে, শুধু অডিট।**
+
+`productsById` (গ্লোবাল Zustand Map, App.jsx লাইন ৩৮৯) সম্পূর্ণ `products` state থেকেই
+derive হয় (subscribe প্যাটার্ন) — আলাদা কোনো write path না, divergence-ঝুঁকি নেই।
+
+**উপসংহার**: write path single-choke-point ডিজাইন সঠিকভাবে বজায় আছে, ধাপ ৩-এর জন্য প্রস্তুত।
+
 ### ধাপ ৩ — read path: বাকি যে ২টা ব্লকার (SQLITE_MIGRATION_LOG.md এন্ট্রি ৭২-এ চিহ্নিত)
 - `SmartBusinessMgmt` return/void — billing-adjacent, আলাদা সিদ্ধান্ত দরকার
 - POS নিজস্ব বাকি অংশ (`sbm_pos_ondemand_cart`, এন্ট্রি ৬৮) — real-device টেস্ট বাকি

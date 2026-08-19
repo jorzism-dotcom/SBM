@@ -51,16 +51,18 @@ JS fallback সরিয়ে SQLite-নির্ভর হয়ে যাও�
 এরর নেই, কিন্তু এটা রানটাইম/টেস্ট-লেভেল ভেরিফিকেশন না।
 
 **⚠️ পরের সেশনে প্রথম কাজ**:
-- network থাকলে `npm install` → `npm test`/lint/typecheck/build দিয়ে পুরোপুরি ভেরিফাই
-- real-device-এ (SQLite চালু থাকা টেস্ট শপে) নতুন "গভীর রিকনসিলিয়েশন চেক" বাটন চালিয়ে
-  বর্তমান ড্রিফটের প্রকৃত মাত্রা দেখা
-- এরপর PRODUCTS_SQLITE_PRIMARY_PHASE_PLAN.md-এর ধাপ ২ (write-path পূর্ণ অডিট)
+- ✅ ~~real-device-এ রিকনসিলিয়েশন চেক~~ — সম্পন্ন, ০ ড্রিফট পাওয়া গেছে (উপরে দেখুন)
+- ✅ ~~write path অডিট (২২টা setProducts কল-সাইট)~~ — সম্পন্ন, কোনো bypass নেই, কোড পরিবর্তন লাগেনি (দেখুন PRODUCTS_SQLITE_PRIMARY_PHASE_PLAN.md ধাপ ২)
+- network থাকলে `npm install` → `npm test`/lint/typecheck/build দিয়ে পুরোপুরি ভেরিফাই (এখনো বাকি)
+- এরপর ধাপ ৩: `SmartBusinessMgmt` return/void সিদ্ধান্ত + `sbm_pos_ondemand_cart` real-device টেস্ট — এই দুটোই এখন আসল বাকি ব্লকার, boot থেকে products সরানোর আগে
 
 **📁 এই সেশনে যেসব ফাইল বদলেছে**:
 - `src/App.jsx` — `dualWriteSqlite()` reliability ফিক্স (write-সাফল্যে prevMapRef advance), নতুন `_dualWriteFailureStats`/`getDualWriteFailureStats()`, `reconcileStore` ইম্পোর্ট, `SqliteMigrationCard`-এ নতুন রিকনসিলিয়েশন বাটন+UI
 - `src/db/DataStore.js` — নতুন `reconcileStore()` ফাংশন
 - `PRODUCTS_SQLITE_PRIMARY_PHASE_PLAN.md` — **নতুন ফাইল**, এই ফেজের সম্পূর্ণ প্ল্যান
 - `SQLITE_MIGRATION_LOG.md` — এন্ট্রি ৭৩ যোগ
+
+**✅ আপডেট (একই দিনে, ব্যবহারকারীর real-device টেস্ট)**: লাইভ pharmacy দোকানে (২২৩৭ products, ১৭ customers, ৬৪৫ invoices, dual-write আগে থেকেই চালু ছিল) নতুন "Products গভীর রিকনসিলিয়েশন চেক" বাটন চালিয়ে দেখা গেছে — **০ ড্রিফট**: SQLite-এ নেই/deleted 0, array-তে নেই 0, কনটেন্ট মিসম্যাচ 0, ২২৩৭/২২৩৭ সম্পূর্ণ মিলেছে। মানে এই দোকানে dual-write বাস্তবেই নির্ভরযোগ্যভাবে কাজ করছিল (আগের সেশনের আশঙ্কা এই নির্দিষ্ট শপে বাস্তবায়িত হয়নি), আর এই সেশনের reliability ফিক্স যোগ করার পরও resumable migration/count-verify/backfill সব আগের মতোই clean (২২৩৫/২২৩৫, ১৭/১৭, ৬২৭/৬২৭ done) — কোনো রিগ্রেশন হয়নি। **ধাপ ১ এখন real-device-ভেরিফায়েড, সম্পন্ন ধরা যায়।**
 
 ---
 
