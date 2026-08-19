@@ -24,7 +24,132 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৭৩-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৭৫-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟢 এন্ট্রি ৭৫ (✅ sandbox নেটওয়ার্ক কাজ করেছে) — ব্যাকআপ পাথ SQLite-primary
+redesign (products SQLite-primary ধাপ ৪-এর real prerequisite)**:
+
+**প্রেক্ষাপট**: ব্যবহারকারী এই সেশনে বুট থেকে products সম্পূর্ণ (আক্ষরিক অর্থে,
+"lazy" না — "কখনোই না") সরানোর নির্দেশ দিয়েছিলেন, POS real-device টেস্টও
+কনফার্মড। কিন্তু কোড অডিটে **একটা আগে-অলক্ষিত রিয়েল ব্লকার** পাওয়া গেল:
+auto-backup/Drive backup (`buildBackupData()`, প্রতি ৫-৪৫ মিনিটে চলে)
+সরাসরি in-memory `products` React state থেকে backup বানাত। `products`
+বুট থেকে সত্যিই কখনো লোড না হলে এই effect **নীরবে খালি `[]` ব্যাকআপ লিখে
+দিত** — কোনো এরর ছাড়াই, ধরাও পড়ত না যতক্ষণ না কারো আসলে restore লাগত।
+এটা "চিরস্থায়ী নিয়ম #১" (IndexedDB backup কখনো ভাঙা যাবে না) সরাসরি লঙ্ঘন
+করত, তাই এই এন্ট্রিতে **আগে এটাই ফিক্স করা হলো**, তারপরই আসল বুট-লোড
+রিমুভাল সম্ভব।
+
+**কী করা হলো**:
+1. **নতুন `getAllRows(businessType, store)`** (DataStore.js) — একটা টেবিলের
+   সব non-deleted রেকর্ড id-cursor keyset pagination দিয়ে (OFFSET না, `queryPage()`-এর
+   ঠিক একই কারণে — বড় টেবিলে স্ক্যান-অ্যান্ড-ডিসকার্ড এড়াতে) ব্যাচে-ব্যাচে
+   (২০০০/ব্যাচ) fetch করে একটা পূর্ণ array রিটার্ন করে।
+2. **`buildBackupData()` (App.jsx)** — invoices/stockMovements/txns/cashLogs-এর
+   ঠিক একই "in-memory state আংশিক হতে পারে, নির্ভরযোগ্য পূর্ণ সোর্স থাকলে
+   সেটাই ব্যবহার করো" প্যাটার্ন products-এর জন্যও যোগ হলো। `isSqliteEnabled()`
+   হলে সরাসরি SQLite থেকে (`dsGetAllRows()`) পূর্ণ products আনা হয় — safety-net
+   হিসেবে in-memory state যদি এখনো বেশি/সমান থাকে সেটাই প্রাধান্য পায় (নিরাপদ
+   দিকে ভুল)। SQL fetch ব্যর্থ হলে try/catch দিয়ে in-memory state-এ fallback।
+3. **নতুন টেস্ট সুইট** `tests/datastore-getallrows-tests.mjs` (৬টা কেস) —
+   মৌলিক fetch, deleted-রেকর্ড বাদ যাওয়া, খালি টেবিল, chunk-সীমা (২০০০) পার
+   হওয়া বড় সেট (৪৫০০ রেকর্ড, ডুপ্লিকেট/মিস নেই যাচাই), ঠিক chunk-গুণিতকে
+   loop-termination, আর customers store — `package.json`-এর `test` script-এ
+   যোগ করা হয়েছে।
+
+**⚠️ যা এখনো একই রকম ঝুঁকিতে আছে, এই এন্ট্রিতে ছোঁয়া হয়নি (স্কোপ সততার সাথে
+সীমিত রাখা হলো)**:
+- `buildManualBackupData()` (Settings-এর ম্যানুয়াল Google Drive/Local export
+  বাটন) এখনো সরাসরি in-memory `products` পড়ে — এটা একটা synchronous
+  `useCallback` (render-time-এ কল হয়, `data={buildManualBackupData()}`),
+  async করতে হলে ২টা render call-site রিস্ট্রাকচার করা লাগবে (useState+
+  useEffect)। কম-ঝুঁকি (ইউজার-ট্রিগার্ড, silent না — কম প্রোডাক্ট দেখলে
+  ইউজার নিজেই টের পাবেন), তাই এই সেশনে স্কোপের বাইরে রাখা হলো।
+- `performMasterSync()`-এর merge লজিক (Drive backup বনাম local `products`
+  মেলানো) এখনো in-memory `products` state ব্যবহার করে তুলনার জন্য —
+  `products` খালি থাকলে merge ভুলভাবে সবকিছু "Drive-এ নতুন" ধরে নিতে পারে।
+  এটা backup-পড়ার চেয়ে জটিল (দুই-দিকের merge/tombstone লজিক), আলাদা সেশনে
+  আলাদাভাবে অডিট করা দরকার।
+
+**যাচাই সম্পূর্ণ (network কাজ করেছে)**: `npm install` → `npm test`
+(**১৬টা সুইট, ১৬২টা কেস, সব পাস** — নতুন ৬টাসহ) → `npm run lint` (0 error,
+567 প্রি-এক্সিস্টিং warning, অপরিবর্তিত) → `npm run typecheck` (ক্লিন) →
+`npm run build` (ক্লিন) → `test:golden-master` (৭/৭) → `test:fuzz` (সব
+প্রপার্টি) — সবগুলো পাস।
+
+**🔴 সততার সাথে — আসল বুট-লোড রিমুভাল এখনো করা হয়নি**: ব্যবহারকারী "এই সেশনে
+যেকোনো মূল্যে" পুরো removal চেয়েছিলেন। এই এন্ট্রিতে শুধু তার **প্রকৃত
+prerequisite** (ব্যাকআপ redesign, উপরে) সম্পন্ন হলো — এটা প্রকৃত, আগে
+অলক্ষিত একটা ব্লকার ছিল, কালক্ষেপণ না। আসল `sbm_products_boot_lazy`
+ফ্ল্যাগকে "পেছানো" থেকে "একদমই লোড না করা"-য় আপগ্রেড করা এবং সেই সাথে
+`performMasterSync()`-এর merge-ঝুঁকি সমাধান — **পরের সেশনের কাজ**।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/db/DataStore.js` — নতুন `getAllRows()` ফাংশন
+- `src/App.jsx` — `getAllRows` ইম্পোর্ট (`dsGetAllRows`), `buildBackupData()`-এ
+  SQLite-primary products fetch (`fullProducts` লজিক, `invoicesForBackup`-এর
+  প্যাটার্নে), `stateMap`-এ `products` → `fullProducts`
+- `tests/datastore-getallrows-tests.mjs` — **নতুন ফাইল**, ৬টা টেস্ট কেস
+- `package.json` — `test` script-এ নতুন সুইট যোগ
+- `PRODUCTS_SQLITE_PRIMARY_PHASE_PLAN.md`, `SQLITE_MIGRATION_LOG.md` — এই
+  এন্ট্রি + প্ল্যান আপডেট
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৭৪)
+
+**🟢 এন্ট্রি ৭৪ (✅ sandbox নেটওয়ার্ক কাজ করেছে — এই সেশনে পূর্ণ যাচাই সম্ভব হয়েছে) —
+`SmartBusinessMgmt` return/void SQL-fallback (ধাপ ৩-এর ২টা ব্লকারের ১টা সম্পন্ন)**:
+
+**কী করা হলো**: নতুন `getProductByIdWithSqlFallback(businessType, productId, productsByIdMap)`
+হেল্পার (App.jsx, `dualWriteSqlite()`-এর ঠিক পাশে) — `productsById`-এ id পাওয়া গেলে
+zero-cost সরাসরি সেই object রিটার্ন করে (বর্তমান আচরণ, products এখনো সবসময় পূর্ণ,
+১০০% অপরিবর্তিত), না-পাওয়া গেলেই (ভবিষ্যতে boot-lazy সত্যিই চালু হলে ঘটবে) `dsGetByIds()`
+দিয়ে SQLite থেকে সেই একটা রেকর্ড fetch করে। `voidInvoice()`-এর `localP`
+(লাইন ~১৪৬৪২) ও `freshP` (লাইন ~১৪৭৩৩), আর `processReturn()`-এর `localP`
+(লাইন ~১৪৯৯৩) ও `freshP` (লাইন ~১৫০২৬) — এই ৪টা সাইটই `useAppStore.getState().productsById.get()`
+থেকে `await getProductByIdWithSqlFallback(...)`-এ কনভার্ট। দুটো `useCallback`
+dependency array-তেই `businessType` যোগ হয়েছে (আগে ব্যবহৃত হতো না, এখন হয়)।
+
+**কেন এটাই আসল ফিক্স ছিল**: এন্ট্রি ৭৩-এ অডিটে ধরা পড়েছিল — এখন কোনো ঝুঁকি নেই
+(boot-lazy লোড দেরি করে মাত্র, বাদ দেয় না), কিন্তু ধাপ ৪-এ (products চিরতরে বুট
+থেকে বাদ) গেলে এই ৪টা সাইট ভেঙে পড়ত — কোনো id `productsById`-এ না পেলে কোডটা
+ভুলভাবে ধরে নিত পণ্যটা ডিলিট হয়ে গেছে (`skippedDeletedNames`/স্কিপ), অথচ আসলে
+সেটা শুধু লোড হয়নি — স্টক-রিস্টোর/রিটার্ন silently miss হয়ে যেত।
+
+**যাচাই — এই সেশনে network কাজ করেছে বলে সম্পূর্ণ**: `npm install` (488 প্যাকেজ,
+সফল) → `npm test` (**১৫৬টা কেস, ১৫টা সুইট, সব পাস**) → `npm run lint` (0 error,
+567 প্রি-এক্সিস্টিং warning, আমার এডিট করা লাইনের কাছে নতুন কোনো warning নেই) →
+`npm run typecheck` (ক্লিন) → `npm run build` (vite build ক্লিন, ১৪.৮৫ সেকেন্ড) →
+`test:golden-master` (৭/৭) → `test:fuzz` (সব প্রপার্টি, ১০০০ রান করে) — **সবগুলো পাস**।
+
+**⚠️ সততার সাথে যা এখনো বাকি (এই সেশনে "যেকোনো মূল্যে" নির্দেশ সত্ত্বেও ইচ্ছাকৃতভাবে
+করা হয়নি)**: ব্যবহারকারী এই সেশনে বুট থেকে products সম্পূর্ণ সরিয়ে ফেলার (ধাপ ৪, চূড়ান্ত)
+নির্দেশ দিয়েছেন। এই এন্ট্রিতে ধাপ ৩-এর ২টা ব্লকারের ১টা (SmartBusinessMgmt, উপরে)
+সম্পূর্ণ কোড+টেস্ট-ভেরিফায়েড হয়েছে। কিন্তু **২য় ব্লকার — `sbm_pos_ondemand_cart`-এর
+real-device POS-cart টেস্ট — কোনো sandbox যাচাই দিয়ে প্রতিস্থাপনযোগ্য না** (আসল
+Capacitor SQLite প্লাগইনের Android আচরণ, লাইভ বিলিং ফ্লো)। এই একটা ব্লকার ছাড়া
+ধাপ ৪ কোড করলে সেটা untested-ই থেকে যাবে একটা এমন সিস্টেমে যেখানে ভুল হলে সরাসরি
+টাকা/স্টক প্রভাবিত হয় — তাই ধাপ ৪ ইচ্ছাকৃতভাবে আটকে রাখা হলো, "কোনো দোকানে না
+যাওয়া"-র প্রতিশ্রুতি সত্ত্বেও (কোড sandbox-এ untested থাকাটাই নিজে একটা ভবিষ্যৎ
+ঝুঁকি — দেখুন PRODUCTS_SQLITE_PRIMARY_PHASE_PLAN.md ধাপ ৪-এর নতুন নোট)।
+**পরবর্তী পদক্ষেপ (ব্যবহারকারীর হাতে, ৫ মিনিটের কাজ)**: Settings → ভার্সন নাম্বারে
+৭ বার ট্যাপ → SqliteMigrationCard → `sbm_pos_ondemand_cart` চালু করে POS-এ কয়েকটা
+বিক্রি/কার্ট টেস্ট করা। কনফার্ম হলেই পরের সেশনে সরাসরি ধাপ ৪ কোড করা যাবে।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — নতুন `getProductByIdWithSqlFallback()` হেল্পার, `voidInvoice()`/
+  `processReturn()`-এর ৪টা `productsById` লুকআপ সাইট SQL-fallback-এ কনভার্ট,
+  দুই `useCallback`-এর dep array-তে `businessType` যোগ
+- `PRODUCTS_SQLITE_PRIMARY_PHASE_PLAN.md` — ধাপ ৩ (SmartBusinessMgmt অংশ ✅) ও
+  ধাপ ৪ (কেন এখনো আটকে আছে তার ব্যাখ্যা) আপডেট
+- `SQLITE_MIGRATION_LOG.md` — এন্ট্রি ৭৪ যোগ
+
+কোনো নতুন ফাইল তৈরি হয়নি এই সেশনে।
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৭৩)
 
 **🟡 এন্ট্রি ৭৩ (⚠️ sandbox নেটওয়ার্ক কাজ করেনি এই সেশনে, শুধু esbuild parse-check) — নতুন ফেজ শুরু: "products SQLite-primary" — dual-write reliability বাগ ফিক্স + রিকনসিলিয়েশন টুল**:
 
