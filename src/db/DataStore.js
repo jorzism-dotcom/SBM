@@ -763,6 +763,42 @@ export async function getByIds(businessType, store, ids) {
   return uniqueIds.map((id) => byId.get(id)).filter(Boolean);
 }
 
+// 🆕 এন্ট্রি ৭৫ (products SQLite-primary, ধাপ ৪ প্রস্তুতি — ব্যাকআপ পাথ redesign) —
+// পুরো টেবিলের সব (non-deleted) রেকর্ড একসাথে ফেরত দেয়, `getByIds()`-এর মতোই
+// chunked (মেমরিতে সব রেজাল্ট জমা করেই রিটার্ন, কিন্তু SQL কোয়েরি নিজে batch-এ
+// চলে, খুব বড় টেবিলেও একটামাত্র statement-এ আটকে থাকে না)।
+//
+// **কেন দরকার**: `buildBackupData()` (App.jsx) IndexedDB/Drive/snapshot ব্যাকআপের
+// জন্য এতদিন সরাসরি in-memory `products` React state থেকে পড়ত। `sbm_products_boot_lazy`
+// ফ্ল্যাগ ভবিষ্যতে "সত্যিকারভাবে কখনো পুরোপুরি লোড না করা"-য় আপগ্রেড হলে সেই
+// state আর কখনো সম্পূর্ণ নাও থাকতে পারে — তখন backup নীরবে অসম্পূর্ণ/খালি হয়ে
+// যেত। এই ফাংশন backup-কে products state-নির্ভরতা থেকে মুক্ত করে — SQLite-ই
+// (dual-write reconcile করে ইতিমধ্যে প্রমাণিত সোর্স, দেখুন entry ৭৩) সরাসরি সোর্স
+// হিসেবে ব্যবহার করা যায়, products in-memory-তে যতটুকুই থাকুক না কেন।
+const GET_ALL_ROWS_CHUNK_SIZE = 2000;
+
+export async function getAllRows(businessType, store) {
+  const db = await getDb(businessType);
+  const rows = [];
+  let lastId = "";
+  // 🔴 কেন id-cursor keyset (OFFSET না): queryPage()-এর ঠিক একই কারণ — বড়
+  // টেবিলে (১ লাখ+ products) OFFSET স্ক্যান-অ্যান্ড-ডিসকার্ড ধীর হয়ে যায়।
+  // id-তে ইতিমধ্যে PRIMARY KEY ইনডেক্স আছে (schema.sql), তাই এক্সট্রা ইনডেক্স
+  // লাগে না।
+  for (;;) {
+    const res = await db.query(
+      `SELECT data, id FROM ${store} WHERE deleted = 0 AND id > ? ORDER BY id ASC LIMIT ?`,
+      [lastId, GET_ALL_ROWS_CHUNK_SIZE]
+    );
+    const batch = res.values || [];
+    if (batch.length === 0) break;
+    for (const row of batch) rows.push(JSON.parse(row.data));
+    lastId = String(batch[batch.length - 1].id);
+    if (batch.length < GET_ALL_ROWS_CHUNK_SIZE) break;
+  }
+  return rows;
+}
+
 export async function remove(businessType, store, id) {
   const db = await getDb(businessType);
   await db.run(`DELETE FROM ${store} WHERE id = ?`, [String(id)]);
