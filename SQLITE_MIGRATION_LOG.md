@@ -24,7 +24,169 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৬৭-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৭২-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟢 এন্ট্রি ৭২ (✅ sandbox নেটওয়ার্ক কাজ করেছে) — `BatchSyncTool`-এর `riskProducts` FULL-SCAN কনভার্ট, নতুন টেস্ট-সহ**:
+
+**কী করা হলো**:
+1. **`src/db/DataStore.js`-এ নতুন `getRiskProducts(businessType)`** — `getInventoryList()`-এর ঠিক একই প্যাটার্নে, indexed `cost_price`/`price` কলামে SQL: `WHERE deleted=0 AND product_type!='service' AND cost_price>0 AND price>0 AND price<=cost_price ORDER BY (price-cost_price) ASC`।
+2. **নতুন `useRiskProducts(products, businessType)` হুক** (App.jsx) — `useKnownCategories()`-এর ঠিক একই SQL-primary/JS-fallback প্যাটার্ন — SQL চালু থাকলে `dsGetRiskProducts()`, নাহলে আগের JS ফুল-স্ক্যান হুবহু ফলব্যাক হিসেবে।
+3. **`BatchSyncTool`-এ `riskProducts`** এখন এই হুক থেকে — শর্ত/সর্ট-অর্ডার অপরিবর্তিত।
+4. **নতুন টেস্ট**: `tests/datastore-inventory-tests.mjs`-এ ৪টা কেস যোগ (negative/zero margin মেলে, costPrice/price শূন্য বাদ যায়, productType==='service' বাদ যায়, margin ascending সর্ট) — `npm test`-এ ইতিমধ্যে অন্তর্ভুক্ত (আলাদা কিছু যোগ করতে হয়নি package.json-এ)।
+
+**যাচাই সম্পূর্ণ**: `npm install` (নেটওয়ার্ক কাজ করেছে) → `npm test` সব সুইট পাস, ইনভেন্টরি সুইট ১৮→২২ কেস ✅ → `npm run lint` 0 error (৫৬৬ প্রি-এক্সিস্টিং warning, অপরিবর্তিত) ✅ → `npm run typecheck` ক্লিন ✅ → `npm run build` ক্লিন ✅ → `test:golden-master` (৭/৭) ও `test:fuzz` (সব প্রপার্টি) পাস ✅।
+
+**🎉 এই এন্ট্রির পর — POS-বহির্ভূত অংশের সব পরিকল্পিত কাজ শেষ**: Dashboard/Products/BatchSyncTool/রিপোর্ট — সবকটাতে `products`-নির্ভর FULL-SCAN/VISIBLE-ID সাইট হয় SQL-কনভার্টেড, নয়তো ইতিমধ্যে প্রমাণিত ফলব্যাক-প্যাটার্নে ছিল।
+
+**⚠️ যা এখনো বাকি (এখন এই ২টাই মূল বাকি কাজ)**:
+   - `SmartBusinessMgmt` return/void — POS-সমতুল্য ঝুঁকি (স্টক/ক্যাশ প্রভাবিত করে), আলাদা সিদ্ধান্ত দরকার
+   - POS-এর নিজস্ব বাকি অংশ (`sbm_pos_ondemand_cart`, এন্ট্রি ৬৮) — real-device টেস্ট এখনো বাকি, POS-এ আরও এগোনোর পূর্বশর্ত
+   - এই দুটো ছাড়া `products`-কে বুট থেকে আসলে মেমরি থেকে বাদ দেওয়া (আসল স্টেপ ৭) সম্ভব না — POS-ই একমাত্র বাকি ব্লকার এখন
+
+**পরের সেশনে করণীয়**: `sbm_pos_ondemand_cart` real-device টেস্ট (ব্যবহারকারীর হাতে) এবং/অথবা `SmartBusinessMgmt` return/void নিয়ে আলাদা আলোচনা — sandbox-এ POS ছুঁয়ে-করার-মতো নিরাপদ কাজ আর নেই।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/db/DataStore.js` — নতুন `getRiskProducts()` ফাংশন
+- `src/App.jsx` — নতুন `useRiskProducts()` হুক (ইম্পোর্ট + সংজ্ঞা), `BatchSyncTool`-এ `riskProducts` কনভার্ট
+- `tests/datastore-inventory-tests.mjs` — `getRiskProducts` ইম্পোর্ট + ৪টা নতুন টেস্ট কেস
+- `SQLITE_MIGRATION_LOG.md` — এন্ট্রি ৭২ যোগ
+
+কোনো নতুন ফাইল তৈরি হয়নি এই সেশনে।
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৭১)
+
+**🟢 এন্ট্রি ৭১ (✅ sandbox নেটওয়ার্ক কাজ করেছে) — `Products` main list অডিট + কনভার্শন — সুখবর, ৯টা সাইট আসলে বেশিরভাগই আগে থেকেই সম্পূর্ণ ছিল**:
+
+`Products` কম্পোনেন্টের ৯টা `products.X()` সাইট এক-এক করে অডিট করে দেখা গেল:
+1. **`prodBatchMap`** (FIFO ব্যাচ-ব্যাজ) — পুরো `products` অ্যারে স্ক্যান করে একটা Map বানাত, কিন্তু রেন্ডার-সাইটে সবসময় একটামাত্র নির্দিষ্ট `p`-এর জন্যই পড়া হতো। যেহেতু `getActiveBatch(p)` একটা pure ফাংশন (single product নেয়), পুরো Map প্রি-কম্পিউট করার দরকারই ছিল না — **পুরো useMemo সরিয়ে রেন্ডার-সাইটে সরাসরি `getActiveBatch(p)` কল** করা হচ্ছে এখন। ফলাফল ১০০% অভিন্ন, `products`-নির্ভরতা সম্পূর্ণ বাদ।
+2. **`lowStock`/`outOfStock`** — পুরো ফাইলে গ্রেপ করে যাচাই করা হলো, এই দুটো ভ্যারিয়েবল **কোথাও ব্যবহৃতই হতো না** (dead code, সম্ভবত আগের কোনো রিফ্যাক্টরের অবশিষ্টাংশ) — সরিয়ে ফেলা হলো, নতুন SQL ডিজাইনের দরকার নেই।
+3. **বাকি ৬টা সাইট ইতিমধ্যেই সঠিক প্যাটার্নে** — `productsByIdMap`/`productsWithSerialAll` (POS-এর মতোই fast-path source + JS-fallback base, ইচ্ছাকৃতভাবে products-নির্ভর), FTS-narrowing pool (এন্ট্রি ৪৪-এর SQL-primary/JS-fallback, সম্পূর্ণ), dup-name-check (এন্ট্রি ৪৪, সম্পূর্ণ), `peProdByIds`/`editProdByIds` (এন্ট্রি ৫৫-৫৬, সম্পূর্ণ) — এগুলোতে নতুন কাজের প্রয়োজন নেই।
+
+**ফলাফল**: `Products` main list ধারণার চেয়ে অনেক কম কাজ বাকি ছিল — এই এন্ট্রিতেই কার্যত সম্পূর্ণ (শুধু ২টা প্রকৃত পরিবর্তন লাগল, ৬টা আগে থেকেই ঠিক ছিল)।
+
+**যাচাই সম্পূর্ণ**: `npm install` (নেটওয়ার্ক কাজ করেছে) → `npm test` সব সুইট পাস ✅ → `npm run lint` 0 error (৫৬৬ প্রি-এক্সিস্টিং warning — dead-code সরানোয় ৫৬৮→৫৬৬, নতুন সমস্যা না) ✅ → `npm run typecheck` ক্লিন ✅ → `npm run build` ক্লিন ✅ → `test:golden-master` (৭/৭) ও `test:fuzz` (সব প্রপার্টি) পাস ✅।
+
+**⚠️ যা এখনো বাকি সামগ্রিকভাবে**:
+   - `BatchSyncTool`-এর `riskProducts` (genuine FULL-SCAN, নতুন SQL কোয়েরি লাগবে, কম-গুরুত্বপূর্ণ ডায়াগনস্টিক টুল)
+   - `SmartBusinessMgmt` return/void — POS-সমতুল্য ঝুঁকি, আলাদা সিদ্ধান্ত দরকার
+   - `sbm_pos_ondemand_cart` (এন্ট্রি ৬৮) ও POS-এর বাকি অংশ — real-device টেস্ট এখনো বাকি
+   - এই সব হলেই `products`-কে বুট থেকে আসলে মেমরি থেকে বাদ দেওয়া (আসল স্টেপ ৭, মেমরি-সাশ্রয়) বিবেচনা করা যাবে
+
+**পরের সেশনে করণীয় (গুরুত্বের ক্রমে)**:
+1. `sbm_pos_ondemand_cart` real-device টেস্ট — সবচেয়ে বড় বাকি ব্লকার
+2. `SmartBusinessMgmt` return/void নিয়ে ব্যবহারকারীর সাথে আলাদা আলোচনা (ফ্ল্যাগ-গার্ডেড করব কিনা)
+3. `BatchSyncTool`-এর `riskProducts` (কম-গুরুত্বপূর্ণ, সময় থাকলে)
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — `Products` কম্পোনেন্টে `prodBatchMap` সরিয়ে ইনলাইন `getActiveBatch(p)`, dead-code `lowStock`/`outOfStock` অপসারণ
+- `SQLITE_MIGRATION_LOG.md` — এন্ট্রি ৭১ যোগ
+
+কোনো নতুন ফাইল তৈরি হয়নি এই সেশনে।
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৭০)
+
+**🟢 এন্ট্রি ৭০ (✅ sandbox নেটওয়ার্ক কাজ করেছে) — Dashboard ক্রয়-অর্ডার ফ্লো কনভার্ট + স্কোপ সংশোধন (ViewerDashboardScreen/BatchSyncTool)**:
+
+**যা করা হলো**:
+1. **Dashboard ক্রয়-অর্ডার ফ্লো**: `allSelectedItems` (invModal==='order...' ব্লকে, আগে পুরো `products` অ্যারে ফিল্টার করত) — এখন `orderQtysAll`-এর id-সেট নিয়ে `useProductsByIds()`, hook টপ-লেভেলে (Rules of Hooks মেনে, কন্ডিশনাল ব্লকের বাইরে) কল করা, ইতিমধ্যে-বিদ্যমান `_globalProductsById` (এন্ট্রি ৬৪-এর write-through Map) fast-path হিসেবে পুনর্ব্যবহার। ঝুঁকি কম — শুধু ক্রয়-অর্ডার তৈরির UI, স্টক/বিলিং সরাসরি লেখে না।
+
+**🔴 গুরুত্বপূর্ণ স্কোপ-সংশোধন (আগের এন্ট্রির "বাকি" তালিকায় ভুল ছিল)**:
+2. **`ViewerDashboardScreen` আসলে এই মাইগ্রেশনের অংশই না** — কোড দেখে ধরা পড়ল এটা সম্পূর্ণ আলাদা, offline "ভিউয়ার মোড" (রিমোট ব্যাকআপ-স্ন্যাপশট দেখার জন্য, কোনো FSS.init()/Firebase কানেকশন নেই এই ডিভাইসে)। এর `products` একটা ছোট, ইতিমধ্যে-সম্পূর্ণ ব্যাকআপ blob (SQLite ব্যাকড না) — কোনো লাইভ দোকানের বড় ক্যাটালগ না, তাই boot-lazy/products-removal-এর সাথে এর কোনো সম্পর্ক নেই। **এটা এখন থেকে বাকি-কাজের তালিকা থেকে বাদ**।
+3. **`BatchSyncTool`-এর সহজ অংশ ইতিমধ্যেই সম্পূর্ণ (এন্ট্রি ৫৬-এ)** — `batchProdByIds`/`useProductsByIds()` আগে থেকেই wired। শুধু `riskProducts` (লস-ঝুঁকি পণ্য, `(products||[]).filter(...)`, মাল্টি-লাইন ফরম্যাটের কারণে আগের গ্রেপে ধরা পড়েনি) বাকি আছে — এটা genuine FULL-SCAN (কোন পণ্যগুলো ঝুঁকিপূর্ণ তা *খুঁজে বের করতে হয়*, বাউন্ডেড id-সেট দিয়ে সম্ভব না) — একটা নতুন SQL কোয়েরি ডিজাইন লাগবে (ক্যাটাগরি ③-এর মতো), এই এন্ট্রিতে করা হয়নি (কম-গুরুত্বপূর্ণ, এটা একটা ডায়াগনস্টিক/অ্যাডমিন টুল, রেগুলার ব্যবহারের স্ক্রিন না)।
+
+**যাচাই সম্পূর্ণ**: `npm install` (নেটওয়ার্ক কাজ করেছে) → `npm test` সব সুইট পাস ✅ → `npm run lint` 0 error (৫৬৮ প্রি-এক্সিস্টিং warning, অপরিবর্তিত) ✅ → `npm run typecheck` ক্লিন ✅ → `npm run build` ক্লিন ✅ → `test:golden-master` (৭/৭) ও `test:fuzz` (সব প্রপার্টি) পাস ✅।
+
+**⚠️ যা এখনো বাকি (সংশোধিত তালিকা)**:
+   - `Products` main list (সবচেয়ে বড়, ৯টা সাইট) — এখনো বাকি, বড় কাজ
+   - `BatchSyncTool`-এর `riskProducts` (নতুন SQL কোয়েরি লাগবে, কম-গুরুত্বপূর্ণ)
+   - `SmartBusinessMgmt` return/void — POS-এর সমতুল্য ঝুঁকি, আলাদা সিদ্ধান্ত দরকার
+   - `sbm_pos_ondemand_cart` (এন্ট্রি ৬৮) real-device টেস্ট এখনো বাকি
+   - Dashboard-এর `custOrderProductPool` — ইতিমধ্যেই SQL-primary/JS-fallback প্যাটার্নে সম্পূর্ণ (এন্ট্রি ৬৫), নতুন কাজ না
+
+**পরের সেশনে করণীয়**: `Products` main list নিয়ে আলাদা সেশন, অথবা `sbm_pos_ondemand_cart` real-device টেস্ট আগে সেরে ফেলা।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — Dashboard-এ `orderQtysAllIds`/`getPOSelectedProduct` (নতুন, টপ-লেভেল hook কল) যোগ, `allSelectedItems` কনভার্ট
+- `SQLITE_MIGRATION_LOG.md` — এন্ট্রি ৭০ যোগ
+
+কোনো নতুন ফাইল তৈরি হয়নি এই সেশনে।
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৬৯)
+
+**🟢 এন্ট্রি ৬৯ (✅ sandbox নেটওয়ার্ক কাজ করেছে) — POS বাদে, সবচেয়ে কম-ঝুঁকির (read-only রিপোর্ট) অংশ কনভার্ট**: ব্যবহারকারী `sbm_pos_ondemand_cart` (এন্ট্রি ৬৮) এখনো real-device-এ টেস্ট করেননি বলে জানালেন, আর POS-এ আর এগোতে চাইলেন না — এর বাইরে বাকি কাজ করতে বললেন। ৩৩টা বাকি full-array সাইট অডিট করে দেখা গেল সেগুলো ৭টা ভিন্ন কম্পোনেন্টে ছড়ানো (SmartBusinessMgmt return/void, ViewerDashboardScreen, AnalyticsSection_, ProfitStatementCard, Dashboard purchase-order flow, Products main list [৯টা সাইট], BatchSyncTool) — ঝুঁকির মাত্রা ভিন্ন ভিন্ন। এই সেশনে **সবচেয়ে নিরাপদ ক্যাটাগরি (read-only রিপোর্ট, কোনো স্টক/ক্যাশ লেখা হয় না)** দিয়ে শুরু হলো।
+
+**কী করা হলো (কোনো নতুন ফ্ল্যাগ ছাড়াই — কারণ ঝুঁকি এতই কম যে flag-gate করার দরকার নেই)**:
+1. **`ProfitStatementCard`** (লাভ-ক্ষতি বিবরণী): `prodMap` (পুরো `products` থেকে) সরিয়ে বাছাই-করা তারিখ-রেঞ্জের ইনভয়েস-আইটেম থেকে বের করা বাউন্ডেড id-সেট (`pnlProductIds`) নিয়ে `useProductsByIds()` — id in-memory `products`-এ থাকলে (বর্তমানে সবসময়) সিঙ্ক্রোনাস, ফলাফল ১০০% অপরিবর্তিত।
+2. **`AnalyticsSection_`** (Home page চার্ট): একই প্যাটার্ন — `chartData`-এর cost-lookup বাউন্ডেড id-সেট দিয়ে। name-fallback (`products.find(pr=>pr.name===it.name)`, productId-বিহীন পুরনো আইটেমের বিরল edge-case) ইচ্ছাকৃতভাবে অপরিবর্তিত রাখা হয়েছে — id-ভিত্তিক না বলে `useProductsByIds()`-এ প্রতিস্থাপনযোগ্য না, আর যথেষ্ট বিরল বলে আলাদা name-based SQL ডিজাইনের দরকার নেই এখন।
+3. দুটো কম্পোনেন্টেই `businessType` prop নতুন করে wire করা হয়েছে (caller AIPage_-এ আগে থেকেই ছিল, শুধু pass করা হয়নি) — `useProductsByIds()`-এর SQL-ফলব্যাক পাথ future-ready করতে।
+
+**ঝুঁকি — সবচেয়ে কম**: দুটোই **read-only রিপোর্ট** (P&L statement, Analytics চার্ট) — কোনো স্টক/ক্যাশ/ইনভয়েস লেখা হয় না। সবচেয়ে খারাপ ক্ষেত্রেও ভুল সংখ্যা দেখাবে, সাথে সাথে চোখে পড়বে ও ঠিক করা যাবে — ডেটা করাপশন বা বিক্রি-বন্ধের ঝুঁকি নেই। তাই flag-gate ছাড়াই সরাসরি করা হয়েছে (POS/return-void-এর মতো নয়)।
+
+**⚠️ যা এখনো বাকি (POS বাদে)**:
+   - `SmartBusinessMgmt`-এ return/void লজিক (২টা সাইট) — এটা **billing-adjacent** (স্টক/ক্যাশ প্রভাবিত করে), POS-এর ঠিক একই ঝুঁকি-শ্রেণীর — **এই সেশনে ইচ্ছাকৃতভাবে ছোঁয়া হয়নি**, পরের সেশনে ব্যবহারকারীর সাথে আলাদাভাবে আলোচনা করে সিদ্ধান্ত নেওয়া উচিত (POS-এর সাথে একই আচরণ প্রাপ্য কিনা)
+   - `Products` main list (সবচেয়ে বড়, ৯টা সাইট) — প্রতিদিন ব্যবহৃত ইনভেন্টরি-ম্যানেজমেন্ট স্ক্রিন, ঝুঁকি মাঝারি (write আছে — এডিট/ডিলিট)
+   - `Dashboard`-এর ক্রয়-অর্ডার ফ্লো (২টা সাইট, ২৪৮৭৭/২৪৮৯৬ লাইন এলাকা)
+   - `ViewerDashboardScreen` (২টা সাইট), `BatchSyncTool` (১টা সাইট)
+   - `useKnownCategories`/`useLiveDupProduct`/`useInventoryData`-এর JS-ফলব্যাক শাখা — এগুলো **ইতিমধ্যেই SQL-primary/JS-fallback প্যাটার্নে সম্পূর্ণ**, বাকি `products.X()` কল শুধু নিরাপত্তা-জাল (fallback), নতুন কাজ না — গণনায় ভুল করে অন্তর্ভুক্ত হয়েছিল, এই এন্ট্রিতে স্পষ্ট করা হলো
+   - `sbm_pos_ondemand_cart` (এন্ট্রি ৬৮) real-device টেস্ট এখনো বাকি (অপরিবর্তিত)
+   - সব মিলিয়ে `products`-কে বুট থেকে আসলে মেমরি থেকে বাদ দেওয়া (আসল স্টেপ ৭) এখনো অনেক দূরে — এটা এখনো বহু-সেশনের কাজ, প্রতিটা কম্পোনেন্ট আলাদাভাবে ঝুঁকি-মূল্যায়ন করে এগোতে হবে
+
+**যাচাই সম্পূর্ণ**: `npm install` (নেটওয়ার্ক কাজ করেছে) → `npm test` সব সুইট পাস ✅ → `npm run lint` 0 error (৫৬৮ প্রি-এক্সিস্টিং warning, অপরিবর্তিত) ✅ → `npm run typecheck` ক্লিন ✅ → `npm run build` ক্লিন ✅ → `test:golden-master` (৭/৭) ও `test:fuzz` (সব প্রপার্টি) পাস ✅।
+
+**পরের সেশনে করণীয়**:
+1. `sbm_pos_ondemand_cart` real-device টেস্ট (এন্ট্রি ৬৮, এখনো বাকি)
+2. `Dashboard`-এর ক্রয়-অর্ডার ফ্লো ও `ViewerDashboardScreen`/`BatchSyncTool` (মাঝারি-ঝুঁকি, write আছে কিন্তু বিলিং না) — এগুলো নিয়ে এগোনো যায়
+3. `Products` main list (বড় কাজ, নিজের সেশন)
+4. `SmartBusinessMgmt` return/void — POS-এর মতোই আলাদাভাবে ফ্ল্যাগ-গার্ডেড আলোচনা প্রাপ্য, ব্যবহারকারীকে জিজ্ঞাসা না করে এগোনো উচিত না
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — `ProfitStatementCard`ও `AnalyticsSection_`-এ id-বাউন্ডেড `useProductsByIds()` ওয়্যারিং (নতুন `businessType` prop দুটোতেই), caller (AIPage_)-এ prop pass করা
+- `SQLITE_MIGRATION_LOG.md` — এন্ট্রি ৬৯ যোগ
+
+কোনো নতুন ফাইল তৈরি হয়নি এই সেশনে।
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৬৮)
+
+**🟡 এন্ট্রি ৬৮ (✅ sandbox নেটওয়ার্ক কাজ করেছে) — "products সম্পূর্ণ সরানো" (আসল ৭.৩)-এর POS অংশ শুরু, ফ্ল্যাগ-গার্ডেড, ডিফল্ট বন্ধ**: ব্যবহারকারী POS বিলিং-কার্ট real-device টেস্ট শেষ করার পর "আসল ৭.৩" (products বুট থেকে সম্পূর্ণ সরানো) করতে বললেন। কোড-অডিটে ধরা পড়ল এটা **all-or-nothing** — এখনো `products`-এর পুরো অ্যারের উপর নির্ভরশীল ৩৫টা লাইভ জায়গা আছে (POS SmartInvoiceBuilder-সহ), আর একটাও বাকি থাকলে পুরো অ্যারে মেমরিতে রাখতে হবে। POS বিলিং-কার্ট (৫০০ লাইভ দোকানের রেভিনিউ-ক্রিটিক্যাল পাথ) sandbox-এ real-device ছাড়া blind-convert করা নিরাপদ না — তাই ব্যবহারকারীর সম্মতিতে **নতুন, সম্পূর্ণ স্বাধীন, ডিফল্ট-বন্ধ ফ্ল্যাগের পেছনে** কাজ শুরু হলো (`sbm_products_boot_lazy`-এর থেকে আলাদা)।
+
+**কী করা হলো**:
+1. **নতুন ফ্ল্যাগ `sbm_pos_ondemand_cart`** (DataStore.js-এ `isPosOndemandCartEnabled()`/`setPosOndemandCartEnabled()`, ProductsBootLazyToggle-এর ঠিক একই প্যাটার্নে) — **ডিফল্ট বন্ধ**।
+2. **SmartInvoiceBuilder-এ `productBatchMap`/`invProdMap` ফ্ল্যাগ-গেটেড**: ফ্ল্যাগ বন্ধ থাকলে (ডিফল্ট) আগের মতোই পুরো `products` অ্যারে স্ক্যান — ১০০% অপরিবর্তিত। ফ্ল্যাগ চালু থাকলে — কার্টে-থাকা আইটেম (`items.map(it=>it.productId)`) + গ্রিডে-দৃশ্যমান পণ্য (`gridProducts`) মিলিয়ে একটা বাউন্ডেড id-সেট (`posNeededIds`) বানিয়ে, ইতিমধ্যে-প্রমাণিত `useProductsByIds()` (এন্ট্রি ৪২-৪৩, POS ব্রাউজ-গ্রিডে এন্ট্রি ৪০ থেকেই লাইভ) দিয়ে শুধু সেই id-গুলোর জন্য lookup — id in-memory `products`-এ পাওয়া গেলে সিঙ্ক্রোনাস (SQL কল ছাড়াই), না পাওয়া গেলে (products লেজি/খালি) ব্যাচ-ফেচ।
+3. **⚠️ টাইপ-সেফটি সতর্কতা যা মাথায় রাখা হয়েছে**: `invProdMap.get(it.productId)` কল-সাইটগুলো কোনো `String()` wrapping ছাড়াই কল করে — তাই নতুন কোডে Map-এর key হিসেবে সবসময় resolved product-এর native `p.id` ব্যবহার করা হয়েছে (posNeededIds-এর `String(id)` না) — আগের আচরণের key-টাইপ অবিকল রাখতে।
+4. **Dev panel টগল**: নতুন `PosOndemandCartToggle` কম্পোনেন্ট (লাল/ঝুঁকি-রঙে, `ProductsBootLazyToggle`-এর নিচে) — অন/অফ বাটন + স্পষ্ট সতর্কবার্তা "real-device বিলিং যাচাই ছাড়া কখনো চালু করবেন না"।
+
+**⚠️ যা এখনো বাকি এই ছোট ধাপের পরেও (এখনো `products` মেমরি থেকে সরানো যায়নি)**:
+   - এই ফ্ল্যাগ **real-device-এ কখনো টেস্ট হয়নি** — চালু করে কার্টে আইটেম যোগ, qty +/-, self-use টগল, ব্যাচ/মেয়াদ-সতর্কতা প্রদর্শন, স্টক-ডিডাকশন সব সঠিক থাকছে কিনা যাচাই করা **আসল পরের কাজ**, তারপরই বিবেচনা করা যাবে আরও এগোনো নিরাপদ কিনা
+   - POS-এই আরও বাকি: `productsWithSerial`/`filteredProducts` (সার্চ-ফলব্যাক পাথ, `products` খালি থাকলে ভাঙবে), ক্যাটাগরি-লিস্ট ইনপুট, `productsByIdMap` (browse-এর ভিত্তি) — এগুলো এখনো পুরো `products` অ্যারে-নির্ভর
+   - POS-এর বাইরেও Dashboard/Products main list/Purchase Entry/BatchSyncTool-এ এখনো কিছু পুরো-অ্যারে ব্যবহার আছে (grep-এ মোট ৩৫টা লাইভ জায়গা, এই এন্ট্রিতে POS-এর ২টা (`invProdMap`/`productBatchMap`) কনভার্ট হলো)
+   - যতক্ষণ উপরের যেকোনো একটাও বাকি, `products`-কে বুট থেকে আসলে সরানো (memory-তে না রাখা) সম্ভব না — এটা এখনো বহু-সেশনের কাজ
+
+**যাচাই সম্পূর্ণ**: `npm install` (নেটওয়ার্ক কাজ করেছে) → `npm test` সব সুইট পাস ✅ → `npm run lint` 0 error (৫৬৮ প্রি-এক্সিস্টিং warning — নতুন `PosOndemandCartToggle` কম্পোনেন্টের একই ধরনের false-positive "defined but never used" প্যাটার্নে +১, নতুন সমস্যা না) ✅ → `npm run typecheck` ক্লিন ✅ → `npm run build` ক্লিন ✅ → `test:golden-master` (৭/৭) ও `test:fuzz` (সব প্রপার্টি) পাস ✅।
+
+**পরের সেশনে করণীয় (ক্রমানুসারে)**:
+1. **`sbm_pos_ondemand_cart` real-device-এ চালু করে বিলিং-কার্ট পুঙ্খানুপুঙ্খ টেস্ট** — এটাই এখন আসল ব্লকার, sandbox-এ যাচাই সম্ভব না
+2. ক্লিন হলে — POS-এর বাকি অংশ (`productsWithSerial`/সার্চ-ফলব্যাক) একই ফ্ল্যাগের পেছনে কনভার্ট করা বিবেচনা
+3. তারপর POS-বহির্ভূত বাকি ৩৩টা full-array ব্যবহার (Dashboard/Products list/Purchase Entry/BatchSyncTool) ধাপে ধাপে
+4. সবশেষে — সব কল-সাইট কনভার্টেড+real-device-ভেরিফায়েড হলেই `products`-কে বুট থেকে আসলে মেমরি থেকে বাদ দেওয়া (আসল স্টেপ ৭, memory savings)
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/db/DataStore.js` — নতুন `isPosOndemandCartEnabled()`/`setPosOndemandCartEnabled()` ফ্ল্যাগ হেল্পার যোগ
+- `src/App.jsx` — SmartInvoiceBuilder-এ `productBatchMap`/`invProdMap` ফ্ল্যাগ-গেটেড id-বাউন্ডেড কনভার্শন যোগ (নতুন `posNeededIds`/`getPosOndemandProduct`), নতুন `PosOndemandCartToggle` কম্পোনেন্ট + `SqliteMigrationCard`-এ তার ব্যবহার, ইম্পোর্ট লাইনে নতুন ২টা ফাংশন যোগ
+- `SQLITE_MIGRATION_LOG.md` — এন্ট্রি ৬৮ যোগ
+
+কোনো নতুন ফাইল তৈরি হয়নি এই সেশনে।
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৬৭)
 
 **🟢 এন্ট্রি ৬৭ (✅ sandbox নেটওয়ার্ক কাজ করেছে, পুরো chain সত্যিকারের ভাবে চালানো হয়েছে)**: ব্যবহারকারী এন্ট্রি ৬৬-এর real-device টেস্ট করলেন — `sbm_products_boot_lazy` চালু করে বুট ব্লক হয়নি, "রিঅর্ডার সাজেশন" কার্ড প্রথমবার সঠিকভাবে দেখা গেছে, পণ্য তালিকা (২২৩৭টা) পুরোপুরি লোড+সার্চেবল। **রিপোর্ট করা একমাত্র সমস্যা**: Dashboard-এর "ইনভেন্টরি/স্টক বিশ্লেষণ" সেকশনে "স্টক ডেটা লোড হচ্ছে..." ১৫-২০ সেকেন্ড ধরে দেখাচ্ছিল।
 
