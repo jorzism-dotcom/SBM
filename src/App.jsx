@@ -55,7 +55,7 @@ import { upsertInvoiceItems as dsUpsertInvoiceItems, removeInvoiceItems as dsRem
 
 // 🆕 এন্ট্রি ৪২-৪৩ (ধাপ ৭.২, PRODUCTS_ONDEMAND_MIGRATION_PLAN.md) — lazy/async
 // id-ভিত্তিক product লুকআপের জন্য ব্যাচ-হেল্পার
-import { getByIds as dsGetByIds } from "./db/DataStore.js";
+import { getByIds as dsGetByIds, getAllRows as dsGetAllRows } from "./db/DataStore.js";
 // 🆕 Repository লেয়ার (Phase ২, PHASE_3_4_5_FINAL_PLAN_v2.md) — এখনো array-ভিত্তিক,
 // শুধু ইন্টারফেস। প্রথম ওয়্যার্ড কল-সাইট: detailCust (নিচে)।
 import { getCustomerById } from "./db/Repository.js";
@@ -6173,6 +6173,28 @@ function dualWriteSqlite(businessType, store, prevMapRef, currentArr) {
       ...removedIds.map((id) => ({ entityId: id, op: "delete", payload: null })),
     ];
     logEventsMany(businessType, entityType, entries).catch(() => {});
+  }
+}
+
+// 🆕 এন্ট্রি ৭৪ (SmartBusinessMgmt return/void SQL-fallback, ৭.৩ প্রস্তুতি) —
+// `productsById` (Zustand store, in-memory `products` অ্যারে থেকে derive হওয়া
+// Map) থেকে কোনো id মিস হলে (products boot-lazy/on-demand হওয়ার পর এটা ঘটবে,
+// এখনো ঘটে না কারণ products এখনো সবসময় পূর্ণ) এই হেল্পার SQLite থেকে সরাসরি
+// সেই একটা রেকর্ড fetch করে আনে — যাতে ভুলভাবে "পণ্য ডিলিট হয়ে গেছে" ধরে
+// নিয়ে স্টক-রিস্টোর/রিটার্ন স্কিপ না হয়ে যায় (এন্ট্রি ৭৩-এর অডিটে চিহ্নিত ঝুঁকি)।
+// ⚠️ **fast path অপরিবর্তিত**: `productsById`-এ id পাওয়া গেলে (এখনকার বাস্তবতা,
+// products সবসময় পূর্ণ) কোনো SQL কল হয় না, সিঙ্ক্রোনাসভাবে সরাসরি রিটার্ন হয় —
+// zero behavior change যতক্ষণ না boot-lazy সত্যিকারভাবে চালু হয়।
+async function getProductByIdWithSqlFallback(businessType, productId, productsByIdMap) {
+  const local = productsByIdMap?.get(String(productId));
+  if (local) return local;
+  if (!isSqliteEnabled() || !businessType) return undefined;
+  try {
+    const rows = await dsGetByIds(businessType, "products", [productId]);
+    return rows[0] || undefined;
+  } catch (e) {
+    console.warn("getProductByIdWithSqlFallback() SQL fallback ব্যর্থ:", e);
+    return undefined;
   }
 }
 
@@ -13503,6 +13525,32 @@ function SmartBusinessMgmt() {
     let fullStockMovements = stockMovements;
     let fullTxns = txns;
     let fullCashLogs = cashLogs;
+    // 🆕 এন্ট্রি ৭৫ (products SQLite-primary, ধাপ ৪ প্রস্তুতি) — invoices/stockMovements/
+    // txns/cashLogs-এর ঠিক একই "in-memory state আংশিক হতে পারে, নির্ভরযোগ্য পূর্ণ সোর্স
+    // থাকলে সেটাই ব্যবহার করো" প্যাটার্ন products-এর জন্যও। ⚠️ কেন এটা দরকার: এতদিন
+    // এই ফাংশন সরাসরি in-memory `products` React state থেকে backup বানাত — `products`
+    // সবসময় বুটেই পূর্ণ লোড হতো বলে এটা নিরাপদ ছিল। কিন্তু `sbm_products_boot_lazy`
+    // ফ্ল্যাগ ভবিষ্যতে "সত্যিই কখনো পুরোপুরি লোড না করা"-য় গেলে `products` state আর
+    // কখনো সম্পূর্ণ নাও থাকতে পারত — তখন backup নীরবে অসম্পূর্ণ হয়ে যেত (কোনো এরর
+    // ছাড়াই, ধরাও পড়ত না যতক্ষণ না কারো আসলে restore লাগে)। এখন SQLite চালু ও
+    // reconcile-প্রমাণিত সোর্স হলে (দেখুন entry ৭৩) সরাসরি সেখান থেকে পূর্ণ products
+    // পড়া হয় — products in-memory-তে যতটুকুই থাকুক (পূর্ণ/আংশিক/খালি), backup সবসময়
+    // পূর্ণ থাকবে। প্রতি backup সাইকেলেই (প্রতি ৫-৪৫ মিনিট) এই fetch হয় — invoices-এর
+    // মতো ১২-ঘণ্টার cache দরকার নেই কারণ এটা local SQLite read (কোনো Firestore quota/
+    // network cost নেই, শুধু ডিস্ক I/O)।
+    let fullProducts = products;
+    if (isSqliteEnabled() && businessType) {
+      try {
+        const sqlProducts = await dsGetAllRows(businessType, "products");
+        // in-memory state যদি এখনো পূর্ণ/বেশি থাকে (SQLite চালু হওয়ার আগের মুহূর্ত,
+        // বা কোনো সাম্প্রতিক আইটেম dual-write reconcile হওয়ার আগেই), সেটাকেই
+        // অগ্রাধিকার — নিরাপদ দিকে ভুল করা (invoices-এর মতো একই নীতি)।
+        if (sqlProducts.length >= products.length) fullProducts = sqlProducts;
+      } catch (e) {
+        console.warn("buildBackupData() SQLite products fetch ব্যর্থ, in-memory state ব্যবহার হচ্ছে:", e);
+        fullProducts = products;
+      }
+    }
     if (firebaseEnabled && FSS.isReady()) {
       const lastPull = Number(localStorage.getItem(FULL_PULL_KEY) || 0);
       if (Date.now() - lastPull >= FULL_PULL_INTERVAL) {
@@ -13541,7 +13589,7 @@ function SmartBusinessMgmt() {
     // বানানো হয় — নতুন কোনো collection ভবিষ্যতে যোগ হলে শুধু ওই একটা array-তে
     // নাম যোগ করলেই এই তিনটাই (payload, checksum, counts) নিজে থেকে কভার করবে,
     // এখানে আলাদা করে টাচ করা লাগবে না।
-    const stateMap = { customers, products, invoices: invoicesForBackup, txns: txnsForBackup, smsLog, paymentInvoices, purchaseOrders, stockMovements: stockMovementsForBackup, users, cashLogs: cashLogsForBackup, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, staffLedger, serialQueue };
+    const stateMap = { customers, products: fullProducts, invoices: invoicesForBackup, txns: txnsForBackup, smsLog, paymentInvoices, purchaseOrders, stockMovements: stockMovementsForBackup, users, cashLogs: cashLogsForBackup, suppliers, expenses, returns, auditLogs, quotations, supplierPayments, deletedProducts, deletedCustomers, staffLedger, serialQueue };
     const payload = {};
     const counts = {};
     BACKUP_FIELDS.forEach(f => {
@@ -14639,7 +14687,11 @@ function SmartBusinessMgmt() {
         // অনুসরণ করা হচ্ছে — localP শুধু ঐচ্ছিক costPrice fallback, কখনো
         // পুরো restore-কে গার্ড করে না। soldItem নিজেই batchNo/costPrice/
         // expiryDate ধরে রাখে, তাই localP আসলে না থাকলেও restore চলবে।
-        const localP = useAppStore.getState().productsById.get(String(soldItem.productId));
+        // 🆕 এন্ট্রি ৭৪: productsById-এ মিস হলে SQL fallback (দেখুন
+        // getProductByIdWithSqlFallback() কমেন্ট) — products এখনো সবসময় পূর্ণ
+        // থাকায় এই মুহূর্তে ফলাফল অপরিবর্তিত, শুধু ভবিষ্যতের boot-lazy-এর
+        // প্রস্তুতি।
+        const localP = await getProductByIdWithSqlFallback(businessType, soldItem.productId, useAppStore.getState().productsById);
         const soldBatchNo = soldItem.batchNo || "";
         // 🔴 ফিক্স (রুট কজ — একাধিক ব্যাচ থেকে একসাথে বিক্রি হলে ভয়েডে সব এক
         // ব্যাচে মিশে যাওয়া): এই আইটেম বিক্রির সময় যদি একাধিক ব্যাচ থেকে qty
@@ -14730,7 +14782,7 @@ function SmartBusinessMgmt() {
         // দ্বিতীয়টার restore প্রথমটাকে ওভাররাইট করে হারিয়ে না যায়।
         // 🔴 ফিক্স: পণ্য সত্যিই ডিলিট হয়ে থাকলে (Firestore-এও নেই/অফলাইন) freshP
         // undefined হতে পারে — সেক্ষেত্রে local batches হিসেব সম্ভব না, তাই স্কিপ।
-        const freshP = useAppStore.getState().productsById.get(String(soldItem.productId)) || localP;
+        const freshP = (await getProductByIdWithSqlFallback(businessType, soldItem.productId, useAppStore.getState().productsById)) || localP;
         if (!freshP) {
           // 🔴 ফিক্স (বাগ ৩): local state-এও পণ্য নেই — সত্যিই ডিলিট, দোকানদারকে জানানো হবে।
           skippedDeletedNames.push(soldItem.name || soldItem.productId);
@@ -14966,7 +15018,7 @@ function SmartBusinessMgmt() {
       logErrorToCentral?.("voidInvoice", e, { invoiceId: inv.id });
       showToast("⚠️ ভয়েড প্রসেসিং-এ একটা সমস্যা হয়েছে — ইনভয়েসটা voided দেখাচ্ছে, কিন্তু স্টক/ব্যালেন্স ঠিকমতো ফেরত গেছে কিনা যাচাই করুন", "#ef4444");
     }
-  }, [setInvoices, setCustomers, setProducts, setStockMovements, addTxn, showToast, auditLog, returns, setCashLogs, currentUser]);
+  }, [setInvoices, setCustomers, setProducts, setStockMovements, addTxn, showToast, auditLog, returns, setCashLogs, currentUser, businessType]);
 
   // 🆕 Unified Invoice Void — আংশিক পণ্য ফেরত (partial return)। আগে এই লজিক
   // ReturnModule-এর ভেতরেই লোকাল ফর্ম-স্টেট (retQty/retMode/retReason) নিয়ে
@@ -14990,7 +15042,9 @@ function SmartBusinessMgmt() {
     // 🆕 Phase ৫ (write-through Map) — আগে products.find(p=>p.id===productId), একই
     // ডেটা সোর্স (এই render-এর products ক্লোজার), শুধু O(1)। নিচেই freshP আলাদাভাবে
     // getState() দিয়ে ফ্রেশ read করে actual mutation-এর ঠিক আগে — সেটা অপরিবর্তিত।
-    const localP = productsById.get(String(productId));
+    // 🆕 এন্ট্রি ৭৪: productsById-এ মিস হলে SQL fallback (voidInvoice()-এর
+    // মতোই প্যাটার্ন, দেখুন getProductByIdWithSqlFallback() কমেন্ট)।
+    const localP = await getProductByIdWithSqlFallback(businessType, productId, productsById);
 
     const isOffline = typeof navigator !== "undefined" && navigator.onLine === false;
     let stockResult = null;
@@ -15023,7 +15077,7 @@ function SmartBusinessMgmt() {
       else transientFailure = true;
     }
     if (!stockResult && !productDeleted) {
-      const freshP = useAppStore.getState().productsById.get(String(productId)) || localP;
+      const freshP = (await getProductByIdWithSqlFallback(businessType, productId, useAppStore.getState().productsById)) || localP;
       if (freshP) {
         let updatedBatches = freshP.batches ? [...freshP.batches] : [];
         const soldBatchNo = item.batchNo || "";
@@ -15192,7 +15246,7 @@ function SmartBusinessMgmt() {
     });
 
     showToast(`✅ ${qty} ${item.unit || "পিস"} ফেরত নেওয়া হয়েছে${mode === "baki" ? " ও বাকি সমন্বয় হয়েছে" : ""}`, "#22c55e");
-  }, [productsById, customers, returns, setProducts, setStockMovements, setCustomers, addTxn, setCashLogs, setReturns, showToast, currentUser, auditLog]);
+  }, [productsById, customers, returns, setProducts, setStockMovements, setCustomers, addTxn, setCashLogs, setReturns, showToast, currentUser, auditLog, businessType]);
 
   const connectBluetooth = useCallback(async () => {
     await BT.init();
