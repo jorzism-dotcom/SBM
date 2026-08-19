@@ -24,7 +24,47 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৭২-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৭৩-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟡 এন্ট্রি ৭৩ (⚠️ sandbox নেটওয়ার্ক কাজ করেনি এই সেশনে, শুধু esbuild parse-check) — নতুন ফেজ শুরু: "products SQLite-primary" — dual-write reliability বাগ ফিক্স + রিকনসিলিয়েশন টুল**:
+
+ব্যবহারকারী একটা আগের এক্সপ্লোরেশন সেশনের স্ক্রিনশট (যার কোড এই জিপে সংরক্ষিত ছিল না)
+নিয়ে এলেন — সেখানে "products সম্পূর্ণ বুট থেকে সরানো" নিয়ে গভীরে গিয়ে সিদ্ধান্ত হয়েছিল
+JS fallback সরিয়ে SQLite-নির্ভর হয়ে যাওয়ার, dual-write কখনো reconcile না হওয়া জেনেও।
+এই সেশনে আসল কোড পড়ে বিস্তারিত প্ল্যান PRODUCTS_SQLITE_PRIMARY_PHASE_PLAN.md-এ লেখা
+হয়েছে — সংক্ষেপে:
+
+1. **সংশোধন**: `schema.sql`-এর `products` টেবিল ইতিমধ্যেই per-record (blob না) —
+   ১৫টা indexed hot column + `data` JSON। নতুন schema কাজ লাগে না।
+2. **আসল রুট-কজ পাওয়া গেছে ও ফিক্স হয়েছে**: `dualWriteSqlite()` (App.jsx) আগে
+   `prevMapRef.current` write-সাফল্যের অপেক্ষা না করেই সিঙ্ক্রোনাসভাবে advance করত —
+   ব্যর্থ write সাইলেন্টলি ধরা পড়ে চিরস্থায়ীভাবে সেই রেকর্ড আর কখনো রিট্রাই হতো না।
+   এখন `prevMapRef` শুধু write সফল হলেই advance হয় (in-place mutate), ব্যর্থ হলে
+   পরের change-cycle-এ retry হবে। সাথে in-memory failure counter (`getDualWriteFailureStats()`)।
+3. **নতুন `reconcileStore()`** (DataStore.js) — SQLite বনাম in-memory array-এর content-level
+   (JSON বিট-বাই-বিট) তুলনা, read-only। SqliteMigrationCard-এ "🧪 Products গভীর
+   রিকনসিলিয়েশন চেক" বাটন হিসেবে ওয়্যার করা হয়েছে (count-only `runVerify()`-এর পাশে)।
+
+**যাচাই — সীমিত এই সেশনে**: sandbox-এ `npm install` ব্যর্থ (network নেই, 403) —
+`npm test`/lint/typecheck/build চালানো যায়নি। বদলে esbuild দিয়ে (cached tsx dependency
+থেকে binary) `src/App.jsx` ও `src/db/DataStore.js` parse-check করা হয়েছে — সিনট্যাক্স
+এরর নেই, কিন্তু এটা রানটাইম/টেস্ট-লেভেল ভেরিফিকেশন না।
+
+**⚠️ পরের সেশনে প্রথম কাজ**:
+- network থাকলে `npm install` → `npm test`/lint/typecheck/build দিয়ে পুরোপুরি ভেরিফাই
+- real-device-এ (SQLite চালু থাকা টেস্ট শপে) নতুন "গভীর রিকনসিলিয়েশন চেক" বাটন চালিয়ে
+  বর্তমান ড্রিফটের প্রকৃত মাত্রা দেখা
+- এরপর PRODUCTS_SQLITE_PRIMARY_PHASE_PLAN.md-এর ধাপ ২ (write-path পূর্ণ অডিট)
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — `dualWriteSqlite()` reliability ফিক্স (write-সাফল্যে prevMapRef advance), নতুন `_dualWriteFailureStats`/`getDualWriteFailureStats()`, `reconcileStore` ইম্পোর্ট, `SqliteMigrationCard`-এ নতুন রিকনসিলিয়েশন বাটন+UI
+- `src/db/DataStore.js` — নতুন `reconcileStore()` ফাংশন
+- `PRODUCTS_SQLITE_PRIMARY_PHASE_PLAN.md` — **নতুন ফাইল**, এই ফেজের সম্পূর্ণ প্ল্যান
+- `SQLITE_MIGRATION_LOG.md` — এন্ট্রি ৭৩ যোগ
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৭২)
 
 **🟢 এন্ট্রি ৭২ (✅ sandbox নেটওয়ার্ক কাজ করেছে) — `BatchSyncTool`-এর `riskProducts` FULL-SCAN কনভার্ট, নতুন টেস্ট-সহ**:
 
