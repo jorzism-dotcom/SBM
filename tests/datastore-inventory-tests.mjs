@@ -24,6 +24,7 @@ const {
   getExpiryCandidates,
   getSupplierSummary,
   getProductsBySupplierKey,
+  getRiskProducts,
   upsertMany,
   closeDb,
 } = await import("../src/db/DataStore.js");
@@ -320,6 +321,61 @@ await t("getProductsBySupplierKey", "না-মেলা সাপ্লায�
   await closeDb(bt);
   const pass = rows.length === 0;
   return { pass, expected: 0, actual: rows.length };
+});
+
+// ── ৭. getRiskProducts — লস-ঝুঁকি পণ্য (এন্ট্রি ৭২) ──────────────────────────
+await t("getRiskProducts", "price <= costPrice (নেগেটিভ/শূন্য মার্জিন) এমন পণ্যই আসে", async () => {
+  const bt = freshBusinessType();
+  await upsertMany(bt, "products", [
+    mkProduct("p1", { costPrice: 10, price: 8 }),  // ঝুঁকিপূর্ণ (নেগেটিভ)
+    mkProduct("p2", { costPrice: 10, price: 10 }), // ঝুঁকিপূর্ণ (শূন্য মার্জিন)
+    mkProduct("p3", { costPrice: 10, price: 15 }), // ঠিক আছে, বাদ পড়বে
+  ]);
+  const rows = await getRiskProducts(bt);
+  await closeDb(bt);
+  const ids = rows.map((p) => p.id).sort();
+  const pass = ids.length === 2 && ids[0] === "p1" && ids[1] === "p2";
+  return { pass, expected: "[p1,p2]", actual: ids };
+});
+
+await t("getRiskProducts", "costPrice/price শূন্য বা নেই এমন পণ্য বাদ যায় (division/false-positive এড়াতে)", async () => {
+  const bt = freshBusinessType();
+  await upsertMany(bt, "products", [
+    mkProduct("p1", { costPrice: 0, price: 5 }),
+    mkProduct("p2", { costPrice: 10, price: 0 }),
+    mkProduct("p3", { costPrice: null, price: null }),
+  ]);
+  const rows = await getRiskProducts(bt);
+  await closeDb(bt);
+  const pass = rows.length === 0;
+  return { pass, expected: 0, actual: rows.length };
+});
+
+await t("getRiskProducts", "productType==='service' পণ্য বাদ যায়", async () => {
+  const bt = freshBusinessType();
+  await upsertMany(bt, "products", [
+    mkProduct("p1", { costPrice: 10, price: 8, productType: "service" }),
+    mkProduct("p2", { costPrice: 10, price: 8 }),
+  ]);
+  const rows = await getRiskProducts(bt);
+  await closeDb(bt);
+  const ids = rows.map((p) => p.id);
+  const pass = ids.length === 1 && ids[0] === "p2";
+  return { pass, expected: "[p2]", actual: ids };
+});
+
+await t("getRiskProducts", "মার্জিন ascending (সবচেয়ে খারাপ আগে) সর্ট", async () => {
+  const bt = freshBusinessType();
+  await upsertMany(bt, "products", [
+    mkProduct("p1", { costPrice: 10, price: 9 }),  // margin -1
+    mkProduct("p2", { costPrice: 10, price: 2 }),  // margin -8 (সবচেয়ে খারাপ)
+    mkProduct("p3", { costPrice: 10, price: 10 }), // margin 0
+  ]);
+  const rows = await getRiskProducts(bt);
+  await closeDb(bt);
+  const ids = rows.map((p) => p.id);
+  const pass = ids.length === 3 && ids[0] === "p2" && ids[1] === "p1" && ids[2] === "p3";
+  return { pass, expected: "[p2,p1,p3]", actual: ids };
 });
 
 // ── ফলাফল ────────────────────────────────────────────────────────────────────
