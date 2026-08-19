@@ -640,3 +640,35 @@ export function runInvariantChecks(state = {}) {
 
   return violations;
 }
+
+// ── এন্ট্রি ৭৭ — productsById (ও ভবিষ্যতে অন্য entity-by-id) Map-এর merge-patch
+// আপডেট, ৭.৩ (products boot-lazy) সেফলি করার পূর্বশর্ত হিসেবে বের করা হলো ──────
+// আগে App.jsx-এর useAppStore subscribe প্রতিবার `products` বদলালেই পুরো Map
+// রিবিল্ড করত (`new Map(products.map(...))`) — products সবসময় বুটে পূর্ণ
+// থাকা অবস্থায় নিরাপদ ছিল। কিন্তু products সত্যিকারভাবে lazy/আংশিক হলে
+// (boot-lazy চালু) এই wholesale-rebuild প্রতিটা সাধারণ এডিট/ডিলিটেই আগে
+// SQLite থেকে হাইড্রেট করা বাকি সব এন্ট্রি মুছে ফেলত।
+//
+// এই ফাংশন pure/testable — App.jsx শুধু thin wrapper (useAppStore.subscribe-এর
+// ভেতরে কল করে)। ডিলিশন শুধু তখনই propagate হয় যখন কোনো id আগের items
+// অ্যারেতে ছিল কিন্তু এখন নেই — কখনো items অ্যারেতে না-আসা (শুধু SQL fallback
+// দিয়ে হাইড্রেট করা) id কখনো ভুলভাবে মুছে যাবে না।
+//
+// @param {Map} prevMap - বর্তমান Map (অপরিবর্তিত থাকে, ক্লোন করে নতুন রিটার্ন হয়)
+// @param {Set} prevIds - আগের কলে items অ্যারেতে যেসব id ছিল
+// @param {Array} items - বর্তমান items অ্যারে (প্রতিটার .id প্রপার্টি থাকতে হবে)
+// @returns {{ map: Map, ids: Set }} - নতুন Map (নতুন রেফারেন্স) + পরের কলের জন্য prevIds
+export function mergeItemsIntoIdMap(prevMap, prevIds, items) {
+  const nextMap = new Map(prevMap || []);
+  const curIds = new Set();
+  for (const it of (items || [])) {
+    if (it == null || it.id == null) continue;
+    const id = String(it.id);
+    curIds.add(id);
+    nextMap.set(id, it);
+  }
+  for (const id of (prevIds || [])) {
+    if (!curIds.has(id)) nextMap.delete(id);
+  }
+  return { map: nextMap, ids: curIds };
+}
