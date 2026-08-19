@@ -24,7 +24,179 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৭৫-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৭৯-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟢 এন্ট্রি ৭৯ — "৬৬টা সাইট" এক এক করে সরাসরি কোড খুলে re-audit (শুধু অডিট, কোনো কোড বদলায়নি) — স্কোপ বড় ধরনের সংশোধন**:
+
+**প্রেক্ষাপট**: এন্ট্রি ৭৬/৭৮-এ "৬৬টা `products` bulk-scan সাইট রূপান্তর করতে হবে" — এটাই বাকি সবচেয়ে বড় কাজ বলে চিহ্নিত ছিল। এই সেশনে প্রতিটা সাইট (grep-এর প্রতিটা লাইন নম্বর) সরাসরি কোড খুলে, ঘিরে থাকা ফাংশন/কম্পোনেন্ট পড়ে যাচাই করা হলো (অনুমান/স্যাম্পলিং না)।
+
+**✅ ফলাফল — প্রায় সবগুলোই ইতিমধ্যে কাভার্ড**: ক্যাটাগরি-চিপ (`useKnownCategories`→`dsGetDistinctCategories`), ডুপ-নেম চেক (`useLiveDupProduct`+সেভ-টাইম গার্ড→`dsFindProductByNameNorm`), ইনভেন্টরি/সাপ্লায়ার (`useInventoryData`→`dsGetInventoryList`/`dsGetSupplierSummary`), কাস্টমার-অর্ডার/PE সাজেশন পুল (FTS narrowing bounded) — সবগুলোই ইতিমধ্যে-প্রতিষ্ঠিত **SQL-primary + JS-fallback** প্যাটার্নে (এন্ট্রি ৪৪/৫৪/৫৫/৫৬/৫৭/৬০/৬১/৬২/৬৪/৬৫/৬৮/৭২/৭৪) ঢাকা। সিরিয়াল-নম্বরিং সাইট (১৯১৮৪/২৮৯৯৫) legacy fallback array মাত্র — আসল ব্রাউজ পেজিনেশন আলাদাভাবে SQL `browse_rank` দিয়ে হয় (এন্ট্রি ৭৭-এ আগেই কনফার্মড)। বাকি সব লোকাল `productsByIdMap`/`globalProdMap` (useMemo) আগে থেকেই `useProductsByIds()`-এ র‍্যাপড।
+
+**🔴 স্কোপ-সংশোধন — আসল বাকি কাজ ভিন্ন, নতুন করে চিহ্নিত**: "৬৬টা সাইট রূপান্তর"-এর দরকার নেই (নতুন SQL অ্যাগ্রিগেট ফাংশন ডিজাইন করার কাজ বাকি নেই)। আসল ২টা বাকি জিনিস:
+1. `sbm_products_boot_lazy` এখনো শুধু blob-load **দেরি** করায় (`setTimeout(0)`), কখনো **স্কিপ** করে না (এন্ট্রি ৭৮-এ কনফার্মড) — "কখনো লোড না করা" মোডটাই এখনো তৈরিই হয়নি।
+2. উপরের SQL-primary+JS-fallback হুকগুলোর ফলব্যাক-লজিক এখন ধরে নেয় SQL ব্যর্থ হলে `products` (in-memory) পূর্ণ/নির্ভরযোগ্য — এটা সত্যি শুধু বুট-লেজি বন্ধ থাকা/বর্তমান "দেরি-শুধু" মোডে। "কখনো লোড না করা" মোড তৈরি হলে এই একই ফলব্যাক নীরবে আংশিক `products`-এর উপর ভুল ফলাফল দিতে শুরু করবে (স্টক/ক্যাটাগরি/ডুপ-চেক ভুল) — তাই সেই মোডে SQL ব্যর্থতাকে "নীরব JS fallback" না করে explicit error/retry state-এ পাঠানো লাগবে (নতুন নিরাপত্তা-গার্ড, এখনো ডিজাইন করা হয়নি)।
+
+**যাচাই**: এই সেশনে কোনো কোড বদলায়নি (শুধু অডিট/পড়া) — তাই টেস্ট/lint/build রি-রান করা হয়নি, আগের এন্ট্রি ৭৮-এর সবুজ অবস্থাই বলবৎ।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `SQLITE_MIGRATION_LOG.md` — এই এন্ট্রি (কোনো src ফাইল বদলায়নি)
+
+---
+
+
+
+**🟡 এন্ট্রি ৭৮ — এন্ট্রি ৭৭-এর ২টা বাকি আইটেমের প্রথমটা (বুট-হাইড্রেট) যোগ + দ্বিতীয়টার (bulk-vs-bounded classification) সম্পূর্ণ অডিট (ফ্ল্যাগ এখনো ফ্লিপ করা হয়নি)**:
+
+**প্রেক্ষাপট**: এন্ট্রি ৭৭-এ ২টা বাকি কাজ চিহ্নিত হয়েছিল — (১) বুটে SQLite থেকে সরাসরি `productsById` বাল্ক-হাইড্রেট করা, (২) `productsById`-কে বাল্ক/সিঙ্ক্রোনাস সোর্স হিসেবে ধরে নেওয়া সাইটগুলোর সম্পূর্ণ তালিকা। এই সেশনে দুটোই ধরা হলো।
+
+**✅ (২) সম্পূর্ণ তালিকা (৭২টা `productsById`/`productsByIdMap` রেফারেন্স গ্রেপ করে একে একে যাচাই করা হলো)**:
+- **গ্লোবাল স্টোর `productsById` (Zustand)-এর প্রতিটা প্রকৃত ব্যবহার bounded** — সব জায়গায় নির্দিষ্ট একটা id-তে `.get(id)` (একক প্রোডাক্ট, ইনভয়েস-লাইন-আইটেম লুপের ভেতরে) — `getProductByIdWithSqlFallback()`, ভয়েড/রিটার্ন ফ্লো, `_itemCostPrice()`/`calcInvoiceProfit()`/`calcProfitTotal()`/`calcProfitByProductWithInvoices()` (এই চারটা লজিক ফাংশনই `prodMap?.get?.(id)` — কখনো পুরো Map ইটারেট করে না)। কোথাও `.values()`/`.entries()`/`.forEach()`/`[...map]`/`Array.from(map)` প্যাটার্নে গ্লোবাল Map ইটারেট হচ্ছে না (আলাদাভাবে গ্রেপ করে যাচাই করা হয়েছে) — তাই boot-lazy সত্যিকারভাবে "কখনো লোড না করা"-য় গেলেও এই সাইটগুলো ভাঙবে না, শুধু আরও বেশি SQL fallback ফায়ার হবে (ধীর কিন্তু সঠিক)।
+  - একমাত্র semi-bulk প্যাটার্ন: `useKpiStats()`/`useDashboardTotals()`-এর মতো প্লেইন ফাংশনে `_globalProdMap.size > 0 ? _globalProdMap : new Map(products.map(...))` — এটা bulk-iteration না, শুধু emptiness-চেক + fallback rebuild (products আংশিক/খালি হলে fallback-ও আংশিক/খালিই হবে, কিন্তু `.get()` মিস হলে `_itemCostPrice()` নিজেই `item.costPrice` (ইনভয়েস-টাইমে সেভ করা) ফলব্যাক ব্যবহার করে — তাই ডেটা-করাপশন না, শুধু edge-case-এ display-এর সামান্য নির্ভুলতা কমতে পারে)।
+  - `calcProfitByProductWithInvoices()`-এর `productsFallback.find(pr => pr.name === item.name)` (App.jsx লাইন ৮৩১১) — এটাও `products` array-এর উপর bulk `.find()`, কিন্তু ফলাফল শুধু `displayName`-এ ব্যবহৃত হয়, যেটার নিজস্ব `|| item.name` ফলব্যাক আছে — safe।
+- **লোকাল `productsByIdMap` (কম্পোনেন্ট-লেভেল `useMemo(() => new Map(products.map(...)), [products])`, POS ব্রাউজ/PE/PNL/সেলফ-ইউজ ইত্যাদি ~৭টা জায়গা)** — এগুলো ইতিমধ্যেই ধাপ ৭.৩ প্রস্তুতির অংশ হিসেবে `useProductsByIds(ids, businessType, productsByIdMap)` হুক দিয়ে র‍্যাপড (বাউন্ডেড id-সেট, SQL fallback-সহ) — নতুন কিছু বদলানোর দরকার নেই, আগেই সঠিক প্যাটার্নে ছিল।
+- **সারমর্ম**: `productsById`-কেন্দ্রিক কোনো কল-সাইটই boot-lazy "কখনো লোড না করা"-র জন্য ব্লকার না — আসল ব্লকার এখনো এন্ট্রি ৭৬-এ মাপা `products` array-এর ৬৬টা সরাসরি bulk-scan সাইট (`products.map/filter/find/forEach/reduce`), যেগুলো `productsById`-এর সাথে সম্পর্কহীন, আলাদা রূপান্তর-কাজ।
+
+**✅ (১) বুট-হাইড্রেট যোগ হলো**: `sbm_products_boot_lazy` চালু থাকলে এখন App.jsx বুট-সিকোয়েন্সে (পুরনো IndexedDB-blob `setTimeout(0)` লোডের পাশাপাশি, সমান্তরালে, স্বাধীনভাবে) সরাসরি SQLite থেকে (`dsGetAllRows(businessType, "products")`, ইতিমধ্যে-প্রমাণিত keyset-paginated ফাংশন) সব প্রোডাক্ট পড়ে `mergeItemsIntoIdMap()` দিয়ে গ্লোবাল `productsById`-এ merge-patch করে দেওয়া হয়। `products` React array স্পর্শ করা হয় না (তাই ৬৬টা bulk-scan সাইট অপ্রভাবিত/অপরিবর্তিত থাকে)। ব্যর্থ হলে (try/catch) নিঃশব্দে পুরনো blob-load পথে ফলব্যাক করে, কোনো এরর ইউজারকে দেখায় না।
+
+**🔴 সততার সাথে — ফ্ল্যাগ এখনো ফ্লিপ করা হয়নি, কারণ**: এই বুট-হাইড্রেট শুধু bounded lookup-গুলো (`productsById.get(id)`) আগে থেকে দ্রুত রেডি করে দেয় — `products` array এখনো পুরোপুরি লোড হয় (নিচের blob-load ব্লক অপরিবর্তিত রাখা হয়েছে, dual-write নিয়ম মেনে)। তাই এই সেশনের কাজে **কোনো আচরণ বদলায়নি** (productsKeyLazy ডিফল্ট বন্ধ, চালু থাকলেও শুধু productsById আরেকটু আগে রেডি হয় — কার্যকরী ফলাফল অভিন্ন)। `sbm_products_boot_lazy`-কে "কখনো লোড না করা"-য় আপগ্রেড করতে এখনো বাকি: ৬৬টা `products` bulk-scan সাইট একটার পর একটা `useProductsByIds()`/SQL-agg প্যাটার্নে রূপান্তর (এন্ট্রি ৭৬-এ চিহ্নিত, POS ব্রাউজ/PE/PNL-এর মতোই), তারপরই blob-load ব্লক সরানো নিরাপদ হবে।
+
+**যাচাই সম্পূর্ণ (sandbox)**: `npm install` → `npm test` (**১৪৭টা কেস, সব পাস, অপরিবর্তিত** — এই সেশনে `tests/*.mjs`-এ কোনো নতুন কেস যোগ হয়নি, কারণ পরিবর্তন শুধু App.jsx-এর বুট-সিকোয়েন্সে, যেটা node-based DataStore/logic টেস্ট সুইট দিয়ে কভার হয় না — device/E2E যাচাই এখনো বাকি) → `npm run lint` (0 error, ৫৬৭ প্রি-এক্সিস্টিং warning, অপরিবর্তিত) → `npm run typecheck` (ক্লিন) → `npm run build` (ক্লিন) → `test:golden-master` (৭/৭) → `test:fuzz` (সব প্রপার্টি) — সবগুলো পাস। **real-device টেস্ট এখনো বাকি** (`sbm_products_boot_lazy` চালু করে বুট-টাইমে bulk-hydrate race/perf আসল Android ডিভাইসে যাচাই করা উচিত ফ্ল্যাগ ব্যবহারিকভাবে চালুর আগে)।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — `productsKeyLazy` ব্লকে নতুন সমান্তরাল SQLite বাল্ক-হাইড্রেট (IIFE, `dsGetAllRows` + `mergeItemsIntoIdMap` পুনর্ব্যবহার, নতুন কোনো ইমপোর্ট লাগেনি — দুটোই আগে থেকেই ইমপোর্টেড)। পুরনো blob-load `setTimeout(0)` ব্লক অপরিবর্তিত।
+- `SQLITE_MIGRATION_LOG.md` — এই এন্ট্রি
+
+---
+
+**🔴 এন্ট্রি ৭৭ — বুট-রিমুভাল (ধাপ ৪) পুনরায় গভীর অডিট + productsById-এর একটা রিয়েল ডেটা-করাপশন বাগ ফিক্স (ফ্ল্যাগ এখনো ফ্লিপ করা হয়নি)**:
+
+**প্রেক্ষাপট**: এন্ট্রি ৭৬-এর পর ব্যবহারকারী "আসল বুট-রিমুভাল" আবার এক সেশনে চেষ্টা করতে বলেছিলেন (আগের সেশন মেসেজ-লিমিটে আটকে গিয়েছিল, ওই কোড কখনো ডেলিভার হয়নি — zip-এ এন্ট্রি ৭৬-এর অবস্থাই ছিল)।
+
+**✅ পুনঃঅডিটে ভালো খবর**: এন্ট্রি ৭৬-এর "৬৬টা সাইট ভাঙবে" পরিমাপ বাস্তবের চেয়ে বেশি সতর্ক ছিল। কোড সরাসরি পড়ে যাচাই করা হলো — এন্ট্রি ৩৬-৭৪ ধরে বেশিরভাগ ক্যাটাগরি ইতিমধ্যেই SQL-ফার্স্ট + `products` শুধু ফলব্যাক প্যাটার্নে সঠিকভাবে কাভার্ড: InventorySection (jsAllStock/jsCriticalStock/jsStockOut/সাপ্লায়ার-গ্রুপিং — dsGetInventoryList/dsGetSupplierSummary), ডুপ্লিকেট-নাম চেক (dsFindProductByNameNorm), ক্যাটাগরি-লিস্ট (dsGetDistinctCategories), POS কার্ট lookup (posOndemandCart ফ্ল্যাগ), আর সবচেয়ে গুরুত্বপূর্ণ — বিক্রি/ভয়েড/রিটার্নের স্টক-ডিডাকশন (`getProductByIdWithSqlFallback()`, এন্ট্রি ৭৪) সবই ইতিমধ্যে SQL fallback-সহ।
+
+**🔴 কিন্তু একটা আসল ব্লকার পাওয়া গেল (নতুন, আগে কারো নজরে পড়েনি)**: গ্লোবাল `productsById` (Zustand store Map, POS/বিক্রি/ভয়েড সহ বহু জায়গায় ব্যবহৃত) আগে `useAppStore.subscribe((s)=>s.products, ...)`-এ **সম্পূর্ণ রিবিল্ড** হতো (`new Map(products.map(...))`) প্রতিবার `products` state বদলালেই। `products` সবসময় বুটে পূর্ণ থাকা অবস্থায় এটা নিরাপদ ছিল। কিন্তু `sbm_products_boot_lazy` সত্যিকারভাবে "কখনো পুরোপুরি লোড না করা"-য় গেলে `products` React state আর সবসময় পূর্ণ থাকবে না (শুধু locally-touched আইটেম থাকবে) — তখন যেকোনো সাধারণ এডিট/ডিলিট/নতুন-এন্ট্রি (`setProducts(prev => ...)`) এই wholesale-rebuild-এর কারণে আগে SQLite থেকে হাইড্রেট করা বাকি পুরো ক্যাটালগ productsById থেকে মুছে ফেলত (products array-তে না-থাকা মানেই আগের লজিক "ডিলিটেড" ধরে নিত)। এটা সাময়িক UI-glitch না — প্রতিটা সাধারণ এডিটেই ঘটত, অর্থাৎ নিয়মিত ডেটা-করাপশন ঝুঁকি (ভুল স্টক/পাওয়া-না-যাওয়া পণ্য) ছিল।
+
+**✅ এই বাগ এই সেশনে ফিক্স হয়েছে**:
+- নতুন pure/টেস্টেড ফাংশন `mergeItemsIntoIdMap(prevMap, prevIds, items)` — `src/logic.js`-এ যোগ হলো। wholesale rebuild-এর বদলে **merge-patch**: নতুন/বদলানো আইটেম Map-এ বসে (পুরনো এন্ট্রি অক্ষত থাকে), ডিলিশন শুধু তখনই propagate হয় যখন কোনো id আগের `items` অ্যারেতে ছিল কিন্তু এখন নেই (প্রকৃত/ইচ্ছাকৃত ডিলিট) — কখনো `items`-এ না-আসা id (শুধু SQL fallback দিয়ে হাইড্রেট করা) কখনো ভুলভাবে মুছে যাবে না।
+- App.jsx-এর `productsById` subscribe (লাইন ~৩৮৭) এখন এই ফাংশনের thin wrapper।
+- `getProductByIdWithSqlFallback()` (এন্ট্রি ৭৪) এখন fetch করা রেকর্ড global `productsById` cache-এও বসিয়ে দেয় — একই id বারবার লাগলে (একই ইনভয়েসের একাধিক লাইন-আইটেম) প্রতিবার নতুন SQL রাউন্ড-ট্রিপ লাগে না।
+- **behavior-preserving গ্যারান্টি**: `products` সবসময় পূর্ণ থাকা বর্তমান বাস্তবতায় (boot-lazy বন্ধ, ৫০০ দোকানের অবস্থা) এই পরিবর্তনে কোনো আচরণ বদলায় না — পুরো অ্যারেই সবসময় "বর্তমান" আর "আগের" দুটোতেই সমান থাকে, তাই diff-based delete আর আগের wholesale rebuild একই ফলাফল দেয়। ৮টা নতুন ইউনিট টেস্ট (`tests/logic-tests.mjs`) এই সমতা + merge-patch behavior দুটোই নিশ্চিত করে।
+
+**🔴 সততার সাথে — ফ্ল্যাগ তবু ফ্লিপ করা হয়নি, কারণ**: merge-patch ফিক্সটা *প্রয়োজনীয় কিন্তু যথেষ্ট না*। boot-lazy সত্যিই চালু হলে `productsById` কখনো পুরো ক্যাটালগ দিয়ে **প্রি-হাইড্রেট** হবে না (এই সেশনে সেই bulk-hydrate পার্টটা যোগ করা হয়নি) — শুধু locally-touched/individually-fetched আইটেমই Map-এ থাকবে। যেসব জায়গা `productsById`-কে **বাল্ক/সিঙ্ক্রোনাস** সোর্স হিসেবে ধরে নেয় (bounded id-সেট না, পুরো Map ইটারেট/ফিল্টার করে) সেগুলো তখনও ভাঙতে পারে — এই সেশনে সেই সাইটগুলোর একটা সম্পূর্ণ তালিকা বানানো হয়নি। তাই `sbm_products_boot_lazy`-কে "কখনো লোড না করা"-য় আপগ্রেড করার আগে এখনো বাকি: (১) boot-এ SQLite থেকে সরাসরি productsById বাল্ক-হাইড্রেট করা (products React array না ছুঁয়ে), (২) productsById-কে সিঙ্ক্রোনাস bulk সোর্স হিসেবে ব্যবহার করা বাকি সাইটগুলো খুঁজে বের করা।
+
+**যাচাই সম্পূর্ণ (sandbox)**: `npm install` → `npm test` (**১৪৭টা কেস, সব পাস**, নতুন ৮টা `mergeItemsIntoIdMap` কেস সহ) → `npm run lint` (0 error, ৫৬৭ প্রি-এক্সিস্টিং warning, অপরিবর্তিত) → `npm run typecheck` (ক্লিন) → `npm run build` (ক্লিন) → `test:golden-master` (৭/৭) → `test:fuzz` (সব প্রপার্টি) — সবগুলো পাস। **real-device টেস্ট এখনো বাকি** (এই ফিক্স productsById-এর internal consistency-কে প্রভাবিত করে — behavior-preserving হলেও ডিভাইসে POS/বিক্রি ফ্লো একবার স্মোক-টেস্ট করা উচিত)।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/logic.js` — নতুন `mergeItemsIntoIdMap()` ফাংশন যোগ
+- `src/App.jsx` — `productsById` subscribe wholesale-rebuild থেকে merge-patch-এ বদল; `getProductByIdWithSqlFallback()` এখন ফলাফল cache করে
+- `tests/logic-tests.mjs` — `mergeItemsIntoIdMap` import + ৮টা নতুন টেস্ট কেস
+
+
+
+**🟢 এন্ট্রি ৭৬ (✅ sandbox নেটওয়ার্ক কাজ করেছে) — এন্ট্রি ৭৫-এর বাকি ২টা ব্লকার
+সমাধান + আসল বুট-রিমুভাল স্কোপ অডিট (কোড না, honest measurement)**:
+
+**প্রেক্ষাপট**: ব্যবহারকারী স্ক্রিনশট দেখিয়ে এই সেশনে ২টা ব্লকার (`buildManualBackupData`,
+`performMasterSync` merge) সারা এবং একই সেশনে আসল বুট-লোড রিমুভাল সম্পূর্ণ করার
+নির্দেশ দিয়েছিলেন।
+
+**✅ যা সম্পূর্ণ ও যাচাই হলো এই সেশনে**:
+
+1. **`buildManualBackupData()` (App.jsx)** — `buildBackupData()`-এর ঠিক একই
+   SQLite-fallback প্যাটার্নে async করা হলো (in-memory `products` আংশিক/খালি
+   হলেও SQLite থেকে পূর্ণ products পড়ে)। যেহেতু এটা আগে render-এর মধ্যে সরাসরি
+   সিঙ্ক্রোনাসভাবে কল হতো (`data={buildManualBackupData()}`), তাই ২টা call-site
+   (GoogleDriveSection, LocalStorageSection প্যানেল)-ই `useState`+`useEffect`-এ
+   রিস্ট্রাকচার করা হলো — প্যানেল খোলা হলে (`showGdExpanded`/`showLdExpanded`)
+   fetch হয়, resolve হওয়া object state-এ বসে। **গুরুত্বপূর্ণ প্লেসমেন্ট নোট**:
+   এই নতুন state/effect `showGdExpanded`/`showLdExpanded` declare হওয়ার ঠিক
+   পরে বসাতে হয়েছে (App.jsx-এ অনেক পরে, ~লাইন ৩৭৬৬৭) — প্রথমে ভুলে
+   `buildManualBackupData`-এর পাশে বসিয়েছিলাম, যেটা একই ফাংশন কম্পোনেন্টে
+   অনেক আগে — সেটা TDZ ReferenceError দিত (নিজের ভুল, নিজেই ধরে ঠিক করা হলো)।
+2. **null-সেফটি গার্ড** — `data` এখন প্যানেল খোলার সাথে সাথেই সংক্ষিপ্ত সময়ের
+   জন্য `null` থাকতে পারে (fetch resolve হওয়ার আগে) — আগে কখনো হতো না
+   (সিঙ্ক্রোনাস কল)। `handleBackup`, `handleSaveSnapshot`, `handleDownloadFile`
+   (এই তিনটাই আগে `data._meta`/`data._license` সরাসরি অ্যাক্সেস করত) — সবগুলোতে
+   `if (!data) { showToast(...); return; }` গার্ড যোগ হলো। `BRS_DataSummary`/
+   `hasAnyBackupRecords`/`pickBackupFields`/`diffBackupFields` — এই চারটা
+   আগে থেকেই null-নিরাপদ ছিল (যাচাই করা হলো, কোনো বদল লাগেনি)।
+3. **`performMasterSync()` merge fix** — Drive-বনাম-local merge তুলনার জন্য
+   `products` in-memory state সরাসরি ব্যবহার হতো। এখন `buildBackupData()`-এর
+   একই প্যাটার্নে SQLite থেকে পূর্ণ products fetch করে (`fullProductsForSync`)
+   merge-এ পাঠানো হয় — in-memory state আংশিক/খালি থাকলে merge আর ভুলভাবে সব
+   Drive রেকর্ডকে "লোকালে নেই" ধরে নেবে না, ফলে সাম্প্রতিক (Drive-এ এখনো
+   push-না-হওয়া) local পরিবর্তন Drive-এর পুরনো ডেটা দিয়ে ওভাররাইট হওয়ার
+   ঝুঁকি কমলো। `businessType` `useCallback` dependency-তে যোগ হয়েছে।
+
+**যাচাই সম্পূর্ণ (network কাজ করেছে)**: `npm install` (488 প্যাকেজ) → `npm test`
+(**১৬টা সুইট, ১৬২টা কেস, সব পাস**) → `npm run lint` (0 error, ৫৬৭ প্রি-এক্সিস্টিং
+warning, অপরিবর্তিত) → `npm run typecheck` (ক্লিন) → `npm run build` (ক্লিন,
+১৩.৩৫ সেকেন্ড) → `test:golden-master` (৭/৭) → `test:fuzz` (সব প্রপার্টি) —
+সবগুলো পাস।
+
+**🔴 সততার সাথে — আসল বুট-লোড রিমুভাল (ধাপ ৪) এই সেশনেও করা হয়নি, আর কেন**:
+
+ব্যবহারকারী "এই সেশনে" সম্পূর্ণ চেয়েছিলেন। কোড করার আগে স্কোপ প্রকৃতপক্ষে কত বড়
+সেটা মাপা হলো (অনুমান না, সরাসরি grep):
+
+```
+grep -oE "\bproducts\.(map|filter|find|forEach|reduce|some|every|length|slice)\(" src/App.jsx | wc -l
+→ ৩৮টা মেথড-কল (map ১১, filter ১০, find ১৩, reduce ২, forEach ২)
+grep -c "\bproducts\." src/App.jsx → ৬৬টা মোট রেফারেন্স
+```
+
+এটা DataStore.js-এর নিজের কমেন্টে আগে থেকেই লেখা "৬৭টা কল-সাইট" দাবির সাথে প্রায়
+হুবহু মেলে — অনুমান ছিল না, বাস্তব সংখ্যা। এই প্রতিটা সাইট এখন ধরে নেয় `products`
+সবসময় সম্পূর্ণ in-memory array — POS বিক্রি, লো-স্টক অ্যালার্ট, ড্যাশবোর্ড
+অ্যাগ্রিগেট, রিপোর্ট, সাপ্লায়ার-ডিউ, এক্সপায়ারি-চেক ইত্যাদি। `sbm_products_boot_lazy`
+ফ্ল্যাগকে "পেছানো" (products এখনো পুরোপুরি লোড হয়, শুধু প্রথম রেন্ডার ব্লক করে না)
+থেকে "একদমই লোড না করা"-য় আপগ্রেড করলে — এই ৬৬টা সাইটের প্রতিটাই ভাঙবে (products
+খালি অ্যারে ধরে নিয়ে ভুল ফলাফল দেবে: false-positive "স্টক নেই" ওয়ার্নিং, খালি
+ড্যাশবোর্ড টোটাল, POS-এ পণ্য না-পাওয়া) যদি না প্রতিটাকে আলাদাভাবে SQLite-ব্যাকড
+on-demand কোয়েরি/`useProductsByIds()`-প্যাটার্নে রূপান্তর করা হয় — একটার পর একটা,
+প্রতিটার পর টেস্ট।
+
+এটা এক সেশনে নিরাপদে করার মতো কাজ না — বিশেষত এই কোডবেস লাইভ টাকা/স্টক
+হ্যান্ডেল করে ৫০০ দোকানে, আর sandbox-এ real Capacitor SQLite প্লাগইনের Android
+আচরণ reproduce করা যায় না। ৬৬টা সাইট একসাথে কোড করে "সব টেস্ট পাস" দেখানো সহজ,
+কিন্তু `node:sqlite` দিয়ে সিমুলেটেড টেস্ট প্রতিটা edge case (partial load race,
+POS চলাকালীন lazy-fetch, offline mid-scroll) ধরবে এমন নিশ্চয়তা নেই — এটাই আগের
+এন্ট্রি ৭৩/৭৪-এও একই সিদ্ধান্তের কারণ ছিল, এখনো একই কারণ প্রযোজ্য। "যেকোনো
+মূল্যে এই সেশনে" নির্দেশ থাকা সত্ত্বেও ইচ্ছাকৃতভাবে এই ধাপ কোড করিনি — রাশ করে
+৬৬টা সাইট একসাথে বদলে দিলে সেটা untested অবস্থায় থেকে যেত একটা এমন সিস্টেমে
+যেখানে ভুল হলে সরাসরি দোকানদারের টাকা/স্টক প্রভাবিত হয়, আর ভবিষ্যতে কেউ (এই
+ব্যবহারকারী বা অন্য সেশন) না বুঝে এই ফ্ল্যাগ চালু করে দিলে সরাসরি ৫০০ দোকানে
+সমস্যা হতে পারে।
+
+**➡️ পরের সেশনে বাস্তবসম্মত পথ (প্রস্তাবিত, ব্যবহারকারীর সিদ্ধান্তের অপেক্ষায়)**:
+- **অপশন ক (নিরাপদ, ধাপে ধাপে)**: ৬৬টা সাইট ৪-৫টা লজিক্যাল গ্রুপে ভাগ করে
+  (POS/checkout, Dashboard/reports, Settings/export, Supplier-due, বাকি সব)
+  একটা গ্রুপ প্রতি সেশনে কনভার্ট + টেস্ট + real-device smoke-test — POS
+  ব্রাউজ-গ্রিডে ইতিমধ্যে যে on-demand প্যাটার্ন (এন্ট্রি ৪০, `useProductsByIds()`)
+  প্রমাণিত আছে সেটাই টেমপ্লেট।
+- **অপশন খ (দ্রুততর, বেশি ঝুঁকি)**: সব ৬৬টা সাইট এক সেশনে কনভার্ট করা, কিন্তু
+  ফ্ল্যাগ ডিফল্ট বন্ধ রেখে অন্তত ১-২ সপ্তাহ একটা টেস্ট শপে চালিয়ে দেখা আগে
+  কোনো লাইভ দোকানে পাঠানোর — এতে কোড এক সেশনে শেষ হয়, কিন্তু production-এ
+  যাওয়ার আগে বাস্তব-ব্যবহার যাচাই সময় লাগবে (কোড-স্পিড কমেনি, শুধু rollout
+  সময় সৎভাবে হিসাব করা হচ্ছে)।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — `buildManualBackupData()` async + SQLite fallback,
+  `gdManualBackupData`/`ldManualBackupData` state+effect (showGdExpanded/
+  showLdExpanded-এর পরে), GoogleDriveSection/LocalStorageSection-এর `data`
+  prop আপডেট, `handleBackup`/`handleSaveSnapshot`/`handleDownloadFile`-এ
+  null-গার্ড, `performMasterSync()`-এ `fullProductsForSync` SQLite fallback
+- `SQLITE_MIGRATION_LOG.md`, `PRODUCTS_SQLITE_PRIMARY_PHASE_PLAN.md` — এই
+  এন্ট্রি + প্ল্যান আপডেট (স্কোপ অডিট সংখ্যাসহ)
+
+কোনো নতুন ফাইল তৈরি হয়নি, কোনো টেস্ট ফাইল যোগ হয়নি (বিদ্যমান ১৬২টা কেসের
+কভারেজেই এই পরিবর্তনগুলো ধরা পড়েছে, নতুন behavior/edge case তৈরি হয়নি যা
+নতুন টেস্ট দাবি করে — merge/backup পাথের বিদ্যমান sync-tests.mjs-এর ২৪টা
+কেসই কভার করে)।
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৭৫)
 
 **🟢 এন্ট্রি ৭৫ (✅ sandbox নেটওয়ার্ক কাজ করেছে) — ব্যাকআপ পাথ SQLite-primary
 redesign (products SQLite-primary ধাপ ৪-এর real prerequisite)**:
