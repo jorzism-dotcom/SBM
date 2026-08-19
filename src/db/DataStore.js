@@ -670,6 +670,64 @@ export async function getById(businessType, store, id) {
   return row ? JSON.parse(row.data) : null;
 }
 
+// 🆕 এন্ট্রি ৭৩ (রিকনসিলিয়েশন অডিট, বহু-সেশন "products SQLite-primary" ফেজের
+// ধাপ ১) — SQLite dual-write টেবিল বনাম বর্তমান in-memory অ্যারে (IndexedDB
+// blob-array থেকে আসা, এখনো একমাত্র সোর্স-অফ-ট্রুথ)-এর মধ্যে content-level
+// পার্থক্য খুঁজে বের করে। সম্পূর্ণ read-only — কোনো write করে না, ১০০% নিরাপদ,
+// প্রোডাকশন ডেটার কোনো ঝুঁকি নেই।
+//
+// কী তুলনা করে: প্রতিটা id-এর জন্য SQLite row-এর `data` কলাম (JSON) বনাম
+// in-memory রেকর্ডের JSON.stringify() — upsert()/upsertMany() ঠিক এই একই
+// JSON.stringify(record) SQLite-এ লেখে, তাই সফলভাবে সিঙ্কড রেকর্ডে এই দুটো
+// স্ট্রিং বিট-বাই-বিট মিলে যাওয়ার কথা।
+//
+// রিটার্ন করে { totalArr, totalSql, missingInSql, extraInSql, mismatched, matched }:
+// - missingInSql: array-তে আছে (deleted না), SQLite-এ নেই/deleted=1 — dualWriteSqlite()-এর
+//   আগের (এন্ট্রি ৭৩-এ ফিক্সড) বাগের ঠিক এই সিম্পটম, ব্যর্থ upsert চিরস্থায়ী ড্রিফট
+// - extraInSql: SQLite-এ আছে (deleted না), array-তে নেই — সাধারণত ব্যর্থ delete-sync
+// - mismatched: দুই জায়গাতেই আছে কিন্তু JSON কনটেন্ট আলাদা
+// প্রতিটা ক্যাটাগরিতে সর্বোচ্চ ২০টা id sample ফেরত (পুরো তালিকা না — বড় দোকানে
+// হাজার হাজার id UI-তে দেখানো ভারী/অর্থহীন)।
+// ⚠️ পুরো টেবিল স্ক্যান করে — products-এর (~১ লাখ টার্গেট স্কেল) জন্য ডিজাইন করা,
+// invoices/txns-এর মতো কোটি-স্কেল টেবিলে সরাসরি ব্যবহার করা উচিত না।
+export async function reconcileStore(businessType, store, currentArr) {
+  const db = await getDb(businessType);
+  const res = await db.query(`SELECT id, deleted, data FROM ${store}`, []);
+  const sqlRows = res.values || [];
+  const sqlById = new Map(sqlRows.map((r) => [String(r.id), r]));
+
+  const arrById = new Map();
+  for (const item of (currentArr || [])) {
+    if (!item || item.id == null) continue;
+    arrById.set(String(item.id), item);
+  }
+
+  const missingInSql = [];
+  const mismatched = [];
+  let matched = 0;
+  for (const [id, item] of arrById) {
+    const row = sqlById.get(id);
+    if (!row || row.deleted) { missingInSql.push(id); continue; }
+    if (row.data !== JSON.stringify(item)) { mismatched.push(id); } else { matched++; }
+  }
+
+  const extraInSql = [];
+  for (const [id, row] of sqlById) {
+    if (row.deleted) continue;
+    if (!arrById.has(id)) extraInSql.push(id);
+  }
+
+  const cap = (list) => list.slice(0, 20);
+  return {
+    totalArr: arrById.size,
+    totalSql: sqlRows.filter((r) => !r.deleted).length,
+    missingInSql: { count: missingInSql.length, sample: cap(missingInSql) },
+    extraInSql: { count: extraInSql.length, sample: cap(extraInSql) },
+    mismatched: { count: mismatched.length, sample: cap(mismatched) },
+    matched,
+  };
+}
+
 // ── এন্ট্রি ৪২ (ধাপ ৭ প্রস্তুতি) — ব্যাচ id-লুকআপ ──────────────────────────
 // কেন দরকার: getById() একবারে ১টা রেকর্ডই আনে — POS পিকার/Products লিস্ট
 // পেজিনেটেড ভিউতে (queryPage()) প্রতি পেজে ৫০-১০০টা id ফেরত আসে, সেই id-গুলোর
