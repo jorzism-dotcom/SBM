@@ -39,7 +39,7 @@ import {
 // তৈরি DataStore abstraction layer। isSqliteEnabled() ফ্ল্যাগ ডিফল্ট বন্ধ, তাই
 // এই import নিজে থেকে কোনো আচরণ পাল্টায় না — শুধু নিচের debouncedSave effect-
 // গুলোতে diff-based upsert/remove যোগ হয়েছে (দেখুন সেখানকার কমেন্ট)।
-import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite, queryPage as dsQueryPage, isProductsBootLazyEnabled, setProductsBootLazyEnabled, isPosOndemandCartEnabled, setPosOndemandCartEnabled } from "./db/DataStore.js";
+import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite, queryPage as dsQueryPage, isProductsBootLazyEnabled, setProductsBootLazyEnabled, isPosOndemandCartEnabled, setPosOndemandCartEnabled, reconcileStore as dsReconcileStore } from "./db/DataStore.js";
 // 🆕 এন্ট্রি ৩৬ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ২) — InventorySection/
 // Dashboard-এর KPI কাউন্ট + ডিটেইল লিস্ট + সাপ্লায়ার-গ্রুপিং SQL cutover
 import { getInventoryList as dsGetInventoryList, getExpiryCandidates as dsGetExpiryCandidates, getSupplierSummary as dsGetSupplierSummary, getProductsBySupplierKey as dsGetProductsBySupplierKey, getDateRangeAggregate as dsGetDateRangeAggregate, getCustomerRfmAggregates as dsGetCustomerRfmAggregates, getRiskProducts as dsGetRiskProducts } from "./db/DataStore.js";
@@ -6122,15 +6122,47 @@ function diffById(prevMap, currentArr) {
 // entity_type ("product"/"customer"/"invoice") কনভেনশনে — schema.sql-এর কমেন্ট দ্রষ্টব্য
 const STORE_TO_ENTITY_TYPE = { products: "product", customers: "customer", invoices: "invoice", expenses: "expense", cashLogs: "cashLog", purchaseOrders: "purchaseOrder", txns: "txn", returns: "return", stockMovements: "stockMovement", supplierPayments: "supplierPayment" };
 
+// 🆕 এন্ট্রি ৭৩ (রিকনসিলিয়েশন অডিট): dual-write ব্যর্থতা দেখার জন্য module-level,
+// in-memory (রিস্টার্টে রিসেট), per-store কাউন্টার — কোনো persistence না, শুধু
+// SqliteMigrationCard-এ "এই সেশনে কোনো write ব্যর্থ হয়েছে কিনা" দ্রুত দেখানোর জন্য।
+const _dualWriteFailureStats = new Map(); // `${businessType}:${store}` -> { count, lastAt, lastError }
+function _recordDualWriteFailure(businessType, store, err) {
+  const key = `${businessType}:${store}`;
+  const prev = _dualWriteFailureStats.get(key) || { count: 0, lastAt: null, lastError: null };
+  _dualWriteFailureStats.set(key, { count: prev.count + 1, lastAt: Date.now(), lastError: String(err?.message || err) });
+}
+function getDualWriteFailureStats(businessType, store) {
+  return _dualWriteFailureStats.get(`${businessType}:${store}`) || null;
+}
+
 function dualWriteSqlite(businessType, store, prevMapRef, currentArr) {
   if (!isSqliteEnabled()) return;
-  const { changed, removedIds, nextMap } = diffById(prevMapRef.current, currentArr);
-  prevMapRef.current = nextMap;
+  const { changed, removedIds } = diffById(prevMapRef.current, currentArr);
+  if (!changed.length && !removedIds.length) return;
+  // 🔴 ফিক্স (এন্ট্রি ৭৩, রিকনসিলিয়েশন অডিট থেকে ধরা পড়া রুট-কজ): আগে prevMapRef.current
+  // এখানেই সিঙ্ক্রোনাসভাবে নতুন Map-এ সেট হতো — upsertMany()/dsRemove() রেজাল্ভ হওয়ার
+  // অপেক্ষা না করেই। মানে কোনো write ব্যর্থ হলেও (নিচের .catch() সাইলেন্টলি যা ধরত)
+  // diffById-এর পরের সাইকেল ওই রেকর্ডকে "আগেই সিঙ্কড" ধরে নিত — সেটা তখন SQLite-এ
+  // চিরস্থায়ীভাবে আর কখনো লেখা হতো না, যতক্ষণ না রেকর্ডটা আবার বদলায়। এটাই
+  // "SQLite dual-write কখনো পুরোপুরি reconcile করা হয়নি" ঝুঁকির প্রকৃত রুট-কজ।
+  // এখন prevMapRef শুধু write সফল হলেই advance হয় (পুরনো Map-অবজেক্টের identity
+  // অক্ষত রেখে in-place mutate) — ব্যর্থ হলে পুরনো এন্ট্রি থেকে যায়, ফলে সেই
+  // রেকর্ড পরের যেকোনো change-cycle-এ (products আবার বদলালেই, পুরো effect ফের
+  // চলে) আবার "changed" হিসেবে ধরা পড়ে রিট্রাই হবে।
+  // ⚠️ সীমাবদ্ধতা: ব্যর্থ রেকর্ডটা (বা এই store-এর অন্য কিছু) আর কখনো না বদলালে
+  // effect ট্রিগারই হবে না — এটা automatic retry, guaranteed eventual-consistency
+  // না। দোকানে নিয়মিত products এডিট হয় বলে বাস্তবে ঝুঁকি কম, তবু নিশ্চিত হতে
+  // SqliteMigrationCard-এর নতুন "গভীর রিকনসিলিয়েশন চেক" বাটন দিয়ে যেকোনো সময়
+  // সম্পূর্ণ content-level অডিট চালানো যায় (দেখুন reconcileStore(), DataStore.js)।
   if (changed.length) {
-    upsertMany(businessType, store, changed).catch(() => {});
+    upsertMany(businessType, store, changed)
+      .then(() => { for (const r of changed) prevMapRef.current.set(String(r.id), r); })
+      .catch((e) => { _recordDualWriteFailure(businessType, store, e); });
   }
   removedIds.forEach((id) => {
-    dsRemove(businessType, store, id).catch(() => {});
+    dsRemove(businessType, store, id)
+      .then(() => { prevMapRef.current.delete(id); })
+      .catch((e) => { _recordDualWriteFailure(businessType, store, e); });
   });
   // 🆕 Phase ১ (foundation, PHASE_3_4_5_FINAL_PLAN_v2.md): lightweight event log —
   // dual-write-এর ঠিক পাশে, সম্পূর্ণ fire-and-forget, মূল write-path অস্পৃষ্ট।
@@ -36730,6 +36762,10 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
   const [resumableProgress, setResumableProgress] = useState({}); // { products: {migrated,total}, ... }
   const [migrationStates, setMigrationStates] = useState(null); // null | রো-অ্যারে (_migration_state টেবিলের বর্তমান কনটেন্ট)
   const [analyzeRunning, setAnalyzeRunning] = useState(false); // এন্ট্রি ১৫: ম্যানুয়াল ANALYZE বাটনের লোডিং স্টেট
+  // 🆕 এন্ট্রি ৭৩ — content-level রিকনসিলিয়েশন (runVerify()-এর count-only চেক থেকে
+  // আলাদা, নিচে দেখুন reconcileProducts())
+  const [reconciling, setReconciling] = useState(false);
+  const [reconcileResult, setReconcileResult] = useState(null); // null | reconcileStore()-এর রিটার্ন
 
   const runBackfill = async () => {
     setBackfilling(true);
@@ -36782,6 +36818,28 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
       showToast?.("❌ ভেরিফাই ব্যর্থ: " + String(e?.message || e), "#ef4444");
     } finally {
       setVerifying(false);
+    }
+  };
+
+  // 🆕 এন্ট্রি ৭৩ — content-level রিকনসিলিয়েশন: শুধু count মেলানো (runVerify) না,
+  // প্রতিটা id-এর আসল JSON কনটেন্ট SQLite বনাম in-memory array-তে মেলানো। এখন
+  // শুধু products-এর জন্য (স্কোপ, invoices/customers-এ পরে দরকার হলে যোগ হবে)।
+  const runReconcileProducts = async () => {
+    setReconciling(true);
+    try {
+      const result = await dsReconcileStore(businessType, "products", products || []);
+      setReconcileResult(result);
+      const problems = result.missingInSql.count + result.extraInSql.count + result.mismatched.count;
+      showToast?.(
+        problems === 0
+          ? `✅ রিকনসিলিয়েশন ক্লিন — ${result.matched}/${result.totalArr} মিলেছে, কোনো ড্রিফট পাওয়া যায়নি`
+          : `⚠️ ${problems}টা রেকর্ডে ড্রিফট পাওয়া গেছে (নিচে ডিটেইল দেখুন)`,
+        problems === 0 ? undefined : "#f59e0b"
+      );
+    } catch (e) {
+      showToast?.("❌ রিকনসিলিয়েশন চেক ব্যর্থ: " + String(e?.message || e), "#ef4444");
+    } finally {
+      setReconciling(false);
     }
   };
 
@@ -36954,6 +37012,37 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
               })}
             </div>
           )}
+
+          {/* 🆕 এন্ট্রি ৭৩ — content-level রিকনসিলিয়েশন (products-only, উপরের count-only
+              ভেরিফাই থেকে গভীরতর): প্রতিটা id-এর আসল JSON কনটেন্ট মেলায়, শুধু সংখ্যা না। */}
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px dashed ${T.border}` }}>
+            <button onClick={runReconcileProducts} disabled={reconciling} style={{
+              width: "100%", padding: "10px 0", borderRadius: 10, border: `1.5px solid ${T.border}`,
+              background: "transparent", color: T.text, fontWeight: 700, fontSize: 12.5,
+              cursor: reconciling ? "default" : "pointer",
+            }}>{reconciling ? "গভীর চেক চলছে..." : "🧪 Products গভীর রিকনসিলিয়েশন চেক (কন্টেন্ট-লেভেল, read-only)"}</button>
+            <div style={{ color: T.sub, fontSize: 10.5, marginTop: 5, lineHeight: 1.6 }}>
+              শুধু row-কাউন্ট না — প্রতিটা পণ্যের আসল ডেটা SQLite বনাম IndexedDB-তে বিট-বাই-বিট
+              মিলিয়ে দেখে। কোনো write করে না, সম্পূর্ণ নিরাপদ।
+            </div>
+            {reconcileResult && (
+              <div style={{ background: T.bg, borderRadius: 10, padding: 12, marginTop: 10, fontSize: 11.5, lineHeight: 1.9, color: T.text }}>
+                <div>মোট array: <b>{reconcileResult.totalArr}</b> | মোট SQLite (deleted বাদে): <b>{reconcileResult.totalSql}</b> | মিলেছে: <b style={{ color: "#22c55e" }}>{reconcileResult.matched}</b></div>
+                <div style={{ color: reconcileResult.missingInSql.count ? "#ef4444" : T.sub }}>
+                  SQLite-এ নেই/deleted: <b>{reconcileResult.missingInSql.count}</b>
+                  {reconcileResult.missingInSql.count > 0 && ` (নমুনা: ${reconcileResult.missingInSql.sample.join(", ")})`}
+                </div>
+                <div style={{ color: reconcileResult.extraInSql.count ? "#f59e0b" : T.sub }}>
+                  SQLite-এ আছে, array-তে নেই: <b>{reconcileResult.extraInSql.count}</b>
+                  {reconcileResult.extraInSql.count > 0 && ` (নমুনা: ${reconcileResult.extraInSql.sample.join(", ")})`}
+                </div>
+                <div style={{ color: reconcileResult.mismatched.count ? "#ef4444" : T.sub }}>
+                  কনটেন্ট মিসম্যাচ: <b>{reconcileResult.mismatched.count}</b>
+                  {reconcileResult.mismatched.count > 0 && ` (নমুনা: ${reconcileResult.mismatched.sample.join(", ")})`}
+                </div>
+              </div>
+            )}
+          </div>
 
           {/* 🔁 Resumable migration (Phase 2, এন্ট্রি ১১) — বড় স্কেলে মাঝপথে অ্যাপ বন্ধ হলেও
               _migration_state টেবিল দিয়ে প্রগ্রেস ট্র্যাক করে, resume করলে প্রথম থেকে না শুরু করে
