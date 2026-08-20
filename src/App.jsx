@@ -29136,9 +29136,29 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const deferredSearch = useDeferredValue(search);
 
   // ── serial নম্বর সহ পণ্য তালিকা + সার্চ ফিল্টার (এই useMemo আগে ভুলবশত মুছে গিয়েছিল) ──
+  // 🔴 এন্ট্রি ৮৪ (real-device বাগ ফিক্স — "uncommon-এ ২৪৩টা কিন্তু ২০৩টা
+  // দেখাচ্ছিল, সার্চও কাজ করছে না") — মূল কারণ: never-load মোডে `products`
+  // React array চিরস্থায়ীভাবে খালি ([]) থাকে (এটাই ডিজাইন — দেখুন এন্ট্রি ৮০),
+  // আর ব্রাউজ-মোড SQL-হাইড্রেটেড (useSqliteBrowse/browseProducts) হলেও সার্চ
+  // অ্যাক্টিভ হওয়া মাত্র useSqliteBrowse=false হয়ে filteredAll-এ (নিচে) চলে
+  // যায়, যেটা সরাসরি এই `products` prop থেকে বিল্ড হতো — খালি array স্ক্যান
+  // করে সবসময় শূন্য ফলাফল দিত, SQL/FTS candidate id ঠিক পেলেও pool খালি বলে
+  // কিছুই মিলত না। এখন never-load মোডে (products খালি) গ্লোবাল
+  // হাইড্রেটেড `productsById` (Zustand store, এন্ট্রি ৭৮/৮৩-এ পুরো ক্যাটালগ
+  // দিয়ে বাল্ক-হাইড্রেট হয়) ফলব্যাক সোর্স হিসেবে ব্যবহার হচ্ছে। products
+  // পূর্ণ থাকা অবস্থায় (বর্তমান ৫০০ দোকানের ডিফল্ট) এই ফলব্যাক কখনো ট্রিগার
+  // হয় না — behavior-preserving।
+  const _globalProductsByIdForSearch = useAppStore(s => s.productsById);
+  const productsSearchSource = useMemo(() => {
+    if (products.length > 0) return products;
+    return _globalProductsByIdForSearch && _globalProductsByIdForSearch.size > 0
+      ? Array.from(_globalProductsByIdForSearch.values())
+      : products;
+  }, [products, _globalProductsByIdForSearch]);
+
   const productsWithSerialAll = useMemo(() =>
-    products.map((p, i) => ({ ...p, serial: i + 1, serialStr: String(i + 1) })),
-    [products]
+    productsSearchSource.map((p, i) => ({ ...p, serial: i + 1, serialStr: String(i + 1) })),
+    [productsSearchSource]
   );
 
   // 🆕 ধাপ ৭.৩ প্রস্তুতি (POS-এর productsByIdMap-এর সাথে সামঞ্জস্যপূর্ণ প্যাটার্ন) —
@@ -29379,7 +29399,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const [peFtsQuery, setPeFtsQuery] = useState("");
   useEffect(() => {
     const q = (peForm.productSearch || "").trim();
-    if (!q || !isSqliteEnabled() || (products.length > 0 && products.length <= FTS_NARROW_THRESHOLD)) { // এন্ট্রি ৮১
+    if (!q || !isSqliteEnabled() || (productsSearchSource.length > 0 && productsSearchSource.length <= FTS_NARROW_THRESHOLD)) { // এন্ট্রি ৮১/৮৪
       setPeFtsIds(null);
       return;
     }
@@ -29390,18 +29410,21 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
         .catch(() => { if (!cancelled) { setPeFtsIds(null); _markProductsSqlDownIfRisky(); } }); // এন্ট্রি ৮১
     }, 150);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [peForm.productSearch, businessType, products.length]);
+  }, [peForm.productSearch, businessType, productsSearchSource.length]);
 
+  // 🔴 এন্ট্রি ৮৪ — আগে সরাসরি `products` (never-load মোডে খালি) স্ক্যান করত,
+  // ফলে ক্রয় এন্ট্রি ফর্মের পণ্য-সার্চ কখনো ফলাফল দেখাত না (একই রুট-কজ যা
+  // Products লিস্ট সার্চেও ছিল, উপরে productsSearchSource দেখুন)।
   const peFilteredProds = useMemo(() => {
     const q = (peForm.productSearch || "").trim();
-    if (!q) return products;
+    if (!q) return productsSearchSource;
     const useNarrowing = peFtsIds && peFtsQuery === q;
-    const pool = useNarrowing ? products.filter(p => peFtsIds.has(String(p.id))) : products;
+    const pool = useNarrowing ? productsSearchSource.filter(p => peFtsIds.has(String(p.id))) : productsSearchSource;
     return pool
       .map(p => ({ ...p, _score: productMatchScore(p, q) }))
       .filter(p => p._score > 0)
       .sort(bySearchScore);
-  }, [products, peForm.productSearch, peFtsIds, peFtsQuery]);
+  }, [productsSearchSource, peForm.productSearch, peFtsIds, peFtsQuery]);
   const peNextBatchLabel = useMemo(() => (
     peForm.productId ? calcNextBatch(peForm.productId, products, purchaseOrders) : "—"
   ), [peForm.productId, products, purchaseOrders]);
