@@ -31720,7 +31720,7 @@ const MemoProducts = React.memo(Products);
 // ব্লকটা সরিয়ে দিলেই পুরো ফিচার ক্লিন-আপ হয়ে যাবে, অন্য কোথাও কিছু বদলাতে হবে না।
 function BatchSyncTool({ T, S, products = [], setProducts, invoices = [], setInvoices, showToast, currentUser, auditLog, businessType }) {
   const fmt = n => fmtMoney(n);
-  const [section, setSection] = React.useState("risk"); // "risk" | "mismatch" | "correction"
+  const [section, setSection] = React.useState("risk"); // "risk" | "correction"
   const [editingId, setEditingId] = React.useState(null);
   const [editPrice, setEditPrice] = React.useState("");
   // 🆕 ফিক্স (৩০ জুলাই ২০২৬): "ঝুঁকিপূর্ণ পণ্য" ট্যাবে আগে শুধু বিক্রয়মূল্য ঠিক
@@ -31734,16 +31734,6 @@ function BatchSyncTool({ T, S, products = [], setProducts, invoices = [], setInv
   // থাকলে indexed cost_price/price কলামে SQL কোয়েরি (dsGetRiskProducts),
   // নাহলে ঠিক এই একই JS লজিক ফলব্যাক হিসেবে — শর্ত/সর্ট-অর্ডার হুবহু অপরিবর্তিত।
   const riskProducts = useRiskProducts(products, businessType);
-
-  // ── (B) ব্যাচ costPrice মিসম্যাচ ───────────────────────────────────────
-  // 🔴 ফিক্স (True Batch/FIFO costing — ২০২৬): আগে "সব ব্যাচের costPrice
-  // product.costPrice-এর সাথে মিলতে হবে" এই ধারণায় এই চেকটা বানানো হয়েছিল
-  // (যখন প্রতিটা ক্রয়ে সব ব্যাচ জোর করে একই গড় দামে সিঙ্ক হয়ে যেত)। এখন
-  // প্রতিটা ব্যাচ তার নিজের আসল রেকর্ডকৃত cost ধরে রাখে (ফ্রি ব্যাচ=০,
-  // অন্যগুলো তাদের কেনা দামে) — তাই ব্যাচ-cost ≠ product-average এখন
-  // স্বাভাবিক ও কাঙ্ক্ষিত, "মিসম্যাচ" না। পুরনো লজিক এখন প্রতিটা ব্যাচকেই
-  // ভুলভাবে ফ্ল্যাগ করত বলে নিষ্ক্রিয় করা হলো।
-  const mismatches = React.useMemo(() => [], []);
 
   const canEdit = currentUser?.role === "admin" || currentUser?.role === "owner";
 
@@ -31870,36 +31860,14 @@ function BatchSyncTool({ T, S, products = [], setProducts, invoices = [], setInv
     setEditingId(null); setEditPrice(""); setEditCost("");
   };
 
-  const syncBatch = (m) => {
-    setProducts(prev => prev.map(p => {
-      if (p.id !== m.productId) return p;
-      const batches = (p.batches || []).map((b, i) =>
-        i === m.batchIndex ? { ...b, costPrice: p.costPrice || 0, sellPrice: p.price || 0, costMismatchIgnored: false } : b
-      );
-      return { ...p, batches };
-    }));
-    showToast?.(`${m.productName} — ব্যাচ ${m.batchNo} সিঙ্ক করা হলো`);
-  };
-
-  const keepBatch = (m) => {
-    setProducts(prev => prev.map(p => {
-      if (p.id !== m.productId) return p;
-      const batches = (p.batches || []).map((b, i) =>
-        i === m.batchIndex ? { ...b, costMismatchIgnored: true } : b
-      );
-      return { ...p, batches };
-    }));
-    showToast?.(`${m.productName} — ব্যাচ ${m.batchNo} রেখে দেওয়া হলো (ইচ্ছাকৃত ভিন্ন দাম হিসেবে মার্ক)`);
-  };
-
   const cardStyle = { background: T.card, borderRadius: 14, padding: "12px 14px", marginBottom: 10, border: `1px solid ${T.border}` };
   const btnBase = { border: "none", borderRadius: 8, padding: "7px 12px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" };
 
   return (
     <div style={{ padding: "14px 12px 90px" }}>
-      <div style={{ color: T.headingColor, fontWeight: 900, fontSize: 16, marginBottom: 4 }}>⚠️ লস-ঝুঁকি ও ব্যাচ সিঙ্ক</div>
+      <div style={{ color: T.headingColor, fontWeight: 900, fontSize: 16, marginBottom: 4 }}>⚠️ লস-ঝুঁকি ও মূল্য সংশোধন</div>
       <div style={{ color: T.sub || "#94a3b8", fontSize: 12, marginBottom: 14 }}>
-        ভুল ক্রয়/বিক্রয়মূল্য বা পুরনো ব্যাচ-দামের কারণে লস — সমাধান হয়ে গেলে এই টুলটা মুছে ফেলতে পারবেন।
+        ভুল ক্রয়/বিক্রয়মূল্য বা পুরনো ইনভয়েসের কারণে লস — সমাধান হয়ে গেলে এই টুলটা মুছে ফেলতে পারবেন।
       </div>
 
       <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
@@ -31907,10 +31875,6 @@ function BatchSyncTool({ T, S, products = [], setProducts, invoices = [], setInv
           ...btnBase, flex: 1, minWidth: 100, background: section === "risk" ? T.accent : "transparent",
           color: section === "risk" ? "#fff" : T.headingColor, border: `1px solid ${T.accent}88`,
         }}>ঝুঁকিপূর্ণ পণ্য ({riskProducts.length})</button>
-        <button onClick={() => setSection("mismatch")} style={{
-          ...btnBase, flex: 1, minWidth: 100, background: section === "mismatch" ? T.accent : "transparent",
-          color: section === "mismatch" ? "#fff" : T.headingColor, border: `1px solid ${T.accent}88`,
-        }}>ব্যাচ মিসম্যাচ ({mismatches.length})</button>
         <button onClick={() => setSection("correction")} style={{
           ...btnBase, flex: 1, minWidth: 100, background: section === "correction" ? T.accent : "transparent",
           color: section === "correction" ? "#fff" : T.headingColor, border: `1px solid ${T.accent}88`,
@@ -31952,27 +31916,6 @@ function BatchSyncTool({ T, S, products = [], setProducts, invoices = [], setInv
                 <button onClick={() => { setEditingId(p.id); setEditPrice(String(p.price || "")); setEditCost(String(p.costPrice || "")); }}
                   style={{ ...btnBase, marginTop: 8, background: "#0ea5e9", color: "#fff" }}>মূল্য ঠিক করুন</button>
               )
-            )}
-          </div>
-        ))
-      )}
-
-      {section === "mismatch" && (
-        mismatches.length === 0 ? (
-          <div style={{ textAlign: "center", color: T.sub || "#94a3b8", fontSize: 13, padding: 30 }}>✅ কোনো ব্যাচ মিসম্যাচ নেই</div>
-        ) : mismatches.map((m, idx) => (
-          <div key={`${m.productId}-${m.batchIndex}-${idx}`} style={{ ...cardStyle, borderLeft: "3px solid #f59e0b" }}>
-            <div style={{ color: T.headingColor, fontWeight: 800, fontSize: 14 }}>{m.productName}</div>
-            <div style={{ color: T.sub || "#94a3b8", fontSize: 11.5, marginTop: 2 }}>ব্যাচ: {m.batchNo} · স্টক: {m.qty}</div>
-            <div style={{ display: "flex", gap: 14, marginTop: 4, fontSize: 12.5 }}>
-              <span style={{ color: "#f59e0b" }}>ব্যাচের ক্রয়মূল্য: ৳{fmt(m.batchCost)}</span>
-              <span style={{ color: "#0ea5e9" }}>প্রোডাক্টের বর্তমান ক্রয়মূল্য: ৳{fmt(m.productCost)}</span>
-            </div>
-            {canEdit && (
-              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                <button onClick={() => syncBatch(m)} style={{ ...btnBase, flex: 1, background: "#16a34a", color: "#fff" }}>✅ সিঙ্ক করুন</button>
-                <button onClick={() => keepBatch(m)} style={{ ...btnBase, flex: 1, background: "transparent", color: T.headingColor, border: `1px solid ${T.border}` }}>রেখে দিন</button>
-              </div>
             )}
           </div>
         ))
