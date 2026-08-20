@@ -24,7 +24,35 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৮৩-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৮৪-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🔴 এন্ট্রি ৮৪ (⚠️ sandbox-এ এই সেশনে নেটওয়ার্ক অ্যাক্সেস ছিল না — npm install/test/lint/typecheck/build/golden-master/fuzz কোনোটাই চালানো যায়নি, শুধু ম্যানুয়াল কোড-রিভিউ + ব্রেস-ব্যালান্স চেক — real-device টেস্ট এখনো বাকি, এবার sandbox-ভেরিফিকেশনও বাকি) — real-device-এ ধরা পড়া "uncommon-এ ২৪৩টা কিন্তু ২০৩টা দেখাচ্ছিল, সার্চও কাজ করছে না" বাগের রুট-কজ ফিক্স**:
+
+**প্রেক্ষাপট**: আগের সেশনের (শেয়ার্ড PDF ট্রান্সক্রিপ্ট) ইনভেস্টিগেশন এই zip-এ সংরক্ষিত হয়নি (সেই সেশন "Ran 8 commands, edited a file" পর্যন্ত গিয়ে কাটা পড়েছিল) — এই সেশনে PDF দুটো পড়ে সেই একই রুট-কজ কোড পড়ে পুনরায় নিশ্চিত করা হলো এবং প্রকৃত ফিক্স প্রয়োগ করা হলো।
+
+**রুট-কজ**: Products লিস্ট পেজে (`function Products`) দুটো আলাদা ডেটা-পাথ —
+- **ব্রাউজ মোড** (সার্চ না থাকলে): SQL `queryPage()` + `useProductsByIds()` দিয়ে হাইড্রেট — never-load মোডেও ঠিকই কাজ করে। "২০৩/২৪৩" সংখ্যাটা সম্ভবত এখানেই — pagination ঠিকই চলছে কিন্তু scroll/`endReached` ট্রিগার না হওয়া পর্যন্ত বাকি পেজ লোড হয়নি (এটা স্বাভাবিক ভার্চুয়াল-স্ক্রল আচরণ, বাগ না — এই সেশনে হাত দেওয়া হয়নি)।
+- **সার্চ মোড (আসল বাগ)**: সার্চ করলে `isSearchActive = true` হয়ে যায়, ফলে `useSqliteBrowse` বন্ধ হয়ে যায় এবং কোড সরাসরি `filteredAll`-এ চলে যায় — যেটা `productsWithSerialAll` থেকে আসে, আর সেটা সরাসরি `products` prop (in-memory array) থেকে। **never-load মোডে এই array চিরস্থায়ীভাবে খালি** — তাই FTS candidate id ঠিকই পাওয়া গেলেও, স্কোরিং-এর জন্য আসল product object খুঁজতে গিয়ে খালি array-তে কিছুই মেলেনি। এই কারণেই সার্চ সম্পূর্ণ কাজ করছিল না। একই রুট-কজে ক্রয়-এন্ট্রি (PE) ফর্মের `peFilteredProds`-ও (লাইন ~২৯৪১৫ এলাকা) আক্রান্ত ছিল।
+
+**ফিক্স**: নতুন `productsSearchSource` — `products.length > 0` হলে `products`-ই (আচরণ অপরিবর্তিত, ৫০০ লাইভ দোকানের ডিফল্ট), নাহলে গ্লোবাল হাইড্রেটেড `productsById` (Zustand store, এন্ট্রি ৭৮/৮০/৮৩-এ পুরো ক্যাটালগ দিয়ে বাল্ক-হাইড্রেট হয়) থেকে `Array.from(...values())`। `productsWithSerialAll` (→ `filteredAll` → সার্চ+ডিফল্ট-সর্ট) এবং `peFilteredProds` (+ তার FTS-threshold চেক) — দুটোই এখন `products`-এর বদলে `productsSearchSource` ব্যবহার করে।
+
+**🔴 সততার সাথে — এই সেশনে যাচাই অসম্পূর্ণ**: sandbox-এ নেটওয়ার্ক না থাকায় `npm install` ব্যর্থ হয়েছে (`node_modules` নেই), তাই `npm test`/`lint`/`typecheck`/`build`/`golden-master`/`fuzz` — **কোনোটাই চালানো যায়নি এই সেশনে**। শুধু ম্যানুয়ালি কোড পড়ে (edited অংশ + আশেপাশের কল-সাইট) এবং ব্রেস-ব্যালান্স স্ক্রিপ্ট দিয়ে যাচাই করা হয়েছে। **পরের সেশনে (নেটওয়ার্ক থাকলে) সবচেয়ে প্রথম কাজ**: `npm install && npm test && npm run lint && npm run typecheck && npm run build && npm run test:golden-master && npm run test:fuzz` চালিয়ে নিশ্চিত হওয়া, তারপরই real-device টেস্ট।
+
+**এখনো না-ছোঁয়া সম্পর্কিত ঝুঁকি (audit-এর সময় পাওয়া, ইচ্ছাকৃতভাবে bounded রাখা হলো)**: `Products` কম্পোনেন্টের ভেতরেই আরও কয়েক জায়গায় সরাসরি `products` (raw array) স্ক্যান হয় (`calcNextBatch(peForm.productId, products, ...)`, ব্যাচ-এডিট প্যানেলের `products.map()`/`.find()` কল-সাইটগুলো ইত্যাদি) — এগুলো এই সেশনে audit করা হয়নি (স্কোপ: শুধু ব্যবহারকারীর রিপোর্ট করা "সার্চ কাজ করছে না" বাগ)। never-load মোডে এই সাইটগুলো ঝুঁকিপূর্ণ থাকতে পারে, future সেশনে পুরো `Products` কম্পোনেন্টের একটা সম্পূর্ণ grep-audit করা উচিত (এন্ট্রি ৮২-এর প্যাটার্ন অনুসরণ করে)।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — নতুন `productsSearchSource` (never-load ফলব্যাক, গ্লোবাল `productsById` থেকে) + `productsWithSerialAll`/`peFilteredProds`/তার FTS-threshold চেক এখন `products`-এর বদলে এটা ব্যবহার করে
+
+**পরের সেশনে আসল করণীয়**:
+0. **সবার আগে**: sandbox-এ `npm install && npm test && npm run lint && npm run typecheck && npm run build && npm run test:golden-master && npm run test:fuzz` চালিয়ে এই সেশনের ফিক্স যাচাই (নেটওয়ার্ক না থাকলে ব্যবহারকারীকে জানানো)
+1. real-device: `sbm_products_boot_never` চালু করে Products ট্যাবে "uncommon" ফিল্টার + সার্চ দুটোই আবার টেস্ট করে নিশ্চিত করা যে ফিক্স কাজ করেছে
+2. উপরে উল্লেখিত `Products` কম্পোনেন্টের বাকি raw-`products` স্ক্যান সাইটগুলো (calcNextBatch কল-সাইট, ব্যাচ-এডিট প্যানেল) audit
+3. POS on-demand cart (`sbm_pos_ondemand_cart`) real-device টেস্ট — সবচেয়ে বড় ব্লকার (অপরিবর্তিত, আগের সিরিয়াল থেকে)
+4. এন্ট্রি ৫৩/৫৫/৫৬-এর ৪টা id+hydrate সাইট real-device ভেরিফিকেশন
+5. FTS fallback পুল `products`-এর বদলে `productsById`-ভিত্তিক করা (এন্ট্রি ৮২-এর সীমাবদ্ধতা, এখনো অমীমাংসিত)
+6. ৭টা বিলিং-ক্রিটিক্যাল POS সাইট + cost-critical purchase-batch সাইট (সবচেয়ে ঝুঁকিপূর্ণ)
+
+---
 
 **🟢 এন্ট্রি ৮৩ (✅ sandbox নেটওয়ার্ক কাজ করেছে, npm test/lint/typecheck/build/golden-master/fuzz সব পাস — real-device টেস্ট এখনো বাকি) — ব্যবহারকারীর "৪, ৫, ৬ করুন" নির্দেশে ৩টা আইটেম যাচাই/সমাধান**:
 
