@@ -19519,11 +19519,14 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
   const { get: getPosOndemandProduct } = useProductsByIds(posNeededIds, businessType, productsByIdMap);
 
   // ── FIFO active-batch: শুধু p.batches (qty>0) // ── FIFO active-batch: শুধু p.batches (qty>0) থেকে — PE history source নয় ──
+  // 🔴 এন্ট্রি ৮৯ — invProdMap-এর ঠিক একই গ্যাপ/ফিক্স (উপরে দেখুন): posOndemandCart
+  // বন্ধ থাকলে আগে raw `products`, never-load মোডে খালি হয়ে গ্রিড-কার্ড/কার্টে
+  // ব্যাচ-নম্বর/এক্সপায়ারি ব্যাজ (ডিসপ্লে-অনলি, টাকা/স্টক লজিক না) হারিয়ে যেত।
   const productBatchMap = useMemo(() => {
     const map = {};
     const source = posOndemandCart
       ? posNeededIds.map(id => getPosOndemandProduct(id)).filter(Boolean)
-      : products;
+      : (products.length === 0 ? Array.from(productsByIdMap.values()) : products);
     source.forEach(p => {
       const fifo = getActiveBatch(p);
       if (fifo) {
@@ -19537,10 +19540,21 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
       }
     });
     return map;
-  }, [products, posOndemandCart, posNeededIds, getPosOndemandProduct]);
+  }, [products, posOndemandCart, posNeededIds, getPosOndemandProduct, productsByIdMap]);
 
   // 🔴 ফিক্স: p.stock-এর বদলে getSellableStock(p) — এতে মেয়াদোত্তীর্ণ ব্যাচের
   // qty বাদ দিয়ে হিসেব হয়, তাই মেয়াদোত্তীর্ণ পণ্য/ব্যাচ ইনভয়েসে যোগ করা যায় না
+  // 🔴 এন্ট্রি ৮৯ (item ৩, বিলিং-ক্রিটিক্যাল) — আগে `posOndemandCart` বন্ধ থাকলে
+  // (এটা `sbm_pos_ondemand_cart`, never-load থেকে সম্পূর্ণ স্বাধীন একটা ফ্ল্যাগ)
+  // সবসময় সরাসরি raw `products` থেকেই বিল্ড হতো — never-load মোডে (`products`
+  // স্থায়ীভাবে খালি) `invProdMap` তখন খালি Map হয়ে যেত, ফলে `selfUseCost`
+  // (createInvoice, নিজের-ব্যবহার ইনভয়েসের টাকার হিসাব) আর `toggleSelfUse`
+  // (কার্ট প্রাইস টগল) দুটোই ভুল/০ costPrice ব্যবহার করত। এখন products খালি
+  // হলে (এবং posOndemandCart বন্ধ থাকলে) ইতিমধ্যে-নিরাপদ `productsByIdMap`-এর
+  // (উপরে, এন্ট্রি ৮৬-এ productsSourceForPos-ভিত্তিক ফলব্যাক পাওয়া) values
+  // থেকে বিল্ড হয় — key-টাইপ (native `p.id`) অবিকল রাখা হয়েছে, শুধু সোর্স
+  // বদলেছে। products পূর্ণ থাকা অবস্থায় (৫০০ লাইভ দোকানের ডিফল্ট) কোনো
+  // আচরণ বদলায়নি — behavior-preserving।
   const invProdMap = useMemo(() => {
     // ⚠️ key হিসেবে সবসময় `p.id`-এর নিজস্ব (native) টাইপ ব্যবহার করা হচ্ছে
     // (String() করে না) — কল-সাইটগুলো (`invProdMap.get(it.productId)`) কোনো
@@ -19549,8 +19563,11 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
       const resolved = posNeededIds.map(id => getPosOndemandProduct(id)).filter(Boolean);
       return new Map(resolved.map(p => [p.id, p]));
     }
+    if (products.length === 0) {
+      return new Map(Array.from(productsByIdMap.values()).map(p => [p.id, p]));
+    }
     return new Map(products.map(p => [p.id, p]));
-  }, [products, posOndemandCart, posNeededIds, getPosOndemandProduct]);
+  }, [products, posOndemandCart, posNeededIds, getPosOndemandProduct, productsByIdMap]);
 
   // 🏠 নিজের ব্যবহার টগল — Payment স্টেপে অন/অফ করলে কার্টের সব আইটেমের দাম
   // বিক্রয়মূল্য ⇄ ক্রয়মূল্যের মধ্যে রিক্যালকুলেট হবে
@@ -20022,6 +20039,42 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     // সরাসরি blob-এ সেভ হয়ে যেত, প্রতিটা বিক্রিতে পুরো ক্যাটালগ মুছে যেত।
     // এখন সেই কেসে (products.length===0 + ফ্ল্যাগ চালু) blob-write স্কিপ হয়।
     if (_productsAfterSale && !(products.length === 0 && isProductsNeverLoadEnabled())) save(LK(SK.products), _productsAfterSale);
+
+    // 🔴 এন্ট্রি ৮৮ (item ১ — এন্ট্রি ৮৬-এ চিহ্নিত, এতদিন অসমাধানকৃত রিয়েল বাগ ফিক্স):
+    // never-load মোডে উপরের setProducts()-এ `prev` স্থায়ীভাবে `[]`, তাই `mapped`ও
+    // সবসময় `[]` — stockUpdateMap-এর হিসাব করা ডিডাকশন `products` React array-তে
+    // কখনো প্রতিফলিত হয় না, আর dualWriteSqlite() (products effect, উপরে) ওই একই
+    // সবসময়-খালি array থেকেই diffById() করে বলে SQLite-এও কখনো লেখা হয় না — অর্থাৎ
+    // ইনভয়েস তৈরি হয় ঠিকই কিন্তু স্টক-ডিডাকশন কোথাও স্থায়ী হতো না।
+    // ফিক্স: dualWriteSqlite()/diffById() পাথ সম্পূর্ণ বাইপাস করে, এই নির্দিষ্ট
+    // ডিডাকশনের জন্য আলাদা সরাসরি-SQL পাথ — `stockUpdateMap`-এর প্রতিটা id-এর
+    // জন্য global হাইড্রেটেড `productsById` (freshP-এর একই সোর্স, তাই never-load
+    // মোডেও সবসময় populated) থেকে পূর্ণ রেকর্ড নিয়ে stock/batches merge করে সরাসরি
+    // DataStore.upsertMany() দিয়ে SQLite-এ লেখা হয়, প্লাস productsById cache নিজেও
+    // optimistic/সিঙ্ক্রোনাসভাবে আপডেট হয় (একই সেশনে পরের বিক্রি/UI যেন সাথে সাথেই
+    // নতুন স্টক দেখে, পরের getState().productsById.get() কল কখনো স্টেল ডেটা না পায়)।
+    // স্বাভাবিক মোডে (products সবসময় পূর্ণ, ৫০০ লাইভ দোকানের ডিফল্ট) এই ব্লক কখনো
+    // ট্রিগার হয় না — behavior-preserving, উপরের setProducts()/dualWriteSqlite()
+    // পাথই তখন যথেষ্ট।
+    if (stockUpdateMap.size > 0 && products.length === 0 && isProductsNeverLoadEnabled() && isSqliteEnabled() && businessType) {
+      const curProductsById = useAppStore.getState().productsById;
+      const nextProductsById = new Map(curProductsById);
+      const neverLoadStockRecords = [];
+      stockUpdateMap.forEach((upd, id) => {
+        const base = curProductsById.get(String(id));
+        if (!base) return; // ডিফেন্সিভ — freshP (উপরে) থেকেই এই map বিল্ড হয়েছিল, তাই বাস্তবে সবসময় পাওয়া যাবে
+        const merged = { ...base, stock: upd.stock, batches: upd.batches };
+        neverLoadStockRecords.push(merged);
+        nextProductsById.set(String(id), merged);
+      });
+      if (neverLoadStockRecords.length > 0) {
+        useAppStore.getState().set("productsById", nextProductsById); // সিঙ্ক্রোনাস, অপটিমিস্টিক
+        upsertMany(businessType, "products", neverLoadStockRecords).catch((e) => {
+          console.warn("never-load POS স্টক-ডিডাকশন সরাসরি-SQL upsert ব্যর্থ:", e);
+          _markProductsSqlDownIfRisky(); // এন্ট্রি ৮০/৮১/৮২-এর একই গ্লোবাল ব্যানার-গার্ড — silent data loss না
+        });
+      }
+    }
 
     const inv = {
       id: invId, invoiceNo, customerId: isSelfUse ? null : isWalkIn ? walkInCustId : selCust.id,
@@ -29211,7 +29264,14 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   // 🆕 ধাপ ৭.৩ প্রস্তুতি (POS-এর productsByIdMap-এর সাথে সামঞ্জস্যপূর্ণ প্যাটার্ন) —
   // id → লাইভ product অবজেক্ট Map, useProductsByIds() হুকের জন্য। যতক্ষণ products
   // পুরোপুরি মেমরিতে থাকে, এই Map থেকেই সবসময় সিঙ্ক্রোনাস লুকআপ হয় (SQL ফেচ না)।
-  const productsByIdMap = useMemo(() => new Map(products.map(p => [String(p.id), p])), [products]);
+  // 🔴 এন্ট্রি ৮৯ — আগে সরাসরি raw `products` থেকে বিল্ড হতো, never-load মোডে
+  // (`products` স্থায়ীভাবে খালি) তাই এই Map-ও সবসময় খালি থাকত — `applyPurchaseBatch()`
+  // (নিচে, ক্রয়-এন্ট্রি weighted-avg-cost) এখান থেকেই `prod` সিঙ্ক্রোনাসভাবে খুঁজত,
+  // ফলে never-load মোডে প্রতিটা ক্রয়-এন্ট্রি নীরবে ব্যর্থ হতো (`prod` undefined →
+  // `if (!prod...) return null`)। এখন `productsSearchSource`-এর (উপরে, এন্ট্রি ৮৪)
+  // ঠিক একই global-হাইড্রেটেড-`productsById` ফলব্যাক প্যাটার্ন — products পূর্ণ
+  // থাকা অবস্থায় (৫০০ লাইভ দোকানের ডিফল্ট) কোনো আচরণ বদলায়নি, behavior-preserving।
+  const productsByIdMap = useMemo(() => new Map(productsSearchSource.map(p => [String(p.id), p])), [productsSearchSource]);
 
   const [demandFilter, setDemandFilter] = useState("সব"); // "সব" | "common" | "uncommon"
 
@@ -29941,65 +30001,107 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
           };
           let newStock = (prod.stock || 0) + qty; // fallback/লগের জন্য প্রাথমিক মান
 
+          // 🔴 এন্ট্রি ৮৯ — batchNo dedup + weighted-average cost patch কম্পিউট
+          // করার pure লজিক এখানে একটা হেল্পারে বের করা হলো (আগে শুধু নিচের
+          // setProducts()-এর ভেতরেই ইনলাইন ছিল), যাতে স্বাভাবিক (products
+          // array) পাথ আর never-load (সরাসরি-SQL, নিচে দেখুন) পাথ — দুটোই
+          // ঠিক একই হিসাব ব্যবহার করে, duplicate/diverge করার ঝুঁকি ছাড়াই।
+          // আচরণ/হিসাব ১০০% অপরিবর্তিত — শুধু ইনলাইন কোড একটা ফাংশনে সরানো হলো।
+          const computeBatchPatch = (base) => {
+            const existingBatchNos = new Set((base.batches || []).map(b => b.batchNo));
+            if (existingBatchNos.has(newBatch.batchNo)) {
+              const m = /^(.*-)(\d+)$/.exec(newBatch.batchNo);
+              if (m) {
+                let n = parseInt(m[2], 10);
+                let candidate;
+                do { n += 1; candidate = `${m[1]}${n}`; } while (existingBatchNos.has(candidate));
+                newBatch.batchNo = candidate;
+                entry.batch = candidate;
+              }
+            }
+            const oldStock = base.stock || 0;
+            const oldCost  = base.costPrice || 0;
+            const computedNewStock = oldStock + qty;
+            // ইনভেন্টরি ভ্যালুয়েশনের জন্য (ড্যাশবোর্ড/রিপোর্টে "মোট স্টক মূল্য" জাতীয়
+            // মেট্রিকে ব্যবহৃত) — এই weighted-average product.costPrice হিসেবে থেকেই যাচ্ছে।
+            const newCostPrice = oldStock + qty > 0
+              ? (oldStock * oldCost + qty * cost) / (oldStock + qty)
+              : cost;
+            const roundedNewCost = Math.round(newCostPrice * 10000) / 10000;
+            // 🔴 ফিক্স (True Batch/FIFO costing — ২০২৬): আগে এখানে নতুন ব্যাচ সহ
+            // বিদ্যমান সব ব্যাচের costPrice নতুন weighted-average দিয়ে ওভাররাইট
+            // হয়ে যেত (৩০ জুলাই ২০২৬-এর Weighted-Average ফিক্স)। সমস্যা: ফ্রি/বোনাস
+            // ব্যাচ (cost=0) ঢুকলে সব ব্যাচের রেকর্ডকৃত cost গড়ে মিশে যেত, এবং
+            // computeStockDeductionFIFO()-এর ব্যাচ-ভিত্তিক profit হিসাব অর্থহীন হয়ে
+            // পড়ত (সব ব্যাচেই একই cost)। এখন প্রতিটা ব্যাচ (নতুনটা সহ) তার নিজের
+            // আসল রেকর্ডকৃত cost (ফ্রি হলে ০) চিরস্থায়ীভাবে ধরে রাখছে — শুধু
+            // product.costPrice (উপরের roundedNewCost) সামগ্রিক ভ্যালুয়েশনের জন্য
+            // গড় থাকছে, ব্যাচ-লেভেল অ্যাকাউন্টিং (FIFO বিক্রি/ভয়েড/লাভ হিসাব) আর
+            // এই গড়ের ওপর নির্ভর করবে না।
+            // নতুন ব্যাচের costPrice ইতিমধ্যেই তার আসল দামে সেট করা আছে (উপরে
+            // newBatch তৈরির সময়) — এখানে আর ওভাররাইট করা হচ্ছে না।
+            // 🆕 lastRealCostPrice: ফ্রি এন্ট্রি বাদে সর্বশেষ real ক্রয়মূল্য —
+            // পরবর্তী ক্রয় এন্ট্রি ফর্মের auto-fill এখন এটা ব্যবহার করবে, যাতে
+            // weighted-average drift (ফ্রি স্টকের কারণে) পরের এন্ট্রির ফর্মে
+            // ভুল/কম দাম দেখিয়ে বিভ্রান্ত না করে।
+            const newLastRealCost = isFreeStock ? (base.lastRealCostPrice ?? base.costPrice ?? 0) : cost;
+            const merged = {
+              ...base,
+              stock: computedNewStock,
+              costPrice: roundedNewCost,
+              lastRealCostPrice: newLastRealCost,
+              price: sell || base.price,
+              spPrice: (spPrice !== undefined && spPrice !== "") ? (parseFloat(spPrice) || 0) : base.spPrice,
+              lastUpdated: now,
+              expiryDate: expiryDate || base.expiryDate,
+              batches: [
+                ...(base.batches || []),
+                newBatch,
+              ],
+            };
+            return { newStock: computedNewStock, merged };
+          };
+
           // অফলাইন/সার্ভার-ব্যর্থ (বা optimistic first-paint পাথ, নিচে দেখুন) —
           // synchronous local calculation, সিঙ্ক্রোনাস-লুপ collision-safety
           // (_peBatchOffset + linear probing) সহ।
           const applyLocalFallback = () => {
+            // 🔴 এন্ট্রি ৮৯ (item ৩, POS স্টক-ডিডাকশনের এন্ট্রি ৮৬/৮৮-এর ঠিক একই
+            // রুট-কজ, এখানে ক্রয়-এন্ট্রি/weighted-avg-cost-এ) — never-load মোডে
+            // নিচের `setProducts(prev => prev.map(...))`-এ `prev` স্থায়ীভাবে
+            // `[]`, তাই `mapped`ও কখনো এই পণ্যকে ধরে না — ক্রয়ের স্টক-বৃদ্ধি +
+            // weighted-average cost কোথাও পার্সিস্ট হতো না, আর dualWriteSqlite()
+            // (products effect)-ও একই সবসময়-খালি array থেকেই diff করে বলে
+            // SQLite-এও কখনো লেখা হতো না। ফিক্স: dualWriteSqlite()/diffById()
+            // পাথ বাইপাস করে — global হাইড্রেটেড `productsById` থেকে বেস রেকর্ড
+            // নিয়ে (উপরের একই computeBatchPatch() হিসাব দিয়ে) সরাসরি
+            // DataStore.upsertMany() দিয়ে SQLite-এ লেখা হয়, প্লাস productsById
+            // cache নিজেও সিঙ্ক্রোনাসভাবে আপডেট হয় (পরের ব্যাচ/এন্ট্রি অবিলম্বে
+            // সঠিক oldStock/oldCost দেখে)। স্বাভাবিক মোডে (products সবসময় পূর্ণ)
+            // এই ব্লক কখনো ট্রিগার হয় না — behavior-preserving।
+            if (products.length === 0 && isProductsNeverLoadEnabled()) {
+              const base = useAppStore.getState().productsById.get(String(productId)) || prod;
+              if (!base) return; // ডিফেন্সিভ — prod ইতিমধ্যে না-null চেক হয়ে গেছে (উপরে), তবু
+              const { newStock: ns, merged } = computeBatchPatch(base);
+              newStock = ns;
+              if (isSqliteEnabled() && businessType) {
+                const nextProductsById = new Map(useAppStore.getState().productsById);
+                nextProductsById.set(String(productId), merged);
+                useAppStore.getState().set("productsById", nextProductsById); // সিঙ্ক্রোনাস, অপটিমিস্টিক
+                upsertMany(businessType, "products", [merged]).catch((e) => {
+                  console.warn("never-load ক্রয়-এন্ট্রি সরাসরি-SQL upsert ব্যর্থ:", e);
+                  _markProductsSqlDownIfRisky(); // এন্ট্রি ৮০/৮১/৮২-এর একই গ্লোবাল ব্যানার-গার্ড
+                });
+              }
+              return;
+            }
             let computedArr = null;
             setProducts(prev => {
               const mapped = prev.map(p => {
                 if (p.id !== productId) return p;
-                const existingBatchNos = new Set((p.batches || []).map(b => b.batchNo));
-                if (existingBatchNos.has(newBatch.batchNo)) {
-                  const m = /^(.*-)(\d+)$/.exec(newBatch.batchNo);
-                  if (m) {
-                    let n = parseInt(m[2], 10);
-                    let candidate;
-                    do { n += 1; candidate = `${m[1]}${n}`; } while (existingBatchNos.has(candidate));
-                    newBatch.batchNo = candidate;
-                    entry.batch = candidate;
-                  }
-                }
-                const oldStock = p.stock || 0;
-                const oldCost  = p.costPrice || 0;
-                newStock = oldStock + qty;
-                // ইনভেন্টরি ভ্যালুয়েশনের জন্য (ড্যাশবোর্ড/রিপোর্টে "মোট স্টক মূল্য" জাতীয়
-                // মেট্রিকে ব্যবহৃত) — এই weighted-average product.costPrice হিসেবে থেকেই যাচ্ছে।
-                const newCostPrice = oldStock + qty > 0
-                  ? (oldStock * oldCost + qty * cost) / (oldStock + qty)
-                  : cost;
-                const roundedNewCost = Math.round(newCostPrice * 10000) / 10000;
-                // 🔴 ফিক্স (True Batch/FIFO costing — ২০২৬): আগে এখানে নতুন ব্যাচ সহ
-                // বিদ্যমান সব ব্যাচের costPrice নতুন weighted-average দিয়ে ওভাররাইট
-                // হয়ে যেত (৩০ জুলাই ২০২৬-এর Weighted-Average ফিক্স)। সমস্যা: ফ্রি/বোনাস
-                // ব্যাচ (cost=0) ঢুকলে সব ব্যাচের রেকর্ডকৃত cost গড়ে মিশে যেত, এবং
-                // computeStockDeductionFIFO()-এর ব্যাচ-ভিত্তিক profit হিসাব অর্থহীন হয়ে
-                // পড়ত (সব ব্যাচেই একই cost)। এখন প্রতিটা ব্যাচ (নতুনটা সহ) তার নিজের
-                // আসল রেকর্ডকৃত cost (ফ্রি হলে ০) চিরস্থায়ীভাবে ধরে রাখছে — শুধু
-                // product.costPrice (উপরের roundedNewCost) সামগ্রিক ভ্যালুয়েশনের জন্য
-                // গড় থাকছে, ব্যাচ-লেভেল অ্যাকাউন্টিং (FIFO বিক্রি/ভয়েড/লাভ হিসাব) আর
-                // এই গড়ের ওপর নির্ভর করবে না।
-                // নতুন ব্যাচের costPrice ইতিমধ্যেই তার আসল দামে সেট করা আছে (উপরে
-                // newBatch তৈরির সময়) — এখানে আর ওভাররাইট করা হচ্ছে না।
-                // 🆕 lastRealCostPrice: ফ্রি এন্ট্রি বাদে সর্বশেষ real ক্রয়মূল্য —
-                // পরবর্তী ক্রয় এন্ট্রি ফর্মের auto-fill এখন এটা ব্যবহার করবে, যাতে
-                // weighted-average drift (ফ্রি স্টকের কারণে) পরের এন্ট্রির ফর্মে
-                // ভুল/কম দাম দেখিয়ে বিভ্রান্ত না করে।
-                const newLastRealCost = isFreeStock ? (p.lastRealCostPrice ?? p.costPrice ?? 0) : cost;
-                return {
-                  ...p,
-                  stock: newStock,
-                  costPrice: roundedNewCost,
-                  lastRealCostPrice: newLastRealCost,
-                  price: sell || p.price,
-                  spPrice: (spPrice !== undefined && spPrice !== "") ? (parseFloat(spPrice) || 0) : p.spPrice,
-                  lastUpdated: now,
-                  expiryDate: expiryDate || p.expiryDate,
-                  batches: [
-                    ...(p.batches || []),
-                    newBatch,
-                  ],
-                };
+                const { newStock: ns, merged } = computeBatchPatch(p);
+                newStock = ns;
+                return merged;
               });
               computedArr = mapped;
               return mapped;
@@ -30014,9 +30116,9 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             // নিরাপদ থাকলেও UI-তে ভুলভাবে "হারিয়ে গেছে" মনে হতো। এখানে সাথে
             // সাথেই (debounce এড়িয়ে) ডিস্কে সেভ করে দেওয়া হচ্ছে যাতে অ্যাপ যেকোনো
             // মুহূর্তে কিল হলেও পরের বুটে সঠিক optimistic স্টকই দেখা যায়।
-            // 🔴 এন্ট্রি ৮৬ — একই রুট-কজ: never-load মোডে `prev` খালি হওয়ায়
-            // `computedArr` ও খালি — blob-write স্কিপ করা হলো এই কেসে।
-            if (computedArr && !(products.length === 0 && isProductsNeverLoadEnabled())) save(LK(SK.products), computedArr);
+            // (never-load কেস উপরেই আলাদাভাবে early-return হয়ে গেছে, তাই এখানে
+            // products.length===0 কখনো ঘটে না — এন্ট্রি ৮৬-এর গার্ড আর দরকার নেই)
+            if (computedArr) save(LK(SK.products), computedArr);
           };
 
           // 🆕 পারফরম্যান্স ফিক্স (ক্রয় এন্ট্রি সেভ-এ ধীরগতি): আগে এখানে
