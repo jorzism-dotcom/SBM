@@ -64,6 +64,32 @@ export function setProductsBootLazyEnabled(v) {
   } catch {}
 }
 
+// ── Feature flag: Products boot "কখনো লোড না করা" (এন্ট্রি ৮০) ─────────────
+// ⚠️ এটা `sbm_products_boot_lazy`-এর উপর নির্ভরশীল একটা *আলাদা, উপরের-স্তরের*
+// ফ্ল্যাগ — `sbm_pos_ondemand_cart`-এর মতোই প্যাটার্নে। শুধু এই ফ্ল্যাগ চালু
+// করলে কিছুই বদলায় না; `sbm_products_boot_lazy` **এবং** `sbm_use_sqlite_store`
+// দুটোই চালু থাকা লাগবে, তবেই App.jsx বুট-সিকোয়েন্স পুরনো IndexedDB blob-load
+// (`setTimeout(() => loadMany([LK(SK.products)]))`) সম্পূর্ণ স্কিপ করে —
+// productsById শুধু SQLite বাল্ক-হাইড্রেট (এন্ট্রি ৭৮) থেকেই আসবে, `products`
+// React array চিরকাল খালি [] থাকবে। App.jsx নিজে হাইড্রেট সফল হয়েছে কিনা
+// যাচাই করেই তবে blob-load স্কিপ করে — ব্যর্থ হলে নিরাপদে পুরনো delay-only
+// আচরণে fallback করে (এই ফ্ল্যাগ চালু থাকলেও)। ডিফল্ট বন্ধ।
+const PRODUCTS_NEVER_LOAD_FLAG_KEY = "sbm_products_boot_never";
+
+export function isProductsNeverLoadEnabled() {
+  try {
+    return localStorage.getItem(PRODUCTS_NEVER_LOAD_FLAG_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setProductsNeverLoadEnabled(v) {
+  try {
+    localStorage.setItem(PRODUCTS_NEVER_LOAD_FLAG_KEY, v ? "1" : "0");
+  } catch {}
+}
+
 // ── Feature flag: POS on-demand cart lookups (এন্ট্রি ৬৮, ৭.৩-এর POS অংশের
 // প্রথম real ধাপ) ───────────────────────────────────────────────────────────
 // ⚠️ এই ফ্ল্যাগ **ডিফল্ট বন্ধ**, আর `sbm_products_boot_lazy` থেকে সম্পূর্ণ
