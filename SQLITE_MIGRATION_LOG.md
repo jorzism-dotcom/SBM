@@ -24,7 +24,93 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৭৯-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৮৩-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟢 এন্ট্রি ৮৩ (✅ sandbox নেটওয়ার্ক কাজ করেছে, npm test/lint/typecheck/build/golden-master/fuzz সব পাস — real-device টেস্ট এখনো বাকি) — ব্যবহারকারীর "৪, ৫, ৬ করুন" নির্দেশে ৩টা আইটেম যাচাই/সমাধান**:
+
+**প্রেক্ষাপট**: আগের সেশনে "পুরো অ্যাপ SQL মাইগ্রেশনে আর কি বাকি" প্রশ্নের জবাবে যে সিরিয়াল দেওয়া হয়েছিল, তার ৪ (`buildManualBackupData`), ৫ (`performMasterSync` merge), ৬ (never-load মোডে schema migration status গ্যাপ) নিয়ে কাজ করার নির্দেশ এলো।
+
+**✅ ৪ ও ৫ — ইতিমধ্যে সম্পূর্ণ পাওয়া গেল (কোনো নতুন কাজ লাগেনি)**: এই দুটো আসলে **আগেই এন্ট্রি ৭৬-এ সম্পূর্ণ হয়ে গিয়েছিল** — `buildManualBackupData()` async + SQLite-fallback + null-safety guard, `performMasterSync()`-এর merge তুলনায় SQLite থেকে পূর্ণ products fetch, দুটোই কোড পড়ে যাচাই করা হলো (`PRODUCTS_SQLITE_PRIMARY_PHASE_PLAN.md` ডকুমেন্টটা stale ছিল, এন্ট্রি ৭৬-এর পরে আর আপডেট হয়নি — তাই আগের সেশনের সারাংশে এই দুটো ভুলভাবে "বাকি" হিসেবে দেখানো হয়েছিল)। কোনো কোড বদল হয়নি এই দুটোর জন্য।
+
+**✅ ৬ — সমাধান হলো (আসল নতুন কাজ)**: never-load মোডে `_hydrateProductsByIdFromSql()` (এন্ট্রি ৮০) SQLite থেকে raw রো পড়ত কিন্তু কখনো `SchemaMigration.runAll()` চালাত না (blob-load পথই একমাত্র জায়গা ছিল যেখানে migration ট্রিগার হতো, আর never-load মোডে সেই পথ স্কিপ হয়) — ফলে `schemaMigrationStats` কার্ড কখনো দেখাত না, আর হয়তো-পুরনো-schema রেকর্ড productsById-তে অমাইগ্রেটেড শেপেই বসত।
+- এখন hydrate-এর ভেতরেই SQLite থেকে পড়া রো-গুলোর উপর `SchemaMigration.runAll()` চলে (সিঙ্ক্রোনাস/delay-mode বুট-প্যাচের ঠিক একই pure-function প্যাটার্ন) — migrated শেপ productsById-তে বসে, `schemaMigrationStats` ঠিকভাবে সেট/ক্লিয়ার হয়।
+- **বাড়তি**: যেসব রেকর্ড আসলে migrate হয়েছে সেগুলো `upsertMany()` দিয়ে ফায়ার-অ্যান্ড-ফরগেট SQLite-এও write-back হয় — শুধু in-memory ঠিক করা যথেষ্ট ছিল না, কারণ aggregate হুক/single-id fallback সরাসরি SQLite থেকে পড়ে, সেগুলো এই write-back ছাড়া এখনো পুরনো শেপ পেত। ব্যর্থ হলে নন-ফেটাল (পরের বুটে idempotent রিট্রাই)।
+- **এন্ট্রি ৭৮-এর delay-mode hydrate-এও (never-load বন্ধ, শুধু boot-lazy চালু) এখন এই একই migration+write-back চলে** — যেহেতু এই hydrate ফাংশনটাই দুই মোডে শেয়ার্ড। ৫০০ লাইভ দোকানে `sbm_products_boot_lazy` নিজেও ডিফল্ট বন্ধ থাকায় zero impact, কিন্তু সততার সাথে উল্লেখ — এটা শুধু never-load-স্কোপড ফিক্স না, boot-lazy-শুধু মোডেও নতুন (নিরাপদ, additive) আচরণ।
+
+**যাচাই সম্পূর্ণ (sandbox)**: `npm install` → `npm test` (সব প্রি-এক্সিস্টিং কেস পাস) → `npm run lint` (0 error) → `npm run typecheck` (ক্লিন) → `npm run build` (ক্লিন) → `test:golden-master` (৭/৭) → `test:fuzz` (সব প্রপার্টি) — সবগুলো পাস। **real-device টেস্ট এখনো বাকি**।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — `_hydrateProductsByIdFromSql()`-এ SchemaMigration.runAll() + schemaMigrationStats সেট/ক্লিয়ার + migrated রেকর্ডের upsertMany() write-back
+
+**পরের সেশনে আসল করণীয়** (আগের সিরিয়াল অনুযায়ী, ১-৩ শুধু real-device-এ সম্ভব):
+1. POS on-demand cart (`sbm_pos_ondemand_cart`) real-device টেস্ট — সবচেয়ে বড় ব্লকার
+2. never-load ফ্ল্যাগ real-device স্মোক-টেস্ট (বুট/POS/Dashboard/Products/সাপ্লায়ার/কাস্টমার-অর্ডার/ক্রয়-এন্ট্রি, SQL ইচ্ছাকৃতভাবে বন্ধ করে ব্যানার+রিট্রাই আচরণসহ, এখন migration status card-ও)
+3. এন্ট্রি ৫৩/৫৫/৫৬-এর ৪টা id+hydrate সাইট real-device ভেরিফিকেশন
+4. FTS fallback পুল `products`-এর বদলে `productsById`-ভিত্তিক করা (এন্ট্রি ৮২-এর সীমাবদ্ধতা, এখনো অমীমাংসিত)
+5. ৭টা বিলিং-ক্রিটিক্যাল POS সাইট + cost-critical purchase-batch সাইট (সবচেয়ে ঝুঁকিপূর্ণ)
+6. চূড়ান্ত ধাপ: `products` boot থেকে পুরোপুরি সরানো (১-৩ real-device ভেরিফায়েড হওয়ার পরই)
+7. পুরনো IndexedDB blob-array কোড মোছা (Phase 5, ৪-৬ সপ্তাহ স্থিতিশীল থাকার পর)
+
+---
+
+**🟢 এন্ট্রি ৮২ (✅ sandbox নেটওয়ার্ক কাজ করেছে, npm test/lint/typecheck/build/golden-master/fuzz সব পাস — real-device টেস্ট এখনো বাকি) — এন্ট্রি ৮০-এর কাজ ২ (silent fallback → error/retry) এখন সম্পূর্ণ**:
+
+**প্রেক্ষাপট**: ব্যবহারকারী "২ নাম্বার কাজটি পুরো কমপ্লিট করুন" বললেন।
+
+**যা করা হলো — এন্ট্রি ৮০-তে শুধু single-id lookup-এ (`getProductByIdWithSqlFallback`) থাকা `_markProductsSqlDownIfRisky()`/`_clearProductsSqlDown()` লজিক শেয়ার্ড হেল্পারে বের করে বাকি সবগুলো products-নির্ভর SQL-primary+JS-fallback সাইটে ছড়ানো হলো**:
+
+1. **১৫টা "aggregate/list" হুক** (এন্ট্রি ৪৪/৫৪/৬২/৭২ ইত্যাদিতে বানানো) — প্রতিটার catch ব্লকে `_markProductsSqlDownIfRisky()`, success-এ `_clearProductsSqlDown()`:
+   `useProductsByIds`, `useProductStockTotals`, `useLowStockItems`, `useOutOfStockCount`, `useOutOfStockItems`, `useExpiryCandidates`, `useSupplierDueRows`, `useProductSalesRows`, `useReorderAlerts`, `useKnownCategories`, `useRiskProducts`, `useKnownSuppliers`, `useKnownDosageForms`, `useLiveDupProduct`, `useInventoryData` (এটা নিজেই এন্ট্রি ৫৪ থেকে sqlStatus:'error' এক্সপোজ করত, silent ছিল না — এখানে শুধু গ্লোবাল ব্যানারের সাথে সিঙ্ক করা হলো)।
+
+2. **৫টা FTS-narrowing সাইট**-এ (POS প্রধান সার্চ, Products-লিস্ট সার্চ, সাপ্লায়ার-লিস্ট সার্চ, কাস্টমার-অর্ডার সাজেশন, ক্রয়-এন্ট্রি সাজেশন) **একটা ভিন্ন, গভীরতর বাগ** পাওয়া গেল ও ফিক্স হলো: থ্রেশহোল্ড-চেক ছিল `products.length <= FTS_NARROW_THRESHOLD` — never-load মোডে `products.length` সবসময় ০, তাই এই শর্ত সবসময় true হয়ে **SQL/FTS-কেই এড়িয়ে সরাসরি খালি array স্ক্যান করত**, catch ব্লক পর্যন্ত পৌঁছাতোই না। ফিক্স: `(products.length > 0 && products.length <= FTS_NARROW_THRESHOLD)` — length===０ (ছোট ক্যাটালগ থেকে আলাদা করে) আর কখনো narrowing স্কিপ করে না, সবসময় SQL-এর মাধ্যমে চেষ্টা করে। ব্যর্থ হলে `_markProductsSqlDownIfRisky()`, সফল হলে `_clearProductsSqlDown()`।
+
+**ফলাফল**: এখন never-load মোডে (`sbm_products_boot_never` চালু) SQL ডাউন থাকলে **যেকোনো** products-নির্ভর ফিচার (স্টক/লো-স্টক/আউট-অফ-স্টক/এক্সপায়ারি/সাপ্লায়ার-ডিউ/রিঅর্ডার/ক্যাটাগরি-চিপ/লস-ঝুঁকি/ডসেজ-ফর্ম/ডুপ-নেম-চেক/POS-সার্চ/Products-লিস্ট-সার্চ/সাপ্লায়ার-সার্চ/কাস্টমার-অর্ডার-সাজেশন/ক্রয়-এন্ট্রি-সাজেশন) `productsNeverLoadSqlDown` গ্লোবাল ফ্ল্যাগ সেট করে, উপরের লাল ব্যানার দেখায় — কোনোটাই আর নীরবে ভুল/শূন্য ফলাফল দেখায় না। ডিফল্ট মোডে (never-load বন্ধ, products সবসময় পূর্ণ) `products.length` কখনো ০ হয় না বলে এই সব নতুন গার্ড কখনো ট্রিগার হয় না — behavior-preserving, ৫০০ লাইভ দোকানে zero impact।
+
+**🔴 এখনো জানা সীমাবদ্ধতা (সততার সাথে)**:
+- FTS ব্যর্থ হলে fallback পুল এখনো raw `products` array (never-load-এ খালি) — সঠিক ফিক্স হতো `productsById`/`globalProdMap`-ভিত্তিক ফলব্যাকে বদলানো, কিন্তু সেটা প্রতিটা কল-সাইটের রেন্ডার-লজিক আলাদাভাবে audit করা লাগবে (বড় কাজ)। আপাতত ব্যানার+রিট্রাই-ই ব্যবহারকারীর একমাত্র সংকেত — silent ভুল ডেটা না দেখানোটাই মূল লক্ষ্য ছিল, এটা অর্জিত।
+- Dashboard-এর সিঙ্ক্রোনাস `jsAllStock`/`jsCriticalStock`/`jsStockOut`/`jsSupplierRows` (local `useMemo`, `useInventoryData`-এর ভেতরে) never-load মোডে গার্ডেড sqlStatus:'error' পাথ দিয়েই protected — কিন্তু এর বাইরে যদি কোনো কম্পোনেন্ট সরাসরি রॉ `products` prop স্ক্যান করে (কোনো hook ছাড়া, ইনলাইন `.filter()`/`.map()`) সেগুলো এই অডিটের বাইরে থেকে যেতে পারে — সম্পূর্ণ ১০০% নিশ্চয়তা নেই একটা ৪২k+ লাইনের ফাইলে, যদিও গ্রেপ-অডিট অনুযায়ী এন্ট্রি ৭৯-এ চিহ্নিত সব ক্যাটাগরির শেয়ার্ড হুক/FTS-সাইট কভার হয়েছে।
+
+**যাচাই সম্পূর্ণ (sandbox)**: `npm install` → `npm test` (সব প্রি-এক্সিস্টিং কেস পাস) → `npm run lint` (0 error, শুধু প্রি-এক্সিস্টিং warning) → `npm run typecheck` (ক্লিন) → `npm run build` (ক্লিন) → `test:golden-master` (৭/৭) → `test:fuzz` (সব প্রপার্টি) — সবগুলো পাস। **real-device টেস্ট এখনো বাকি** — উভয় ফ্ল্যাগ ডিফল্ট বন্ধ, তাই বর্তমান ৫০০ লাইভ দোকানে কোনো ঝুঁকি নেই।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — `_markProductsSqlDownIfRisky()`/`_clearProductsSqlDown()` শেয়ার্ড হেল্পার (`getProductByIdWithSqlFallback`-এর ইনলাইন লজিক থেকে বের করা) + ১৫টা হুক + ৫টা FTS-narrowing সাইটে (থ্রেশহোল্ড-বাগ ফিক্সসহ) ওয়্যার করা
+
+**পরের সেশনে আসল করণীয়**:
+1. real-device: `sbm_products_boot_lazy` + `sbm_products_boot_never` দুটোই চালু করে বুট/POS/Dashboard/Products/সাপ্লায়ার/কাস্টমার-অর্ডার/ক্রয়-এন্ট্রি স্মোক-টেস্ট (বিশেষভাবে SQL ইচ্ছাকৃতভাবে বন্ধ করে ব্যানার+রিট্রাই আচরণ যাচাই)
+2. never-load মোডে schema migration স্ট্যাটাস দেখানোর সমাধান (এন্ট্রি ৮০-এর জানা সীমাবদ্ধতা, এখনো অমীমাংসিত)
+3. FTS-ব্যর্থতার fallback পুল `products`-এর বদলে `productsById`-ভিত্তিক করা (উপরে উল্লেখিত সীমাবদ্ধতা)
+
+---
+
+**🟢 এন্ট্রি ৮০ (✅ sandbox নেটওয়ার্ক কাজ করেছে, npm test/lint/typecheck/build/golden-master/fuzz সব পাস — real-device টেস্ট এখনো বাকি) — পরের সেশনের ২টা কাজের প্রথমটা সম্পূর্ণ + দ্বিতীয়টার শুধু একটা bounded অংশ**:
+
+**প্রেক্ষাপট**: ব্যবহারকারী এন্ট্রি ৭৯-এর "পরের সেশনে আসল করণীয়" ২টাই ক্রমান্বয়ে (প্রথমটা আগে) করতে বললেন।
+
+**✅ কাজ ১ (সম্পূর্ণ) — `sbm_products_boot_lazy`-কে "দেরি" থেকে "কখনো লোড না করা"-য় আপগ্রেড**:
+- নতুন **স্বাধীন, dependent ফ্ল্যাগ** `sbm_products_boot_never` (`isProductsNeverLoadEnabled()`/`setProductsNeverLoadEnabled()`, `src/db/DataStore.js`) — `sbm_pos_ondemand_cart`-এর ঠিক একই প্যাটার্নে: `sbm_products_boot_lazy` চালু না থাকলে অর্থহীন, ডিফল্ট বন্ধ।
+- App.jsx বুট-সিকোয়েন্স: এই ফ্ল্যাগ চালু থাকলে এন্ট্রি ৭৮-এর SQLite বাল্ক-হাইড্রেট এখন **await করা হয়** (আগে fire-and-forget ছিল) — হাইড্রেট সফল হলে **এবং তখনই** নিচের পুরনো `setTimeout(() => loadMany([LK(SK.products)]))` blob-load ব্লক সম্পূর্ণ স্কিপ হয় (`products` React array স্থায়ীভাবে `[]` থাকে, `productsById`-ই একমাত্র সোর্স)। হাইড্রেট ব্যর্থ হলে বা SQL/businessType না থাকলে নিরাপদে পুরনো delay-only আচরণে fallback (blob তখনও লোড হয়) — কখনো ডেটা হারায় না।
+- ফ্ল্যাগ বন্ধ থাকলে (৫০০ দোকানের বর্তমান ডিফল্ট অবস্থা, এবং `sbm_products_boot_lazy` নিজেও ডিফল্ট বন্ধ) কোনো আচরণ বদলায়নি — behavior-preserving।
+- Dev প্যানেলে নতুন `ProductsNeverLoadToggle` (boot-lazy বন্ধ থাকলে disabled/opacity দেখায়) — `ProductsBootLazyToggle`-এর পাশে বসানো।
+- **জানা সীমাবদ্ধতা**: never-load মোডে blob পড়া হয় না বলে `schemaMigrationStats` কখনো সেট হবে না সেই বুটে (migration status card দেখাবে না) — future ফিক্স প্রয়োজন যদি কোনো দোকানের products-এ এখনো পেন্ডিং schema migration থাকে।
+
+**🟡 কাজ ২ (আংশিক, ইচ্ছাকৃতভাবে bounded) — silent fallback → explicit error/retry state**:
+- নতুন গ্লোবাল স্টোর ফ্ল্যাগ `productsNeverLoadSqlDown` (ডিফল্ট `false`)।
+- শুধু **single-id** `getProductByIdWithSqlFallback()`-এ (সবচেয়ে বেশি ব্যবহৃত সাইট) গার্ড বসানো হলো: `products` array খালি থাকা অবস্থায় (never-load মোডের চিহ্ন) SQL কলও ব্যর্থ হলে এই ফ্ল্যাগ `true` হয়; পরের যেকোনো সফল SQL কলে স্বয়ংক্রিয়ভাবে `false`-এ self-heal হয়।
+- App শেলে (SmartBusinessMgmt টপ-লেভেল) একটা fixed লাল ব্যানার + "রিট্রাই" বাটন (আপাতত `window.location.reload()`) — ফ্ল্যাগ true হলেই দেখায়, সব ট্যাবে।
+- **🔴 সততার সাথে — অসম্পূর্ণ**: বাকি ৬৫টা bulk-scan সাইট (এন্ট্রি ৭৯-এর টেবিলে তালিকাভুক্ত — ডুপ-নেম চেক, ইনভেন্টরি/সাপ্লায়ার, কাস্টমার-অর্ডার/PE, সিরিয়াল নম্বরিং, POS/PE/PNL) এখনো SQL ব্যর্থ হলে `products`/`productsByIdMap`/`globalProdMap` (এখন স্থায়ীভাবে খালি) নীরবে স্ক্যান করে — অর্থাৎ never-load মোডে SQL ডাউন থাকলে এই সাইটগুলো ভুল/শূন্য ফলাফল **নীরবেই** দেখাতে পারে, ব্যানার দেখাবে না। Dev টগলের বর্ণনা ও কোড কমেন্টে এই সীমাবদ্ধতা স্পষ্টভাবে লেখা আছে।
+
+**যাচাই সম্পূর্ণ (sandbox)**: `npm install` → `npm test` (সব প্রি-এক্সিস্টিং কেস পাস, নতুন টেস্ট যোগ হয়নি এই সেশনে) → `npm run lint` (0 error) → `npm run typecheck` (ক্লিন) → `npm run build` (ক্লিন) → `test:golden-master` (৭/৭) → `test:fuzz` (সব প্রপার্টি) — সবগুলো পাস। **real-device টেস্ট এখনো বাকি** — উভয় ফ্ল্যাগ ডিফল্ট বন্ধ, তাই বর্তমান ৫০০ লাইভ দোকানে কোনো ঝুঁকি নেই যতক্ষণ না ম্যানুয়ালি চালু করা হয়।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/db/DataStore.js` — নতুন `sbm_products_boot_never` ফ্ল্যাগ (get/set)
+- `src/App.jsx` — বুট-সিকোয়েন্সে never-load স্কিপ-লজিক, নতুন `productsNeverLoadSqlDown` স্টোর ফিল্ড, `getProductByIdWithSqlFallback()`-এ গার্ড, `ProductsNeverLoadToggle` কম্পোনেন্ট + মাউন্ট, top-level এরর ব্যানার
+
+**পরের সেশনে আসল করণীয়**:
+1. real-device: `sbm_products_boot_lazy` + `sbm_products_boot_never` দুটোই চালু করে বুট/POS/Dashboard/Products স্মোক-টেস্ট
+2. বাকি ৬৫টা bulk-scan সাইটে (এন্ট্রি ৭৯-এর টেবিল অনুযায়ী) একই `productsNeverLoadSqlDown` গার্ড ছড়ানো — বড় কাজ, একাধিক সেশনে ভাগ করে করা উচিত
+3. never-load মোডে schema migration স্ট্যাটাস দেখানোর সমাধান (জানা সীমাবদ্ধতা, উপরে দেখুন)
+
+---
 
 **🟢 এন্ট্রি ৭৯ — "৬৬টা সাইট" এক এক করে সরাসরি কোড খুলে re-audit (শুধু অডিট, কোনো কোড বদলায়নি) — স্কোপ বড় ধরনের সংশোধন**:
 
