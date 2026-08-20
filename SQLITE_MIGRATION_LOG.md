@@ -24,7 +24,59 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৮৭-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৮৯-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟢 এন্ট্রি ৮৯ (✅ sandbox নেটওয়ার্ক কাজ করেছে, npm test/lint/typecheck/build/golden-master/fuzz সব পাস — real-device টেস্ট এখনো বাকি) — এন্ট্রি ৮৮-এর "পরের সেশনে আসল করণীয়" আইটেম ৩ (৭টা বিলিং-ক্রিটিক্যাল POS সাইট + cost-critical purchase-batch/weighted-avg-cost) ফিক্স, আইটেম ৪ (POS on-demand cart) ইচ্ছাকৃতভাবে স্কিপ (ব্যবহারকারীর নির্দেশে)**:
+
+**প্রেক্ষাপট**: ব্যবহারকারী বললেন "৪ নম্বর ফিক্স লাগবে না। ৩ নম্বর করুন" — অর্থাৎ POS on-demand cart real-device স্মোক-টেস্ট (আইটেম ৪) এই সেশনে বাদ, শুধু বিলিং-ক্রিটিক্যাল সাইট + cost-critical purchase-batch/weighted-avg-cost (আইটেম ৩) করতে হবে।
+
+**✅ পুরো `SmartInvoiceBuilder` (POS ইনভয়েস-সেভ) + `applyPurchaseBatch`/`savePE` (weighted-avg-cost) কোড লাইন-বাই-লাইন re-audit করা হলো — never-load মোডে ৩টা রিয়েল গ্যাপ পাওয়া গেল ও ফিক্স হলো**:
+
+1. **🔴 সবচেয়ে গুরুতর — `applyPurchaseBatch()`-এ `prod` lookup সম্পূর্ণ ব্যর্থ হতো**: `Products` কম্পোনেন্টের নিজস্ব `productsByIdMap` (লাইন ~২৯২৫০) সরাসরি raw `products`-এর উপর বিল্ড হতো — never-load মোডে খালি Map। `applyPurchaseBatch()` এখান থেকেই সিঙ্ক্রোনাসভাবে `prod` খুঁজত (`if (!prod...) return null`) — অর্থাৎ **never-load মোডে প্রতিটা ক্রয়-এন্ট্রি নীরবে সম্পূর্ণ ব্যর্থ হতো**, কোনো error/toast ছাড়াই ফর্ম কিছু না করেই "সেভ" হয়ে যেত। **ফিক্স**: `productsSearchSource`-এর (এন্ট্রি ৮৪-এ প্রতিষ্ঠিত global-হাইড্রেটেড ফলব্যাক প্যাটার্ন) থেকে বিল্ড করা হচ্ছে এখন — products পূর্ণ থাকা অবস্থায় (৫০০ লাইভ দোকান) হুবহু অপরিবর্তিত।
+
+2. **🔴 একই ক্লাসের বাগ — weighted-average cost/স্টক-বৃদ্ধি কোথাও পার্সিস্ট হতো না**: `applyPurchaseBatch()`-এর `applyLocalFallback()` (Firestore সরানোর পর থেকে **এখন এটাই একমাত্র বাস্তব পাথ** — `FSS.isReady()` সবসময় `false`, দেখুন `FSS` স্টাবের কোড) `setProducts(prev => prev.map(...))` দিয়ে লিখত — never-load মোডে `prev` স্থায়ীভাবে `[]`, POS বিক্রির এন্ট্রি ৮৬/৮৮-এর ঠিক একই রুট-কজ। **ফিক্স**: batchNo-dedup + weighted-average-cost হিসাবের pure লজিক একটা শেয়ার্ড হেল্পার (`computeBatchPatch()`)-এ বের করা হলো (দুই পাথ কখনো diverge করবে না), আর never-load মোডে (`products.length===0 && isProductsNeverLoadEnabled()`) সেই হেল্পার দিয়ে global `productsById` থেকে বেস রেকর্ড নিয়ে সরাসরি `DataStore.upsertMany()` + `productsById` cache সিঙ্ক্রোনাস আপডেট — dualWriteSqlite()/diffById() পাথ সম্পূর্ণ বাইপাস, POS ফিক্সের (এন্ট্রি ৮৮) ঠিক একই প্যাটার্ন।
+
+3. **🟡 বিলিং-ক্রিটিক্যাল — `invProdMap` (নিজের-ব্যবহার/self-use কস্ট হিসাব + কার্ট প্রাইস-টগল)**: `SmartInvoiceBuilder`-এর `invProdMap` — `sbm_pos_ondemand_cart` (never-load থেকে **স্বাধীন** একটা ফ্ল্যাগ, ডিফল্ট বন্ধ) বন্ধ থাকলে raw `products`-এর উপর বিল্ড হতো, never-load মোডে খালি। প্রভাবিত করত: `selfUseCost` (নিজের-ব্যবহার ইনভয়েসের মোট টাকা — costPrice সবসময় ০/undefined ফলব্যাক হতো) আর `toggleSelfUse` (কার্টের দাম বিক্রয়⇄ক্রয়মূল্য টগল)। **ফিক্স**: `products.length===0` হলে ইতিমধ্যে-নিরাপদ `productsByIdMap`-এর (এন্ট্রি ৮৬-এ `productsSourceForPos`-ভিত্তিক ফলব্যাক পাওয়া) values থেকে বিল্ড হয় — native (non-string) `p.id` key-টাইপ অবিকল রাখা হয়েছে (কল-সাইটগুলো `String()` wrap করে না)। **একই প্যাটার্নে `productBatchMap`-ও ফিক্স করা হলো** (FIFO ব্যাচ/এক্সপায়ারি ব্যাজ, ডিসপ্লে-অনলি — টাকা/স্টক লজিক না, তবু একই রুট-কজ)।
+
+**যাচাই করে confirm — বাকি সাইটগুলো ইতিমধ্যে নিরাপদ**: POS বিক্রির স্টক-ডিডাকশন (`freshP`, primary lookup `getState().productsById`) এন্ট্রি ৮৮-এই ফিক্সড; `createInvoice()`-এর ভেতরে আর কোনো raw `products` রেফারেন্স নেই (পুরো ফাংশন লাইন-বাই-লাইন গ্রেপ করে কনফার্ম করা হলো)।
+
+**যাচাই সম্পূর্ণ (sandbox)**: `npm install` → `npm test` (সব প্রি-এক্সিস্টিং সুইট পাস, ১৫টা suite) → `npm run lint` (0 error, ৫৬৮ warning অপরিবর্তিত) → `npm run typecheck` (ক্লিন) → `npm run build` (ক্লিন) → `test:golden-master` (৭/৭) → `test:fuzz` (সব প্রপার্টি) — সবগুলো পাস। **real-device টেস্ট এখনো বাকি** — never-load চালু রেখে (ক) একটা ক্রয়-এন্ট্রি সেভ করে স্টক/costPrice ঠিক বাড়ছে কিনা, (খ) একটা "নিজের ব্যবহার" ইনভয়েস তৈরি করে costPrice ঠিক হিসাব হচ্ছে কিনা, (গ) কার্টে self-use টগল করে দাম ঠিক বদলাচ্ছে কিনা — এই ৩টা যাচাই করা উচিত।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — `Products` কম্পোনেন্টের `productsByIdMap` এখন `productsSearchSource`-ভিত্তিক; `applyPurchaseBatch()`-এ নতুন শেয়ার্ড `computeBatchPatch()` হেল্পার + never-load সরাসরি-SQL ব্লক (`applyLocalFallback()`-এর ভেতরে); `SmartInvoiceBuilder`-এর `invProdMap`/`productBatchMap` উভয়েই never-load ফলব্যাক
+
+**পরের সেশনে আসল করণীয়**:
+1. real-device: এই সেশনের ৩টা ফিক্স যাচাই (ক্রয়-এন্ট্রি সেভ + self-use ইনভয়েস + self-use টগল, never-load চালু রেখে)
+2. real-device: এন্ট্রি ৮৮-এর POS স্টক-ডিডাকশন ফিক্সও এখনো যাচাই বাকি
+3. Audit Trail-এর "মোট লগ ০" (সব-সময়ের) সমস্যাটা এখনো তদন্ত বাকি (এন্ট্রি ৮৭ দ্রষ্টব্য)
+4. POS on-demand cart (`sbm_pos_ondemand_cart`), বাকি real-device স্মোক-টেস্ট আইটেম — ব্যবহারকারীর নির্দেশে এই সেশনে ইচ্ছাকৃতভাবে বাদ
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৮৮)
+
+**🟢 এন্ট্রি ৮৮ (✅ sandbox নেটওয়ার্ক কাজ করেছে, npm test/lint/typecheck/build/golden-master/fuzz সব পাস — real-device টেস্ট এখনো বাকি) — এন্ট্রি ৮৭-এর "পরের সেশনে আসল করণীয়" আইটেম ৩ (সবচেয়ে জরুরি ব্লকার) ফিক্স + আইটেম ৫ (FTS fallback পুল) অডিট করে confirm-resolved**:
+
+**প্রেক্ষাপট**: ব্যবহারকারী "১,২ সমাধান করুন" বললেন — এন্ট্রি ৮৬/৮৭-এর "পরের সেশনে আসল করণীয়" তালিকার (১) never-load মোডে POS বিক্রির স্টক-ডিডাকশন কোথাও পার্সিস্ট না হওয়া, ও (২) FTS fallback পুল `productsById`-ভিত্তিক করা।
+
+**✅ আইটেম ১ (রিয়েল ফিক্স) — never-load মোডে POS স্টক-ডিডাকশনের জন্য আলাদা সরাসরি-SQL পাথ**: এন্ট্রি ৮৬-এ চিহ্নিত রুট-কজ ছিল — `SmartInvoiceBuilder`-এর বিক্রি-সম্পন্ন হ্যান্ডলারে `setProducts(prev => prev.map(...))` দিয়ে ডিডাকশন প্রয়োগ হতো, কিন্তু never-load মোডে `prev` স্থায়ীভাবে `[]`, তাই `mapped`ও `[]`-ই থাকত — আর `dualWriteSqlite()` (products effect) এই একই সবসময়-খালি array থেকেই `diffById()` করে বলে SQLite-এও কখনো ডিডাকশন লেখা হতো না। **ফিক্স**: `stockUpdateMap` কম্পিউট হওয়ার পরপরই, `products.length===0 && isProductsNeverLoadEnabled()` (+ SQL চালু + businessType আছে) হলে — `dualWriteSqlite()`/`diffById()` পাথ সম্পূর্ণ বাইপাস করে একটা নতুন ব্লক: global হাইড্রেটেড `productsById` (freshP-এর একই সোর্স, তাই সবসময় populated) থেকে প্রতিটা বিক্রি-হওয়া id-এর পূর্ণ রেকর্ড নিয়ে নতুন `stock`/`batches` merge করে `DataStore.upsertMany()` দিয়ে সরাসরি SQLite-এ লেখা হয়, প্লাস `productsById` cache নিজেও সিঙ্ক্রোনাসভাবে optimistic-আপডেট হয় (একই সেশনে পরের বিক্রি/UI সাথে সাথেই নতুন স্টক দেখে)। ব্যর্থ হলে `_markProductsSqlDownIfRisky()` (এন্ট্রি ৮০/৮১/৮২-এর একই গ্লোবাল ব্যানার) — silent data loss হয় না। স্বাভাবিক মোডে (products সবসময় পূর্ণ, ৫০০ লাইভ দোকানের ডিফল্ট) এই ব্লক কখনো ট্রিগার হয় না — behavior-preserving।
+
+**🟢 আইটেম ২ (কোড-অডিট, কোনো নতুন কোড লাগেনি) — FTS fallback পুল ইতিমধ্যে productsById-ভিত্তিক**: এন্ট্রি ৮২-এ চিহ্নিত ৫টা FTS-narrowing সাইট (POS প্রধান সার্চ, Products-লিস্ট সার্চ, সাপ্লায়ার-লিস্ট সার্চ, কাস্টমার-অর্ডার সাজেশন, ক্রয়-এন্ট্রি সাজেশন) সরাসরি কোড খুলে একটা একটা করে যাচাই করা হলো — দেখা গেল এন্ট্রি ৮৪ (`productsSearchSource`, Products-লিস্ট + ক্রয়-এন্ট্রি), এন্ট্রি ৮৬ (`productsSourceForPos`, POS), আর এন্ট্রি ৮৭ (`custOrderProductsBase`, কাস্টমার-অর্ডার) — এই তিনটা সেশন মিলে ইতিমধ্যে সবগুলো সাইটের বেস-পুল raw `products` থেকে global হাইড্রেটেড `productsById` ফলব্যাকে সরিয়ে ফেলেছে। সাপ্লায়ার-লিস্ট সার্চের পুল (`items`/`supPool`) raw `products` থেকেই আসে না — `useInventoryData()` হুকের SQL-primary+guarded-JS-fallback রেজাল্ট (`inv.allStock` ইত্যাদি) থেকে আসে, যেটা এন্ট্রি ৮২-তেই গার্ডেড হয়ে গিয়েছিল। **উপসংহার**: এন্ট্রি ৮২-এর "এখনো জানা সীমাবদ্ধতা" নোটটা stale হয়ে গিয়েছিল — পরের ৩টা সেশনে প্রতিটা সাইট ভিন্ন bug-report ধরে ফিক্স করা হয়েছিল, কিন্তু checklist থেকে এই আইটেম কখনো সরানো হয়নি। এই সেশনে শুধু checklist সংশোধন করা হলো, কোড অপরিবর্তিত।
+
+**যাচাই সম্পূর্ণ (sandbox)**: `npm install` → `npm test` (সব প্রি-এক্সিস্টিং সুইট পাস, ১৫টা suite) → `npm run lint` (0 error, ৫৬৮ warning অপরিবর্তিত) → `npm run typecheck` (ক্লিন) → `npm run build` (ক্লিন) → `test:golden-master` (৭/৭) → `test:fuzz` (সব প্রপার্টি) — সবগুলো পাস। **real-device টেস্ট এখনো বাকি** — never-load ফ্ল্যাগ চালু করে POS-এ একটা বিক্রি সম্পন্ন করে দেখা উচিত পণ্যের স্টক এখন সত্যিই কমছে কিনা, এবং সেই বিক্রির পরে অ্যাপ রিস্টার্ট করেও (কোল্ড বুট, productsById নতুন করে SQLite থেকে হাইড্রেট হবে) স্টক ঠিক আছে কিনা।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — `SmartInvoiceBuilder`-এর বিক্রি-সম্পন্ন হ্যান্ডলারে নতুন never-load সরাসরি-SQL স্টক-ডিডাকশন ব্লক (`upsertMany` + `productsById` optimistic আপডেট)
+
+**পরের সেশনে আসল করণীয়**:
+1. real-device: উপরের স্টক-ডিডাকশন ফিক্স নিশ্চিত করা (never-load চালু রেখে বিক্রি → স্টক কমা → কোল্ড রিস্টার্টেও ঠিক থাকা)
+2. Audit Trail-এর "মোট লগ ০" (সব-সময়ের) সমস্যাটা এখনো তদন্ত বাকি (এন্ট্রি ৮৭ দ্রষ্টব্য)
+3. ৭টা বিলিং-ক্রিটিক্যাল POS ইনভয়েস-সেভ সাইট + cost-critical purchase-batch/weighted-avg-cost সাইট — সবচেয়ে ঝুঁকিপূর্ণ, এখনো একেবারেই ছোঁয়া হয়নি
+4. POS on-demand cart, বাকি real-device স্মোক-টেস্ট আইটেম (এন্ট্রি ৮৬-এর তালিকা অনুযায়ী)
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৮৭)
 
 **🟢 এন্ট্রি ৮৭ (✅ sandbox নেটওয়ার্ক কাজ করেছে, npm test/lint/typecheck/build সব পাস — real-device টেস্ট এখনো বাকি) — real-device স্ক্রিনশট-বেসড টেস্টিং থেকে ধরা পড়া একটা নতুন never-load গ্যাপ ফিক্স + বাকি ৩টা "ভাঙা" রিপোর্টের কোড-অডিট**:
 
