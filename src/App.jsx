@@ -25364,9 +25364,20 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     // 🆕 এন্ট্রি ৬৫: custOrderFtsIds রেডি + query মিললে (উপরে দ্রষ্টব্য) পুরো products না,
     // শুধু FTS-narrowed candidate পুল স্ক্যান হয় — বড় ক্যাটালগে O(n) smartMatch এড়ানো।
     // SQL বন্ধ/candidate না-থাকা/ছোট ক্যাটালগ অবস্থায় আগের মতোই পুরো products (আচরণ অপরিবর্তিত)।
+    // 🔴 ফিক্স (এন্ট্রি ৮৭): never-load মোডে `products` স্থায়ীভাবে খালি থাকে — এই
+    // Dashboard কম্পোনেন্টের কাস্টমার-অর্ডার সার্চ এন্ট্রি ৮৪/৮৬-এর অডিটে ধরা পড়েনি
+    // (শুধু Products-লিস্ট/POS কভার হয়েছিল)। Products কম্পোনেন্টের
+    // productsSearchSource-এর ঠিক একই প্যাটার্নে গ্লোবাল হাইড্রেটেড productsById
+    // (উপরে ইতিমধ্যেই সংজ্ঞায়িত _globalProductsById)-তে ফলব্যাক — products খালি
+    // থাকলে সেখান থেকে খুঁজবে।
+    const custOrderProductsBase = products.length > 0
+      ? products
+      : (_globalProductsById && _globalProductsById.size > 0
+          ? Array.from(_globalProductsById.values())
+          : products);
     const custOrderNameTrimmed = custOrderName.trim();
     const useCustOrderNarrowing = custOrderNameTrimmed && custOrderFtsIds && custOrderFtsQuery === custOrderNameTrimmed;
-    const custOrderProductPool = useCustOrderNarrowing ? products.filter(p => custOrderFtsIds.has(String(p.id))) : products;
+    const custOrderProductPool = useCustOrderNarrowing ? custOrderProductsBase.filter(p => custOrderFtsIds.has(String(p.id))) : custOrderProductsBase;
     const custOrderProductSuggestions = custOrderNameTrimmed.length >= 2
       ? custOrderProductPool.map(p => ({ p, score: smartMatch(p.name, custOrderNameTrimmed) })).filter(x => x.score > 0).sort((a,b)=>b.score-a.score || a.p.name.length-b.p.name.length || a.p.name.localeCompare(b.p.name)).slice(0,6)
       : [];
