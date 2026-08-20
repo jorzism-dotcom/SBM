@@ -20056,50 +20056,32 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     // স্বাভাবিক মোডে (products সবসময় পূর্ণ, ৫০০ লাইভ দোকানের ডিফল্ট) এই ব্লক কখনো
     // ট্রিগার হয় না — behavior-preserving, উপরের setProducts()/dualWriteSqlite()
     // পাথই তখন যথেষ্ট।
-    // 🩺 TEMP DEBUG (সাময়িক — bug hunt শেষ হলে সরিয়ে ফেলা হবে): আগের সংস্করণ
-    // showToast() ব্যবহার করেছিল — কিন্তু এই একই ফাংশনের নিচেই "ইনভয়েস তৈরি
-    // হয়েছে" showToast() পরপরই কল হয় (একই single-toast state, একটাই এন্ট্রি
-    // রাখে) — ফলে debug toast লেখা হওয়ার সাথে সাথেই ওভাররাইট হয়ে যাচ্ছিল, তাই
-    // ইউজার কিছুই দেখতে পাননি। এখন window.alert() — সিঙ্ক্রোনাস/ব্লকিং, "ওকে"
-    // চাপা পর্যন্ত থেমে থাকে, ওভাররাইট হওয়ার কোনো সুযোগ নেই।
-    (() => {
-      const _dbgReasons = [];
-      if (stockUpdateMap.size === 0) _dbgReasons.push("stockUpdateMap খালি (freshP কোনো আইটেমের জন্যই পাওয়া যায়নি!)");
-      if (!(products.length === 0)) _dbgReasons.push(`products.length=${products.length} (≠0)`);
-      if (!isProductsNeverLoadEnabled()) _dbgReasons.push("neverLoad বন্ধ");
-      if (!isSqliteEnabled()) _dbgReasons.push("sqlite বন্ধ");
-      if (!businessType) _dbgReasons.push("businessType খালি");
-      if (_dbgReasons.length > 0) {
-        try { window.alert(`🩺 stock-fix স্কিপড:\n${_dbgReasons.join("\n")}`); } catch {}
-      }
-    })();
     if (stockUpdateMap.size > 0 && products.length === 0 && isProductsNeverLoadEnabled() && isSqliteEnabled() && businessType) {
       const curProductsById = useAppStore.getState().productsById;
       const nextProductsById = new Map(curProductsById);
       const neverLoadStockRecords = [];
       const _dbgMissingBase = [];
       stockUpdateMap.forEach((upd, id) => {
-        const base = curProductsById.get(String(id));
-        if (!base) { _dbgMissingBase.push(String(id)); return; } // ডিফেন্সিভ — freshP (উপরে) থেকেই এই map বিল্ড হয়েছিল, তাই বাস্তবে সবসময় পাওয়া যাবে
+        // 🔴 এন্ট্রি ৮৯ (root cause fix): freshP (উপরে, লাইন ~20017) দুটো সোর্স
+        // থেকে lookup করেছিল — global store `productsById` + fallback
+        // `productsByIdMap` (on-demand browse/cart cache)। কিন্তু এখানে `base`
+        // শুধু global store থেকেই খোঁজা হচ্ছিল — on-demand-loaded পণ্য (যা এখনো
+        // global store-এ হাইড্রেট হয়নি) এখানে "not found" হয়ে defensive
+        // return-এ স্কিপ হয়ে যেত, ফলে সেই পণ্যের স্টক-ডিডাকশন কখনো SQL-এ লেখা হতো
+        // না। ফিক্স: freshP-এর মতোই একই fallback chain ব্যবহার করা হলো।
+        const base = curProductsById.get(String(id)) || productsByIdMap.get(String(id));
+        if (!base) { _dbgMissingBase.push(String(id)); return; } // সত্যিকারের ডিফেন্সিভ কেস — এখন উভয় সোর্স মিস হলেই শুধু ট্রিগার হবে
         const merged = { ...base, stock: upd.stock, batches: upd.batches };
         neverLoadStockRecords.push(merged);
         nextProductsById.set(String(id), merged);
       });
-      // 🩺 TEMP DEBUG
       if (_dbgMissingBase.length > 0) {
-        try { window.alert(`🩺 stock-fix: base না পাওয়া গেছে id: ${_dbgMissingBase.join(",")}`); } catch {}
+        console.warn("never-load স্টক-ডিডাকশন: এই id(গুলো)-র জন্য base product পাওয়া যায়নি (উভয় সোর্সেই মিস — অস্বাভাবিক):", _dbgMissingBase.join(","));
       }
       if (neverLoadStockRecords.length > 0) {
         useAppStore.getState().set("productsById", nextProductsById); // সিঙ্ক্রোনাস, অপটিমিস্টিক
-        // 🩺 TEMP DEBUG
-        try { window.alert(`🩺 stock-fix: SQL-এ পাঠানো হচ্ছে —\n${neverLoadStockRecords.map(r => `${r.name}:${r.stock}`).join("\n")}`); } catch {}
-        upsertMany(businessType, "products", neverLoadStockRecords).then(() => {
-          // 🩺 TEMP DEBUG
-          try { window.alert(`🩺 stock-fix: SQL upsert সফল ✅`); } catch {}
-        }).catch((e) => {
+        upsertMany(businessType, "products", neverLoadStockRecords).catch((e) => {
           console.warn("never-load POS স্টক-ডিডাকশন সরাসরি-SQL upsert ব্যর্থ:", e);
-          // 🩺 TEMP DEBUG
-          try { window.alert(`🩺 stock-fix: SQL upsert ব্যর্থ ❌ —\n${String(e?.message || e)}`); } catch {}
           _markProductsSqlDownIfRisky(); // এন্ট্রি ৮০/৮১/৮২-এর একই গ্লোবাল ব্যানার-গার্ড — silent data loss না
         });
       }
