@@ -20056,21 +20056,46 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     // স্বাভাবিক মোডে (products সবসময় পূর্ণ, ৫০০ লাইভ দোকানের ডিফল্ট) এই ব্লক কখনো
     // ট্রিগার হয় না — behavior-preserving, উপরের setProducts()/dualWriteSqlite()
     // পাথই তখন যথেষ্ট।
+    // 🩺 TEMP DEBUG (সাময়িক — bug hunt শেষ হলে সরিয়ে ফেলা হবে): এই ব্লক আদৌ
+    // ট্রিগার হচ্ছে কিনা, আর ঠিক কোন সাব-কন্ডিশনটা ফেইল করছে তা toast-এ
+    // দেখানো হচ্ছে যাতে real-device-এ (console access ছাড়াই) সরাসরি চোখে দেখা যায়।
+    if (stockUpdateMap.size > 0) {
+      const _dbgReasons = [];
+      if (!(products.length === 0)) _dbgReasons.push(`products.length=${products.length} (≠0)`);
+      if (!isProductsNeverLoadEnabled()) _dbgReasons.push("neverLoad বন্ধ");
+      if (!isSqliteEnabled()) _dbgReasons.push("sqlite বন্ধ");
+      if (!businessType) _dbgReasons.push("businessType খালি");
+      if (_dbgReasons.length > 0) {
+        showToast(`🩺 stock-fix স্কিপড: ${_dbgReasons.join(", ")}`, "#f59e0b");
+      }
+    }
     if (stockUpdateMap.size > 0 && products.length === 0 && isProductsNeverLoadEnabled() && isSqliteEnabled() && businessType) {
       const curProductsById = useAppStore.getState().productsById;
       const nextProductsById = new Map(curProductsById);
       const neverLoadStockRecords = [];
+      const _dbgMissingBase = [];
       stockUpdateMap.forEach((upd, id) => {
         const base = curProductsById.get(String(id));
-        if (!base) return; // ডিফেন্সিভ — freshP (উপরে) থেকেই এই map বিল্ড হয়েছিল, তাই বাস্তবে সবসময় পাওয়া যাবে
+        if (!base) { _dbgMissingBase.push(String(id)); return; } // ডিফেন্সিভ — freshP (উপরে) থেকেই এই map বিল্ড হয়েছিল, তাই বাস্তবে সবসময় পাওয়া যাবে
         const merged = { ...base, stock: upd.stock, batches: upd.batches };
         neverLoadStockRecords.push(merged);
         nextProductsById.set(String(id), merged);
       });
+      // 🩺 TEMP DEBUG
+      if (_dbgMissingBase.length > 0) {
+        showToast(`🩺 stock-fix: base না পাওয়া গেছে id: ${_dbgMissingBase.join(",")}`, "#ef4444");
+      }
       if (neverLoadStockRecords.length > 0) {
         useAppStore.getState().set("productsById", nextProductsById); // সিঙ্ক্রোনাস, অপটিমিস্টিক
-        upsertMany(businessType, "products", neverLoadStockRecords).catch((e) => {
+        // 🩺 TEMP DEBUG
+        showToast(`🩺 stock-fix: SQL-এ পাঠানো হচ্ছে — ${neverLoadStockRecords.map(r => `${r.name}:${r.stock}`).join(", ")}`, "#22c55e");
+        upsertMany(businessType, "products", neverLoadStockRecords).then(() => {
+          // 🩺 TEMP DEBUG
+          showToast(`🩺 stock-fix: SQL upsert সফল ✅`, "#22c55e");
+        }).catch((e) => {
           console.warn("never-load POS স্টক-ডিডাকশন সরাসরি-SQL upsert ব্যর্থ:", e);
+          // 🩺 TEMP DEBUG
+          showToast(`🩺 stock-fix: SQL upsert ব্যর্থ ❌ — ${String(e?.message || e)}`, "#ef4444");
           _markProductsSqlDownIfRisky(); // এন্ট্রি ৮০/৮১/৮২-এর একই গ্লোবাল ব্যানার-গার্ড — silent data loss না
         });
       }
