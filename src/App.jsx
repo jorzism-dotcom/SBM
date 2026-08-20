@@ -20056,19 +20056,23 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     // স্বাভাবিক মোডে (products সবসময় পূর্ণ, ৫০০ লাইভ দোকানের ডিফল্ট) এই ব্লক কখনো
     // ট্রিগার হয় না — behavior-preserving, উপরের setProducts()/dualWriteSqlite()
     // পাথই তখন যথেষ্ট।
-    // 🩺 TEMP DEBUG (সাময়িক — bug hunt শেষ হলে সরিয়ে ফেলা হবে): এই ব্লক আদৌ
-    // ট্রিগার হচ্ছে কিনা, আর ঠিক কোন সাব-কন্ডিশনটা ফেইল করছে তা toast-এ
-    // দেখানো হচ্ছে যাতে real-device-এ (console access ছাড়াই) সরাসরি চোখে দেখা যায়।
-    if (stockUpdateMap.size > 0) {
+    // 🩺 TEMP DEBUG (সাময়িক — bug hunt শেষ হলে সরিয়ে ফেলা হবে): আগের সংস্করণ
+    // showToast() ব্যবহার করেছিল — কিন্তু এই একই ফাংশনের নিচেই "ইনভয়েস তৈরি
+    // হয়েছে" showToast() পরপরই কল হয় (একই single-toast state, একটাই এন্ট্রি
+    // রাখে) — ফলে debug toast লেখা হওয়ার সাথে সাথেই ওভাররাইট হয়ে যাচ্ছিল, তাই
+    // ইউজার কিছুই দেখতে পাননি। এখন window.alert() — সিঙ্ক্রোনাস/ব্লকিং, "ওকে"
+    // চাপা পর্যন্ত থেমে থাকে, ওভাররাইট হওয়ার কোনো সুযোগ নেই।
+    (() => {
       const _dbgReasons = [];
+      if (stockUpdateMap.size === 0) _dbgReasons.push("stockUpdateMap খালি (freshP কোনো আইটেমের জন্যই পাওয়া যায়নি!)");
       if (!(products.length === 0)) _dbgReasons.push(`products.length=${products.length} (≠0)`);
       if (!isProductsNeverLoadEnabled()) _dbgReasons.push("neverLoad বন্ধ");
       if (!isSqliteEnabled()) _dbgReasons.push("sqlite বন্ধ");
       if (!businessType) _dbgReasons.push("businessType খালি");
       if (_dbgReasons.length > 0) {
-        showToast(`🩺 stock-fix স্কিপড: ${_dbgReasons.join(", ")}`, "#f59e0b");
+        try { window.alert(`🩺 stock-fix স্কিপড:\n${_dbgReasons.join("\n")}`); } catch {}
       }
-    }
+    })();
     if (stockUpdateMap.size > 0 && products.length === 0 && isProductsNeverLoadEnabled() && isSqliteEnabled() && businessType) {
       const curProductsById = useAppStore.getState().productsById;
       const nextProductsById = new Map(curProductsById);
@@ -20083,19 +20087,19 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
       });
       // 🩺 TEMP DEBUG
       if (_dbgMissingBase.length > 0) {
-        showToast(`🩺 stock-fix: base না পাওয়া গেছে id: ${_dbgMissingBase.join(",")}`, "#ef4444");
+        try { window.alert(`🩺 stock-fix: base না পাওয়া গেছে id: ${_dbgMissingBase.join(",")}`); } catch {}
       }
       if (neverLoadStockRecords.length > 0) {
         useAppStore.getState().set("productsById", nextProductsById); // সিঙ্ক্রোনাস, অপটিমিস্টিক
         // 🩺 TEMP DEBUG
-        showToast(`🩺 stock-fix: SQL-এ পাঠানো হচ্ছে — ${neverLoadStockRecords.map(r => `${r.name}:${r.stock}`).join(", ")}`, "#22c55e");
+        try { window.alert(`🩺 stock-fix: SQL-এ পাঠানো হচ্ছে —\n${neverLoadStockRecords.map(r => `${r.name}:${r.stock}`).join("\n")}`); } catch {}
         upsertMany(businessType, "products", neverLoadStockRecords).then(() => {
           // 🩺 TEMP DEBUG
-          showToast(`🩺 stock-fix: SQL upsert সফল ✅`, "#22c55e");
+          try { window.alert(`🩺 stock-fix: SQL upsert সফল ✅`); } catch {}
         }).catch((e) => {
           console.warn("never-load POS স্টক-ডিডাকশন সরাসরি-SQL upsert ব্যর্থ:", e);
           // 🩺 TEMP DEBUG
-          showToast(`🩺 stock-fix: SQL upsert ব্যর্থ ❌ — ${String(e?.message || e)}`, "#ef4444");
+          try { window.alert(`🩺 stock-fix: SQL upsert ব্যর্থ ❌ —\n${String(e?.message || e)}`); } catch {}
           _markProductsSqlDownIfRisky(); // এন্ট্রি ৮০/৮১/৮২-এর একই গ্লোবাল ব্যানার-গার্ড — silent data loss না
         });
       }
