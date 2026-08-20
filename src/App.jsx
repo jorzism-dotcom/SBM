@@ -39,7 +39,7 @@ import {
 // তৈরি DataStore abstraction layer। isSqliteEnabled() ফ্ল্যাগ ডিফল্ট বন্ধ, তাই
 // এই import নিজে থেকে কোনো আচরণ পাল্টায় না — শুধু নিচের debouncedSave effect-
 // গুলোতে diff-based upsert/remove যোগ হয়েছে (দেখুন সেখানকার কমেন্ট)।
-import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite, queryPage as dsQueryPage, isProductsBootLazyEnabled, setProductsBootLazyEnabled, isPosOndemandCartEnabled, setPosOndemandCartEnabled, reconcileStore as dsReconcileStore } from "./db/DataStore.js";
+import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite, queryPage as dsQueryPage, isProductsBootLazyEnabled, setProductsBootLazyEnabled, isProductsNeverLoadEnabled, setProductsNeverLoadEnabled, isPosOndemandCartEnabled, setPosOndemandCartEnabled, reconcileStore as dsReconcileStore } from "./db/DataStore.js";
 // 🆕 এন্ট্রি ৩৬ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ২) — InventorySection/
 // Dashboard-এর KPI কাউন্ট + ডিটেইল লিস্ট + সাপ্লায়ার-গ্রুপিং SQL cutover
 import { getInventoryList as dsGetInventoryList, getExpiryCandidates as dsGetExpiryCandidates, getSupplierSummary as dsGetSupplierSummary, getProductsBySupplierKey as dsGetProductsBySupplierKey, getDateRangeAggregate as dsGetDateRangeAggregate, getCustomerRfmAggregates as dsGetCustomerRfmAggregates, getRiskProducts as dsGetRiskProducts } from "./db/DataStore.js";
@@ -246,6 +246,14 @@ const useAppStore = create(subscribeWithSelector((set) => ({
   // দুটোর মাধ্যমেই বদলালেও ধরবে, কারণ এটা action-এর ভেতরে না বসিয়ে বাইরে থেকে
   // subscribe করা — কোনো নির্দিষ্ট write-path-এর উপর নির্ভরশীল না)।
   productsById:      new Map(),
+  // 🆕 এন্ট্রি ৮০ — `sbm_products_boot_never` চালু ও SQLite বাল্ক-হাইড্রেট
+  // ব্যর্থ (বা runtime-এ `getProductByIdWithSqlFallback()`-এর SQL কল ব্যর্থ)
+  // হলে true হয়। `products` array কখনো লোড হয় না বলে এই মোডে JS fallback
+  // নিরাপদ না (permanently-empty array স্ক্যান করলে ভুল/শূন্য ফলাফল দেখাবে
+  // silently) — তাই UI-কে এই ফ্ল্যাগ দেখে explicit error/retry state
+  // দেখাতে হবে, silent fallback না করে। ডিফল্ট মোডে (এই ফ্ল্যাগ বন্ধ)
+  // কখনো true হয় না, তাই কোনো আচরণ বদলায় না।
+  productsNeverLoadSqlDown: false,
   customersById:     new Map(),
   invoicesById:      new Map(),
   txns:              [],
@@ -6203,6 +6211,26 @@ function dualWriteSqlite(businessType, store, prevMapRef, currentArr) {
   }
 }
 
+// 🆕 এন্ট্রি ৮১ — এন্ট্রি ৮০-এ `getProductByIdWithSqlFallback()`-এ যে
+// mark/clear লজিক ইনলাইন লেখা হয়েছিল, সেটাই এখন দুটো শেয়ার্ড হেল্পারে বের করা
+// হলো (`_markProductsSqlDownIfRisky` / `_clearProductsSqlDown`) — যাতে বাকি
+// products-নির্ভর SQL-primary+JS-fallback হুকগুলোও (useAllStockItems,
+// useLowStockItems, useKnownCategories, useLiveDupProduct ইত্যাদি) ঠিক একই
+// শর্তে (products array খালি + SQL ব্যর্থ) একই গ্লোবাল ব্যানার ট্রিগার করতে
+// পারে, কোড ডুপ্লিকেট না করে। শর্তটা ইচ্ছাকৃতভাবে "products.length === 0"-ই
+// রয়ে গেছে — legacy/ডিফল্ট মোডে (never-load বন্ধ) products সবসময় পূর্ণ থাকে,
+// তাই সেখানে এই হেল্পার কখনো ফ্ল্যাগ সেট করবে না, বর্তমান আচরণ ১০০% অপরিবর্তিত।
+function _markProductsSqlDownIfRisky() {
+  if (useAppStore.getState().products.length === 0) {
+    useAppStore.getState().set("productsNeverLoadSqlDown", true);
+  }
+}
+function _clearProductsSqlDown() {
+  if (useAppStore.getState().productsNeverLoadSqlDown) {
+    useAppStore.getState().set("productsNeverLoadSqlDown", false);
+  }
+}
+
 // 🆕 এন্ট্রি ৭৪ (SmartBusinessMgmt return/void SQL-fallback, ৭.৩ প্রস্তুতি) —
 // `productsById` (Zustand store, in-memory `products` অ্যারে থেকে derive হওয়া
 // Map) থেকে কোনো id মিস হলে (products boot-lazy/on-demand হওয়ার পর এটা ঘটবে,
@@ -6229,9 +6257,11 @@ async function getProductByIdWithSqlFallback(businessType, productId, productsBy
       nextMap.set(String(productId), found);
       useAppStore.getState().set("productsById", nextMap);
     }
+    _clearProductsSqlDown(); // এন্ট্রি ৮০/৮১ — SQL কাজ করছে প্রমাণিত, self-heal
     return found;
   } catch (e) {
     console.warn("getProductByIdWithSqlFallback() SQL fallback ব্যর্থ:", e);
+    _markProductsSqlDownIfRisky(); // এন্ট্রি ৮০/৮১
     return undefined;
   }
 }
@@ -9314,8 +9344,10 @@ function useProductsByIds(ids, businessType, productsByIdMap) {
           for (const row of rows) next.set(String(row.id), row);
           return next;
         });
+        _clearProductsSqlDown(); // এন্ট্রি ৮১
       } catch (e) {
         console.warn("useProductsByIds() SQL ব্যাচ-ফেচ ব্যর্থ:", e);
+        _markProductsSqlDownIfRisky(); // এন্ট্রি ৮১
       } finally {
         missing.forEach((id) => inFlightRef.current.delete(id));
       }
@@ -9351,9 +9383,11 @@ function useProductStockTotals(products, businessType) {
         const res = await dsGetInventoryCounts(businessType);
         if (cancelled || seqRef.current !== seq) return;
         setSql({ stockValue: res.stockValue, lowStockCount: res.critical });
+        _clearProductsSqlDown(); // এন্ট্রি ৮১
       } catch (e) {
         if (cancelled || seqRef.current !== seq) return;
         console.warn("products stock SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        _markProductsSqlDownIfRisky(); // এন্ট্রি ৮১
         setSql(null);
       }
     })();
@@ -9389,9 +9423,11 @@ function useLowStockItems(products, businessType) {
         const rows = await dsGetInventoryList(businessType, "critical");
         if (cancelled || seqRef.current !== seq) return;
         setSql(rows);
+        _clearProductsSqlDown(); // এন্ট্রি ৮১
       } catch (e) {
         if (cancelled || seqRef.current !== seq) return;
         console.warn("lowStockItems SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        _markProductsSqlDownIfRisky(); // এন্ট্রি ৮১
         setSql(null);
       }
     })();
@@ -9430,9 +9466,11 @@ function useOutOfStockCount(products, businessType) {
         const res = await dsGetInventoryCounts(businessType);
         if (cancelled || seqRef.current !== seq) return;
         setSql({ outOfStock: res.stockOut, totalProducts: res.totalCount });
+        _clearProductsSqlDown(); // এন্ট্রি ৮১
       } catch (e) {
         if (cancelled || seqRef.current !== seq) return;
         console.warn("outOfStock SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        _markProductsSqlDownIfRisky(); // এন্ট্রি ৮১
         setSql(null);
       }
     })();
@@ -9465,9 +9503,11 @@ function useOutOfStockItems(products, businessType) {
         const rows = await dsGetInventoryList(businessType, "out");
         if (cancelled || seqRef.current !== seq) return;
         setSql(rows);
+        _clearProductsSqlDown(); // এন্ট্রি ৮১
       } catch (e) {
         if (cancelled || seqRef.current !== seq) return;
         console.warn("outOfStockItems SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        _markProductsSqlDownIfRisky(); // এন্ট্রি ৮১
         setSql(null);
       }
     })();
@@ -9502,9 +9542,11 @@ function useExpiryCandidates(products, businessType) {
         const rows = await dsGetExpiryCandidates(businessType);
         if (cancelled || seqRef.current !== seq) return;
         setSql(rows);
+        _clearProductsSqlDown(); // এন্ট্রি ৮১
       } catch (e) {
         if (cancelled || seqRef.current !== seq) return;
         console.warn("expiryCandidates SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        _markProductsSqlDownIfRisky(); // এন্ট্রি ৮১
         setSql(null);
       }
     })();
@@ -9569,9 +9611,11 @@ function useSupplierDueRows(products, purchaseOrders, supplierPayments, business
         const rows = await dsGetSupplierDueRows(businessType);
         if (cancelled || seqRef.current !== seq) return;
         setSql(rows);
+        _clearProductsSqlDown(); // এন্ট্রি ৮১
       } catch (e) {
         if (cancelled || seqRef.current !== seq) return;
         console.warn("supplier due-map SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        _markProductsSqlDownIfRisky(); // এন্ট্রি ৮১
         setSql(null);
       }
     })();
@@ -9621,9 +9665,11 @@ function useProductSalesRows(invAll, prodMap, businessType, cutoffs) {
         const rows = await dsGetProductSalesRows(businessType, { d30, d60, d90 });
         if (cancelled || seqRef.current !== seq) return;
         setSql(rows);
+        _clearProductsSqlDown(); // এন্ট্রি ৮১
       } catch (e) {
         if (cancelled || seqRef.current !== seq) return;
         console.warn("productSales SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        _markProductsSqlDownIfRisky(); // এন্ট্রি ৮১
         setSql(null);
       }
     })();
@@ -9699,9 +9745,11 @@ function useReorderAlerts(products, businessType, jsReorderAlerts) {
         const rows = await dsGetReorderSalesRows(businessType, d30);
         if (cancelled || seqRef.current !== seq) return;
         setSql(computeReorderAlertsFromSalesRows(rows, products));
+        _clearProductsSqlDown(); // এন্ট্রি ৮১
       } catch (e) {
         if (cancelled || seqRef.current !== seq) return;
         console.warn("reorderAlerts SQL ফেচ ব্যর্থ, Worker ফলব্যাক ব্যবহার হচ্ছে:", e);
+        _markProductsSqlDownIfRisky(); // এন্ট্রি ৮১
         setSql(null);
       }
     })();
@@ -9731,9 +9779,11 @@ function useKnownCategories(products, businessType) {
         const cats = await dsGetDistinctCategories(businessType);
         if (cancelled || seqRef.current !== seq) return;
         setSql(cats);
+        _clearProductsSqlDown(); // এন্ট্রি ৮১
       } catch (e) {
         if (cancelled || seqRef.current !== seq) return;
         console.warn("ক্যাটাগরি-লিস্ট SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        _markProductsSqlDownIfRisky(); // এন্ট্রি ৮১
         setSql(null);
       }
     })();
@@ -9769,9 +9819,11 @@ function useRiskProducts(products, businessType) {
         const rows = await dsGetRiskProducts(businessType);
         if (cancelled || seqRef.current !== seq) return;
         setSql(rows.map(p => ({ ...p, margin: (p.price || 0) - (p.costPrice || 0) })));
+        _clearProductsSqlDown(); // এন্ট্রি ৮১
       } catch (e) {
         if (cancelled || seqRef.current !== seq) return;
         console.warn("লস-ঝুঁকি পণ্য SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        _markProductsSqlDownIfRisky(); // এন্ট্রি ৮১
         setSql(null);
       }
     })();
@@ -9804,9 +9856,11 @@ function useKnownSuppliers(products, purchaseOrders, businessType) {
         const rows = await dsGetDistinctSuppliers(businessType);
         if (cancelled || seqRef.current !== seq) return;
         setSql(rows);
+        _clearProductsSqlDown(); // এন্ট্রি ৮১
       } catch (e) {
         if (cancelled || seqRef.current !== seq) return;
         console.warn("সাপ্লায়ার-লিস্ট SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        _markProductsSqlDownIfRisky(); // এন্ট্রি ৮১
         setSql(null);
       }
     })();
@@ -9833,9 +9887,11 @@ function useKnownDosageForms(products, businessType) {
         const rows = await dsGetDistinctDosageForms(businessType);
         if (cancelled || seqRef.current !== seq) return;
         setSql(rows.filter(df => !DOSAGE_FORM_CHIPS.includes(df)));
+        _clearProductsSqlDown(); // এন্ট্রি ৮১
       } catch (e) {
         if (cancelled || seqRef.current !== seq) return;
         console.warn("dosage-form লিস্ট SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        _markProductsSqlDownIfRisky(); // এন্ট্রি ৮১
         setSql(null);
       }
     })();
@@ -9864,8 +9920,8 @@ function useLiveDupProduct(name, editId, products, businessType) {
     let cancelled = false;
     const timer = setTimeout(() => {
       dsFindProductByNameNorm(businessType, target)
-        .then((row) => { if (!cancelled) { setSql(row); setSqlQuery(target); } })
-        .catch((e) => { if (!cancelled) { console.warn("ডুপ্লিকেট-নাম SQL চেক ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e); setSql(null); setSqlQuery(null); } });
+        .then((row) => { if (!cancelled) { setSql(row); setSqlQuery(target); _clearProductsSqlDown(); } }) // এন্ট্রি ৮১
+        .catch((e) => { if (!cancelled) { console.warn("ডুপ্লিকেট-নাম SQL চেক ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e); _markProductsSqlDownIfRisky(); setSql(null); setSqlQuery(null); } }); // এন্ট্রি ৮১
     }, 150);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [target, editId, sqliteOn, businessType]);
@@ -11883,6 +11939,9 @@ function SmartBusinessMgmt() {
   // অপ্রয়োজনীয় ডুপ্লিকেট ছিল (মূল কারণ ছিল ViewerDashboardScreen-এর আলাদা স্কোপ থেকে
   // ভুলে রেফারেন্স করা, সেই বাগ এখন গ্লোবাল Map দিয়েই ঠিকভাবে সমাধান)।
   const productsById     = useAppStore(s => s.productsById);
+  // 🆕 এন্ট্রি ৮০ — never-load মোডে SQL ব্যর্থ হলে (এখনো শুধু single-id
+  // fallback সাইটে ধরা পড়ে, দেখুন getProductByIdWithSqlFallback) true হয়।
+  const productsNeverLoadSqlDown = useAppStore(s => s.productsNeverLoadSqlDown);
   const invoices         = useAppStore(s => s.invoices);
   const txns             = useAppStore(s => s.txns);
   const suppliers        = useAppStore(s => s.suppliers);
@@ -12280,6 +12339,10 @@ function SmartBusinessMgmt() {
       // পুরোপুরি লোড হয় (শুধু কখন হয় সেটাই বদলাচ্ছে) — এই ৬৭টা কল-সাইট
       // নির্ভরশীল কোড কিছুই বদলাতে হয়নি/ভাঙেনি।
       const productsKeyLazy = isProductsBootLazyEnabled();
+      // 🆕 এন্ট্রি ৮০ — `productsKeyLazy` চালু থাকলেই শুধু অর্থপূর্ণ (dependent
+      // ফ্ল্যাগ, `sbm_pos_ondemand_cart`-এর প্যাটার্নে)। বন্ধ থাকলে productsKeyLazy
+      // নিজেই false, তাই CRITICAL_KEYS-এ products সবসময়ের মতোই সিঙ্ক্রোনাস।
+      const productsNeverLoadFlag = productsKeyLazy && isProductsNeverLoadEnabled();
       const CRITICAL_KEYS = [
         LK(SK.customers), ...(productsKeyLazy ? [] : [LK(SK.products)]), LK(SK.invoices), LK(SK.txns), SK.users,
         SK.shopName, LK(SK.darkMode), LK(SK.activeTheme), LK(SK.fontSize),
@@ -12446,51 +12509,105 @@ function SmartBusinessMgmt() {
         // blob লোড শেষ করে। দুটো স্বাধীনভাবে সমান্তরালে চলে (কোনো একটা আরেকটার
         // অপেক্ষায় থাকে না)।
         //
-        // ⚠️ **এখনো `productsKeyLazy`-কে "কখনো লোড না করা"-য় আপগ্রেড করে না** —
-        // নিচের products blob-load ব্লক অপরিবর্তিত রেখে দেওয়া হয়েছে (dual-write
-        // চিরস্থায়ী নিয়ম অনুযায়ী, নতুন path পুরনোটা প্রতিস্থাপন করার আগে যথেষ্ট
-        // প্রমাণিত হতে হবে)। এই বাল্ক-হাইড্রেট নিজে থেকেই productsById-কে দ্রুত
-        // রেডি করে দেয় (সুবিধা), কিন্তু bulk-scan-নির্ভর ৬৬টা কল-সাইট এখনো
-        // `products` array-এর উপরই নির্ভরশীল — সেগুলো এখনো অপরিবর্তিত/অরূপান্তরিত।
-        // মূল `products` blob লোড শেষ হলে (নিচের setTimeout ব্লক) merge-patch
-        // subscribe (লাইন ~৪১৩) স্বয়ংক্রিয়ভাবে productsById-কে reconcile করে
-        // দেবে — SQL-হাইড্রেটেড কিন্তু blob-এ আসলে ডিলিটেড কোনো id থাকলে তখনই
-        // সঠিকভাবে সরে যাবে।
-        if (isSqliteEnabled() && businessTypeVal) {
-          (async () => {
-            try {
-              const sqlProductsForHydrate = await dsGetAllRows(businessTypeVal, "products");
-              if (sqlProductsForHydrate.length > 0) {
-                const { map: hydratedMap, ids: hydratedIds } = mergeItemsIntoIdMap(
-                  useAppStore.getState().productsById,
-                  _prevProductIdsForMap,
-                  sqlProductsForHydrate
-                );
-                _prevProductIdsForMap = hydratedIds;
-                useAppStore.getState().set("productsById", hydratedMap);
+        // 🆕 এন্ট্রি ৮০ — `sbm_products_boot_never` (আলাদা, dependent ফ্ল্যাগ,
+        // ডিফল্ট বন্ধ) চালু থাকলে এই বাল্ক-হাইড্রেট এখন **await করা হয়**
+        // (আগে fire-and-forget ছিল) — কারণ নিচে blob-load স্কিপ করার
+        // সিদ্ধান্ত এর সফলতার উপর নির্ভর করে। ফ্ল্যাগ বন্ধ থাকলে (ডিফল্ট)
+        // hydrate আগের মতোই fire-and-forget থাকে, blob-load ব্লক সবসময় চলে
+        // — কোনো আচরণ বদলায় না।
+        const productsNeverLoadRequested = productsNeverLoadFlag;
+        let neverLoadHydrateOk = false;
+        const _hydrateProductsByIdFromSql = async () => {
+          try {
+            const sqlProductsForHydrate = await dsGetAllRows(businessTypeVal, "products");
+            // 🆕 এন্ট্রি ৮৩ — never-load মোডে blob কখনো পড়া হয় না বলে schema
+            // migration (SchemaMigration.runAll) আগে কখনো ট্রিগারই হতো না —
+            // productsById চিরকাল SQLite-এর raw/হয়তো-পুরনো-schema শেপেই থাকত,
+            // আর schemaMigrationStats কার্ড কখনো দেখাত না (জানা সীমাবদ্ধতা,
+            // এন্ট্রি ৮০)। এখন সিঙ্ক্রোনাস/delay-mode বুট-প্যাচের ঠিক একই
+            // in-memory pure ফাংশন এখানেও চালানো হলো — SQLite থেকে পড়া রেকর্ড
+            // migrated শেপে productsById-তে বসে, আর কিছু migrate হলে
+            // schemaMigrationStats-ও সেট হয় (নিচে)।
+            const { data: hydrateMigratedData, stats: hydrateSchemaStats } = SchemaMigration.runAll({
+              products: sqlProductsForHydrate,
+            });
+            const migratedRows = hydrateMigratedData.products;
+            const { map: hydratedMap, ids: hydratedIds } = mergeItemsIntoIdMap(
+              useAppStore.getState().productsById,
+              _prevProductIdsForMap,
+              migratedRows
+            );
+            _prevProductIdsForMap = hydratedIds;
+            useAppStore.getState().set("productsById", hydratedMap);
+            if (hydrateSchemaStats.totalMigrated > 0) {
+              useAppStore.getState().set("schemaMigrationStats", hydrateSchemaStats);
+              // 🆕 এন্ট্রি ৮৩ — শুধু in-memory ঠিক করাই যথেষ্ট না: এই রেকর্ডগুলো
+              // যদি SQLite-এ raw/পুরনো শেপেই থেকে যায়, তাহলে যেসব সাইট সরাসরি
+              // SQLite থেকে পড়ে (aggregate হুক, single-id fallback) তারা এখনো
+              // পুরনো শেপ পাবে। তাই যেসব রেকর্ড আসলে migrate হয়েছে সেগুলো
+              // ফায়ার-অ্যান্ড-ফরগেট upsertMany() দিয়ে SQLite-এও লিখে দেওয়া হলো —
+              // পরের বুট থেকে (বা যেকোনো ফ্রেশ SQL রিড) আর migrate করা লাগবে না।
+              // ব্যর্থ হলেও ক্ষতি নেই — এই বুটে in-memory ঠিকই আছে, পরের বুটে
+              // আবার চেষ্টা হবে (idempotent, migrateRecord() বারবার চালালেও
+              // _schemaV চেক করে কিছু বদলায় না)।
+              const changedRows = migratedRows.filter((r, i) => r !== sqlProductsForHydrate[i]);
+              if (changedRows.length > 0) {
+                upsertMany(businessTypeVal, "products", changedRows).catch((e) => {
+                  console.warn("এন্ট্রি ৮৩: migrated products SQLite write-back ব্যর্থ (নন-ফেটাল, পরের বুটে রিট্রাই হবে):", e);
+                });
               }
-            } catch (e) {
-              // নিরাপদ ফেইলিওর — ব্যর্থ হলে শুধু নিচের পুরনো blob-load পথের
-              // (ধীর কিন্তু প্রমাণিত) অপেক্ষা করা হবে, কোনো এরর ইউজারকে দেখানো হয় না।
-              console.warn("productsById SQLite বাল্ক-হাইড্রেট ব্যর্থ (নন-ফেটাল, blob-load ফলব্যাক চলছে):", e);
+            } else {
+              useAppStore.getState().set("schemaMigrationStats", null);
             }
-          })();
+            return true;
+          } catch (e) {
+            // নিরাপদ ফেইলিওর — ব্যর্থ হলে নিচের পুরনো blob-load পথের (ধীর
+            // কিন্তু প্রমাণিত) অপেক্ষা করা হবে, কোনো এরর ইউজারকে দেখানো হয় না।
+            console.warn("productsById SQLite বাল্ক-হাইড্রেট ব্যর্থ (নন-ফেটাল, blob-load ফলব্যাক চলছে):", e);
+            return false;
+          }
+        };
+        if (isSqliteEnabled() && businessTypeVal) {
+          if (productsNeverLoadRequested) {
+            neverLoadHydrateOk = await _hydrateProductsByIdFromSql();
+          } else {
+            _hydrateProductsByIdFromSql(); // fire-and-forget, এন্ট্রি ৭৮-এর আচরণ অপরিবর্তিত
+          }
         }
-        setTimeout(async () => {
-          const prodBoot = await loadMany([LK(SK.products)]);
-          const rawProdsLazy = prodBoot[LK(SK.products)];
-          const { data: lazyMigratedData, stats: lazySchemaStats } = SchemaMigration.runAll({
-            products: rawProdsLazy || SEED_PRODUCTS,
-          });
-          _patch({
-            products: lazyMigratedData.products,
-            // ৬৭টা কল-সাইট products.length/ইত্যাদির উপর নির্ভর করে বলে schema
-            // মাইগ্রেশন স্ট্যাটাস কার্ড (আগে থেকে থাকা UI) এখানেও আপডেট হওয়া
-            // উচিত, উপরের সিঙ্ক্রোনাস প্যাচের মতোই — নাহলে lazy মোডে মাইগ্রেশন
-            // নোটিশ কখনো দেখানো হতো না।
-            schemaMigrationStats: lazySchemaStats.totalMigrated > 0 ? lazySchemaStats : null,
-          });
-        }, 0);
+
+        // ⚠️ blob-load শুধুমাত্র তখনই স্কিপ হয় যখন never-load ফ্ল্যাগ চালু
+        // **এবং** উপরের হাইড্রেট সত্যিই সফল হয়েছে (SQL চালু + businessTypeVal
+        // ঠিক আছে + কোনো এরর হয়নি) — নাহলে নিরাপদে পুরনো delay-only আচরণে
+        // fallback (blob এখনো লোড হবে, শুধু দেরিতে)। **এন্ট্রি ৮০-এর সীমাবদ্ধতা
+        // এন্ট্রি ৮৩-তে সমাধান হয়েছে**: এখন _hydrateProductsByIdFromSql()-এর
+        // ভেতরেই SchemaMigration.runAll() চলে (উপরে দেখুন) — never-load মোডেও
+        // schemaMigrationStats ঠিকভাবে সেট হয়, আর migrate হওয়া রেকর্ড SQLite-এও
+        // write-back হয়। bulk-scan সাইটগুলোর SQL ব্যর্থতা এখনো
+        // productsNeverLoadSqlDown ফ্ল্যাগ দিয়েই গার্ডেড (এন্ট্রি ৮১-৮২)।
+        if (productsNeverLoadRequested && neverLoadHydrateOk) {
+          _patch({ productsNeverLoadSqlDown: false });
+        } else {
+          if (productsNeverLoadRequested) {
+            // ফ্ল্যাগ চালু ছিল কিন্তু হাইড্রেট ব্যর্থ/SQL বন্ধ — never-load
+            // মোড এই বুটে আসলে সক্রিয় হয়নি, UI-কে জানিয়ে রাখা হলো।
+            _patch({ productsNeverLoadSqlDown: true });
+          }
+          setTimeout(async () => {
+            const prodBoot = await loadMany([LK(SK.products)]);
+            const rawProdsLazy = prodBoot[LK(SK.products)];
+            const { data: lazyMigratedData, stats: lazySchemaStats } = SchemaMigration.runAll({
+              products: rawProdsLazy || SEED_PRODUCTS,
+            });
+            _patch({
+              products: lazyMigratedData.products,
+              // ৬৭টা কল-সাইট products.length/ইত্যাদির উপর নির্ভর করে বলে schema
+              // মাইগ্রেশন স্ট্যাটাস কার্ড (আগে থেকে থাকা UI) এখানেও আপডেট হওয়া
+              // উচিত, উপরের সিঙ্ক্রোনাস প্যাচের মতোই — নাহলে lazy মোডে মাইগ্রেশন
+              // নোটিশ কখনো দেখানো হতো না।
+              schemaMigrationStats: lazySchemaStats.totalMigrated > 0 ? lazySchemaStats : null,
+            });
+          }, 0);
+        }
       }
 
       // ── Wave 2 — প্রথম পেইন্টের জন্য জরুরি নয় এমন কালেকশন, পেইন্টের পরে ──────
@@ -15820,6 +15937,25 @@ function SmartBusinessMgmt() {
     <div style={S.root}>
       {/* ── Gemini-style Background ──────────────────── */}
       <div data-mesh="1" style={{ position:"fixed", inset:0, zIndex:0, pointerEvents:"none", background: currentPreset.bg }} />
+      {/* 🆕 এন্ট্রি ৮০ — never-load মোডে SQL ডাউন হলে explicit error/retry
+          ব্যানার (silent fallback-এর বদলে)। ⚠️ এখনো শুধু single-id
+          getProductByIdWithSqlFallback() থেকে ট্রিগার হয় — বাকি ৬৫টা
+          bulk-scan সাইটে এখনো একই গার্ড বসানো বাকি, তাই এই ব্যানার না
+          দেখালেও ওই সাইটগুলো এই মোডে ভুল ফলাফল দিতে পারে। */}
+      {productsNeverLoadSqlDown && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, zIndex: 99999,
+          background: "#ef4444", color: "#fff", fontSize: 12.5, fontWeight: 700,
+          padding: "8px 14px", display: "flex", alignItems: "center",
+          justifyContent: "space-between", gap: 10, boxShadow: "0 2px 10px rgba(0,0,0,0.25)",
+        }}>
+          <span>⚠️ প্রোডাক্ট ডেটাবেস (SQLite) এই মুহূর্তে পড়া যাচ্ছে না — কিছু তথ্য ভুল/অসম্পূর্ণ দেখাতে পারে</span>
+          <button
+            onClick={() => window.location.reload()}
+            style={{ background: "#fff", color: "#ef4444", border: "none", borderRadius: 6, padding: "4px 10px", fontWeight: 800, fontSize: 12, cursor: "pointer", flexShrink: 0 }}
+          >রিট্রাই</button>
+        </div>
+      )}
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Bengali:wght@400;500;700;800&family=Hind+Siliguri:wght@400;500;600;700;800&family=Anton&display=swap');
 
@@ -19188,17 +19324,24 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
   // 🆕 Phase ৪ (হাইব্রিড সার্চ) — শুধু বড় ডেটাসেটে narrowing চালু। FTS_NARROW_THRESHOLD
   // এখন module-level (উপরে import-এর কাছে) — এই থ্রেশহোল্ডের নিচে productMatchScore()-এর
   // ফাজি/বারকোড ম্যাচ কোয়ালিটি হারানোর ঝুঁকি নেওয়ার মতো কোনো বাস্তব পারফরম্যান্স-লাভ নেই।
+  // 🆕 এন্ট্রি ৮১ — `productsWithSerial.length > 0 &&` শর্তটা নতুন যোগ হলো: আগে
+  // `<= THRESHOLD` (০ সহ) হলেই narrowing স্কিপ হতো, কিন্তু never-load মোডে
+  // `products` স্থায়ীভাবে `[]` (length ০) — তখন এই স্কিপ ভুলভাবে FTS-কেই
+  // এড়িয়ে সরাসরি খালি array-এর উপর JS ফিল্টারে যেত (নিচে filteredProducts
+  // দেখুন)। এখন length===0 হলে (ছোট ক্যাটালগ থেকে আলাদা করে) কখনো স্কিপ হয় না,
+  // সবসময় SQL narrowing চেষ্টা করে। স্বাভাবিক/ছোট-ক্যাটালগ মোডে (products.length
+  // সবসময় >0) কোনো আচরণ বদলায়নি।
   useEffect(() => {
     const q = prodSearch.trim();
-    if (!q || !isSqliteEnabled() || productsWithSerial.length <= FTS_NARROW_THRESHOLD) {
+    if (!q || !isSqliteEnabled() || (productsWithSerial.length > 0 && productsWithSerial.length <= FTS_NARROW_THRESHOLD)) {
       setFtsCandidateIds(null);
       return;
     }
     let cancelled = false;
     const timer = setTimeout(() => {
       hybridSearchCandidateIds(businessType, "products", q, 300)
-        .then((ids) => { if (!cancelled) { setFtsCandidateIds(ids); setFtsCandidateQuery(q); } })
-        .catch(() => { if (!cancelled) setFtsCandidateIds(null); }); // ব্যর্থ হলে সাইলেন্টলি ফুল-array ফলব্যাক
+        .then((ids) => { if (!cancelled) { setFtsCandidateIds(ids); setFtsCandidateQuery(q); _clearProductsSqlDown(); } }) // এন্ট্রি ৮১
+        .catch(() => { if (!cancelled) { setFtsCandidateIds(null); _markProductsSqlDownIfRisky(); } }); // এন্ট্রি ৮১ — never-load মোডে (products খালি) এই ব্যর্থতা আর সাইলেন্ট না
     }, 150); // debounce — প্রতি কি-স্ট্রোকে না
     return () => { cancelled = true; clearTimeout(timer); };
   }, [prodSearch, businessType, productsWithSerial.length]);
@@ -21963,9 +22106,11 @@ function useInventoryData(products, businessType) {
         ]);
         if (cancelled || seqRef.current !== seq) return;
         setSql({ allRows, criticalRows, outRows, expiryRows, supplierSummary });
+        _clearProductsSqlDown(); // এন্ট্রি ৮১ — এই হুক নিজেই এন্ট্রি ৫৪ থেকে sqlStatus:'error' এক্সপোজ করে (কখনো silent fallback করে না), এখানে শুধু গ্লোবাল ব্যানারের সাথে সিঙ্ক রাখা হলো
       } catch (e) {
         if (cancelled || seqRef.current !== seq) return;
         console.warn("ইনভেন্টরি SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        _markProductsSqlDownIfRisky(); // এন্ট্রি ৮১
         setSql(false);
       }
     })();
@@ -23251,15 +23396,15 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   const [supFtsQuery, setSupFtsQuery] = useState(""); 
   useEffect(() => {
     const q = supSearchQuery.trim();
-    if (!q || !isSqliteEnabled() || products.length <= FTS_NARROW_THRESHOLD) {
+    if (!q || !isSqliteEnabled() || (products.length > 0 && products.length <= FTS_NARROW_THRESHOLD)) { // এন্ট্রি ৮১: length===0 (never-load) কখনো স্কিপ না
       setSupFtsIds(null);
       return;
     }
     let cancelled = false;
     const timer = setTimeout(() => {
       hybridSearchCandidateIds(businessType, "products", q, 300)
-        .then((ids) => { if (!cancelled) { setSupFtsIds(ids); setSupFtsQuery(q); } })
-        .catch(() => { if (!cancelled) setSupFtsIds(null); });
+        .then((ids) => { if (!cancelled) { setSupFtsIds(ids); setSupFtsQuery(q); _clearProductsSqlDown(); } }) // এন্ট্রি ৮১
+        .catch(() => { if (!cancelled) { setSupFtsIds(null); _markProductsSqlDownIfRisky(); } }); // এন্ট্রি ৮১
     }, 150);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [supSearchQuery, businessType, products.length]);
@@ -23273,15 +23418,15 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   const [custOrderFtsQuery, setCustOrderFtsQuery] = useState("");
   useEffect(() => {
     const q = custOrderName.trim();
-    if (q.length < 2 || !isSqliteEnabled() || products.length <= FTS_NARROW_THRESHOLD) {
+    if (q.length < 2 || !isSqliteEnabled() || (products.length > 0 && products.length <= FTS_NARROW_THRESHOLD)) { // এন্ট্রি ৮১
       setCustOrderFtsIds(null);
       return;
     }
     let cancelled = false;
     const timer = setTimeout(() => {
       hybridSearchCandidateIds(businessType, "products", q, 300)
-        .then((ids) => { if (!cancelled) { setCustOrderFtsIds(ids); setCustOrderFtsQuery(q); } })
-        .catch(() => { if (!cancelled) setCustOrderFtsIds(null); });
+        .then((ids) => { if (!cancelled) { setCustOrderFtsIds(ids); setCustOrderFtsQuery(q); _clearProductsSqlDown(); } }) // এন্ট্রি ৮১
+        .catch(() => { if (!cancelled) { setCustOrderFtsIds(null); _markProductsSqlDownIfRisky(); } }); // এন্ট্রি ৮১
     }, 150);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [custOrderName, businessType, products.length]);
@@ -29018,15 +29163,15 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const [prodListFtsQuery, setProdListFtsQuery] = useState("");
   useEffect(() => {
     const q = (deferredSearch || "").trim();
-    if (!q || q.startsWith("__") || !isSqliteEnabled() || productsWithSerialAll.length <= FTS_NARROW_THRESHOLD) {
+    if (!q || q.startsWith("__") || !isSqliteEnabled() || (productsWithSerialAll.length > 0 && productsWithSerialAll.length <= FTS_NARROW_THRESHOLD)) { // এন্ট্রি ৮১
       setProdListFtsIds(null);
       return;
     }
     let cancelled = false;
     const timer = setTimeout(() => {
       hybridSearchCandidateIds(businessType, "products", q, 300)
-        .then((ids) => { if (!cancelled) { setProdListFtsIds(ids); setProdListFtsQuery(q); } })
-        .catch(() => { if (!cancelled) setProdListFtsIds(null); }); // ব্যর্থ হলে সাইলেন্টলি ফুল-array ফলব্যাক
+        .then((ids) => { if (!cancelled) { setProdListFtsIds(ids); setProdListFtsQuery(q); _clearProductsSqlDown(); } }) // এন্ট্রি ৮১
+        .catch(() => { if (!cancelled) { setProdListFtsIds(null); _markProductsSqlDownIfRisky(); } }); // এন্ট্রি ৮১
     }, 150);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [deferredSearch, businessType, productsWithSerialAll.length]);
@@ -29234,15 +29379,15 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const [peFtsQuery, setPeFtsQuery] = useState("");
   useEffect(() => {
     const q = (peForm.productSearch || "").trim();
-    if (!q || !isSqliteEnabled() || products.length <= FTS_NARROW_THRESHOLD) {
+    if (!q || !isSqliteEnabled() || (products.length > 0 && products.length <= FTS_NARROW_THRESHOLD)) { // এন্ট্রি ৮১
       setPeFtsIds(null);
       return;
     }
     let cancelled = false;
     const timer = setTimeout(() => {
       hybridSearchCandidateIds(businessType, "products", q, 300)
-        .then((ids) => { if (!cancelled) { setPeFtsIds(ids); setPeFtsQuery(q); } })
-        .catch(() => { if (!cancelled) setPeFtsIds(null); });
+        .then((ids) => { if (!cancelled) { setPeFtsIds(ids); setPeFtsQuery(q); _clearProductsSqlDown(); } }) // এন্ট্রি ৮১
+        .catch(() => { if (!cancelled) { setPeFtsIds(null); _markProductsSqlDownIfRisky(); } }); // এন্ট্রি ৮১
     }, 150);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [peForm.productSearch, businessType, products.length]);
@@ -36878,6 +37023,52 @@ function ProductsBootLazyToggle({ T, showToast }) {
   );
 }
 
+// 🆕 এন্ট্রি ৮০ — ProductsBootLazyToggle-এর ঠিক একই প্যাটার্ন, কিন্তু dependent:
+// শুধু boot-lazy চালু থাকলেই অর্থপূর্ণ (তাই disabled থাকে boot-lazy বন্ধ হলে)।
+// চালু + boot-lazy চালু + hydrate সফল হলে products blob আর কখনোই লোড হবে না।
+function ProductsNeverLoadToggle({ T, showToast }) {
+  const [bootLazyOn] = useState(() => isProductsBootLazyEnabled());
+  const [enabled, setEnabled] = useState(() => isProductsNeverLoadEnabled());
+
+  const handleToggle = () => {
+    const next = !enabled;
+    setProductsNeverLoadEnabled(next);
+    setEnabled(next);
+    showToast?.(
+      next
+        ? "✅ Products never-load চালু হলো — পরের রিস্টার্টে blob পুরোপুরি স্কিপ হওয়ার চেষ্টা করবে (SQL ব্যর্থ হলে নিরাপদে পুরনো আচরণে ফলব্যাক)"
+        : "Products never-load বন্ধ হলো — পরের রিস্টার্টে boot-lazy (delay-only) আচরণে ফিরবে"
+    );
+  };
+
+  return (
+    <div style={{ marginTop: 12, padding: 10, borderRadius: 8, border: `1.5px solid ${enabled ? "#ef4444" : T.border}`, opacity: bootLazyOn ? 1 : 0.5 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: T.text }}>
+          🚫 Products Never-Load (এন্ট্রি ৮০, ঝুঁকিপূর্ণ — শুধু টেস্ট)
+        </div>
+        <button onClick={handleToggle} disabled={!bootLazyOn} style={{
+          padding: "5px 12px", borderRadius: 20,
+          border: `1.5px solid ${enabled ? "#ef4444" : T.border}`,
+          background: enabled ? "#ef4444" : "transparent",
+          color: enabled ? "#fff" : T.sub, fontWeight: 700, fontSize: 11,
+          cursor: bootLazyOn ? "pointer" : "not-allowed",
+        }}>{enabled ? "চালু" : "বন্ধ"}</button>
+      </div>
+      <div style={{ marginTop: 6, fontSize: 10.5, color: T.sub, lineHeight: 1.7 }}>
+        {!bootLazyOn && "⚠️ আগে উপরে Products Boot-Lazy চালু করুন — নাহলে এই ফ্ল্যাগ কিছুই করবে না। "}
+        চালু করলে `products` React array আর কখনো IndexedDB blob থেকে লোড হবে না
+        (স্থায়ীভাবে খালি [] থাকবে) — শুধু SQLite বাল্ক-হাইড্রেট থেকেই `productsById`
+        রেডি হবে। হাইড্রেট ব্যর্থ হলে বা SQL বন্ধ থাকলে সেই বুটে নিরাপদে পুরনো
+        delay-only আচরণে ফলব্যাক করে। ⚠️ ৬৬টা bulk-scan সাইট (Dashboard/PNL/Products
+        তালিকা ইত্যাদি) এখনো SQL ব্যর্থ হলে silent fallback করে — SQL ডাউন থাকা
+        অবস্থায় এই ফ্ল্যাগ চালু রাখলে ভুল/শূন্য ফলাফল নীরবে দেখাতে পারে (গার্ড আইটেম
+        এখনো future কাজ)। real-device-এ খুব সতর্কভাবে টেস্ট করুন। ডিফল্ট বন্ধ।
+      </div>
+    </div>
+  );
+}
+
 // 🆕 এন্ট্রি ৬৮ (৭.৩, POS on-demand cart) — ProductsBootLazyToggle-এর ঠিক একই
 // প্যাটার্ন। ⚠️ এই ফ্ল্যাগ চালু হলে POS বিলিং-কার্ট (SmartInvoiceBuilder)-এর
 // কার্ট/ব্যাচ-লুকআপ id-বাউন্ডেড হয়ে যায় — real-device বিলিং যাচাই ছাড়া কখনো
@@ -37303,6 +37494,7 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
           </div>
 
           <ProductsBootLazyToggle T={T} showToast={showToast} />
+          <ProductsNeverLoadToggle T={T} showToast={showToast} />
           <PosOndemandCartToggle T={T} showToast={showToast} />
 
           <div style={{ marginTop: 12, fontSize: 10.5, color: T.sub, lineHeight: 1.7 }}>
