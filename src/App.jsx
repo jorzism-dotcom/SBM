@@ -424,14 +424,36 @@ useAppStore.subscribe(
   },
   { fireImmediately: true }
 );
+// 🔴 এন্ট্রি ৯৩ (Phase ৩ boot-change prerequisite — এন্ট্রি ৭৭-এর productsById
+// ফিক্সের ঠিক একই ক্লাসের ল্যান্ডমাইন, customers/invoices-এর জন্যও আগে থেকেই
+// বিদ্যমান ছিল, এখনো ট্রিগার হয়নি কারণ customers/invoices এখনো বুটে সবসময়
+// পূর্ণ থাকে): নিচের দুটো subscribe আগে wholesale-rebuild করত
+// (`new Map(customers.map(...))`) — customers/invoices সত্যিকারভাবে
+// lazy/আংশিক (কখনো never-load বা windowed) হলে এই রিবিল্ড প্রতিটা সাধারণ
+// এডিটেই SQLite থেকে হাইড্রেট করা বাকি সব এন্ট্রি মুছে ফেলত (ঠিক এন্ট্রি
+// ৭৭-এর productsById বাগের মতোই)। এখন productsById-এর প্রমাণিত merge-patch
+// প্যাটার্ন (mergeItemsIntoIdMap(), logic.js, pure/টেস্টেড) পুনর্ব্যবহার করা
+// হলো — customers/invoices বুটে সবসময় পূর্ণ থাকা বর্তমান বাস্তবতায় (কোনো
+// lazy/never-load ফ্ল্যাগ এখনো নেই এদের জন্য) কোনো আচরণ বদলায় না, শুধু
+// ভবিষ্যতের boot-lazy কাজের জন্য নিরাপদ পূর্বশর্ত তৈরি হলো।
+let _prevCustomerIdsForMap = new Set();
 useAppStore.subscribe(
   (s) => s.customers,
-  (customers) => { useAppStore.getState().set("customersById", new Map(customers.map(c => [String(c.id), c]))); },
+  (customers) => {
+    const { map, ids } = mergeItemsIntoIdMap(useAppStore.getState().customersById, _prevCustomerIdsForMap, customers);
+    _prevCustomerIdsForMap = ids;
+    useAppStore.getState().set("customersById", map);
+  },
   { fireImmediately: true }
 );
+let _prevInvoiceIdsForMap = new Set();
 useAppStore.subscribe(
   (s) => s.invoices,
-  (invoices) => { useAppStore.getState().set("invoicesById", new Map(invoices.map(i => [String(i.id), i]))); },
+  (invoices) => {
+    const { map, ids } = mergeItemsIntoIdMap(useAppStore.getState().invoicesById, _prevInvoiceIdsForMap, invoices);
+    _prevInvoiceIdsForMap = ids;
+    useAppStore.getState().set("invoicesById", map);
+  },
   { fireImmediately: true }
 );
 
@@ -15375,7 +15397,8 @@ function SmartBusinessMgmt() {
     setStockMovements(prev => [mv, ...(prev || [])]);
 
     const refundAmount = calcReturnRefundAmount(inv, item, qty);
-    const cust = inv.customerId ? customers.find(c => c.id === inv.customerId) : null;
+    // 🆕 এন্ট্রি ৯৩ — O(n) find() → global write-through customersById O(1) lookup
+    const cust = inv.customerId ? useAppStore.getState().customersById.get(String(inv.customerId)) || null : null;
     if ((isOffline || transientFailure) && !productDeleted) {
       const restoreItems = stockResult ? [] : [{
         productId, qty, batchNo: item.batchNo || "",
@@ -20126,7 +20149,8 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
       overpayAmount: _overpayAmt,
       prevBalance: isSelfUse ? 0
         : (isWalkIn ? (walkInCustMode === "existing" && walkInExistingId
-            ? (customers.find(c => c.id === walkInExistingId)?.balance || 0)
+            // 🆕 এন্ট্রি ৯৩ — O(n) find() → global customersById O(1) lookup
+            ? (useAppStore.getState().customersById.get(String(walkInExistingId))?.balance || 0)
             : 0)
           : selCust.balance),
       date: todayStr(), dateKey: todayEn(), shopName,
@@ -20432,7 +20456,8 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
 
   // ── After invoice created: show receipt ──
   if (printInv) {
-    const c = customers.find(c => c.id === printInv.customerId);
+    // 🆕 এন্ট্রি ৯৩ — O(n) find() → global customersById O(1) lookup
+    const c = useAppStore.getState().customersById.get(String(printInv.customerId));
     return (
       <div style={{ ...S.page, overflowY: "auto", paddingBottom: 90 }}>
         <button style={S.textBtn} onClick={resetAll}>← ইনভয়েস তালিকায় ফিরুন</button>
@@ -22986,7 +23011,8 @@ function InvoiceVoidModal({ inv, returns = [], products = [], customers = [], cu
     .filter(it => it.remainingQty > 0);
   const hasStock = remainingStockItems.length > 0;
   const returnableItems = remainingStockItems.filter(it => it.productType !== "service");
-  const cust = inv.customerId ? customers.find(c => c.id === inv.customerId) : null;
+  // 🆕 এন্ট্রি ৯৩ — O(n) find() → global customersById O(1) lookup
+  const cust = inv.customerId ? useAppStore.getState().customersById.get(String(inv.customerId)) || null : null;
 
   const overlayStyle = {
     position: "fixed", inset: 0, zIndex: 9999,
@@ -24134,7 +24160,8 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   ), [isToday, todayInvs, todayTotal, todayCashSale, todayBaki, todayProfit, todayBakiInvsFull, todaySelfUseInvs, todaySelfUseCost, todayVoidedInvs, invoices, txns, products, returns, repStart, repEnd]);
 
   if (viewInv) {
-    const cust = customers.find(c => c.id === viewInv.customerId);
+    // 🆕 এন্ট্রি ৯৩ — O(n) find() → global customersById O(1) lookup
+    const cust = useAppStore.getState().customersById.get(String(viewInv.customerId));
     return (
       <div style={S.page}>
         <button style={S.textBtn} onClick={closeInvoiceView}>← তালিকায় ফিরুন</button>
@@ -27810,7 +27837,8 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
 
   const requestDelete = (id) => setConfirmId(id);
   const confirmDelete = (id) => {
-    const c = customers.find(x => x.id === id);
+    // 🆕 এন্ট্রি ৯৩ — O(n) find() → global customersById O(1) lookup
+    const c = useAppStore.getState().customersById.get(String(id));
     if ((c?.balance || 0) > 0) {
       showToast(`${c.name}-এর ৳${fmtMoney(c.balance)} বাকি আছে — আগে পরিশোধ করুন`, "#ef4444");
       setConfirmId(null);
@@ -28163,7 +28191,8 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
   };
 
   if (viewInv) {
-    const cust = customers.find(c => c.id === viewInv.customerId);
+    // 🆕 এন্ট্রি ৯৩ — O(n) find() → global customersById O(1) lookup
+    const cust = useAppStore.getState().customersById.get(String(viewInv.customerId));
     return (
       <div style={S.page}>
         <button style={S.textBtn} onClick={closeInvoiceView}>← লেনদেনে ফিরুন</button>
@@ -33460,7 +33489,8 @@ function SmsLog({ T, S, smsLog, smsCount, setSmsCount, customers, sendSMS, showT
 
   const sendCustom = async () => {
     if (!custId || !msg.trim()) { showToast("কাস্টমার ও বার্তা দিন", "#ef4444"); return; }
-    const c = customers.find(x => x.id === custId);
+    // 🆕 এন্ট্রি ৯৩ — O(n) find() → global customersById O(1) lookup
+    const c = useAppStore.getState().customersById.get(String(custId));
     if (!c) return;
     setSending(true);
     await sendSMS(c, "custom", 0);
