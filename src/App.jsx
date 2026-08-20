@@ -13434,7 +13434,24 @@ function SmartBusinessMgmt() {
   const _dsSupplierPaymentsRef = useRef(new Map());
 
   useEffect(() => { if (loaded) { debouncedSave(LK(SK.customers), customers, 1500); setBackupNeeded(true); dualWriteSqlite(businessType, "customers", _dsCustomersRef, customers); } }, [customers, loaded]);
-  useEffect(() => { if (loaded) { debouncedSave(LK(SK.products),  products,  1500); setBackupNeeded(true); dualWriteSqlite(businessType, "products",  _dsProductsRef,  products);  } }, [products, loaded]);
+  useEffect(() => {
+    if (!loaded) return;
+    // 🔴 এন্ট্রি ৮৬ — গুরুত্বপূর্ণ ফিক্স: never-load মোডে (`sbm_products_boot_never`)
+    // `products` React array ইচ্ছাকৃতভাবে স্থায়ীভাবে খালি রাখা হয় (SQLite-ই
+    // read-path-এর একমাত্র সোর্স)। কিন্তু এই effect আগে সেই খালি array-ই
+    // নিঃশর্তে IndexedDB blob-এ (`LK(SK.products)`) সেভ করে দিত — অ্যাপ বুট
+    // হওয়ার সাথে সাথেই (`loaded` false→true হওয়ার মুহূর্তেই) আসল পুরো
+    // ক্যাটালগ blob-এ মুছে ফাঁকা [] সেভ হয়ে যেত, কোনো ইউজার-অ্যাকশন ছাড়াই।
+    // এখন এই মোডে (products.length===0 + ফ্ল্যাগ চালু) blob-write সম্পূর্ণ
+    // স্কিপ হয় — শেষ known-good blob অক্ষত/হিমায়িত থাকে। dualWriteSqlite()
+    // স্কিপ করার দরকার নেই — prevMapRef.current এই মোডে কখনো পপুলেট হয় না
+    // (currentArr সবসময় []), তাই diffById() কখনো removedIds রিপোর্ট করে না,
+    // কোনো ভুল SQLite ডিলিট ঘটে না — শুধু blob-write-ই আসল ঝুঁকি ছিল।
+    const neverLoadFrozen = products.length === 0 && isProductsNeverLoadEnabled();
+    if (!neverLoadFrozen) debouncedSave(LK(SK.products), products, 1500);
+    setBackupNeeded(true);
+    dualWriteSqlite(businessType, "products", _dsProductsRef, products);
+  }, [products, loaded]);
   useEffect(() => { if (loaded) { debouncedSave(LK(SK.invoices),  invoices,  1500); setBackupNeeded(true); dualWriteSqlite(businessType, "invoices",  _dsInvoicesRef,  invoices);  } }, [invoices, loaded]);
   // 🆕 এন্ট্রি ৪৮ — invoiceItems টেবিল dual-write (invoices dual-write-এর ঠিক পাশে, স্বাধীন diff)
   useEffect(() => { if (loaded) { dualWriteInvoiceItems(businessType, _dsInvoiceItemsRef, invoices, globalProdMap); } }, [invoices, loaded]);
@@ -19316,9 +19333,24 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
   // DISTINCT কোয়েরি, নাহলে আগের মতোই পুরো products অ্যারে JS-স্ক্যান।
   const categories = useKnownCategories(products, businessType);
 
+  // 🔴 এন্ট্রি ৮৬ ফিক্স — Products কম্পোনেন্টের `productsSearchSource`-এর
+  // (এন্ট্রি ৮৪) ঠিক একই প্যাটার্ন, এখানে POS-এর জন্য আলাদা করে দরকার ছিল
+  // (আলাদা কম্পোনেন্ট, আলাদা closure)। never-load মোডে `products` prop
+  // স্থায়ীভাবে খালি — আগে POS product picker/সার্চ তখন সবসময় "কিছু পাওয়া
+  // যায়নি" দেখাত। এখন খালি থাকলে গ্লোবাল হাইড্রেটেড `productsById`
+  // (Zustand store) থেকে ফলব্যাক করে। products পূর্ণ থাকা অবস্থায় (৫০০
+  // লাইভ দোকানের ডিফল্ট) এই ফলব্যাক কখনো ট্রিগার হয় না — behavior-preserving।
+  const _globalProductsByIdForPos = useAppStore(s => s.productsById);
+  const productsSourceForPos = useMemo(() => {
+    if (products.length > 0) return products;
+    return _globalProductsByIdForPos && _globalProductsByIdForPos.size > 0
+      ? Array.from(_globalProductsByIdForPos.values())
+      : products;
+  }, [products, _globalProductsByIdForPos]);
+
   const productsWithSerial = useMemo(() =>
-    products.map((p, i) => ({ ...p, serial: i + 1, serialStr: String(i + 1) })),
-    [products]
+    productsSourceForPos.map((p, i) => ({ ...p, serial: i + 1, serialStr: String(i + 1) })),
+    [productsSourceForPos]
   );
 
   // 🆕 Phase ৪ (হাইব্রিড সার্চ) — শুধু বড় ডেটাসেটে narrowing চালু। FTS_NARROW_THRESHOLD
@@ -19985,7 +20017,11 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
     // 🔴 ফিক্স (ক্রয় এন্ট্রি/নতুন পণ্যের ফিক্সের ঠিক একই কারণে): বিক্রির স্টক
     // ডিডাকশনও সাথে সাথেই ডিস্কে সেভ — debounce উইন্ডোতে অফলাইনে অ্যাপ কিল হলে
     // পরের বুটে স্টক আগের (বিক্রির আগের) মান দেখানো থেকে বাঁচাবে।
-    if (_productsAfterSale) save(LK(SK.products), _productsAfterSale);
+    // 🔴 এন্ট্রি ৮৬ — never-load মোডে `prev` (React state) স্থায়ীভাবে খালি,
+    // তাই `_productsAfterSale` ও খালি [] হয়ে যায় — আগে এই খালি array-ই
+    // সরাসরি blob-এ সেভ হয়ে যেত, প্রতিটা বিক্রিতে পুরো ক্যাটালগ মুছে যেত।
+    // এখন সেই কেসে (products.length===0 + ফ্ল্যাগ চালু) blob-write স্কিপ হয়।
+    if (_productsAfterSale && !(products.length === 0 && isProductsNeverLoadEnabled())) save(LK(SK.products), _productsAfterSale);
 
     const inv = {
       id: invId, invoiceNo, customerId: isSelfUse ? null : isWalkIn ? walkInCustId : selCust.id,
@@ -29426,8 +29462,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       .sort(bySearchScore);
   }, [productsSearchSource, peForm.productSearch, peFtsIds, peFtsQuery]);
   const peNextBatchLabel = useMemo(() => (
-    peForm.productId ? calcNextBatch(peForm.productId, products, purchaseOrders) : "—"
-  ), [peForm.productId, products, purchaseOrders]);
+    peForm.productId ? calcNextBatch(peForm.productId, productsSearchSource, purchaseOrders) : "—"
+  ), [peForm.productId, productsSearchSource, purchaseOrders]);
   const peDisplayed = useMemo(() => {
     const list = peAllEntries
       .filter(e => peViewMode === "day" ? e.dateKey === peNavDate : (e.dateKey || "").startsWith(peNavMonth))
@@ -29759,7 +29795,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       // পুরনো দেখানো" ফিক্সের প্যাটার্ন): নতুন পণ্য তৈরিতেও debounced (1500ms)
       // সেভের বদলে সাথে সাথেই ডিস্কে সেভ — অফলাইনে অনেকগুলো নতুন পণ্য যোগ করার
       // মাঝে অ্যাপ কিল হলেও পরের বুটে সঠিক তালিকা দেখা যাবে।
-      save(LK(SK.products), [...products, newProductRec]);
+      // 🔴 এন্ট্রি ৮৬ — never-load মোডে raw `products` prop স্থায়ীভাবে খালি,
+      // তাই `[...products, newProductRec]` আসলে শুধু ১টা পণ্যের array হয়ে
+      // যেত — আগে সেটাই blob-এ সেভ হয়ে পুরো ক্যাটালগ ১টা পণ্যে নেমে যেত।
+      // এখন এই মোডে blob-write স্কিপ হয় (শেষ known-good blob অক্ষত থাকে)।
+      if (!(products.length === 0 && isProductsNeverLoadEnabled())) save(LK(SK.products), [...products, newProductRec]);
       learnMedicineEntry(businessType, form.name, form.unit === "__typing__" ? "" : form.unit, form.company); // 💊🐄 সেলফ-লার্নিং সাজেশন (দুই মোডেই)
       // নতুন পণ্যে initial stock লগ করো (delta = totalStockVal, prevStock = 0)
       if (totalStockVal > 0) {
@@ -29833,7 +29873,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
         const todayKey   = _dateKeyOf(new Date());
 
         // ── পণ্য-ভিত্তিক Auto Batch Number — global helper ব্যবহার ─────────
-        const getNextBatch = (productId) => calcNextBatch(productId, products, purchaseOrders);
+        const getNextBatch = (productId) => calcNextBatch(productId, productsSearchSource, purchaseOrders);
         const nextBatchLabel = peNextBatchLabel;
         const selProdForBatch = peSelProdForBatch;
         // সর্বশেষ ব্যাচ যা বর্তমানে স্টকে আছে (তথ্যমূলক ব্যাজের জন্য) — nextBatchLabel থেকে আলাদা
@@ -29963,7 +30003,9 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
             // নিরাপদ থাকলেও UI-তে ভুলভাবে "হারিয়ে গেছে" মনে হতো। এখানে সাথে
             // সাথেই (debounce এড়িয়ে) ডিস্কে সেভ করে দেওয়া হচ্ছে যাতে অ্যাপ যেকোনো
             // মুহূর্তে কিল হলেও পরের বুটে সঠিক optimistic স্টকই দেখা যায়।
-            if (computedArr) save(LK(SK.products), computedArr);
+            // 🔴 এন্ট্রি ৮৬ — একই রুট-কজ: never-load মোডে `prev` খালি হওয়ায়
+            // `computedArr` ও খালি — blob-write স্কিপ করা হলো এই কেসে।
+            if (computedArr && !(products.length === 0 && isProductsNeverLoadEnabled())) save(LK(SK.products), computedArr);
           };
 
           // 🆕 পারফরম্যান্স ফিক্স (ক্রয় এন্ট্রি সেভ-এ ধীরগতি): আগে এখানে
@@ -30234,7 +30276,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
                         {filteredProds.slice(0,15).map(p => (
                           <div key={p.id}
                             onMouseDown={() => {
-                            const nextBatch = calcNextBatch(p.id, products, purchaseOrders);
+                            const nextBatch = calcNextBatch(p.id, productsSearchSource, purchaseOrders);
                             setPeForm(f => ({
                               ...f,
                               productId: p.id,
