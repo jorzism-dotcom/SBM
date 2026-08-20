@@ -24,7 +24,33 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৯০-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৯১-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟢 এন্ট্রি ৯১ (✅ real-device কনফার্মড রুট-কজ ফিক্স, sandbox নেটওয়ার্ক কাজ করেছে, npm test/lint/build সব পাস — real-device রি-টেস্ট এখনো বাকি) — এন্ট্রি ৮৯-এর "পরের সেশনে আসল করণীয়" আইটেম ২ (POS স্টক-ডিডাকশন real-device যাচাই) থেকে ধরা পড়া রিয়েল বাগ ফিক্স**:
+
+**প্রেক্ষাপট**: real-device টেস্টে (Bondro, ৪০→বিক্রি ২০, expected ২০) ধরা পড়ল স্টক আসলে কমছে না। temp diagnostic `window.alert()` যোগ করে root cause নিশ্চিত করা হলো — alert-এ সরাসরি দেখা গেল: `stock-fix: base না পাওয়া গেছে id: mruliw7adv6nu`।
+
+**🔴 রুট কজ**: এন্ট্রি ৮৮-এর never-load সরাসরি-SQL স্টক-ডিডাকশন ফিক্সে `freshP` (stockUpdateMap বিল্ড করার সময়) দুটো সোর্স চেক করত — global store `productsById` + fallback `productsByIdMap` (POS component-এর নিজস্ব on-demand browse/cart map, `productsWithSerial`-ভিত্তিক)। কিন্তু ঠিক নিচেই `base` lookup (SQL-এ merge করে পাঠানোর জন্য পূর্ণ রেকর্ড আনতে) শুধু global store `productsById`-ই চেক করত — fallback ছাড়া। যেসব পণ্য POS-এর on-demand browse/cart-এ লোড হয়েছিল কিন্তু global store-এ তখনো হাইড্রেট হয়নি, সেগুলোর জন্য `freshP` ঠিকই পেত (fallback থেকে) আর `stockUpdateMap`-এও ঢুকত, কিন্তু `base` lookup ব্যর্থ হতো (defensive `if (!base) return` স্কিপ করত) — ফলে সেই পণ্যের ডিডাকশন কখনো `upsertMany()`-তে পৌঁছাতই না, স্টক নীরবে persist হতো না।
+
+**ফিক্স**: `base` lookup-এ `freshP`-এর মতোই একই fallback chain যোগ করা হলো — `curProductsById.get(String(id)) || productsByIdMap.get(String(id))`। এখন উভয় সোর্স মিস হলেই শুধু (সত্যিকারের অস্বাভাবিক কেসেই) defensive স্কিপ ট্রিগার হবে।
+
+**Temp debug alerts সরানো হলো**: bug hunt শেষ (root cause কনফার্মড ও ফিক্সড), তাই ৪টা `window.alert()` ডায়াগনস্টিক ব্লক রিমুভ করা হয়েছে — শুধু `console.warn()` রাখা হয়েছে সত্যিকারের ডিফেন্সিভ কেস (উভয় সোর্স মিস) ও upsert ব্যর্থতার জন্য (আগের প্যাটার্নের সাথে সামঞ্জস্যপূর্ণ)।
+
+**যাচাই সম্পূর্ণ (sandbox)**: `npm test` (সব ১৫টা প্রি-এক্সিস্টিং সুইট পাস) → `npm run lint` (0 error, ৫৬১ warning, বেসলাইন অপরিবর্তিত) → `npm run build` (ক্লিন)। **real-device রি-টেস্ট এখনো বাকি** — নতুন APK ইনস্টল করে আবার একটা বিক্রি করে নিশ্চিত করতে হবে Bondro-র (বা যেকোনো পণ্যের) SQLite স্টক আসলে কমছে কিনা (cold-restart করে চেক করে দেখাই সবচেয়ে নিশ্চিত)।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — POS স্টক-ডিডাকশনের never-load সরাসরি-SQL ব্লকে `base` lookup-এ `productsByIdMap` fallback যোগ (রুট-কজ ফিক্স); ৪টা temp `window.alert()` ডায়াগনস্টিক ব্লক রিমুভ, ২টা `console.warn()`-এ রূপান্তরিত
+- `SQLITE_MIGRATION_LOG.md` — এই এন্ট্রি (৯১) যোগ
+- `PRODUCTS_ONDEMAND_MIGRATION_PLAN.md` — শুরুতে ARCHIVED/STALE নোট যোগ (কোনো কোড টাচ করা হয়নি, শুধু ডকুমেন্টেশন) — never-load অগ্রগতি (এন্ট্রি ৭৮-৯১) এই প্ল্যানের মূল লক্ষ্য (ধাপ ৭, lazy boot) ভিন্ন মেকানিজমে অর্জন করেছে বলে ব্যাখ্যা করা হলো, ক্যাটাগরি ③-এর আপডেটেড (সব ✅) স্ট্যাটাস যোগ করা হলো, আর নতুন সেশনে এই ফাইল আপলোড না করার পরামর্শ দেওয়া হলো
+
+**পরের সেশনে আসল করণীয়**:
+1. real-device: এই ফিক্স (এন্ট্রি ৯১) যাচাই — বিক্রির পর স্টক কমছে ও cold-restart-এর পরও কমা অবস্থাতেই থাকছে কিনা
+2. real-device: এন্ট্রি ৮৯-এর ৩টা ফিক্স যাচাই (ক্রয়-এন্ট্রি সেভ + self-use ইনভয়েস + self-use টগল) এখনো বাকি থাকলে
+3. POS on-demand cart (`sbm_pos_ondemand_cart`) real-device স্মোক-টেস্ট এখনো বাকি থাকলে
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৯০-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
 
 **🟢 এন্ট্রি ৯০ (✅ sandbox নেটওয়ার্ক কাজ করেছে, npm test/lint/typecheck/build/golden-master/fuzz সব পাস) — এন্ট্রি ৮৯-এর "পরের সেশনে আসল করণীয়" আইটেম ১ (Audit Trail "মোট লগ ০") তদন্ত, আইটেম-তালিকার বাইরের BatchSyncTool "ব্যাচ মিসম্যাচ" dead-tab রিমুভ, প্লাস PRODUCTS_ONDEMAND_MIGRATION_PLAN.md-এর ক্যাটাগরি ③ (FULL-SCAN) আইটেমগুলোর কোড-স্ট্যাটাস ভেরিফাই**:
 
