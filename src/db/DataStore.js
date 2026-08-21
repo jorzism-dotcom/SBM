@@ -90,6 +90,47 @@ export function setProductsNeverLoadEnabled(v) {
   } catch {}
 }
 
+// ── Feature flag: Customers boot lazy + never-load (এন্ট্রি ৯৭) ────────────
+// ⚠️ products-এর ঠিক একই দুই-স্তরের প্যাটার্ন (PRODUCTS_BOOT_LAZY_FLAG_KEY +
+// PRODUCTS_NEVER_LOAD_FLAG_KEY, এন্ট্রি ৭৮/৮০) — customers-এর জন্য। এই দুটো
+// ফ্ল্যাগই **ডিফল্ট বন্ধ** এবং একে অপরের উপর নির্ভরশীল
+// (customersNeverLoad শুধু customersBootLazy চালু থাকলেই অর্থপূর্ণ)।
+// ⚠️⚠️ এই ফ্ল্যাগ চালু করার আগে migration log-এর এন্ট্রি ৯৭ পড়ুন — এখনো
+// কয়েকটা call-site (মোবাইল-ডুপ্লিকেট চেক, POS walk-in ফ্লো, SMS reminder
+// লিস্ট) `customers` পূর্ণ array-এর উপর নির্ভরশীল, never-load চালু করলে
+// এগুলো silently ভাঙতে পারে যতক্ষণ না সেগুলো কনভার্ট হয়।
+const CUSTOMERS_BOOT_LAZY_FLAG_KEY = "sbm_customers_boot_lazy";
+
+export function isCustomersBootLazyEnabled() {
+  try {
+    return localStorage.getItem(CUSTOMERS_BOOT_LAZY_FLAG_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setCustomersBootLazyEnabled(v) {
+  try {
+    localStorage.setItem(CUSTOMERS_BOOT_LAZY_FLAG_KEY, v ? "1" : "0");
+  } catch {}
+}
+
+const CUSTOMERS_NEVER_LOAD_FLAG_KEY = "sbm_customers_boot_never";
+
+export function isCustomersNeverLoadEnabled() {
+  try {
+    return localStorage.getItem(CUSTOMERS_NEVER_LOAD_FLAG_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setCustomersNeverLoadEnabled(v) {
+  try {
+    localStorage.setItem(CUSTOMERS_NEVER_LOAD_FLAG_KEY, v ? "1" : "0");
+  } catch {}
+}
+
 // ── Feature flag: POS on-demand cart lookups (এন্ট্রি ৬৮, ৭.৩-এর POS অংশের
 // প্রথম real ধাপ) ───────────────────────────────────────────────────────────
 // ⚠️ এই ফ্ল্যাগ **ডিফল্ট বন্ধ**, আর `sbm_products_boot_lazy` থেকে সম্পূর্ণ
@@ -1010,6 +1051,39 @@ export async function getInventoryCounts(businessType) {
     stockValue: row.stock_value || 0,
   };
 }
+
+/**
+ * 🆕 এন্ট্রি ৯৪ (Phase ৩ রোডম্যাপ ধাপ ১, Category B — customers aggregate
+ * cutover)। getInventoryCounts()-এর ঠিক একই COUNT/SUM-CASE প্যাটার্ন —
+ * totalBaki, bakiCount, clearCount তিনটাই এক কোয়েরিতে। `balance` কলাম
+ * ইতিমধ্যে সরাসরি ইনডেক্সড না হলেও `deleted`-এ ইনডেক্স আছে, আর টেবিলে
+ * customer সংখ্যা products-এর তুলনায় ছোট (~১০-২০ হাজার টার্গেট), তাই
+ * সরাসরি WHERE deleted=0 স্ক্যানই যথেষ্ট দ্রুত।
+ * ⚠️ total_baki আসল App.jsx কল-সাইটের সাথে মিলিয়ে RAW sum (নেগেটিভ
+ * ব্যালেন্স/অগ্রিম পেমেন্টও অন্তর্ভুক্ত) — শুধু পজিটিভ-only sum না, কারণ
+ * বর্তমান dashboard-এর totalBaki ঠিক এই আচরণই দেখায় (`customers.reduce((s,c)
+ * => s + (c.balance||0), 0)`)। bakiCount/clearCount অবশ্য >０/≤０ শর্তেই।
+ */
+export async function getCustomerBakiSummary(businessType) {
+  const db = await getDb(businessType);
+  const sql = `
+    SELECT
+      COUNT(*) AS total_count,
+      SUM(CASE WHEN balance > 0 THEN 1 ELSE 0 END) AS baki_count,
+      SUM(CASE WHEN balance <= 0 THEN 1 ELSE 0 END) AS clear_count,
+      SUM(COALESCE(balance, 0)) AS total_baki
+    FROM customers WHERE deleted = 0
+  `;
+  const res = await db.query(sql);
+  const row = res.values?.[0] || {};
+  return {
+    totalCount: row.total_count || 0,
+    bakiCount: row.baki_count || 0,
+    clearCount: row.clear_count || 0,
+    totalBaki: row.total_baki || 0,
+  };
+}
+
 
 /**
  * ডিটেইল লিস্ট — 'all' | 'critical' | 'out'। allStock App.jsx-এর মূল আচরণ
