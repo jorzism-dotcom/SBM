@@ -46,7 +46,7 @@ import { getInventoryList as dsGetInventoryList, getExpiryCandidates as dsGetExp
 // 🆕 এন্ট্রি ৩৮ — useKpiStats-এর বাকি ৪টা ডেটা-সোর্স (cashLogs/purchaseOrders/txns/returns)
 import { getCashLogTotal as dsGetCashLogTotal, getPurchaseOrderTotals as dsGetPurchaseOrderTotals, getTxnTotals as dsGetTxnTotals, getReturnsTotals as dsGetReturnsTotals } from "./db/DataStore.js";
 // 🆕 এন্ট্রি ৩৯ — useKpiStats-এর products-নির্ভর অবশিষ্ট অংশ (stockValue/lowStockItems/monthExpiredValue/monthExpiredCount)
-import { getInventoryCounts as dsGetInventoryCounts, getExpiredRemovalTotals as dsGetExpiredRemovalTotals, getCustomerBakiSummary as dsGetCustomerBakiSummary } from "./db/DataStore.js";
+import { getInventoryCounts as dsGetInventoryCounts, getExpiredRemovalTotals as dsGetExpiredRemovalTotals, getCustomerBakiSummary as dsGetCustomerBakiSummary, getCustomerByMobile as dsGetCustomerByMobile, getBakiCustomers as dsGetBakiCustomers } from "./db/DataStore.js";
 // 🆕 এন্ট্রি ৪১ — ধাপ ৬ (computeSupplierDueMap SQL cutover)
 import { getSupplierDueRows as dsGetSupplierDueRows } from "./db/DataStore.js";
 import { getDistinctCategories as dsGetDistinctCategories, getDistinctSuppliers as dsGetDistinctSuppliers, getDistinctDosageForms as dsGetDistinctDosageForms, findProductByNameNorm as dsFindProductByNameNorm, normName as dsNormName, getReorderSalesRows as dsGetReorderSalesRows } from "./db/DataStore.js";
@@ -9443,6 +9443,47 @@ function useCustomersByIds(ids, businessType) {
   return { get, cache };
 }
 
+// 🆕 এন্ট্রি ৯৮ (Phase ৩ ধাপ ৩ প্রিরিকুইজিট) — useRiskProducts()-এর ঠিক একই
+// SQL-primary/JS-fallback প্যাটার্ন, `customers.filter(c => c.balance > 0)`-এর
+// ৩টা কল-সাইট (Dashboard bakiCustomers, SmsLog bakiCustomers/bakiSmsCustomers)
+// এখন এই একটা শেয়ার্ড হুক ব্যবহার করে। SQL ব্যর্থ হলে বা বন্ধ থাকলে JS ফলব্যাক
+// (আচরণ অপরিবর্তিত) — কলার নিজের mobile-শর্ত (যদি থাকে) আলাদাভাবে ফিল্টার করবে,
+// কারণ ২টা সাইট শুধু balance>0 চায়, ২টা সাইট balance>0 && mobile দুটোই চায়।
+function useBakiCustomers(customers, businessType) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await dsGetBakiCustomers(businessType);
+        if (cancelled || seqRef.current !== seq) return;
+        setSql(rows);
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("bakiCustomers SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, customers]);
+
+  const js = useMemo(() => customers.filter(c => (c.balance || 0) > 0), [customers]);
+
+  return sql || js;
+}
+
+// 🆕 এন্ট্রি ৯৮ — useBakiCustomers()-এর mobile-filtered variant (SmsLog +
+// Settings-এর বাল্ক-SMS রিমাইন্ডার লিস্ট দুটোই balance>0 && mobile চায়)
+function useBakiCustomersWithMobile(customers, businessType) {
+  const all = useBakiCustomers(customers, businessType);
+  return useMemo(() => all.filter(c => c.mobile), [all]);
+}
+
 // 🆕 এন্ট্রি ৩৯ — useKpiStats-এর products-নির্ভর অবশিষ্ট অংশ: stockValue/lowStockCount
 // (getInventoryCounts()-এর stock_value/critical কলাম — এন্ট্রি ৩৬-এ InventorySection-এর
 // জন্য বানানো একই ফাংশন, useKpiStats-এও পুনর্ব্যবহার করা হচ্ছে, নতুন করে লেখার দরকার
@@ -16773,6 +16814,7 @@ function SmartBusinessMgmt() {
               voidInvoice={voidInvoice} processReturn={processReturn}
               setCustomers={setCustomers} setDeletedCustomers={setDeletedCustomers}
               auditLog={auditLog} onBack={() => setDetailCId(null)}
+              businessType={businessType}
             />
           </ErrorBoundary>
         )}
@@ -16925,7 +16967,7 @@ function SmartBusinessMgmt() {
             <SmsLog T={T} S={S}
               smsLog={smsLog} smsCount={smsCount} setSmsCount={setSmsCount}
               customers={customers} sendSMS={sendSMS} showToast={showToast}
-              smsGateway={smsGateway}
+              smsGateway={smsGateway} businessType={businessType}
             />
           </ErrorBoundary>
         )}
@@ -19505,9 +19547,26 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
   const [voiceResult,     setVoiceResult]    = useState(null); // parsed result
   const voiceRecRef = useRef(null);
 
+  // 🆕 এন্ট্রি ৯৯ — Products POS picker-এর (এন্ট্রি ৮৬) ঠিক একই fallback প্যাটার্ন।
+  // never-load মোডে `customers` prop স্থায়ীভাবে খালি — আগে POS কাস্টমার
+  // পিকার/সার্চ তখন সবসময় "কিছু পাওয়া যায়নি" দেখাত। এখন খালি থাকলে গ্লোবাল
+  // হাইড্রেটেড `customersById` (Zustand store, এন্ট্রি ৯৭-এর SQL বাল্ক-হাইড্রেট
+  // ব্লক দিয়ে never-load-এ পূর্ণ হাইড্রেট হয়) থেকে ফলব্যাক করে। customers পূর্ণ
+  // থাকা অবস্থায় (৫০০ লাইভ দোকানের ডিফল্ট) এই ফলব্যাক কখনো ট্রিগার হয় না —
+  // behavior-preserving। ফাজি সার্চ (customerMatchScore) এখনো JS-সাইডেই থাকে
+  // (customers-এর স্কেল প্রোডাক্টের তুলনায় অনেক ছোট — হাজার-দুয়েক — তাই
+  // products-এর মতো FTS-narrowing থ্রেশহোল্ড এখানে দরকার নেই)।
+  const _globalCustomersByIdForPos = useAppStore(s => s.customersById);
+  const customersSourceForPos = useMemo(() => {
+    if (customers.length > 0) return customers;
+    return _globalCustomersByIdForPos && _globalCustomersByIdForPos.size > 0
+      ? Array.from(_globalCustomersByIdForPos.values())
+      : customers;
+  }, [customers, _globalCustomersByIdForPos]);
+
   const customersWithSerial = useMemo(() =>
-    customers.map((c, i) => ({ ...c, serial: i + 1, serialStr: String(i + 1) })),
-    [customers]
+    customersSourceForPos.map((c, i) => ({ ...c, serial: i + 1, serialStr: String(i + 1) })),
+    [customersSourceForPos]
   );
 
   // 🔴 (ইউজার-রিকোয়েস্ট) আগে শুধু filter হতো, স্কোর অনুযায়ী সর্ট হতো না —
@@ -19780,23 +19839,23 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
   const walkInCustMatches = useMemo(() => {
     if (!walkInCustSearch.trim()) return [];
     const q = walkInCustSearch.trim();
-    return (customers || [])
+    return (customersSourceForPos || [])
       .map(c => ({ ...c, _score: customerMatchScore(c, q) }))
       .filter(c => c._score > 0)
       .sort(bySearchScore)
       .slice(0, 8);
-  }, [customers, walkInCustSearch]);
+  }, [customersSourceForPos, walkInCustSearch]);
 
   // 🆕 "পুরোনো কাস্টমার" মডালের জন্য পূর্ণ তালিকা (সার্চ করলে ফিল্টার, না করলে সব)
   const walkInModalCustList = useMemo(() => {
-    const list = customers || [];
+    const list = customersSourceForPos || [];
     if (!walkInCustSearch.trim()) return list;
     const q = walkInCustSearch.trim();
     return list
       .map(c => ({ ...c, _score: customerMatchScore(c, q) }))
       .filter(c => c._score > 0)
       .sort(bySearchScore);
-  }, [customers, walkInCustSearch]);
+  }, [customersSourceForPos, walkInCustSearch]);
 
   const selectWalkInExistingCust = (c) => {
     setWalkInCustMode("existing");
@@ -20169,7 +20228,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
           mobile: walkInMobile.trim() || "",
           address: walkInAddress.trim() || "",
           balance: walkInBakiAmt,
-          serial: customers.length + 1,
+          serial: customersSourceForPos.length + 1,
           createdAt: new Date().toISOString(),
         };
         setCustomers(prev => [...prev, newCust]);
@@ -20798,7 +20857,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
             </div>
             <div style={{ flex: 1 }}>
               <div style={{ color: IS.text, fontWeight: 900, fontSize: 15, letterSpacing: 0.3 }}>কাস্টমার নির্বাচন করুন</div>
-              <div style={{ color: IS.sub, fontSize: 11 }}>{customers.length}জন নিবন্ধিত</div>
+              <div style={{ color: IS.sub, fontSize: 11 }}>{customersSourceForPos.length}জন নিবন্ধিত</div>
             </div>
             {/* নির্বাচিত badge + selected customer name card — invisible until customer is selected */}
             <div style={{
@@ -20856,7 +20915,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
             <input
               className="sbm-search-input"
               style={{ flex: 1, background: "none", border: "none", outline: "none", color: T.text, fontSize: 14, fontFamily: "inherit", padding: 0 }}
-              placeholder={`নাম, মোবাইল বা সিরিয়াল নম্বর... (${customers.length}জন)`}
+              placeholder={`নাম, মোবাইল বা সিরিয়াল নম্বর... (${customersSourceForPos.length}জন)`}
               defaultValue={custSearch}
               ref={el => {
                 if (!el) return;
@@ -23909,7 +23968,8 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
   }, [cashModal, cashHistKeyStr, fssReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── bakiCustomers: বাকি আছে এমন কাস্টমার (Dashboard-wide) ──────────────────
-  const bakiCustomers = useMemo(() => customers.filter(c => (c.balance || 0) > 0), [customers]);
+  // 🆕 এন্ট্রি ৯৮ — raw array-স্ক্যান থেকে useBakiCustomers() (SQL-primary/JS-fallback) কনভার্ট
+  const bakiCustomers = useBakiCustomers(customers, businessType);
   // 🔴 পারফরম্যান্স ফিক্স: নিচে "বাকি আছে এমন কাস্টমার" ব্রেকডাউন মোডালে আগে প্রতি
   // কাস্টমারে txns.filter() করা হতো (O(কাস্টমার×txns)) — এখন একবারে Map-এ গ্রুপ করে O(1) lookup।
   const txnsByCustForBaki = React.useMemo(() => {
@@ -27855,13 +27915,29 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
   // ব্যবহৃত হতো না। সম্পূর্ণ ব্লক সরানো হলো (SQL হুক কলও, যা আগে প্রতি মাউন্টে
   // অপ্রয়োজনীয় SQL রাউন্ড-ট্রিপ করত)।
 
-  const addCustomer = () => {
+  const addCustomer = async () => {
     const name = (nameRef.current?.value?.trim() || form.name || "").trim();
     const mobile = (mobileRef.current?.value?.trim() || form.mobile || "").trim();
     const address = (addressRef.current?.value?.trim() || form.address || "").trim();
     if (!name) { showToast("নাম দিতে হবে", "#ef4444"); return; }
+    // 🆕 এন্ট্রি ৯৮ (Phase ৩ ধাপ ৩ প্রিরিকুইজিট, saveProduct-এর dsFindProductByNameNorm
+    // প্যাটার্নের হুবহু কপি — টাকা/ডেটা-ইন্টেগ্রিটি সংশ্লিষ্ট): আগে সরাসরি raw
+    // `customers` array স্ক্যান করত — never-load ফ্ল্যাগ চালু হলে (customers array
+    // চিরস্থায়ী খালি) এই চেক নীরবে সবসময় "না পাওয়া" রিটার্ন করত, ডুপ্লিকেট কাস্টমার
+    // রেকর্ড তৈরির ঝুঁকি। SQL চালু থাকলে authoritative SQL lookup (indexed
+    // mobile কলাম), ব্যর্থ হলে বা SQL বন্ধ থাকলে আগের JS-স্ক্যান ফলব্যাক (আচরণ অপরিবর্তিত)।
     if (mobile) {
-      const dupMobile = customers.find(c => c.mobile === mobile && c.id !== editId);
+      let dupMobile = null;
+      if (isSqliteEnabled() && businessType) {
+        try {
+          dupMobile = await dsGetCustomerByMobile(businessType, mobile, editId);
+        } catch (e) {
+          console.warn("সেভ-টাইম ডুপ্লিকেট-মোবাইল SQL চেক ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+          dupMobile = customers.find(c => c.mobile === mobile && c.id !== editId) || null;
+        }
+      } else {
+        dupMobile = customers.find(c => c.mobile === mobile && c.id !== editId) || null;
+      }
       if (dupMobile) { showToast(`এই মোবাইলে আরেকজন আছে: ${dupMobile.name}`, "#f59e0b"); return; }
     }
     if (editId) {
@@ -27966,9 +28042,22 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
   // 🔴 পারফরম্যান্স ফিক্স: আগে এই সার্চ/সেগমেন্ট ফিল্টার প্রতিটি keystroke বা
   // যেকোনো state পরিবর্তনে (useMemo ছাড়া) পুরো customers অ্যারে map+filter করত —
   // ১০,০০০ কাস্টমারে প্রতি keystroke-এ ~১০,০০০ object spread + fuzzy-match কল হতো।
+  // 🆕 এন্ট্রি ৯৯ — SmartInvoiceBuilder-এর POS পিকারে (এন্ট্রি ৯৯, উপরে) ব্যবহৃত
+  // ঠিক একই fallback প্যাটার্ন। এই সাইট শুধু search-mode-এ সক্রিয় (non-search
+  // browse mode আগে থেকেই SQL cursor-pagination ব্যবহার করে, এন্ট্রি ৯৬ দেখুন)।
+  // never-load-এ `customers` prop খালি হলে গ্লোবাল হাইড্রেটেড `customersById`
+  // থেকে ফলব্যাক — customers পূর্ণ থাকা অবস্থায় (ডিফল্ট) কখনো ট্রিগার হয় না।
+  const _globalCustomersByIdForSearch = useAppStore(s => s.customersById);
+  const customersSourceForSearch = useMemo(() => {
+    if (customers.length > 0) return customers;
+    return _globalCustomersByIdForSearch && _globalCustomersByIdForSearch.size > 0
+      ? Array.from(_globalCustomersByIdForSearch.values())
+      : customers;
+  }, [customers, _globalCustomersByIdForSearch]);
+
   const withSerial = useMemo(() =>
-    customers.map((c, i) => ({ ...c, serial: i + 1, serialStr: String(i + 1) })),
-    [customers]
+    customersSourceForSearch.map((c, i) => ({ ...c, serial: i + 1, serialStr: String(i + 1) })),
+    [customersSourceForSearch]
   );
   const bySearch = useMemo(() => {
     const q = deferredSearch.trim();
@@ -28154,7 +28243,7 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
 const MemoCustomers = React.memo(Customers);
 
 // ── Customer Detail ────────────────────────────────────────────────────────────
-function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvoices, shopName = "SBM", onGoToInvoice, setModal, products = [], returns = [], currentUser, showToast, voidInvoice, processReturn, setCustomers, setDeletedCustomers, auditLog, onBack }) {
+function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvoices, shopName = "SBM", onGoToInvoice, setModal, products = [], returns = [], currentUser, showToast, voidInvoice, processReturn, setCustomers, setDeletedCustomers, auditLog, onBack, businessType }) {
   // 🆕 (৯ আগস্ট ২০২৬ — ইউজার-রিকোয়েস্টে রিলোকেশন) এডিট/ডিলিট এখন তালিকা পেজ থেকে
   // সরিয়ে ডিটেইলস পেজে আনা হয়েছে — তালিকার কার্ড এখন শুধু নাম/মোবাইল/ঠিকানা দেখাবে,
   // ইনভয়েস/জমা/এডিট/ডিলিট সব এই ডিটেইলস পেজেই।
@@ -28163,13 +28252,26 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
   const [editForm, setEditForm] = useState({ name: customer?.name || "", mobile: customer?.mobile || "", address: customer?.address || "" });
   const [deleteConfirming, setDeleteConfirming] = useState(false);
   const openEdit = () => { setEditForm({ name: customer?.name || "", mobile: customer?.mobile || "", address: customer?.address || "" }); setEditOpen(true); };
-  const saveEdit = () => {
+  const saveEdit = async () => {
     const name = editForm.name.trim();
     const mobile = editForm.mobile.trim();
     const address = editForm.address.trim();
     if (!name) { showToast?.("নাম দিতে হবে", "#ef4444"); return; }
+    // 🆕 এন্ট্রি ৯৮ — addCustomer-এর ঠিক একই SQL-primary/JS-fallback ডুপ্লিকেট-মোবাইল
+    // চেক (businessType না থাকলে — যেমন ViewerDashboardScreen-এ — স্বাভাবিকভাবেই
+    // JS-ফলব্যাকে চলে যায়, কোনো আচরণ পরিবর্তন হয় না)।
     if (mobile) {
-      const dup = customers.find(c => c.mobile === mobile && c.id !== customer.id);
+      let dup = null;
+      if (isSqliteEnabled() && businessType) {
+        try {
+          dup = await dsGetCustomerByMobile(businessType, mobile, customer.id);
+        } catch (e) {
+          console.warn("সেভ-টাইম ডুপ্লিকেট-মোবাইল SQL চেক ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+          dup = customers.find(c => c.mobile === mobile && c.id !== customer.id) || null;
+        }
+      } else {
+        dup = customers.find(c => c.mobile === mobile && c.id !== customer.id) || null;
+      }
       if (dup) { showToast?.(`এই মোবাইলে আরেকজন আছে: ${dup.name}`, "#f59e0b"); return; }
     }
     setCustomers(prev => prev.map(c => c.id === customer.id ? { ...c, name, mobile, address } : c));
@@ -32650,15 +32752,26 @@ function ReturnModule({ T, S, invoices, products, customers, returns, setReturns
   const ihShiftDay   = (delta) => setIhDate(prev => { const d = new Date(prev || todayKey); d.setDate(d.getDate()+delta); return _dateKeyOf(d); });
   const ihShiftMonth = (delta) => setIhMonth(prev => { const [y,m] = (prev || monthKeyNow).split("-").map(Number); const d = new Date(y,(m-1)+delta,1); return _monthKeyOf(d); });
 
+  // 🆕 এন্ট্রি ৯৯ — একই fallback প্যাটার্ন (ReturnModule-এর নিজস্ব businessType prop
+  // নেই, কিন্তু গ্লোবাল customersById store পড়তে সেটা লাগে না — শুধু App()-এর
+  // বুট-সিকোয়েন্সে হাইড্রেট হয়ে থাকলেই যথেষ্ট)।
+  const _globalCustomersByIdForReturns = useAppStore(s => s.customersById);
+  const customersSourceForReturns = React.useMemo(() => {
+    if ((customers || []).length > 0) return customers;
+    return _globalCustomersByIdForReturns && _globalCustomersByIdForReturns.size > 0
+      ? Array.from(_globalCustomersByIdForReturns.values())
+      : (customers || []);
+  }, [customers, _globalCustomersByIdForReturns]);
+
   const ihCustSuggestions = React.useMemo(() => {
     const q = ihCustText.trim();
     if (!q || ihCustId) return [];
-    return (customers||[])
+    return customersSourceForReturns
       .map(c => ({ ...c, _score: customerMatchScore(c, q) }))
       .filter(c => c._score > 0)
       .sort(bySearchScore)
       .slice(0, 8);
-  }, [ihCustText, ihCustId, customers]);
+  }, [ihCustText, ihCustId, customersSourceForReturns]);
 
   // 🔴 ফিক্স: আগে সরাসরি Firestore কুয়েরি (ইন্টারনেট লাগত) — এখন লাইভ invoices
   // state (শেষ ৬ মাস) + InvoiceArchive (৬ মাসের বেশি পুরনো, IndexedDB) মার্জ
@@ -33579,14 +33692,15 @@ function ExpenseTracker({ T, S, expenses = [], setExpenses, showToast, currentUs
 }
 
 // ── SMS Log ────────────────────────────────────────────────────────────────────
-function SmsLog({ T, S, smsLog, smsCount, setSmsCount, customers, sendSMS, showToast, smsGateway }) {
+function SmsLog({ T, S, smsLog, smsCount, setSmsCount, customers, sendSMS, showToast, smsGateway, businessType }) {
   const [custId, setCustId] = useState("");
   const [msg,    setMsg]    = useState("");
   const [sending,setSending]= useState(false);
   const [bulkSending, setBulkSending] = useState(false);
   const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 });
 
-  const bakiCustomers = useMemo(() => customers.filter(c => (c.balance || 0) > 0 && c.mobile), [customers]);
+  // 🆕 এন্ট্রি ৯৮ — useBakiCustomersWithMobile() শেয়ার্ড SQL-primary হুক
+  const bakiCustomers = useBakiCustomersWithMobile(customers, businessType);
   const smsDeliveredCount = useMemo(() => smsLog.filter(s=>s.delivered).length, [smsLog]);
   const smsSimulatedCount = useMemo(() => smsLog.filter(s=>!s.delivered).length, [smsLog]);
 
@@ -37812,7 +37926,7 @@ function Settings_({ T, S, shopName,
   // 📤 ১ ক্লিকে বাকি রিমাইন্ডার SMS
   const [bulkSmsSending, setBulkSmsSending] = useState(false);
   const [bulkSmsProgress, setBulkSmsProgress] = useState({ done: 0, total: 0 });
-  const bakiSmsCustomers = useMemo(() => customers.filter(c => (c.balance || 0) > 0 && c.mobile), [customers]);
+  const bakiSmsCustomers = useBakiCustomersWithMobile(customers, businessType);
   const sendBulkBakiReminderFromSettings = async () => {
     if (bakiSmsCustomers.length === 0) {
       showToast("বাকি আছে এমন কোনো কাস্টমার (মোবাইল নম্বরসহ) নেই", "#f59e0b");
