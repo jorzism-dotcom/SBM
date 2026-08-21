@@ -737,6 +737,43 @@ export async function getById(businessType, store, id) {
   return row ? JSON.parse(row.data) : null;
 }
 
+// 🆕 এন্ট্রি ৯৮ (Phase ৩ রোডম্যাপ ধাপ ৩ প্রিরিকুইজিট — never-load bulk-scan
+// কল-সাইট কনভার্সন, টাকা-সংশ্লিষ্ট ২টা সাইটের ১ম) — নতুন কাস্টমার তৈরি/এডিটে
+// ডুপ্লিকেট-মোবাইল চেক আগে `customers.find(c => c.mobile === mobile)` দিয়ে
+// হতো — raw in-memory array-নির্ভর, never-load ফ্ল্যাগ চালু হলে (customers
+// array চিরস্থায়ী খালি) এই চেক নীরবে সবসময় "না পাওয়া" রিটার্ন করত, ফলে
+// ডুপ্লিকেট কাস্টমার রেকর্ড তৈরি হতে পারত। `mobile` কলামে indexed
+// (`idx_customers_mobile`) — SQL lookup সস্তা। excludeId (এডিট-মোডে নিজের
+// id বাদ দিতে) JS-সাইডে ফিল্টার হয়, কারণ মোবাইল নম্বরে সাধারণত ডুপ্লিকেট ১-২টার
+// বেশি হয় না বলে row-level ফিল্টারের প্রয়োজন নেই, deleted=0 চেক SQL-সাইডেই।
+// রিটার্ন করে প্রথম ম্যাচ (বা null) — কলার শুধু "আছে কিনা + কার নাম" জানতে চায়,
+// আসল UI (customers.find) যেমন করত ঠিক তেমনই।
+// 🆕 এন্ট্রি ৯৮ (Phase ৩ ধাপ ৩ প্রিরিকুইজিট, বাকি ৯টা সাইটের বাকি অংশ) — Dashboard/
+// SmsLog/বাল্ক-SMS রিমাইন্ডার লিস্টের `customers.filter(c => c.balance > 0)`
+// সাইটগুলো raw array-নির্ভর ছিল। `balance` কলাম আগে থেকেই আছে (schema.sql),
+// তাই সরাসরি ইনডেক্সড WHERE — getInventoryList()-এর প্যাটার্নে। `deleted = 0`
+// চেক করা হয় (আসল JS filter ডিলিটেড কাস্টমার দেখাতো না, কারণ ডিলিটেড
+// কাস্টমার `customers` array-তেই থাকে না)।
+export async function getBakiCustomers(businessType) {
+  const db = await getDb(businessType);
+  const res = await db.query(`SELECT data FROM customers WHERE deleted = 0 AND balance > 0`, []);
+  return (res.values || []).map((r) => JSON.parse(r.data));
+}
+
+export async function getCustomerByMobile(businessType, mobile, excludeId = null) {
+  const db = await getDb(businessType);
+  const res = await db.query(
+    `SELECT data FROM customers WHERE mobile = ? AND deleted = 0`,
+    [String(mobile)]
+  );
+  for (const row of res.values || []) {
+    const rec = JSON.parse(row.data);
+    if (excludeId != null && String(rec.id) === String(excludeId)) continue;
+    return rec; // প্রথম ম্যাচ যথেষ্ট — আসল customers.find() আচরণ
+  }
+  return null;
+}
+
 // 🆕 এন্ট্রি ৭৩ (রিকনসিলিয়েশন অডিট, বহু-সেশন "products SQLite-primary" ফেজের
 // ধাপ ১) — SQLite dual-write টেবিল বনাম বর্তমান in-memory অ্যারে (IndexedDB
 // blob-array থেকে আসা, এখনো একমাত্র সোর্স-অফ-ট্রুথ)-এর মধ্যে content-level

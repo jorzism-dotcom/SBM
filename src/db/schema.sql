@@ -144,6 +144,8 @@ CREATE TABLE IF NOT EXISTS customers (
   data        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_customers_mobile     ON customers(mobile);
+-- 🆕 এন্ট্রি ৯৮ — bakiCustomers (balance > 0) লিস্ট SQL cutover-এর জন্য
+CREATE INDEX IF NOT EXISTS idx_customers_balance    ON customers(balance);
 CREATE INDEX IF NOT EXISTS idx_customers_name_norm  ON customers(name_norm);
 CREATE INDEX IF NOT EXISTS idx_customers_updated    ON customers(updated_at);
 CREATE INDEX IF NOT EXISTS idx_customers_deleted    ON customers(deleted);
