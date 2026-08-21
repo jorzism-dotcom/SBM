@@ -31,14 +31,14 @@
 > মাস্টার স্ট্যাটাসে লিংক করতে হবে, যাতে পরের সেশন ঠিক কোথা থেকে শুরু করবে বুঝতে পারে।
 
 **A. Customers (ছোট স্কেল, আগে করা — নিরাপদ ওয়ার্মআপ)**
-1. ⬜ Category B — aggregate সাইট (totalBaki, bakiCount/clearCount ইত্যাদি, ৭টা) SQL cutover *(১-২ সেশন)*
-2. ⬜ Category C — Customers main list card + RFM list render, id+hydrate প্যাটার্নে (products main list, এন্ট্রি ৫৩-এর মতো) *(২-৩ সেশন)*
-3. ⬜ Never-load flag তৈরি + boot hydration (products-এর এন্ট্রি ৭৮-৮৫-এর প্যাটার্ন অনুসরণ) *(২-৩ সেশন)*
+1. ✅ Category B — aggregate সাইট (totalBaki×2, bakiCount/clearCount) SQL cutover — **এন্ট্রি ৯৪-এ সম্পূর্ণ (৪টা সাইট কনভার্ট, sandbox যাচাই সম্পূর্ণ, real-device বাকি)**
+2. ✅ Category C — main list SQL cursor-pagination (id+hydrate) — **এন্ট্রি ৯৬-এ সম্পূর্ণ। এন্ট্রি ৯৫-এর ব্লকার (RFM sort) ব্যবহারকারী কনফার্ম করলেন ডেড কোড ছিল, তাই সরিয়ে ফেলার পর আসল ডিজাইন প্রযোজ্য হলো (no-search browse mode → SQL `updated_at DESC` cursor-pagination; সার্চ-মোড এখনো JS fuzzy-match, শেয়ার্ড ইউটিলিটি বলে স্কোপের বাইরে)। sandbox যাচাই সম্পূর্ণ, real-device বাকি**
+3. 🟡 Never-load flag + boot hydration infrastructure — **এন্ট্রি ৯৭-এ তৈরি (products এন্ট্রি ৭৮-এর প্যাটার্নে), ডিফল্ট বন্ধ, sandbox যাচাই সম্পূর্ণ। ⚠️ ফ্ল্যাগ এখনো চালু করার মতো নিরাপদ না — নিচে এন্ট্রি ৯৭-এ তালিকাভুক্ত ৯টা bulk-scan কল-সাইট আগে কনভার্ট/গার্ড করতে হবে**
 
 **B. Invoices (বড় স্কেল, ভিন্ন ডিজাইন — customers-এর পরে শুরু করা ভালো)**
 4. ⬜ ৩৫টা সাইটের পূর্ণ ক্যাটাগরি অডিট (lookup/aggregate/list ভাগ করা) *(১ সেশন)*
 5. ⬜ Windowed-boot ডিজাইন (never-load না — ৬-মাস কাটঅফ লজিক, প্ল্যান ডকের মূল যুক্তি অনুযায়ী) *(২-৩ সেশন)*
-6. ⬜ Category A+B কনভার্সন (lookup + aggregate — RFM, KPI, রিপোর্ট) *(৩-৪ সেশন)*
+6. ⬜ Category A+B কনভার্সন (lookup + aggregate — KPI, রিপোর্ট) *(৩-৪ সেশন)*
 7. ⬜ Category C — invoice history list + ইনভয়েস-নম্বরিং (`INV-${count+1}`) — **সবচেয়ে ঝুঁকিপূর্ণ ধাপ, টাকার রেকর্ড সরাসরি প্রভাবিত করে, প্রতিটা সাব-স্টেপে real-device টেস্ট বাধ্যতামূলক** *(৩-৪ সেশন)*
 8. ⬜ Windowed boot হাইড্রেশন + flag *(২-৩ সেশন)*
 
@@ -50,7 +50,82 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৯৩-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৯৭-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟡 এন্ট্রি ৯৭ (✅ sandbox — npm test/lint/typecheck/build/golden-master/fuzz সব পাস — real-device স্মোক-টেস্ট বাকি, আর ফ্ল্যাগ এখনো চালু করার মতো নিরাপদ না) — Phase ৩ রোডম্যাপ ধাপ ৩ (customers never-load infrastructure) — শুধু কাঠামো তৈরি, চালু করার আগে আরও কাজ বাকি**:
+
+**যা করা হলো**: DataStore.js-এ `sbm_customers_boot_lazy` + `sbm_customers_boot_never` — products-এর ঠিক একই দুই-স্তরের ফ্ল্যাগ প্যাটার্ন (এন্ট্রি ৭৮/৮০), **ডিফল্ট বন্ধ**। App.jsx বুট-সিকোয়েন্সে: `customersKeyLazy` চালু থাকলে `CRITICAL_KEYS` থেকে `LK(SK.customers)` বাদ, আর SQL বাল্ক-হাইড্রেট ব্লক (`_hydrateCustomersByIdFromSql`, products-এন্ট্রি-৭৮-এর সরলীকৃত সংস্করণ — customers-এর কোনো SCHEMA_MIGRATIONS রেজিস্ট্রি নেই বলে entry-৮৩-এর মাইগ্রেশন-during-hydrate জটিলতা লাগেনি) যোগ হলো। `customersNeverLoadSqlDown` স্টোর-ফ্ল্যাগ (products-এর প্যাটার্নে) যোগ হলো। **ফ্ল্যাগ বন্ধ থাকা অবস্থায় বুট-সিকোয়েন্স ১০০% অপরিবর্তিত** (কোড-পাথ কখনো এক্সিকিউট হয় না)।
+
+**🔴🔴 এখনই ফ্ল্যাগ চালু করবেন না — সততার সাথে কেন**: never-load চালু হলে `customers` React array স্থায়ীভাবে খালি `[]` থাকবে। কোড-অডিটে এখনো **৯টা bulk-scan কল-সাইট** পাওয়া গেছে যেগুলো raw `customers` array-এর উপর নির্ভরশীল এবং এখনো কনভার্ট/গার্ড হয়নি:
+- `customers.find(c => c.mobile === mobile)` ×২ (নতুন কাস্টমার তৈরি + এডিটে ডুপ্লিকেট-মোবাইল চেক — **টাকা/ডেটা-ইন্টেগ্রিটি সংশ্লিষ্ট**, ব্যর্থ হলে ডুপ্লিকেট কাস্টমার রেকর্ড তৈরি হতে পারে)
+- `customers.map(...)` (SmartInvoiceBuilder walk-in কাস্টমার serial — POS বিলিং ফ্লো)
+- `customers.filter(c => c.balance > 0)` ×৩ (bakiCustomers — Dashboard, SmsLog, বাল্ক-SMS রিমাইন্ডার লিস্ট)
+- `ViewerDashboardScreen`-এর ২টা সাইট (customersById স্থানীয় rebuild + totalBaki) — এই কম্পোনেন্টের নিজস্ব `businessType` না থাকায় এন্ট্রি ৯৪-এও স্কিপ করা হয়েছিল
+- `Customers` কম্পোনেন্টের `withSerial` (search-mode fallback পাথ) — customers prop থেকে সরাসরি
+
+এর যেকোনো একটা টাচ না করে ফ্ল্যাগ চালু করলে — customers array খালি থাকা অবস্থায় এই সাইটগুলো নীরবে ভুল ফলাফল দেবে (যেমন ডুপ্লিকেট-মোবাইল চেক সবসময় "না পাওয়া" বলবে, SMS reminder লিস্ট খালি দেখাবে)। এটা products migration-এ ঠিক যে ভুল এড়াতে এন্ট্রি ৮০-৯২ জুড়ে সতর্কভাবে একটা একটা করে কল-সাইট কনভার্ট করা হয়েছিল, সেই একই শৃঙ্খলা এখানেও দরকার।
+
+**যাচাই সম্পূর্ণ (sandbox, ফ্ল্যাগ বন্ধ অবস্থায়)**: `npm test` → `npm run lint` (0 error) → `npm run typecheck` → `npm run build` → `test:golden-master` (৭/৭) → `test:fuzz`। **real-device স্মোক-টেস্ট**: শুধু নিশ্চিত করতে হবে ফ্ল্যাগ বন্ধ থাকা অবস্থায় (ডিফল্ট) অ্যাপ আগের মতোই বুট হচ্ছে।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/db/DataStore.js` — `isCustomersBootLazyEnabled/setCustomersBootLazyEnabled`, `isCustomersNeverLoadEnabled/setCustomersNeverLoadEnabled` যোগ
+- `src/App.jsx` — নতুন import, `customersKeyLazy`/`customersNeverLoadFlag` কম্পিউটেশন, `CRITICAL_KEYS`-এ conditional customers exclusion, নতুন SQL বাল্ক-হাইড্রেট ব্লক, `customersNeverLoadSqlDown` স্টোর-ফ্ল্যাগ যোগ
+- `SQLITE_MIGRATION_LOG.md` — এন্ট্রি ৯৬ (আগের সেশনের বাকি লেখা) + এন্ট্রি ৯৭ যোগ, রোডম্যাপ ধাপ ৩ 🟡 মার্ক
+
+**⚠️ বোনাস আবিষ্কার (এই সেশনে, কোনো অ্যাকশন নেওয়া হয়নি)**: বুট-সিকোয়েন্স পড়তে গিয়ে দেখা গেল **invoices ইতিমধ্যেই ৬-মাস windowed বুট-লোড ব্যবহার করে** (রোডম্যাপ ধাপ ৫-এ যা "শুরু হয়নি/ডিজাইন করতে হবে" লেখা ছিল, তা আসলে **আগে থেকেই প্রোডাকশনে আছে** — `archiveOldInvoices()`-এর সাথে সিঙ্কড কাটঅফ)। রোডম্যাপ ধাপ ৪-৮ (invoices সেকশন)-এর এস্টিমেট পরের সেশনে পুনর্বিবেচনা করা দরকার।
+
+**পরের সেশনে করণীয়**:
+1. real-device স্মোক-টেস্ট (flag বন্ধ অবস্থায় বুট স্বাভাবিক আছে কিনা, আর এন্ট্রি ৯৩/৯৪/৯৬-এর বাকি টেস্টগুলোও)
+2. উপরের ৯টা কল-সাইট এক এক করে কনভার্ট/গার্ড করা (ডুপ্লিকেট-মোবাইল চেক ২টাই সবচেয়ে জরুরি — টাকা-সংশ্লিষ্ট)
+3. তারপরই real-device-এ ফ্ল্যাগ চালু করে টেস্ট করা নিরাপদ হবে
+4. Invoices windowed-boot ইতিমধ্যে থাকার বিষয়টা যাচাই করে রোডম্যাপ ধাপ ৪-৮ আপডেট করা
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৯৬-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟢 এন্ট্রি ৯৬ (✅ sandbox যাচাই সম্পূর্ণ, real-device বাকি) — রোডম্যাপ ধাপ ২ (Customers Category C) সম্পূর্ণ, প্লাস ডেড RFM কোড অপসারণ**:
+
+**RFM অপসারণ**: ব্যবহারকারী কনফার্ম করলেন RFM অ্যানালিটিক্স ফিচার আগেই UI থেকে সরানো হয়েছিল, শুধু ডেড কোড পড়ে ছিল। কোড-অডিটে প্রমাণিত (`setSegFilter` কখনো কল হয় না, `showAnalytics` কখনো রেন্ডার হয় না, প্রতি কার্ডে বের করা `rfm` ভ্যারিয়েবল কখনো পড়া হয় না)। সম্পূর্ণ ব্লক সরানো হলো: `SEGMENTS`, `useCustomerRfm()` হুক (ও তার একমাত্র ব্যবহার), `jsRfmData`/`rfmData`/`rfmMap`/`segmentCounts`, `segFilter`/`showAnalytics` state, `dsGetCustomerRfmAggregates` import। `filteredCustomers` এখন সরাসরি `bySearch`-এর alias।
+
+**Category C বাস্তবায়ন**: RFM সরে যাওয়ার পর Customers main list আসলে products-এর মতোই সহজ id+hydrate প্যাটার্নে ফিট করল — `useCustomersByIds()` হুক (নতুন, `useProductsByIds()`-এর প্যাটার্নে কিন্তু global write-through `customersById`-ই ব্যবহার করে, আলাদা লোকাল Map লাগেনি) + SQL cursor-pagination (`dsQueryPage`, `sortColumn: "updated_at", sortDir: "DESC"`, ৪০-আইটেম পেজ, Virtuoso `endReached` দিয়ে ইনফিনিট স্ক্রল)। **সর্ট-অর্ডার পরিবর্তন ব্যবহারকারীর স্পষ্ট অনুমোদনে** (আগে কোনো এক্সপ্লিসিট সর্ট ছিল না — raw array-order; এখন "সর্বশেষ আপডেট/যোগাযোগ আগে")। সার্চ-মোড এখনো JS fuzzy-match (`customerMatchScore`) — এটা ৬টা অন্য কল-সাইটেও শেয়ার্ড ইউটিলিটি, এই পাসের স্কোপের বাইরে। SQL ব্যর্থ হলে (`browseFailed`) নিরাপদে `filteredCustomers` (আগের behavior) ফলব্যাক করে। Header-এর কাউন্ট (`showCount`) এখন `browseTotal` (SQL `COUNT(*)`) ব্যবহার করে যখন browse active।
+
+**যাচাই সম্পূর্ণ (sandbox)**: `npm test` → `npm run lint` (0 error, ৫৬৫→৫৫৮ ওয়ার্নিং কমেছে ডেড কোড অপসারণে) → `npm run typecheck` → `npm run build` → `test:golden-master` (৭/৭) → `test:fuzz`।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — RFM সংক্রান্ত সব কোড অপসারণ (দেখুন উপরে); নতুন `useCustomersByIds()` হুক; Customers কম্পোনেন্টে SQL browse pagination (`loadCustomerBrowsePage`, `browseIds`/`browseTotal`/`browseDone`/`browseFailed` state, `useEffect` রিসেট-অন-বিজনেসটাইপ, Virtuoso `endReached` wiring); `showCount` কাউন্ট আপডেট
+- `SQLITE_MIGRATION_LOG.md` — এই এন্ট্রি (৯৬) যোগ, রোডম্যাপ ধাপ ২ ✅ মার্ক
+
+**পরের সেশনে করণীয়**:
+1. real-device স্মোক-টেস্ট — নতুন কাস্টমার লিস্ট (স্ক্রল/ইনফিনিট-লোড, সার্চ, নতুন কাস্টমার যোগ/এডিট, "সর্বশেষ আপডেট আগে" ক্রম ঠিক আছে কিনা)
+2. এন্ট্রি ৯৩/৯৪-এর real-device স্মোক-টেস্ট (এখনো বাকি থাকলে)
+3. রোডম্যাপ ধাপ ৩ (never-load flag + boot hydration)
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৯৪-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟡 এন্ট্রি ৯৪ (✅ sandbox — npm test/lint/typecheck/build/golden-master/fuzz সব পাস — real-device স্মোক-টেস্ট এখনো বাকি) — Phase ৩ রোডম্যাপ ধাপ ১ (Category B, customers aggregate cutover) সম্পূর্ণ। ধাপ ২ ও ৩ শুরু হয়নি — স্কোপ বাস্তবতা সততার সাথে নিচে লেখা**:
+
+**যা করা হলো (ধাপ ১, ✅)**: `getCustomerBakiSummary()` (DataStore.js) — একটা SQL কোয়েরিতেই `totalBaki` (raw sum, negative balance/অগ্রিমসহ), `bakiCount` (balance>0), `clearCount` (balance≤0) — তিনটাই। App.jsx-এ `useCustomerBakiSummary()` হুক (SQL-primary + JS-fallback, `useKnownCategories()`-এর প্রমাণিত প্যাটার্ন)। ৪টা কল-সাইট কনভার্ট: SmartBusinessMgmt-এর totalBaki, Customers কম্পোনেন্টের bakiCount/clearCount। **⚠️ গুরুত্বপূর্ণ সেফটি-চেক**: SQL query লেখার সময় ধরা পড়ল যে আসল `totalBaki` আসলে সব কাস্টমারের balance-এর **raw sum** (negative balance-ও অন্তর্ভুক্ত), শুধু পজিটিভ-only sum না — প্রথম ড্রাফটে এই ভুল ছিল, কল-সাইট মিলিয়ে ঠিক করা হয়েছে। `ViewerDashboardScreen`-এর একটা তৃতীয় totalBaki সাইট **ইচ্ছাকৃতভাবে অক্ষুণ্ণ রাখা হয়েছে** — এই কম্পোনেন্টে single `businessType` নেই (multi-business `prefix`-ভিত্তিক), তাই নিরাপদ wiring সম্ভব ছিল না এই মুহূর্তে।
+
+**⚠️ ধাপ ২ ও ৩ নিয়ে সততার সাথে**: ব্যবহারকারী "১,২,৩ শেষ করুন" বলেছিলেন। ধাপ ১ (aggregate, ৪টা scalar সাইট) নিরাপদে সম্পূর্ণ করা গেছে। কিন্তু ধাপ ২ (Customers main list card + RFM list render, id+hydrate প্যাটার্নে কনভার্ট) আর ধাপ ৩ (customers-এর জন্য সম্পূর্ণ never-load flag + boot hydration infrastructure তৈরি) — এই দুটো একসাথে products-এর এন্ট্রি ৫৩ ও ৭৮-৮৫-এর সমপরিমাণ কাজ (কয়েক সেশন লেগেছিল সেখানে), আর এই মুহূর্তে customers array বুটে সবসময় পূর্ণ থাকায় (কোনো lazy flag নেই) ধাপ ২-এর id+hydrate কনভার্শন বাস্তবে কোনো নতুন সঠিকতা/পারফরম্যান্স সুবিধা দেবে না যতক্ষণ না ধাপ ৩ (never-load) না হয় — উল্টো, না-প্রমাণিত async hydration লজিক টাকা-সংশ্লিষ্ট কাস্টমার-ব্যালেন্স ডেটাতে অপ্রয়োজনীয় ঝুঁকি যোগ করত। তাই এই দুটো এই সেশনে **ইচ্ছাকৃতভাবে স্কিপ করা হলো** — শর্টকাট নিয়ে "শেষ" দাবি করার চেয়ে honest থাকা বেশি জরুরি এই প্রজেক্টের নিজস্ব চিরস্থায়ী নিয়ম অনুযায়ীই।
+
+**যাচাই সম্পূর্ণ (sandbox)**: `npm test` → `npm run lint` (0 error) → `npm run typecheck` → `npm run build` → `test:golden-master` (৭/৭) → `test:fuzz`। **real-device স্মোক-টেস্ট বাকি**: Dashboard/POS-এর "মোট বাকি" সংখ্যা আগের মতোই দেখাচ্ছে কিনা, Customers পেজের বাকি/ক্লিয়ার কাউন্ট ঠিক আছে কিনা (SQLite চালু অবস্থায় compare করে দেখা, বিশেষত কোনো কাস্টমারের negative balance/অগ্রিম থাকলে)।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/db/DataStore.js` — নতুন `getCustomerBakiSummary(businessType)` ফাংশন যোগ
+- `src/App.jsx` — নতুন import (`getCustomerBakiSummary as dsGetCustomerBakiSummary`), নতুন হুক `useCustomerBakiSummary()`, ৪টা কল-সাইট (SmartBusinessMgmt totalBaki, Customers bakiCount/clearCount) কনভার্ট
+- `SQLITE_MIGRATION_LOG.md` — এই এন্ট্রি (৯৪) যোগ, রোডম্যাপ ধাপ ১ ✅ মার্ক
+
+**পরের সেশনে করণীয়**:
+1. real-device স্মোক-টেস্ট (উপরে তালিকাভুক্ত)
+2. রোডম্যাপ ধাপ ২ (Category C, main list render) — নিজেই একটা পূর্ণ সেশনের কাজ
+3. রোডম্যাপ ধাপ ৩ (never-load flag + boot hydration) — ধাপ ২-এর পরে, নিজেই কয়েক সেশনের কাজ
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৯৩-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
 
 **🟡 এন্ট্রি ৯৩ (✅ sandbox-এ নেটওয়ার্ক কাজ করেছে, npm test/lint/typecheck/build/golden-master/fuzz সব পাস — real-device স্মোক-টেস্ট এখনো বাকি) — Phase ৩ (read-path cutover, বুট-চেঞ্জ) শুরুর সিদ্ধান্ত: এই সেশনে "আসল বুট-চেঞ্জ" সম্পূর্ণ করা হয়নি (ইচ্ছাকৃতভাবে), কিন্তু একটা রিয়েল ল্যান্ডমাইন-বাগ ধরা পড়েছে ও ফিক্স হয়েছে, প্লাস নিরাপদ প্রথম কনসোলিডেশন ধাপ**:
 
