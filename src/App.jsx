@@ -39,14 +39,14 @@ import {
 // তৈরি DataStore abstraction layer। isSqliteEnabled() ফ্ল্যাগ ডিফল্ট বন্ধ, তাই
 // এই import নিজে থেকে কোনো আচরণ পাল্টায় না — শুধু নিচের debouncedSave effect-
 // গুলোতে diff-based upsert/remove যোগ হয়েছে (দেখুন সেখানকার কমেন্ট)।
-import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite, queryPage as dsQueryPage, isProductsBootLazyEnabled, setProductsBootLazyEnabled, isProductsNeverLoadEnabled, setProductsNeverLoadEnabled, isPosOndemandCartEnabled, setPosOndemandCartEnabled, reconcileStore as dsReconcileStore } from "./db/DataStore.js";
+import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite, queryPage as dsQueryPage, isProductsBootLazyEnabled, setProductsBootLazyEnabled, isProductsNeverLoadEnabled, setProductsNeverLoadEnabled, isPosOndemandCartEnabled, setPosOndemandCartEnabled, isCustomersBootLazyEnabled, isCustomersNeverLoadEnabled, reconcileStore as dsReconcileStore } from "./db/DataStore.js";
 // 🆕 এন্ট্রি ৩৬ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ২) — InventorySection/
 // Dashboard-এর KPI কাউন্ট + ডিটেইল লিস্ট + সাপ্লায়ার-গ্রুপিং SQL cutover
-import { getInventoryList as dsGetInventoryList, getExpiryCandidates as dsGetExpiryCandidates, getSupplierSummary as dsGetSupplierSummary, getProductsBySupplierKey as dsGetProductsBySupplierKey, getDateRangeAggregate as dsGetDateRangeAggregate, getCustomerRfmAggregates as dsGetCustomerRfmAggregates, getRiskProducts as dsGetRiskProducts } from "./db/DataStore.js";
+import { getInventoryList as dsGetInventoryList, getExpiryCandidates as dsGetExpiryCandidates, getSupplierSummary as dsGetSupplierSummary, getProductsBySupplierKey as dsGetProductsBySupplierKey, getDateRangeAggregate as dsGetDateRangeAggregate, getRiskProducts as dsGetRiskProducts } from "./db/DataStore.js";
 // 🆕 এন্ট্রি ৩৮ — useKpiStats-এর বাকি ৪টা ডেটা-সোর্স (cashLogs/purchaseOrders/txns/returns)
 import { getCashLogTotal as dsGetCashLogTotal, getPurchaseOrderTotals as dsGetPurchaseOrderTotals, getTxnTotals as dsGetTxnTotals, getReturnsTotals as dsGetReturnsTotals } from "./db/DataStore.js";
 // 🆕 এন্ট্রি ৩৯ — useKpiStats-এর products-নির্ভর অবশিষ্ট অংশ (stockValue/lowStockItems/monthExpiredValue/monthExpiredCount)
-import { getInventoryCounts as dsGetInventoryCounts, getExpiredRemovalTotals as dsGetExpiredRemovalTotals } from "./db/DataStore.js";
+import { getInventoryCounts as dsGetInventoryCounts, getExpiredRemovalTotals as dsGetExpiredRemovalTotals, getCustomerBakiSummary as dsGetCustomerBakiSummary } from "./db/DataStore.js";
 // 🆕 এন্ট্রি ৪১ — ধাপ ৬ (computeSupplierDueMap SQL cutover)
 import { getSupplierDueRows as dsGetSupplierDueRows } from "./db/DataStore.js";
 import { getDistinctCategories as dsGetDistinctCategories, getDistinctSuppliers as dsGetDistinctSuppliers, getDistinctDosageForms as dsGetDistinctDosageForms, findProductByNameNorm as dsFindProductByNameNorm, normName as dsNormName, getReorderSalesRows as dsGetReorderSalesRows } from "./db/DataStore.js";
@@ -254,6 +254,9 @@ const useAppStore = create(subscribeWithSelector((set) => ({
   // দেখাতে হবে, silent fallback না করে। ডিফল্ট মোডে (এই ফ্ল্যাগ বন্ধ)
   // কখনো true হয় না, তাই কোনো আচরণ বদলায় না।
   productsNeverLoadSqlDown: false,
+  // 🆕 এন্ট্রি ৯৭ — productsNeverLoadSqlDown-এর ঠিক একই প্যাটার্ন, customers-এর
+  // জন্য। ডিফল্ট মোডে (ফ্ল্যাগ বন্ধ) কখনো true হয় না।
+  customersNeverLoadSqlDown: false,
   customersById:     new Map(),
   invoicesById:      new Map(),
   txns:              [],
@@ -9386,6 +9389,60 @@ function useProductsByIds(ids, businessType, productsByIdMap) {
   return { get, cache };
 }
 
+// 🆕 এন্ট্রি ৯৬ (Phase ৩ রোডম্যাপ ধাপ ২, Customers Category C) —
+// useProductsByIds()-এর ঠিক একই SQL-batch-fetch + cache প্যাটার্ন, শুধু
+// পার্থক্য: productsByIdMap-এর মতো নতুন লোকাল Map বানানোর দরকার নেই, কারণ
+// global write-through `customersById` (এন্ট্রি ৯৩-এ merge-patch-এ ফিক্সড)
+// ইতিমধ্যেই বিদ্যমান — সরাসরি সেটাই sync-ফলব্যাক সোর্স হিসেবে ব্যবহার করা হলো।
+function useCustomersByIds(ids, businessType) {
+  const [cache, setCache] = useState(() => new Map());
+  const cacheRef = useRef(cache);
+  cacheRef.current = cache;
+  const inFlightRef = useRef(new Set());
+  const sqliteOn = isSqliteEnabled();
+  const customersById = useAppStore(s => s.customersById);
+
+  const idsKey = (ids || []).join(",");
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType) return undefined;
+    const wanted = (ids || []).map(String);
+    // customers এখনো বুটে সবসময় পূর্ণ (never-load flag নেই এখনো), তাই
+    // global customersById-এ সবসময় মিলে যাবে — বর্তমানে zero এক্সট্রা SQL কল।
+    const missing = wanted.filter(
+      (id) => !customersById?.has(id) && !cacheRef.current.has(id) && !inFlightRef.current.has(id)
+    );
+    if (missing.length === 0) return undefined;
+
+    let cancelled = false;
+    missing.forEach((id) => inFlightRef.current.add(id));
+    (async () => {
+      try {
+        const rows = await dsGetByIds(businessType, "customers", missing);
+        if (cancelled) return;
+        setCache((prev) => {
+          const next = new Map(prev);
+          for (const row of rows) next.set(String(row.id), row);
+          return next;
+        });
+      } catch (e) {
+        console.warn("useCustomersByIds() SQL ব্যাচ-ফেচ ব্যর্থ:", e);
+      } finally {
+        missing.forEach((id) => inFlightRef.current.delete(id));
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idsKey, sqliteOn, businessType, customersById]);
+
+  const get = useCallback(
+    (id) => customersById?.get(String(id)) || cacheRef.current.get(String(id)) || null,
+    [customersById, cache] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
+  return { get, cache };
+}
+
 // 🆕 এন্ট্রি ৩৯ — useKpiStats-এর products-নির্ভর অবশিষ্ট অংশ: stockValue/lowStockCount
 // (getInventoryCounts()-এর stock_value/critical কলাম — এন্ট্রি ৩৬-এ InventorySection-এর
 // জন্য বানানো একই ফাংশন, useKpiStats-এও পুনর্ব্যবহার করা হচ্ছে, নতুন করে লেখার দরকার
@@ -9821,6 +9878,55 @@ function useKnownCategories(products, businessType) {
     if (sql) return ["সব", "সার্ভিস", ...sql.map(c => c || "অন্যান্য")];
     return jsCats;
   }, [sql, jsCats]);
+}
+
+// 🆕 এন্ট্রি ৯৪ (Phase ৩ রোডম্যাপ ধাপ ১, Category B — customers aggregate
+// cutover) — useKnownCategories()-এর ঠিক একই SQL-primary/JS-fallback
+// প্যাটার্ন। ৩টা scalar aggregate (totalBaki, bakiCount, clearCount) এক
+// কোয়েরিতে একসাথে ফেচ হয়, যাতে ৩ বার আলাদা DB round-trip না লাগে।
+// customers এখনো বুটে সবসময় পূর্ণ (never-load flag নেই এখনো), তাই এই
+// মুহূর্তে এটা বিশুদ্ধ পারফরম্যান্স/কনসিস্টেন্সি win — কোনো নতুন সঠিকতা
+// অর্জন হচ্ছে না, কিন্তু ভবিষ্যতের never-load-এর জন্য প্রয়োজনীয় প্রথম ধাপ।
+function useCustomerBakiSummary(customers, businessType) {
+  const sqliteOn = isSqliteEnabled();
+  const [sql, setSql] = useState(null);
+  const seqRef = useRef(0);
+
+  useEffect(() => {
+    if (!sqliteOn || !businessType) { setSql(null); return undefined; }
+    const seq = ++seqRef.current;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await dsGetCustomerBakiSummary(businessType);
+        if (cancelled || seqRef.current !== seq) return;
+        setSql(res);
+      } catch (e) {
+        if (cancelled || seqRef.current !== seq) return;
+        console.warn("customer baki-summary SQL ফেচ ব্যর্থ, JS ফলব্যাক ব্যবহার হচ্ছে:", e);
+        setSql(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, customers]);
+
+  const js = useMemo(() => {
+    // ⚠️ bakiCount/clearCount আসল কল-সাইটের raw শর্ত ব্যবহার করে (c.balance > 0 /
+    // c.balance <= 0, কোনো || 0 কোয়ার্স না) — balance undefined হলে দুটোতেই বাদ
+    // পড়বে (যেমন আসল customers.filter(...) করত)। totalBaki আলাদাভাবে RAW sum।
+    let bakiCount = 0, clearCount = 0, totalBaki = 0;
+    for (const c of customers) {
+      totalBaki += (c.balance || 0);
+      if (c.balance > 0) bakiCount++;
+      else if (c.balance <= 0) clearCount++;
+    }
+    return { bakiCount, clearCount, totalBaki };
+  }, [customers]);
+
+  return useMemo(() => {
+    if (sql) return { bakiCount: sql.bakiCount, clearCount: sql.clearCount, totalBaki: sql.totalBaki };
+    return js;
+  }, [sql, js]);
 }
 
 // 🆕 এন্ট্রি ৭২ (৭.৩, POS-বহির্ভূত) — BatchSyncTool-এর "লস-ঝুঁকি পণ্য" ট্যাব।
@@ -12365,8 +12471,13 @@ function SmartBusinessMgmt() {
       // ফ্ল্যাগ, `sbm_pos_ondemand_cart`-এর প্যাটার্নে)। বন্ধ থাকলে productsKeyLazy
       // নিজেই false, তাই CRITICAL_KEYS-এ products সবসময়ের মতোই সিঙ্ক্রোনাস।
       const productsNeverLoadFlag = productsKeyLazy && isProductsNeverLoadEnabled();
+      // 🆕 এন্ট্রি ৯৭ — customers-এর জন্য products-এর ঠিক একই দুই-স্তরের প্যাটার্ন।
+      // ডিফল্ট বন্ধ — বন্ধ থাকলে CRITICAL_KEYS-এ customers সবসময়ের মতোই থাকে,
+      // পুরো বুট-সিকোয়েন্স ১০০% অপরিবর্তিত।
+      const customersKeyLazy = isCustomersBootLazyEnabled();
+      const customersNeverLoadFlag = customersKeyLazy && isCustomersNeverLoadEnabled();
       const CRITICAL_KEYS = [
-        LK(SK.customers), ...(productsKeyLazy ? [] : [LK(SK.products)]), LK(SK.invoices), LK(SK.txns), SK.users,
+        ...(customersKeyLazy ? [] : [LK(SK.customers)]), ...(productsKeyLazy ? [] : [LK(SK.products)]), LK(SK.invoices), LK(SK.txns), SK.users,
         SK.shopName, LK(SK.darkMode), LK(SK.activeTheme), LK(SK.fontSize),
         LK(SK.paymentInvoices), SK.firebaseConfig, SK.firebaseEnabled,
         SK.authSession, SK.devContact, SK.masterResetHash,
@@ -12628,6 +12739,63 @@ function SmartBusinessMgmt() {
               // নোটিশ কখনো দেখানো হতো না।
               schemaMigrationStats: lazySchemaStats.totalMigrated > 0 ? lazySchemaStats : null,
             });
+          }, 0);
+        }
+      }
+
+      // ── এন্ট্রি ৯৭ (customers boot-lazy/never-load, products এন্ট্রি ৭৮-এর
+      // সরলীকৃত সংস্করণ) ────────────────────────────────────────────────────
+      // customers-এর জন্য কোনো SCHEMA_MIGRATIONS রেজিস্ট্রি নেই (শুধু products-এর
+      // আছে, উপরে দেখুন) — তাই products-এর এন্ট্রি ৮৩-এর schema-migration-during-
+      // hydrate জটিলতা এখানে প্রযোজ্য না, সরাসরি SQLite থেকে পড়ে customersById
+      // হাইড্রেট করাই যথেষ্ট।
+      // ⚠️⚠️ এই ব্লক নিজে থেকে কিছু "চালু" করে না — customersKeyLazy (এবং তার
+      // ভেতরে customersNeverLoadFlag) ডিফল্ট বন্ধ, তাই স্বাভাবিক অবস্থায় এই পুরো
+      // ব্লক কখনো এক্সিকিউট হয় না, বুট-সিকোয়েন্স ১০০% অপরিবর্তিত।
+      if (customersKeyLazy) {
+        const customersNeverLoadRequested = customersNeverLoadFlag;
+        let customersNeverLoadHydrateOk = false;
+        const _hydrateCustomersByIdFromSql = async () => {
+          try {
+            const sqlCustomersForHydrate = await dsGetAllRows(businessTypeVal, "customers");
+            const { map: hydratedCustMap, ids: hydratedCustIds } = mergeItemsIntoIdMap(
+              useAppStore.getState().customersById,
+              _prevCustomerIdsForMap,
+              sqlCustomersForHydrate
+            );
+            _prevCustomerIdsForMap = hydratedCustIds;
+            useAppStore.getState().set("customersById", hydratedCustMap);
+            return true;
+          } catch (e) {
+            console.warn("customersById SQLite বাল্ক-হাইড্রেট ব্যর্থ (নন-ফেটাল, blob-load ফলব্যাক চলছে):", e);
+            return false;
+          }
+        };
+        if (isSqliteEnabled() && businessTypeVal) {
+          if (customersNeverLoadRequested) {
+            customersNeverLoadHydrateOk = await _hydrateCustomersByIdFromSql();
+          } else {
+            _hydrateCustomersByIdFromSql(); // fire-and-forget, products এন্ট্রি ৭৮-এর মতোই
+          }
+        }
+
+        // ⚠️ products-এর এন্ট্রি ৮০-৮২-এর ঠিক একই সেফটি-গার্ড প্যাটার্ন —
+        // blob-load শুধু তখনই স্কিপ হয় যখন never-load চালু **এবং** হাইড্রেট
+        // সত্যিই সফল হয়েছে। ব্যর্থ হলে নিরাপদে পুরনো delay-only আচরণে fallback।
+        // customersNeverLoadSqlDown ফ্ল্যাগ এখনো কোনো bulk-scan কল-সাইট গার্ড
+        // করছে না (এন্ট্রি ৯৩-৯৬-এ যেগুলো কনভার্ট হয়েছে সেগুলো ছাড়া) — তাই
+        // এই মুহূর্তে never-load চালু করা এখনো নিরাপদ না (নিচে মাস্টার
+        // স্ট্যাটাসে বিস্তারিত)।
+        if (customersNeverLoadRequested && customersNeverLoadHydrateOk) {
+          _patch({ customersNeverLoadSqlDown: false });
+        } else {
+          if (customersNeverLoadRequested) {
+            _patch({ customersNeverLoadSqlDown: true });
+          }
+          setTimeout(async () => {
+            const custBoot = await loadMany([LK(SK.customers)]);
+            const rawCustLazy = custBoot[LK(SK.customers)];
+            _patch({ customers: rawCustLazy || SEED_CUSTOMERS });
           }, 0);
         }
       }
@@ -15590,7 +15758,9 @@ function SmartBusinessMgmt() {
   const todayReturnsCashRefund = useMemo(() => todayReturns.filter(r => r.refundMode === "cash").reduce((s, r) => s + (r.refundAmount || 0), 0), [todayReturns]);
   const todayReturnsProfitImpact = useMemo(() => todayReturns.reduce((s, r) => s + ((r.refundAmount || 0) - (r.costPrice || 0) * (r.qty || 0)), 0), [todayReturns]);
   const todayTotal = useMemo(() => todayInvs.reduce((s, i) => s + (i.total || 0), 0) - todayReturnsRefund, [todayInvs, todayReturnsRefund]);
-  const totalBaki  = useMemo(() => customers.reduce((s, c) => s + (c.balance || 0), 0), [customers]);
+  // 🆕 এন্ট্রি ৯৪ — Category B SQL cutover (JS-fallback অক্ষুণ্ণ, আচরণ অপরিবর্তিত)
+  const _bakiSummary1 = useCustomerBakiSummary(customers, businessType);
+  const totalBaki  = _bakiSummary1.totalBaki;
   const todayCashSale = useMemo(() => todayInvs.reduce((s, i) => {
     if (i.payType === "cash") return s + i.total;
     if (i.payType === "partial") return s + Math.min(i.paidAmount || 0, i.total || 0);
@@ -22336,38 +22506,9 @@ function useInventoryData(products, businessType) {
   };
 }
 
-// ── এন্ট্রি ৫৭ (Phase 3, Customers RFM/LTV cutover) ──────────────────────────
-// useInventoryData()-এর ঠিক একই কনভেনশন (এন্ট্রি ৫৪) — sqliteOn চালু থাকলে
-// loading/error অবস্থায় সাইলেন্টলি JS-এ ফলব্যাক করে না, sqlStatus এক্সপোজ করে।
-// isSqliteEnabled() বন্ধ থাকলে (৫০০ দোকানের বর্তমান অবস্থা) এই হুক কোনো
-// প্রভাবই ফেলে না — Customers কম্পোনেন্ট আগের jsRfmData-ই ব্যবহার করে।
-function useCustomerRfm(businessType) {
-  const sqliteOn = isSqliteEnabled();
-  const [sql, setSql] = useState(null); // null=লোডিং, false=ব্যর্থ, object=সফল
-  const seqRef = useRef(0);
-
-  useEffect(() => {
-    if (!sqliteOn || !businessType) { setSql(null); return undefined; }
-    const seq = ++seqRef.current;
-    let cancelled = false;
-    (async () => {
-      try {
-        const d30 = _dateKeyOf(new Date(Date.now() - 30 * 86400000));
-        const agg = await dsGetCustomerRfmAggregates(businessType, { d30 });
-        if (cancelled || seqRef.current !== seq) return;
-        setSql(agg);
-      } catch (e) {
-        if (cancelled || seqRef.current !== seq) return;
-        console.warn("Customer RFM SQL ফেচ ব্যর্থ:", e);
-        setSql(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [sqliteOn, businessType]);
-
-  const sqlStatus = !sqliteOn ? "disabled" : (sql && typeof sql === "object") ? "ok" : (sql === false ? "error" : "loading");
-  return { sql: sqlStatus === "ok" ? sql : null, sqlStatus };
-}
+// 🗑️ এন্ট্রি ৯৬ — useCustomerRfm() হুক (আগের এন্ট্রি ৫৭) এই একমাত্র কলার
+// (Customers কম্পোনেন্ট, RFM analytics) সহই সরানো হলো — সম্পূর্ণ ডেড কোড
+// প্রমাণিত (ব্যবহারকারী কনফার্মড: ফিচার আগেই UI থেকে সরানো হয়েছিল)।
 
 
 function InventorySection({ T, S, products, setDashModal, shopName, setInvModal, purchaseOrders = [], businessType = "pharmacy", reorderAlerts = [], invData = null }) {
@@ -27698,122 +27839,21 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
   const [confirmId,       setConfirmId]       = useState(null);
   const [page,            setPage]            = useState(1);
   const [invoicePickCust, setInvoicePickCust] = useState(null);
-  const [segFilter,       setSegFilter]       = useState("all"); // analytics segment filter
-  const [showAnalytics,   setShowAnalytics]   = useState(false);
 
   // 🆕 কাস্টমার মডিউলের নেস্টেড লেয়ার — শেয়ার্ড back-stack-এ। ফর্ম খোলা থাকলে
   // ব্যাক বাটনে ফর্ম বন্ধ হবে, ডিলিট কনফার্ম দেখানো অবস্থায় ব্যাক করলে কনফার্ম বাতিল হবে।
   useBackHandler(showAdd,          () => { setShowAdd(false); setEditId(null); return true; });
   useBackHandler(!!confirmId,      () => { setConfirmId(null); return true; });
 
-  // ── RFM Customer Analytics ─────────────────────────────────────────────────
-  const SEGMENTS = {
-    champion: { label:"চ্যাম্পিয়ন", color:"#22c55e", icon:"🏆", desc:"নিয়মিত, বেশি কেনে" },
-    loyal:    { label:"বিশ্বস্ত",   color:"#3b82f6", icon:"💎", desc:"নিয়মিত ক্রেতা" },
-    active:   { label:"সক্রিয়",    color:"#f59e0b", icon:"⚡", desc:"মাঝেমাঝে আসে" },
-    at_risk:  { label:"ঝুঁকিতে",   color:"#ef4444", icon:"⚠️", desc:"বাকি আছে, আসছে না" },
-    inactive: { label:"নিষ্ক্রিয়", color:"#64748b", icon:"😴", desc:"৬০+ দিন নেই" },
-  };
-
-  // 🆕 এন্ট্রি ৫৭ (Phase 3, Customers RFM/LTV cutover)
-  const custRfmSql = useCustomerRfm(businessType);
-
-  const jsRfmData = useMemo(() => {
-    const now = Date.now();
-    const d30 = _dateKeyOf(new Date(now - 30 * 86400000));
-    const totalSales = invoices.reduce((s, i) => s + (i.total || 0), 0);
-    const monthSale  = invoices.filter(i => (i.dateKey || "") >= d30).reduce((s, i) => s + (i.total || 0), 0);
-
-    // 🔴 পারফরম্যান্স ফিক্স: আগে প্রতিটা কাস্টমারের জন্য পুরো invoices/txns অ্যারে আলাদা
-    // করে .filter() করা হতো — O(কাস্টমার × ইনভয়েস), ১০,০০০ কাস্টমার × ১,০০,০০০ ইনভয়েসে
-    // প্রায় ১০০ কোটি অপারেশন, যা Customer ট্যাব ল্যাগ করানোর মূল কারণ ছিল।
-    // এখন একবারে (single pass) invoices/txns-কে customerId দিয়ে Map-এ গ্রুপ করে নিচ্ছি,
-    // তারপর প্রতি কাস্টমারে শুধু O(1) Map lookup — মোট জটিলতা O(কাস্টমার+ইনভয়েস+txns)।
-    const invByCust = new Map();
-    invoices.forEach(i => {
-      if (i.customerId == null) return;
-      const arr = invByCust.get(i.customerId);
-      if (arr) arr.push(i); else invByCust.set(i.customerId, [i]);
-    });
-    const txnByCust = new Map();
-    txns.forEach(t => {
-      if (t.customerId == null) return;
-      const arr = txnByCust.get(t.customerId);
-      if (arr) arr.push(t); else txnByCust.set(t.customerId, [t]);
-    });
-
-    return customers.map(c => {
-      const custInvs = invByCust.get(c.id) || [];
-      const custTxns = txnByCust.get(c.id) || [];
-      const ltv      = custInvs.reduce((s, i) => s + (i.total || 0), 0);
-      const frequency = custInvs.length;
-      const sorted   = [...custInvs].sort((a, b) => (b.dateKey||"").localeCompare(a.dateKey||""));
-      const lastInv  = sorted[0];
-      const daysSince = lastInv?.dateKey
-        ? Math.floor((now - new Date(lastInv.dateKey).getTime()) / 86400000) : 999;
-      const avgOrder = frequency > 0 ? ltv / frequency : 0;
-      const recentPaid = custTxns
-        .filter(t => t.type === "joma" && (t.dateKey || "") >= d30)
-        .reduce((s, t) => s + (t.amount || 0), 0);
-      const riskScore = ((c.balance || 0) > ltv * 0.4 ? 30 : 0)
-        + (daysSince > 45 && (c.balance || 0) > 0 ? 30 : 0)
-        + ((c.balance || 0) > 5000 ? 20 : 0)
-        + (frequency < 2 ? 10 : 0);
-      const segment = daysSince <= 14 && frequency >= 3 ? "champion"
-        : daysSince <= 30 && ltv > monthSale * 0.1 ? "loyal"
-        : daysSince > 60 && (c.balance || 0) > 0 ? "at_risk"
-        : daysSince <= 30 ? "active"
-        : "inactive";
-      return { ...c, ltv, frequency, daysSince, avgOrder, riskScore, segment, recentPaid };
-    }).sort((a, b) => b.ltv - a.ltv);
-  }, [customers, invoices, txns]);
-
-  // 🆕 এন্ট্রি ৫৭ — SQL অ্যাগ্রিগেট থেকে O(customers) মার্জ (jsRfmData-এর
-  // O(customers+invoices+txns) সিঙ্গল-পাস স্ক্যানের বদলে)। ⚠️ ইচ্ছাকৃত ব্যতিক্রম
-  // এন্ট্রি ৫৪-এর "SQL loading/error-এ সাইলেন্ট JS ফলব্যাক না" নীতি থেকে —
-  // InventorySection-এর ড্যাশবোর্ড-উইজেটে শূন্য দেখানো নিরাপদ (ছোট, প্রেক্ষাপট-স্পষ্ট
-  // widget, ভুল বোঝার সুযোগ কম), কিন্তু Customers এখানে ইউজার সরাসরি লিস্ট ব্রাউজ/সার্চ/
-  // ফিল্টার করে কাজ করে — SQL এখনো লোড না হওয়া বা ব্যর্থ হওয়া অবস্থায় পুরো লিস্ট খালি
-  // দেখালে workflow ব্লক হয়ে যেত। jsRfmData যেহেতু এমনিতেও কম্পিউট হচ্ছে (সরানো হয়নি,
-  // শুধু SQL সফল হলে override করা হচ্ছে), তাই এই ফলব্যাকে কোনো নতুন ঝুঁকি নেই — শুধু
-  // SQL সফল হলে ভারী JS স্ক্যান এড়ানো যাচ্ছে (CPU সাশ্রয়; বড় মেমরি-সাশ্রয় Customers-এ
-  // প্রযোজ্য না, কারণ invoices/txns এমনিতেই অন্য কারণে props হিসেবে মেমরিতে থাকে)।
-  const rfmData = useMemo(() => {
-    if (custRfmSql.sqlStatus !== "ok" || !custRfmSql.sql) return jsRfmData;
-    const now = Date.now();
-    const { byCustomer, recentPaidByCustomer, totals } = custRfmSql.sql;
-    const ltvMap  = new Map(byCustomer.map(r => [String(r.id), r]));
-    const paidMap = new Map(recentPaidByCustomer.map(r => [String(r.id), r.recentPaid]));
-    const monthSale = totals.monthSale || 0;
-    return customers.map(c => {
-      const agg = ltvMap.get(String(c.id));
-      const ltv = agg?.ltv || 0;
-      const frequency = agg?.frequency || 0;
-      const daysSince = agg?.lastDateKey
-        ? Math.floor((now - new Date(agg.lastDateKey).getTime()) / 86400000) : 999;
-      const avgOrder = frequency > 0 ? ltv / frequency : 0;
-      const recentPaid = paidMap.get(String(c.id)) || 0;
-      const riskScore = ((c.balance || 0) > ltv * 0.4 ? 30 : 0)
-        + (daysSince > 45 && (c.balance || 0) > 0 ? 30 : 0)
-        + ((c.balance || 0) > 5000 ? 20 : 0)
-        + (frequency < 2 ? 10 : 0);
-      const segment = daysSince <= 14 && frequency >= 3 ? "champion"
-        : daysSince <= 30 && ltv > monthSale * 0.1 ? "loyal"
-        : daysSince > 60 && (c.balance || 0) > 0 ? "at_risk"
-        : daysSince <= 30 ? "active"
-        : "inactive";
-      return { ...c, ltv, frequency, daysSince, avgOrder, riskScore, segment, recentPaid };
-    }).sort((a, b) => b.ltv - a.ltv);
-  }, [customers, jsRfmData, custRfmSql.sqlStatus, custRfmSql.sql]);
-
-  // rfmData-কে Map-এ রাখি যাতে O(1) lookup হয়
-  const rfmMap = useMemo(() => new Map(rfmData.map(c => [c.id, c])), [rfmData]);
-  // সেগমেন্ট-ভিত্তিক কাউন্ট — অ্যানালিটিক্স প্যানেলে বারবার rfmData.filter() না করে একবারে হিসাব
-  const segmentCounts = useMemo(() => {
-    const counts = {};
-    rfmData.forEach(c => { counts[c.segment] = (counts[c.segment] || 0) + 1; });
-    return counts;
-  }, [rfmData]);
+  // 🗑️ এন্ট্রি ৯৬ (Phase ৩ ধাপ ২ পুনর্বিবেচনা) — RFM Customer Analytics কোড
+  // (SEGMENTS, useCustomerRfm/jsRfmData/rfmData/rfmMap/segmentCounts) এখানে
+  // আগে ছিল। ব্যবহারকারী কনফার্ম করলেন এই ফিচার আগেই UI থেকে সরানো হয়েছে —
+  // কোড-অডিটে ধরাও পড়ল: `setSegFilter` কোথাও কল হয় না (কোনো UI কন্ট্রোল
+  // নেই), `showAnalytics` কখনো রেন্ডার হয় না, আর প্রতি কার্ডে বের করা `rfm`
+  // ভ্যারিয়েবল রেন্ডার-বডিতে কখনো পড়াই হয় না — সম্পূর্ণ ডেড কোড, প্রতি রেন্ডারে
+  // invoices/txns পুরো স্ক্যান করে ltv/segment গণনা করত কিন্তু ফলাফল কোথাও
+  // ব্যবহৃত হতো না। সম্পূর্ণ ব্লক সরানো হলো (SQL হুক কলও, যা আগে প্রতি মাউন্টে
+  // অপ্রয়োজনীয় SQL রাউন্ড-ট্রিপ করত)।
 
   const addCustomer = () => {
     const name = (nameRef.current?.value?.trim() || form.name || "").trim();
@@ -27855,8 +27895,73 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
     setConfirmId(null);
   };
 
-  const bakiCount = useMemo(() => customers.filter(c => c.balance > 0).length, [customers]);
-  const clearCount = useMemo(() => customers.filter(c => c.balance <= 0).length, [customers]);
+  // 🆕 এন্ট্রি ৯৪ — Category B SQL cutover (JS-fallback অক্ষুণ্ণ, আচরণ অপরিবর্তিত)
+  const _bakiSummary2 = useCustomerBakiSummary(customers, businessType);
+  const bakiCount = _bakiSummary2.bakiCount;
+  const clearCount = _bakiSummary2.clearCount;
+
+  // React 18 useDeferredValue — বড় কাস্টমার লিস্টে টাইপ করার সময় UI ব্লক হবে না
+  const deferredSearch = useDeferredValue(search);
+
+  // 🆕 এন্ট্রি ৯৬ (Phase ৩ রোডম্যাপ ধাপ ২, Category C) — Products main list-এর
+  // (এন্ট্রি ৫৩) ঠিক একই id+hydrate cursor-pagination প্যাটার্ন, কিন্তু single-phase
+  // (কোনো demand common/uncommon বিভাজন নেই)। সার্চ সক্রিয় থাকলে SQL browse বন্ধ
+  // থাকে — fuzzy-match সার্চ (customerMatchScore) এখনো পুরো `customers` array-ই
+  // স্ক্যান করে, এই পাসের স্কোপের বাইরে (অন্য ৫টা কল-সাইটেও শেয়ার্ড ইউটিলিটি, আলাদা
+  // কাজ)। সর্ট-অর্ডার: updated_at DESC (ব্যবহারকারীর সিদ্ধান্ত — সর্বশেষ
+  // আপডেট/যোগাযোগ আগে) — আগে কোনো এক্সপ্লিসিট সর্ট ছিল না (raw array-order),
+  // তাই এটা একটা ইচ্ছাকৃত, অনুমোদিত দৃশ্যমান পরিবর্তন, দুর্ঘটনাক্রমে না।
+  const BROWSE_PAGE_SIZE = 40;
+  const isSearchActive = !!(deferredSearch && deferredSearch.trim());
+  const [browseIds,     setBrowseIds]     = useState([]);
+  const [browseTotal,   setBrowseTotal]   = useState(null);
+  const [browseDone,    setBrowseDone]    = useState(false);
+  const [browseLoading, setBrowseLoading] = useState(false);
+  const [browseFailed,  setBrowseFailed]  = useState(false);
+  const browseCursorRef = useRef(null);
+  const useSqliteBrowse = isSqliteEnabled() && !isSearchActive && !browseFailed;
+
+  const loadCustomerBrowsePage = useCallback(async (reset = false) => {
+    setBrowseLoading(true);
+    try {
+      const cursor = reset ? null : browseCursorRef.current;
+      const r = await dsQueryPage(businessType, "customers", {
+        where: "deleted = 0", sortColumn: "updated_at", sortDir: "DESC",
+        limit: BROWSE_PAGE_SIZE, cursor,
+      });
+      browseCursorRef.current = r.nextCursor;
+      setBrowseDone(!r.hasMore);
+      const ids = r.rows.map(c => String(c.id));
+      setBrowseIds(prev => reset ? ids : [...prev, ...ids]);
+    } catch {
+      setBrowseFailed(true); // SQLite ব্যর্থ → পরের রেন্ডারে filteredCustomers ফলব্যাকে চলে যাবে
+    } finally {
+      setBrowseLoading(false);
+    }
+  }, [businessType]);
+
+  // সার্চ টগল/businessType বদলালে ব্রাউজ-পেজিনেশন রিসেট করে প্রথম পেজ (+ মোট গণনা) লোড
+  useEffect(() => {
+    if (!useSqliteBrowse) return;
+    browseCursorRef.current = null;
+    setBrowseIds([]);
+    setBrowseDone(false);
+    loadCustomerBrowsePage(true);
+    (async () => {
+      try {
+        const res = await dsAggregate(businessType, "customers", { select: "COUNT(*) as cnt", where: "deleted=0" });
+        setBrowseTotal(res?.cnt ?? null);
+      } catch { setBrowseTotal(null); }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useSqliteBrowse, businessType]);
+
+  const { get: getBrowseCustomerRow } = useCustomersByIds(browseIds, businessType);
+  const browseCustomers = useMemo(
+    () => browseIds.map(id => getBrowseCustomerRow(id)).filter(Boolean)
+      .map((c, i) => ({ ...c, serial: i + 1, serialStr: String(i + 1) })),
+    [browseIds, getBrowseCustomerRow]
+  );
 
   // 🔴 পারফরম্যান্স ফিক্স: আগে এই সার্চ/সেগমেন্ট ফিল্টার প্রতিটি keystroke বা
   // যেকোনো state পরিবর্তনে (useMemo ছাড়া) পুরো customers অ্যারে map+filter করত —
@@ -27865,8 +27970,6 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
     customers.map((c, i) => ({ ...c, serial: i + 1, serialStr: String(i + 1) })),
     [customers]
   );
-  // React 18 useDeferredValue — বড় কাস্টমার লিস্টে টাইপ করার সময় UI ব্লক হবে না
-  const deferredSearch = useDeferredValue(search);
   const bySearch = useMemo(() => {
     const q = deferredSearch.trim();
     if (!q) return withSerial;
@@ -27876,13 +27979,13 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
       .filter(c => c._score > 0)
       .sort(bySearchScore);
   }, [withSerial, deferredSearch]);
-  const filteredCustomers = useMemo(() => (
-    segFilter === "all" ? bySearch
-      : bySearch.filter(c => {
-          const rfm = rfmMap.get(c.id);
-          return rfm?.segment === segFilter;
-        })
-  ), [bySearch, segFilter, rfmMap]);
+  // 🗑️ এন্ট্রি ৯৬ — segFilter (RFM-এর অংশ) সরানোর পর এই memo এখন সবসময়
+  // bySearch-এর সমান, তাই সরাসরি alias করা হলো (আলাদা useMemo/dependency
+  // ট্র্যাকিং-এর দরকার নেই)।
+  const filteredCustomers = bySearch;
+  // 🆕 এন্ট্রি ৯৬ — SQL browse চালু ও ব্যর্থ না হলে browseCustomers, নাহলে
+  // আগের মতোই filteredCustomers (search-mode বা SQL বন্ধ/ব্যর্থ অবস্থায়)।
+  const gridCustomers = useSqliteBrowse ? browseCustomers : filteredCustomers;
 
   // L5 fix: render-এ side effect না করে useEffect ব্যবহার
   useEffect(() => {
@@ -27905,7 +28008,7 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
           onClear={() => { setSearch(""); }}
           color="#3b82f6"
           T={T} S={S}
-          showCount count={customers.length + "জন"}
+          showCount count={(useSqliteBrowse && browseTotal != null ? browseTotal : customers.length) + "জন"}
           voiceColor="#3b82f6"
           style={{ flex: 1, marginBottom: 0 }}
         />
@@ -27946,9 +28049,9 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
       )}
       {/* Scrollable customer cards box */}
 
-      {/* Virtuoso infinite scroll — filtered by search + segment */}
+      {/* Virtuoso infinite scroll — SQL browse (useSqliteBrowse) বা search-filtered fallback */}
       {(() => {
-        const filtered = filteredCustomers;
+        const filtered = gridCustomers;
 
         return (
       <div style={{
@@ -27956,7 +28059,7 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
         maxHeight: "calc(100dvh - 200px)",
       }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {filtered.length === 0 && <div style={S.empty}>কোনো কাস্টমার পাওয়া যায়নি</div>}
+        {filtered.length === 0 && !(useSqliteBrowse && browseLoading) && <div style={S.empty}>কোনো কাস্টমার পাওয়া যায়নি</div>}
         {filtered.length === 0 && search.trim() && (
           <div style={{ textAlign:"center", padding:"40px 20px", color: T.sub }}>
             <div style={{ fontSize:32, marginBottom:8 }}>🔍</div>
@@ -27970,8 +28073,8 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
           data={filtered}
           increaseViewportBy={{ top: 400, bottom: 600 }}
           computeItemKey={(_, c) => c.id}
+          endReached={useSqliteBrowse ? () => { if (!browseDone && !browseLoading) loadCustomerBrowsePage(false); } : undefined}
           itemContent={(idx, c) => {
-            const rfm = rfmMap.get(c.id);
             return (
           <div key={c.id} className="qc-gradient-card"
             onClick={() => onOpenDetail(c.id)}
