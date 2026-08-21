@@ -33,7 +33,7 @@
 **A. Customers (ছোট স্কেল, আগে করা — নিরাপদ ওয়ার্মআপ)**
 1. ✅ Category B — aggregate সাইট (totalBaki×2, bakiCount/clearCount) SQL cutover — **এন্ট্রি ৯৪-এ সম্পূর্ণ (৪টা সাইট কনভার্ট, sandbox যাচাই সম্পূর্ণ, real-device বাকি)**
 2. ✅ Category C — main list SQL cursor-pagination (id+hydrate) — **এন্ট্রি ৯৬-এ সম্পূর্ণ। এন্ট্রি ৯৫-এর ব্লকার (RFM sort) ব্যবহারকারী কনফার্ম করলেন ডেড কোড ছিল, তাই সরিয়ে ফেলার পর আসল ডিজাইন প্রযোজ্য হলো (no-search browse mode → SQL `updated_at DESC` cursor-pagination; সার্চ-মোড এখনো JS fuzzy-match, শেয়ার্ড ইউটিলিটি বলে স্কোপের বাইরে)। sandbox যাচাই সম্পূর্ণ, real-device বাকি**
-3. 🟡 Never-load flag + boot hydration infrastructure — **এন্ট্রি ৯৭-এ তৈরি (products এন্ট্রি ৭৮-এর প্যাটার্নে), ডিফল্ট বন্ধ, sandbox যাচাই সম্পূর্ণ। ⚠️ ফ্ল্যাগ এখনো চালু করার মতো নিরাপদ না — নিচে এন্ট্রি ৯৭-এ তালিকাভুক্ত ৯টা bulk-scan কল-সাইট আগে কনভার্ট/গার্ড করতে হবে**
+3. 🟢 Never-load flag + boot hydration infrastructure — **এন্ট্রি ৯৭-এ তৈরি, এন্ট্রি ৯৮-৯৯-এ পুরো কোড-লেভেল bulk-scan অডিট শেষ (সব রিস্কি সাইট গার্ড/কনভার্ট হয়েছে)। ফ্ল্যাগ এখনো ডিফল্ট বন্ধ — চালু করার আগে real-device স্মোক-টেস্ট বাধ্যতামূলক, কিন্তু কোনো পরিচিত কোড-লেভেল ব্লকার আর বাকি নেই**
 
 **B. Invoices (বড় স্কেল, ভিন্ন ডিজাইন — customers-এর পরে শুরু করা ভালো)**
 4. ⬜ ৩৫টা সাইটের পূর্ণ ক্যাটাগরি অডিট (lookup/aggregate/list ভাগ করা) *(১ সেশন)*
@@ -50,7 +50,77 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৯৭-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৯৯-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟢 এন্ট্রি ৯৯ (✅ sandbox — npm test/lint/typecheck/build/golden-master/fuzz সব পাস — real-device স্মোক-টেস্ট বাকি, কিন্তু কোড-লেভেল bulk-scan অডিট এখন সম্পূর্ণ) — Phase ৩ রোডম্যাপ ধাপ ৩ শেষ (POS/সার্চ-সাইটসহ)**:
+
+ব্যবহারকারীর "বাকিগুলোও করুন" নির্দেশে এন্ট্রি ৯৮-এর বাকি ২টা সাইট (SmartInvoiceBuilder POS কাস্টমার-পিকার, Customers-এর নিজস্ব search-mode fallback) নিয়ে গভীরে গিয়ে দেখা গেল আসল স্কোপ আরও বড় — শুধু ২টা না, **মোট ৭টা অতিরিক্ত সাইট** (Products POS picker-এর এন্ট্রি ৮৬-এ প্রমাণিত fallback-source প্যাটার্ন প্রয়োগ করে সবগুলো কনভার্ট হলো)।
+
+**🔑 মূল ইনসাইট**: এই সাইটগুলোর জন্য FTS/hybrid-search redesign লাগেনি — Products POS picker (এন্ট্রি ৮৬) যেভাবে করেছিল ঠিক সেভাবেই: `customers.length === 0` (never-load সক্রিয়) হলে গ্লোবাল হাইড্রেটেড `customersById` (Zustand store, এন্ট্রি ৯৭-এর SQL বাল্ক-হাইড্রেট ব্লক দিয়ে **সম্পূর্ণ** সেট দিয়ে পূর্ণ হয়, `dsGetAllRows()` ব্যবহার করে — কোনো bounded/partial সাবসেট না) থেকে fallback করা হলো। JS fuzzy-match (`customerMatchScore`) অপরিবর্তিত থাকে, শুধু তার ইনপুট-সোর্স বদলায়। customers-এর স্কেল products-এর তুলনায় অনেক ছোট (হাজার-দুয়েক) বলে FTS-narrowing থ্রেশহোল্ডের দরকারও নেই।
+
+**যা কনভার্ট হলো (৭টা)**:
+1. SmartInvoiceBuilder — `customersWithSerial`/`filteredCustomers` (মূল POS কাস্টমার-পিকার) → নতুন `customersSourceForPos` fallback
+2. SmartInvoiceBuilder — `walkInCustMatches` (walk-in কাস্টমার inline-search)
+3. SmartInvoiceBuilder — `walkInModalCustList` ("পুরোনো কাস্টমার" মডাল ফুল-লিস্ট)
+4. SmartInvoiceBuilder — walk-in নতুন কাস্টমারের `serial` ফিল্ড (cosmetic, `customers.length + 1` → `customersSourceForPos.length + 1`)
+5. SmartInvoiceBuilder — "কাস্টমার নির্বাচন করুন" হেডারের নিবন্ধিত-সংখ্যা + সার্চ প্লেসহোল্ডারের সংখ্যা (২টা ডিসপ্লে সাইট, একই fallback)
+6. Customers কম্পোনেন্ট — `withSerial` (search-mode fallback, non-browse-mode) → নতুন `customersSourceForSearch` fallback
+7. ReturnModule (Invoice History ফিল্টার) — `ihCustSuggestions` → নতুন `customersSourceForReturns` fallback (এই কম্পোনেন্টের নিজস্ব `businessType` prop নেই, কিন্তু গ্লোবাল store পড়তে সেটা লাগে না)
+
+**পূর্ণ কোড-অডিট (এই সেশনের শেষে)**: পুরো `src/App.jsx`-এ `customers.map/filter/find/reduce/some/forEach/sort/slice(...)` গ্রেপ করে নিশ্চিত করা হয়েছে — এখন যা বাকি আছে তার সবকটাই হয় (ক) ইচ্ছাকৃত JS-fallback ব্র্যাঞ্চ (SQL ব্যর্থ/বন্ধ হলে, `useBakiCustomers`/dup-mobile-check-এর ভেতরে), অথবা (খ) `ViewerDashboardScreen`-এর নিজস্ব local state (লাইভ boot/never-load থেকে সম্পূর্ণ বিচ্ছিন্ন, এন্ট্রি ৯৮-এ ব্যাখ্যা করা হয়েছে)। **আর কোনো পরিচিত raw-array ঝুঁকি নেই।**
+
+**🟡 এখনো ফ্ল্যাগ ডিফল্ট বন্ধ রাখা হয়েছে, ইচ্ছাকৃতভাবে**: কোড-লেভেল অডিট সম্পূর্ণ হলেও এই প্রজেক্টের চিরস্থায়ী নিয়ম অনুযায়ী টাকা-সংশ্লিষ্ট ফিচারে (POS বিলিং, কাস্টমার ব্যালেন্স) কোনো নতুন কোড-পাথ real-device-এ যাচাই ছাড়া চালু করা হয় না। পরের ধাপ real-device-এ flag চালু করে টেস্ট করা।
+
+**যাচাই সম্পূর্ণ (sandbox)**: `npm test` → `npm run lint` (0 error, ৫৬৫ ওয়ার্নিং, বেসলাইন অপরিবর্তিত) → `npm run typecheck` (ক্লিন) → `npm run build` (ক্লিন) → `test:golden-master` (৭/৭) → `test:fuzz`।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — SmartInvoiceBuilder-এ `customersSourceForPos` fallback (৫টা ব্যবহার-সাইট: picker, walk-in inline-search, walk-in modal list, walk-in serial, ২টা count-display); Customers কম্পোনেন্টে `customersSourceForSearch` fallback (`withSerial`); ReturnModule-এ `customersSourceForReturns` fallback (`ihCustSuggestions`)
+- `SQLITE_MIGRATION_LOG.md` — এই এন্ট্রি (৯৯) যোগ, রোডম্যাপ ধাপ ৩ 🟢 মার্ক
+
+**পরের সেশনে করণীয়**:
+1. **real-device স্মোক-টেস্ট (flag বন্ধ, ডিফল্ট অবস্থায়)** — নিশ্চিত করুন অ্যাপ স্বাভাবিকভাবে বুট হচ্ছে, কোনো নতুন কোড-পাথ ট্রিগার হয়নি। প্লাস এন্ট্রি ৯৩/৯৪/৯৬/৯৮-এর বাকি টেস্টগুলো (ডুপ্লিকেট-মোবাইল, বাকি-তালিকা, কাস্টমার লিস্ট স্ক্রল)।
+2. **তারপর real-device-এ flag আসলে চালু করে টেস্ট** — POS-এ কাস্টমার সিলেক্ট/সার্চ, walk-in নতুন কাস্টমার তৈরি, Customers লিস্ট সার্চ, Invoice History-তে কাস্টমার ফিল্টার — এই ৪টাই এখন never-load-সেফ হওয়ার কথা, real-device-এ কনফার্ম করা দরকার।
+3. সফল হলে ধাপ ৩ ✅ মার্ক করে Invoices সেকশন (ধাপ ৪-৮) শুরু করা যাবে।
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৯৮-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟡 এন্ট্রি ৯৮ (✅ sandbox — npm test/lint/typecheck/build/golden-master/fuzz সব পাস — real-device স্মোক-টেস্ট বাকি, ফ্ল্যাগ এখনো চালু করার মতো নিরাপদ না) — Phase ৩ রোডম্যাপ ধাপ ৩ প্রিরিকুইজিট: এন্ট্রি ৯৭-এর ৯টা bulk-scan কল-সাইটের ৫টা কনভার্ট, প্লাস ১টা গুরুত্বপূর্ণ সংশোধন**:
+
+**⚠️ সংশোধন (এন্ট্রি ৯৭-এর একটা দাবি ভুল ছিল)**: এন্ট্রি ৯৭-এ "ViewerDashboardScreen-এর ২টা সাইট" ৯টা ঝুঁকিপূর্ণ সাইটের মধ্যে গণনা করা হয়েছিল। এই সেশনে কোড-অডিটে ধরা পড়ল এটা ভুল — `ViewerDashboardScreen` (দূরবর্তী দোকান মনিটর করার জন্য read-only backup-viewer স্ক্রিন) আসলে লাইভ App()-এর `customers`/CRITICAL_KEYS/never-load বুট-সিকোয়েন্স থেকে সম্পূর্ণ বিচ্ছিন্ন — নিজস্ব local `useState` (`data` prop, একটা backup snapshot থেকে সবসময় পূর্ণ সেট হয়) ব্যবহার করে, লাইভ ফ্ল্যাগের প্রভাব এখানে পৌঁছায়ই না। তাই আসল ঝুঁকিপূর্ণ তালিকা এখন **৭টা** সাইট (৯ - ২), তার মধ্যে **৫টা এই সেশনে কনভার্ট হয়েছে**।
+
+**যা কনভার্ট হলো (৫টা, সব SQL-primary + JS-fallback, saveProduct-এর dsFindProductByNameNorm প্যাটার্নের হুবহু কপি)**:
+1. `addCustomer` (Customers কম্পোনেন্ট) — ডুপ্লিকেট-মোবাইল চেক, নতুন `getCustomerByMobile()` (DataStore.js, indexed `mobile` কলাম)
+2. `saveEdit` (CustomerDetail কম্পোনেন্ট) — একই প্যাটার্ন, `businessType` prop নতুন যোগ হলো (আগে ছিল না)
+3. Dashboard-এর `bakiCustomers` — নতুন `getBakiCustomers()` (DataStore.js, `balance > 0`) + `useBakiCustomers()` হুক (useRiskProducts-এর প্যাটার্ন)
+4. SmsLog-এর `bakiCustomers` (mobile-filtered variant, `useBakiCustomersWithMobile()`), `businessType` prop নতুন যোগ হলো
+5. Settings-এর `bakiSmsCustomers` (বাল্ক-SMS রিমাইন্ডার) — একই `useBakiCustomersWithMobile()` পুনর্ব্যবহার
+
+নতুন index `idx_customers_balance` schema.sql-এ যোগ হয়েছে (idempotent, বিদ্যমান ইনস্টলেও `CREATE INDEX IF NOT EXISTS`-এর মাধ্যমে পরের বুটে স্বয়ংক্রিয়ভাবে যোগ হবে)।
+
+**⬜ যা এখনো বাকি (২টা, স্কোপে বড় — এই সেশনে ইচ্ছাকৃতভাবে স্কিপ)**:
+- **SmartInvoiceBuilder-এর `customersWithSerial`/`filteredCustomers`** (POS বিলিং ফ্লো-তে কাস্টমার সার্চ/পিক) — এটা আসলে Customers main-list-এর (এন্ট্রি ৯৬, Category C) মতোই একটা পূর্ণ browse+search redesign দাবি করে (serial-numbering + `customerMatchScore` fuzzy search পুরো array-র উপর নির্ভরশীল), একটা শর্টকাটে "গার্ড" করা গেলে বিলিং ফ্লো-তে ভুল আচরণ হতে পারে — তাই honest থেকে এই সেশনে হাত দেওয়া হয়নি।
+- **Customers কম্পোনেন্টের নিজস্ব `withSerial`** (search-mode fallback) — এন্ট্রি ৯৬-এই "শেয়ার্ড ইউটিলিটি, স্কোপের বাইরে" বলে চিহ্নিত হয়েছিল, সেই সিদ্ধান্ত অপরিবর্তিত।
+
+**🔴 তাই ফ্ল্যাগ এখনো চালু করার মতো নিরাপদ না** — উপরের ২টা সাইট (বিশেষত POS-এর কাস্টমার সার্চ, যেটা বিলিং ফ্লোতে সরাসরি ব্যবহৃত হয়) never-load চালু অবস্থায় খালি array পেয়ে ভুল আচরণ করবে।
+
+**যাচাই সম্পূর্ণ (sandbox)**: `npm test` → `npm run lint` (0 error, ৫৬৫টা ওয়ার্নিং — নতুন কোডের কোনো unused-var/no-undef না) → `npm run typecheck` (ক্লিন) → `npm run build` (ক্লিন) → `test:golden-master` (৭/৭) → `test:fuzz` (সব প্রপার্টি)। **real-device স্মোক-টেস্ট বাকি**: নতুন কাস্টমার তৈরি/এডিটে ডুপ্লিকেট-মোবাইল ওয়ার্নিং ঠিক কাজ করছে কিনা, Dashboard/SmsLog/Settings-এর বাকি-তালিকা আগের মতোই দেখাচ্ছে কিনা।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/db/schema.sql` — নতুন `idx_customers_balance` ইনডেক্স
+- `src/db/DataStore.js` — নতুন `getCustomerByMobile()`, `getBakiCustomers()` ফাংশন
+- `src/App.jsx` — নতুন import (`dsGetCustomerByMobile`, `dsGetBakiCustomers`); নতুন হুক `useBakiCustomers()`, `useBakiCustomersWithMobile()`; `addCustomer`/`saveEdit` async কনভার্ট + SQL dup-check; `CustomerDetail`/`SmsLog` এ `businessType` prop যোগ; Dashboard/SmsLog/Settings-এর ৩টা `bakiCustomers`/`bakiSmsCustomers` সাইট নতুন হুকে কনভার্ট
+- `SQLITE_MIGRATION_LOG.md` — এই এন্ট্রি (৯৮) যোগ, রোডম্যাপ ধাপ ৩ স্ট্যাটাস আপডেট
+
+**পরের সেশনে করণীয়**:
+1. real-device স্মোক-টেস্ট (উপরে তালিকাভুক্ত + এন্ট্রি ৯৩/৯৪/৯৬-এর বাকি থাকলে)
+2. SmartInvoiceBuilder-এর POS কাস্টমার-পিকার/সার্চ কনভার্ট বা গার্ড (শেষ বাকি ঝুঁকিপূর্ণ সাইট, বিলিং ফ্লো-সংশ্লিষ্ট বলে সবচেয়ে গুরুত্বপূর্ণ)
+3. তারপরই real-device-এ never-load ফ্ল্যাগ চালু করে টেস্ট করা নিরাপদ হবে
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৯৭-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
 
 **🟡 এন্ট্রি ৯৭ (✅ sandbox — npm test/lint/typecheck/build/golden-master/fuzz সব পাস — real-device স্মোক-টেস্ট বাকি, আর ফ্ল্যাগ এখনো চালু করার মতো নিরাপদ না) — Phase ৩ রোডম্যাপ ধাপ ৩ (customers never-load infrastructure) — শুধু কাঠামো তৈরি, চালু করার আগে আরও কাজ বাকি**:
 
