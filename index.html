@@ -150,6 +150,7 @@
     </div>
     <div id="root"></div>
     <script>
+      window.__appBootT0 = Date.now(); // এন্ট্রি ১০৫ — একদম শুরুর টাইমস্ট্যাম্প (WebView-এ JS পার্স হওয়ার সাথে সাথেই), যাতে DiagLog.js-এর প্রতিটা লগ লাইন "অ্যাপ চালু করা থেকে কত সময়" হিসেবে দেখাতে পারে
       window.__hideSplash = function() {
         var s = document.getElementById('splash');
         if (s) {

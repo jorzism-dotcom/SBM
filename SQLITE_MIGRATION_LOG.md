@@ -50,7 +50,40 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ১০২-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ১০৬-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🔍 এন্ট্রি ১০৬ (কোল্ড-স্টার্ট ডায়াগনস্টিক, সম্পূর্ণ বুট-সিকোয়েন্স কভারেজ) — এন্ট্রি ১০২-এর ধারাবাহিকতা, এখনো real-device কনফার্মেশন বাকি**
+
+**সমস্যা**: এন্ট্রি ১০২-এর `console.log` ডায়াগনস্টিক ব্যবহারকারী কখনো দেখতেই পাননি — তিনি শুধু মোবাইল থেকে কাজ করেন, PC/adb/Chrome remote-debugging নেই। এরপর ব্যবহারকারী চাইলেন অ্যাপ চালু করা থেকে শুরু করে products/customers/invoices সব দেখানো পর্যন্ত **পুরো** সময়ের real breakdown — শুধু SQL hydrate অংশ না, পুরো ছবিটা।
+
+**এই সেশনে ৪টা ধাপে করা হলো**:
+
+1. **এন্ট্রি ১০৩ — in-app টাইমিং লগ প্যানেল**: নতুন `src/db/DiagLog.js` — in-memory + `localStorage`-persisted লগ স্টোর (`logDiag`/`getDiagLog`/`clearDiagLog`)। `DataStore.js`-এর cold-start টাইমিং আর `App.jsx`-এর products/customers বাল্ক-হাইড্রেট টাইমিং — দুটোই `console.log`-এর বদলে `logDiag()`-এ। Settings → dev প্যানেলে নতুন **"⏱️ টাইমিং ডায়াগনস্টিক"** কার্ড (`TimingDiagPanel` কম্পোনেন্ট) — রিফ্রেশ/কপি/ক্লিয়ার বাটনসহ, কোনো PC/adb লাগে না।
+
+2. **এন্ট্রি ১০৪ — `getAllRows()` ব্রেকডাউন**: real-device লগে ধরা পড়ল products বাল্ক-হাইড্রেট (২২৩৭ রেকর্ড) একাই ৪.৫-৫.১ সেকেন্ড নিচ্ছে (cold-start db.open/pragma/schema-execute মিলিয়ে মাত্র ৩০০-৭৭০ms, customers মাত্র ৩ms)। `DataStore.js`-এর `getAllRows()`-এর ভেতর নেটিভ `db.query()` (Capacitor bridge round-trip) বনাম JS-সাইড `JSON.parse()` লুপ আলাদাভাবে মাপা শুরু হলো, সাথে মোট/গড় পেলোড সাইজ (KB)।
+
+3. **এন্ট্রি ১০৫ — `window.__appBootT0` + অটো-ট্যাগড টাইমলাইন**: `index.html`-এ একদম প্রথম স্ক্রিপ্ট-লাইনে `window.__appBootT0 = Date.now()` — এটাই "অ্যাপ চালু করা"-র আসল রেফারেন্স পয়েন্ট। `DiagLog.js`-এর `logDiag()` এখন থেকে প্রতিটা লাইনের শেষে স্বয়ংক্রিয়ভাবে `[boot+Xms]` জুড়ে দেয় — সব লগ লাইন একই টাইমলাইনে সরাসরি তুলনাযোগ্য।
+
+4. **এন্ট্রি ১০৬ — পুরো ক্লাসিক blob-load পথের ইনস্ট্রুমেন্টেশন**: এতদিন শুধু SQL hydrate-পথ মাপা হচ্ছিল, কিন্তু আসল বুট effect-এর ক্লাসিক `loadMany(CRITICAL_KEYS)` (IndexedDB blob লোড, না কোনো SQL flag থাকলে এটাই একমাত্র পথ) কখনো মাপা হয়নি। এখন `App.jsx`-এর বুট effect-এ ~১০টা নতুন চেকপয়েন্ট: effect-শুরু (React mount overhead বোঝা যায়), `DeviceID.init()`, `loadMany(PREFIX_KEYS)`, **`loadMany(CRITICAL_KEYS)`** (products/customers/invoices/txns-এর রেকর্ড-সংখ্যাসহ, lazy-flag স্কিপ করলে সেটাও দেখায়), `SchemaMigration.runAll`, ইনভয়েস windowing কাউন্ট, মূল `_patch`/স্প্ল্যাশ-হাইড মুহূর্ত (মোট effect ডিউরেশন), আর products/customers-এর blob-load ফলব্যাক `setTimeout` পথ (শুরু+শেষ+রেকর্ড-সংখ্যা) + never-load-হাইড্রেট-সফল নিশ্চিতকরণ লগ।
+
+**উল্লেখযোগ্য কনফার্মেশন**: ব্যবহারকারীর দেওয়া স্ক্রিনশট থেকে নিশ্চিত হওয়া গেছে — **Products Never-Load** ও **Customers Never-Load** দুটো ফ্ল্যাগই এই ডিভাইসে এখন চালু আছে (শুধু boot-lazy না), অর্থাৎ products SQL হাইড্রেটই বর্তমানে products ডেটার একমাত্র সোর্স — তাই এই একটা কলই সরাসরি products-নির্ভর স্ক্রিন কখন রেন্ডার হবে সেটা গেট করছে।
+
+**এই সেশনে আরেকটা আলাদা বাগফিক্স (এন্ট্রি ১০৩-এর অংশ হিসেবেই কোডে গিয়েছে, নিচেও আলাদা করে নোট করা হলো)**: Customer Detail পেজ ব্ল্যাংক + walk-in বাকি/আংশিক-বাকি পুরোনো-কাস্টমার পিকারে সিলেক্ট করলেও এড না হওয়া — দুটোরই root cause একই প্যাটার্ন (never-load ফ্ল্যাগে স্থায়ীভাবে খালি `customers` prop-এ প্লেইন `.find()`, গ্লোবাল `customersById` ফলব্যাক ছাড়া)। ৪টা কল-সাইট ফিক্স হয়েছে — বিস্তারিত নিচে দেখুন।
+
+**যাচাই সম্পূর্ণ (sandbox)**: esbuild দিয়ে সিনট্যাক্স-কম্পাইল (App.jsx, DataStore.js, DiagLog.js আলাদাভাবে) ক্লিন — এই সেশনে `npm test`/lint/typecheck/build/golden-master চালানো হয়নি (শুধু ডায়াগনস্টিক/ইনস্ট্রুমেন্টেশন কোড, কোনো বিজনেস-লজিক বদলায়নি, তবে পরবর্তী সেশনে পুরো স্যুট চালিয়ে কনফার্ম করা উচিত)।
+
+**real-device-এ এখন যা করবেন**: অ্যাপ সম্পূর্ণ বন্ধ করে (force-close) আবার cold-start করুন, তারপর Settings → dev প্যানেল → "⏱️ টাইমিং ডায়াগনস্টিক" কার্ডে রিফ্রেশ চেপে পুরো লগ (উপর থেকে নিচ) কপি করে পাঠান — এবার পুরো বুট-টাইমলাইন এক জায়গায় দেখা যাবে (React mount → IndexedDB blob-load বনাম SQL hydrate → স্প্ল্যাশ-হাইড → প্রতিটা ডেটাসেট আসলে কখন রেডি)।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — Customer Detail (`detailCust`) + walk-in পিকারের ৩টা সাইট (existingBal/মডাল-কনফার্ম/walkInExistingCust)-এ `customersById` ফলব্যাক; নতুন import (`logDiag`, `getDiagLog`, `clearDiagLog`); products/customers বাল্ক-হাইড্রেট লগে `console.log`→`logDiag`; নতুন `TimingDiagPanel` কম্পোনেন্ট + Settings রেন্ডারে যোগ; বুট effect-এ ~১০টা নতুন `logDiag` চেকপয়েন্ট (effect-শুরু, DeviceID.init, PREFIX_KEYS, CRITICAL_KEYS+কাউন্ট, SchemaMigration, ইনভয়েস windowing, প্রধান `_patch`, products/customers blob-load ফলব্যাক, never-load-সফল কনফার্মেশন)
+- `src/db/DataStore.js` — `_initDb()`-এর `console.log`→`logDiag` + নতুন import; `getAllRows()`-এ native `db.query()` বনাম `JSON.parse()` আলাদা টাইমিং + পেলোড-সাইজ লগ
+- `src/db/DiagLog.js` — **নতুন ফাইল** — in-memory+localStorage লগ স্টোর (`logDiag`/`getDiagLog`/`clearDiagLog`/`bootElapsedMs`), প্রতিটা লাইনে অটো `[boot+Xms]` ট্যাগ
+- `index.html` — `window.__appBootT0 = Date.now()` (স্ক্রিপ্টের একদম প্রথম লাইন)
+- `SQLITE_MIGRATION_LOG.md` — এই এন্ট্রি (১০৩-১০৬ একত্রে)
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ১০২-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
 
 **🔍 এন্ট্রি ১০২ (ডায়াগনস্টিক + মিটিগেশন, ব্যবহারকারী-রিপোর্টেড কোল্ড-স্টার্ট লেটেন্সি) — কোড টাচ হয়েছে, কিন্তু আসল বটলনেক এখনো real-device নাম্বার দেখে কনফার্ম করা বাকি**
 
