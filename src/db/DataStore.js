@@ -291,6 +291,15 @@ export async function getDb(businessType) {
 }
 
 async function _initDb(businessType) {
+  // 🆕 এন্ট্রি ১০২ (ব্যবহারকারী-রিপোর্টেড কোল্ড-স্টার্ট লেটেন্সি ডায়াগনস্টিক) —
+  // ব্যবহারকারী রিপোর্ট করেছেন প্রতি cold-start-এ ~৫ সেকেন্ড বিলম্ব (products/
+  // customers খালি দেখায়, তারপর লোড হয়)। entry ৫৭-৫৮-এ আগে একবার এই ধরনের
+  // লেটেন্সি অপ্টিমাইজ করা হয়েছিল (blind ALTER → PRAGMA table_info() চেক), কিন্তু
+  // আন্দাজে আরও অপ্টিমাইজ করার বদলে আগে আসল বটলনেক কোথায় (db.open() নাকি
+  // schema/column-check নাকি পরের বাল্ক-হাইড্রেট কোয়েরি) সেটা মাপা হচ্ছে —
+  // console.log-এ, non-intrusive, কোনো ইউজার-ফেসিং পরিবর্তন না। পরের real-device
+  // টেস্টে console লগ থেকে নাম্বার পেলে আসল কারণ ধরে সঠিক ফিক্স করা যাবে।
+  const _t0 = Date.now();
   const dbName = `sbm_${businessType}`; // ফাইল হবে sbm_pharmacy SQLite.db ইত্যাদি
   const isConn = (await sqlite.isConnection(dbName, false)).result;
   const consistent = (await sqlite.checkConnectionsConsistency()).result;
@@ -301,6 +310,7 @@ async function _initDb(businessType) {
       : await sqlite.createConnection(dbName, false, "no-encryption", 1, false);
 
   await db.open();
+  const _tOpen = Date.now();
 
   // 🔴 ফিক্স (real-device টেস্টে ধরা পড়া বাগ, স্ক্রিনশট: "Queries cannot be
   // performed using execSQL(), use query() instead."): schema.sql-এর
@@ -316,6 +326,7 @@ async function _initDb(businessType) {
   for (const pragma of pragmaLines) {
     await db.query(pragma.trim());
   }
+  const _tPragma = Date.now();
   // 🔴 ফিক্স (এন্ট্রি ৫৮, real-device-এ ধরা পড়া দ্বিতীয় লেটেন্সি বাগ — flag বন্ধ
   // করে টেস্টে "লেট নেই" কনফার্ম হওয়ায় প্রমাণিত এটা SQL-লেয়ারেরই সমস্যা): আগে
   // এখানে ১৩টা আলাদা ALTER TABLE কল ছিল, প্রতিটা নিজের try/catch-এ ব্লাইন্ডলি
@@ -381,8 +392,19 @@ async function _initDb(businessType) {
   await _addMissingCols("txns", [["customer_id", "TEXT"]]);
   // এন্ট্রি ৬৬ — Invoice history payType ফিল্টার SQL-WHERE-এ পুশ করার জন্য পুরনো ইনস্টলে কলাম-অ্যাড
   await _addMissingCols("invoices", [["pay_type", "TEXT"]]);
+  const _tColCheck = Date.now();
   // schema.sql-এ multiple statements আছে — execute() মাল্টি-স্টেটমেন্ট সাপোর্ট করে
   await db.execute(restOfSchema);
+  const _tSchema = Date.now();
+
+  // 🆕 এন্ট্রি ১০২ — timing ব্রেকডাউন, console-এ (ইউজার দেখেন না, শুধু
+  // real-device ডিবাগের জন্য)। businessType অনুযায়ী আলাদা লাইন যাতে
+  // multi-business ডিভাইসে গুলিয়ে না যায়।
+  console.log(
+    `⏱️ [SQL cold-start: ${businessType}] db.open()=${_tOpen - _t0}ms, ` +
+    `pragma=${_tPragma - _tOpen}ms, column-check(৪টা PRAGMA table_info + দরকার হলে ALTER)=${_tColCheck - _tPragma}ms, ` +
+    `schema-execute(CREATE TABLE/INDEX/TRIGGER)=${_tSchema - _tColCheck}ms, মোট=${_tSchema - _t0}ms`
+  );
 
   // (cache-সেট এখন getDb() wrapper-এই হয় — এখানে সরাসরি সেট করার দরকার নেই)
   return db;
