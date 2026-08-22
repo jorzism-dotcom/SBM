@@ -909,21 +909,43 @@ export async function getAllRows(businessType, store) {
   const db = await getDb(businessType);
   const rows = [];
   let lastId = "";
+  // 🆕 এন্ট্রি ১০৪ — রিয়েল-ডিভাইস লগে ধরা পড়েছে: products বাল্ক-হাইড্রেট
+  // (২২৩৭টা রেকর্ড) একাই ৪.৫-৫.১ সেকেন্ড নিচ্ছে, cold-start-এর db.open/pragma/
+  // schema-execute (মোট ~৩০০-৭৭০ms) থেকে অনেক বেশি — তাই আসল বটলনেক এখানেই। কিন্তু
+  // ঠিক কোন অংশ ধীর তা এখনো অজানা: নেটিভ SQLite db.query() (Capacitor JS↔native
+  // bridge round-trip, সম্ভবত বড় "data" TEXT পেলোড সিরিয়ালাইজেশনের কারণে) নাকি
+  // JS-সাইড JSON.parse() লুপ। এখন দুটো আলাদাভাবে মাপা হচ্ছে।
+  let _queryMs = 0;
+  let _parseMs = 0;
+  let _batches = 0;
+  let _totalChars = 0;
   // 🔴 কেন id-cursor keyset (OFFSET না): queryPage()-এর ঠিক একই কারণ — বড়
   // টেবিলে (১ লাখ+ products) OFFSET স্ক্যান-অ্যান্ড-ডিসকার্ড ধীর হয়ে যায়।
   // id-তে ইতিমধ্যে PRIMARY KEY ইনডেক্স আছে (schema.sql), তাই এক্সট্রা ইনডেক্স
   // লাগে না।
   for (;;) {
+    const _qT0 = Date.now();
     const res = await db.query(
       `SELECT data, id FROM ${store} WHERE deleted = 0 AND id > ? ORDER BY id ASC LIMIT ?`,
       [lastId, GET_ALL_ROWS_CHUNK_SIZE]
     );
+    _queryMs += Date.now() - _qT0;
+    _batches += 1;
     const batch = res.values || [];
     if (batch.length === 0) break;
-    for (const row of batch) rows.push(JSON.parse(row.data));
+    const _pT0 = Date.now();
+    for (const row of batch) {
+      _totalChars += (row.data || "").length;
+      rows.push(JSON.parse(row.data));
+    }
+    _parseMs += Date.now() - _pT0;
     lastId = String(batch[batch.length - 1].id);
     if (batch.length < GET_ALL_ROWS_CHUNK_SIZE) break;
   }
+  logDiag(
+    `⏱️ [getAllRows(${store}) ব্রেকডাউন] নেটিভ db.query()=${_queryMs}ms (${_batches}টা ব্যাচ), ` +
+    `JSON.parse=${_parseMs}ms, মোট রেকর্ড=${rows.length}, মোট ডেটা=${(_totalChars / 1024).toFixed(0)}KB (গড়=${rows.length ? Math.round(_totalChars / rows.length) : 0} bytes/রেকর্ড)`
+  );
   return rows;
 }
 

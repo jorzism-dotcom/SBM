@@ -51,14 +51,27 @@ function _stamp() {
   return `${hh}:${mm}:${ss}`;
 }
 
+// এন্ট্রি ১০৫ — index.html-এ একদম শুরুতে বসানো window.__appBootT0 থেকে
+// "অ্যাপ চালু করা থেকে এই মুহূর্ত পর্যন্ত" সময় বের করে। এটাই "original time"
+// (মোট সময়, কোনো একটা ধাপের আলাদা duration না) — প্রতিটা লগ লাইনে এই একই
+// রেফারেন্স পয়েন্ট থাকলে সব লাইন একে অপরের সাথে তুলনাযোগ্য হয়।
+export function bootElapsedMs() {
+  const t0 = (typeof window !== "undefined" && window.__appBootT0) || null;
+  return t0 ? Date.now() - t0 : null;
+}
+
 /**
  * একটা টাইমিং/ডায়াগনস্টিক লাইন লগ করে — console.log-এও যায় (remote-debug
  * ব্যবহারকারীদের জন্য), আর in-app প্যানেলের জন্য memory+localStorage-এও থাকে।
+ * প্রতিটা লাইনের শেষে স্বয়ংক্রিয়ভাবে "boot+Xms" (অ্যাপ চালু করা থেকে মোট
+ * সময়) জুড়ে দেওয়া হয় — আলাদা করে প্রতিটা কল-সাইটে হিসাব করা লাগে না।
  * @param {string} line
  */
 export function logDiag(line) {
-  console.log(line);
-  const entry = `[${_stamp()}] ${line}`;
+  const elapsed = bootElapsedMs();
+  const full = elapsed !== null ? `${line} [boot+${elapsed}ms]` : line;
+  console.log(full);
+  const entry = `[${_stamp()}] ${full}`;
   _entries.unshift(entry);
   if (_entries.length > MAX_ENTRIES) _entries.length = MAX_ENTRIES;
   _persist();
