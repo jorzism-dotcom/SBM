@@ -14,6 +14,7 @@
 // synthetic dataset script (Node.js) আর App.jsx দুই জায়গা থেকেই ব্যবহারযোগ্য হয়।
 
 import { CapacitorSQLite, SQLiteConnection } from "@capacitor-community/sqlite";
+import { logDiag } from "./DiagLog.js"; // এন্ট্রি ১০৩ — in-app টাইমিং লগ (adb ছাড়াই দেখা যায়)
 // src/logic.js পুরোপুরি pure/framework-agnostic — এখান থেকেই fixed GMT+6
 // dateKey লজিক আনা হচ্ছে, App.jsx-এর _dateKeyOf()/scripts/generate-synthetic-
 // dataset.mjs-এর bdDateKey()-এর সাথে ১০০% সিঙ্কড রাখতে (SQLITE_MIGRATION_LOG.md
@@ -397,10 +398,11 @@ async function _initDb(businessType) {
   await db.execute(restOfSchema);
   const _tSchema = Date.now();
 
-  // 🆕 এন্ট্রি ১০২ — timing ব্রেকডাউন, console-এ (ইউজার দেখেন না, শুধু
-  // real-device ডিবাগের জন্য)। businessType অনুযায়ী আলাদা লাইন যাতে
-  // multi-business ডিভাইসে গুলিয়ে না যায়।
-  console.log(
+  // 🆕 এন্ট্রি ১০২/১০৩ — timing ব্রেকডাউন। এন্ট্রি ১০৩-এ শুধু console.log থেকে
+  // বদলে logDiag() করা হলো — এখন এই লাইন অ্যাপের ভেতরেই (সেটিংস → dev প্যানেল
+  // → "⏱️ টাইমিং ডায়াগনস্টিক") দেখা যাবে, PC/adb ছাড়াই। businessType অনুযায়ী
+  // আলাদা লাইন যাতে multi-business ডিভাইসে গুলিয়ে না যায়।
+  logDiag(
     `⏱️ [SQL cold-start: ${businessType}] db.open()=${_tOpen - _t0}ms, ` +
     `pragma=${_tPragma - _tOpen}ms, column-check(৪টা PRAGMA table_info + দরকার হলে ALTER)=${_tColCheck - _tPragma}ms, ` +
     `schema-execute(CREATE TABLE/INDEX/TRIGGER)=${_tSchema - _tColCheck}ms, মোট=${_tSchema - _t0}ms`
