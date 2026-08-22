@@ -920,7 +920,15 @@ export async function getByIds(businessType, store, ids) {
   const uniqueIds = [...new Set((ids || []).map(String))];
   if (uniqueIds.length === 0) return [];
 
+  // 🆕 এন্ট্রি ১১১ — লগে ধরা পড়েছে এই ফাংশনের duration প্রায় হুবহু মিলে যাচ্ছে
+  // একই মুহূর্তে চলা queryPage() browse-কলের duration-এর সাথে (৩২৪২ms ≈
+  // ৩২৪১ms) — সন্দেহ: এই দুটো কল @capacitor-community/sqlite কানেকশনে
+  // সিরিয়ালাইজড, একটা আরেকটার পেছনে লাইনে দাঁড়িয়ে আছে। getDb() (cache-hit
+  // হলে তাৎক্ষণিক হওয়ার কথা) বনাম আসল db.query() আলাদা করে মাপা হচ্ছে যাতে
+  // ওয়েট-টাইম বনাম কোয়েরি-টাইম আলাদা করে বোঝা যায়।
+  const _gT0 = Date.now();
   const db = await getDb(businessType);
+  const _gTDb = Date.now();
   const byId = new Map();
 
   for (let i = 0; i < uniqueIds.length; i += GET_BY_IDS_CHUNK_SIZE) {
@@ -931,6 +939,9 @@ export async function getByIds(businessType, store, ids) {
       const rec = JSON.parse(row.data);
       byId.set(String(rec.id), rec);
     }
+  }
+  if (store === "products" && uniqueIds.length <= 3) {
+    logDiag(`⏱️ [getByIds ব্রেকডাউন, ${store}] getDb()=${_gTDb - _gT0}ms, বাকি(query+parse)=${Date.now() - _gTDb}ms, মোট=${Date.now() - _gT0}ms, ids=${uniqueIds.join(",")}`);
   }
 
   // ইনপুট অর্ডার বজায় রাখা হচ্ছে (কলার-এক্সপেক্টেশন), না-পাওয়া id চুপচাপ বাদ
@@ -1054,7 +1065,17 @@ export async function queryPage(businessType, store, opts = {}) {
     limit = 50,
     cursor = null,
   } = opts;
+  // 🆕 এন্ট্রি ১১১ — ফিক্স (এন্ট্রি ১১০, demand_type OR→equality + covering
+  // ইনডেক্স)-এর পরও real-device লগে dsQueryPage() আগের মতোই ~২৮৭০-৩২৪০ms
+  // দেখাচ্ছে (sandbox EXPLAIN QUERY PLAN-এ SEEK কনফার্ম হওয়া সত্ত্বেও)। তাই
+  // আন্দাজে আরও ফিক্স না করে এবার সরাসরি ডিভাইসেই মাপা হচ্ছে — getDb()
+  // (connection cache/wait) কতক্ষণ নেয় আলাদাভাবে, নেটিভ db.query() কতক্ষণ নেয়
+  // আলাদাভাবে, আর ঠিক এই WHERE-এ real DB আসলে কোন প্ল্যান বেছে নিচ্ছে
+  // (EXPLAIN QUERY PLAN, ডেটাসহ) — যাতে অনুমান না করে সরাসরি প্রমাণ থেকে
+  // পরের ফিক্স ঠিক করা যায়।
+  const _qT0 = Date.now();
   const db = await getDb(businessType);
+  const _qTDb = Date.now();
   const dir = String(sortDir).toUpperCase() === "ASC" ? "ASC" : "DESC";
   const cmp = dir === "DESC" ? "<" : ">";
 
@@ -1086,9 +1107,30 @@ export async function queryPage(businessType, store, opts = {}) {
     sqlParams = [...params, limit];
   }
 
+  // 🆕 এন্ট্রি ১১১ — শুধু products/customers browse-এর প্রথম পেজে (cursor
+  // নেই, সবচেয়ে বেশি রিপোর্ট হওয়া ধীর কল-সাইট) EXPLAIN QUERY PLAN ক্যাপচার —
+  // real DB-তে ঠিক কোন প্ল্যান বাছা হচ্ছে সরাসরি দেখার জন্য। অন্য কল-সাইটে
+  // (cursor থাকা পরের পেজ, invoices) এক্সট্রা কল এড়াতে স্কিপ।
+  if (!cursor && (store === "products" || store === "customers")) {
+    try {
+      const planRes = await db.query(`EXPLAIN QUERY PLAN ${sql}`, sqlParams);
+      const planText = (planRes.values || []).map((r) => r.detail).join(" | ");
+      logDiag(`🔍 [queryPage EXPLAIN, ${store}] ${planText}`);
+    } catch (_) { /* সাইলেন্ট — শুধু ডায়াগনস্টিক, আসল কোয়েরি অপ্রভাবিত */ }
+  }
+
+  const _qTPlan = Date.now();
   const res = await db.query(sql, sqlParams);
+  const _qTQuery = Date.now();
   const rawRows = res.values || [];
   const rows = rawRows.map((r) => JSON.parse(r.data));
+  const _qTParse = Date.now();
+  if (store === "products" || store === "customers") {
+    logDiag(
+      `⏱️ [queryPage ব্রেকডাউন, ${store}] getDb()=${_qTDb - _qT0}ms, EXPLAIN=${_qTPlan - _qTDb}ms, ` +
+      `নেটিভ db.query()=${_qTQuery - _qTPlan}ms, JSON.parse=${_qTParse - _qTQuery}ms, মোট=${_qTParse - _qT0}ms, ${rawRows.length}টা রো`
+    );
+  }
   const last = rawRows[rawRows.length - 1];
   // পুরো limit ভরে গেলে তবেই ধরে নেওয়া হয় আরও রো থাকতে পারে (ঠিক limit-এর কম
   // এলে নিশ্চিতভাবেই এটাই শেষ পেজ — আলাদা COUNT(*) কল লাগে না)
