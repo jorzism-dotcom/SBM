@@ -50,7 +50,71 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ৯৯-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ১০২-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🔍 এন্ট্রি ১০২ (ডায়াগনস্টিক + মিটিগেশন, ব্যবহারকারী-রিপোর্টেড কোল্ড-স্টার্ট লেটেন্সি) — কোড টাচ হয়েছে, কিন্তু আসল বটলনেক এখনো real-device নাম্বার দেখে কনফার্ম করা বাকি**
+
+**সমস্যা**: ব্যবহারকারী রিপোর্ট করলেন — প্রতি cold-start-এ (অ্যাপ নতুন করে খোলা) products/customers প্রথমে খালি দেখায়, ~৫ সেকেন্ড পর লোড হয়। এন্ট্রি ৫৭-৫৮-এ আগেও একবার এই ধরনের লেটেন্সি অপ্টিমাইজ হয়েছিল, কিন্তু এবার আন্দাজে আরেকটা ফিক্স চাপানোর বদলে **আগে মাপা হলো** ঠিক কোথায় সময় যাচ্ছে — POS-এর মতো ব্যবহারিক অ্যাপে দোকানদারের কাছে এটা "অ্যাপ স্লো" মনে হওয়ার ঝুঁকি আছে, তাই ভুল জায়গায় ফিক্স করা এড়ানো জরুরি ছিল।
+
+**যা করা হলো (২টা অংশ)**:
+
+1. **টাইমিং ডায়াগনস্টিক** (`console.log`, ইউজার দেখেন না) —
+   - `DataStore.js` `_initDb()`-এ: `db.open()`, PRAGMA, column-check (৪টা `PRAGMA table_info` + দরকার হলে ALTER), schema-execute (CREATE TABLE/INDEX/TRIGGER) — প্রতিটা ধাপের সময় আলাদা করে মাপা হচ্ছে, একটাই লাইনে লগ হচ্ছে (`⏱️ [SQL cold-start: pharmacy] db.open()=...ms, pragma=...ms, column-check=...ms, schema-execute=...ms, মোট=...ms`)
+   - `App.jsx`-এ `_hydrateProductsByIdFromSql`/`_hydrateCustomersByIdFromSql`-এ: SQL SELECT (`getAllRows`) বনাম merge/schema-migrate/store-set — কোনটায় কত সময়, রেকর্ড-সংখ্যাসহ
+
+2. **মিটিগেশন (prefetch)** — businessType জানা মাত্রই (বুটের শুরুতে, PREFIX_KEYS লোড হওয়ার পরপরই, splash স্ক্রিন তখনো দেখানো হচ্ছে) ব্যাকগ্রাউন্ডে `getDb(businessTypeVal)` ফায়ার-অ্যান্ড-ফরগেট কল করা হচ্ছে — যাতে connection-open খরচ splash-এর সময়ের সাথে ওভারল্যাপ করে, আলাদা করে অপেক্ষা করতে না হয়। ব্যর্থ হলেও নিরাপদ (catch করা, পরের যেকোনো `getDb()` কল স্বাভাবিকভাবেই রিট্রাই করবে — এন্ট্রি ৫৭-এর in-flight promise cache-এর কারণে)।
+
+**⚠️ এখনো যা অনিশ্চিত**: prefetch যোগ করলে বাস্তবে বিলম্ব কমবে কিনা — বা আসল বটলনেক db.open()-এই কিনা, নাকি schema-execute/column-check-এ, নাকি বাল্ক-হাইড্রেট SELECT-এই — এটা এখনো **অনুমান**, কনফার্মড না। পরের real-device টেস্টে console লগ (`⏱️ [SQL cold-start...]` আর `⏱️ [...বাল্ক-হাইড্রেট]` লাইনগুলো, Chrome remote debugging বা adb logcat দিয়ে দেখা যাবে) থেকে আসল নাম্বার পেলে তবেই নিশ্চিত হওয়া যাবে prefetch যথেষ্ট, নাকি আরও গভীর ফিক্স (যেমন schema-execute অপ্টিমাইজেশন) লাগবে।
+
+**যাচাই সম্পূর্ণ (sandbox)**: `npm test` → `npm run lint` (０ error, ৫৬৭ ওয়ার্নিং, বেসলাইন অপরিবর্তিত) → `npm run typecheck` (ক্লিন) → `npm run build` (ক্লিন) → `test:golden-master` (৭/৭) → `test:fuzz`।
+
+**real-device-এ এখন যা করবেন**: নতুন zip ইনস্টল করে অ্যাপ সম্পূর্ণ বন্ধ করে (force-close/task থেকে সরিয়ে) আবার cold-start করুন। USB দিয়ে Chrome DevTools remote debugging (chrome://inspect) বা `adb logcat` কানেক্ট থাকলে console-এ `⏱️` দিয়ে শুরু হওয়া লাইনগুলো কপি করে পাঠান — সেখান থেকে বোঝা যাবে বিলম্ব কমেছে কিনা এবং আসল বটলনেক কোথায়। remote debugging সম্ভব না হলে অন্তত মনে করে বলুন বিলম্ব আগের মতোই ৫ সেকেন্ড আছে নাকি কমেছে।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/db/DataStore.js` — `_initDb()`-এ টাইমিং ব্রেকডাউন (৪টা মার্কার + একটা console.log)
+- `src/App.jsx` — নতুন import (`getDb as dsGetDb`); বুটের শুরুতে prefetch কল; `_hydrateProductsByIdFromSql`/`_hydrateCustomersByIdFromSql`-এ টাইমিং
+- `SQLITE_MIGRATION_LOG.md` — এই এন্ট্রি (১০২)
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ১০১-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🔴 এন্ট্রি ১০১ (বাগ ফিক্স, ব্যবহারকারী-রিপোর্টেড) — Customers Boot-Lazy/Never-Load-এর UI টগলই কখনো তৈরি হয়নি**
+
+**যা ভুল ছিল**: এন্ট্রি ৯৭-এ `isCustomersBootLazyEnabled()`/`isCustomersNeverLoadEnabled()`/`setCustomersBootLazyEnabled()`/`setCustomersNeverLoadEnabled()` — এই ৪টা ব্যাকএন্ড ফাংশন DataStore.js-এ বানানো হয়েছিল, কিন্তু Settings স্ক্রিনে Products-এর মতো কোনো টগল কার্ড কখনো যোগ হয়নি — শুধু ২টা getter App.jsx-এ import হয়েছিল, ২টা setter বাদ পড়ে গিয়েছিল। ফলে এন্ট্রি ৯৮-৯৯-এ যত bulk-scan সাইট কনভার্ট হলো, সেগুলো real-device-এ কখনোই আসল never-load মোডে টেস্ট করা সম্ভব ছিল না — flag চালু করার কোনো বাটনই ছিল না। ব্যবহারকারী dev-panel স্ক্রিনশট পাঠিয়ে ধরিয়ে দিলেন (Products-এর ৩টা ফ্ল্যাগ দেখা যাচ্ছিল, Customers-এর কোনোটাই না)।
+
+**ফিক্স**: `CustomersBootLazyToggle`/`CustomersNeverLoadToggle` — `ProductsBootLazyToggle`/`ProductsNeverLoadToggle`-এর হুবহু কপি, Settings-এ POS On-Demand Cart-এর ঠিক পরেই যোগ হলো। setter ফাংশন import করা হলো।
+
+**যাচাই সম্পূর্ণ (sandbox)**: `npm test` → `npm run lint` (0 error, ৫৬৭ ওয়ার্নিং — নতুন ২টা `'...Toggle' is defined but never used` false-positive, Products-এর ৩টা টগলেও এই একই pre-existing false-positive আছে, react/jsx-uses-vars প্লাগিন এই প্রজেক্টে কনফিগার না থাকার কারণে — রিগ্রেশন না, প্যাটার্ন-সামঞ্জস্যপূর্ণ) → `npm run typecheck` (ক্লিন) → `npm run build` (ক্লিন) → `test:golden-master` (৭/৭) → `test:fuzz` (সব)।
+
+**real-device-এ এখন যা করবেন**: Settings → হিডেন dev প্যানেল → নিচে স্ক্রল করলে এখন "🐢 Customers Boot-Lazy" আর "🚫 Customers Never-Load" কার্ড দেখা উচিত (Products-এর ৩টা কার্ডের ঠিক নিচে)। প্রথমে Boot-Lazy চালু করুন, তারপর Never-Load চালু করুন (Boot-Lazy আগে চালু না থাকলে Never-Load বাটন disabled থাকবে), অ্যাপ রিস্টার্ট করুন, তারপর এন্ট্রি ৯৯-এর ৪টা জিনিস (POS কাস্টমার সিলেক্ট/সার্চ, walk-in নতুন কাস্টমার, Customers লিস্ট সার্চ, Invoice History কাস্টমার ফিল্টার) যাচাই করুন।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/App.jsx` — নতুন import (`setCustomersBootLazyEnabled`, `setCustomersNeverLoadEnabled`); নতুন কম্পোনেন্ট `CustomersBootLazyToggle`, `CustomersNeverLoadToggle`; Settings রেন্ডারে ২টা নতুন লাইন
+- `SQLITE_MIGRATION_LOG.md` — এই এন্ট্রি (১০১)
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ১০০-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**✅ এন্ট্রি ১০০ (real-device কনফার্মেশন, flag বন্ধ অবস্থায়/ডিফল্ট) — এন্ট্রি ৯৩-৯৯-এর সব কনভার্সনের প্রথম real-device চেক পাস**
+
+ব্যবহারকারী ৫টা স্ক্রিনশট দিয়ে কনফার্ম করলেন: Dashboard বুট, walk-in কাস্টমার তৈরি + বাকি ইনভয়েস (ডুপ্লিকেট-মোবাইল চেক পাথ), কাস্টমার লিস্ট (১৭ জন) স্ক্রল, কাস্টমার ডিটেইল + লেনদেনের ইতিহাস, ইনভয়েস হিস্ট্রি — সব স্বাভাবিক আচরণ করছে, কোনো রিগ্রেশন নেই। **এটা flag বন্ধ অবস্থায় (ডিফল্ট) — never-load flag এখনো real-device-এ চালু করে টেস্ট করা হয়নি।**
+
+**status আপডেট**:
+- এন্ট্রি ৯৩ (customersById fix + ৬টা lookup site) — ✅ real-device ভেরিফায়েড
+- এন্ট্রি ৯৪ (বাকি সংখ্যা — totalBaki/bakiCount/clearCount) — ✅ real-device ভেরিফায়েড
+- এন্ট্রি ৯৬ (কাস্টমার লিস্ট SQL pagination, updated_at DESC) — ✅ real-device ভেরিফায়েড
+- এন্ট্রি ৯৮/৯৯ (৯টা bulk-scan সাইট কনভার্ট, POS/সার্চ ফলব্যাক) — ✅ flag-বন্ধ অবস্থায় real-device ভেরিফায়েড (কোনো রিগ্রেশন নেই)। **⚠️ flag-চালু অবস্থায় এখনো টেস্ট হয়নি — সেটাই পরের ধাপ।**
+
+**পরের সেশনে করণীয় (রোডম্যাপ ধাপ ৩-এর বাকি অংশ)**:
+1. Settings-এর হিডেন dev প্যানেলে গিয়ে "Products Boot-Lazy" + "Products Never-Load" ফ্ল্যাগের পাশে থাকা "Customers Boot-Lazy"/"Customers Never-Load" ফ্ল্যাগ চালু করুন
+2. তারপর real-device-এ POS-এ কাস্টমার সিলেক্ট/সার্চ, walk-in নতুন কাস্টমার তৈরি, Customers লিস্ট সার্চ, Invoice History-তে কাস্টমার ফিল্টার — এই ৪টা আবার চেক করুন (এবার flag চালু অবস্থায়)
+3. সফল হলে ধাপ ৩ পুরোপুরি ✅ মার্ক হবে, এরপর Invoices সেকশন (ধাপ ৪-৮) শুরু করা যাবে
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ৯৯-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
 
 **🟢 এন্ট্রি ৯৯ (✅ sandbox — npm test/lint/typecheck/build/golden-master/fuzz সব পাস — real-device স্মোক-টেস্ট বাকি, কিন্তু কোড-লেভেল bulk-scan অডিট এখন সম্পূর্ণ) — Phase ৩ রোডম্যাপ ধাপ ৩ শেষ (POS/সার্চ-সাইটসহ)**:
 
