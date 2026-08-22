@@ -39,7 +39,7 @@ import {
 // তৈরি DataStore abstraction layer। isSqliteEnabled() ফ্ল্যাগ ডিফল্ট বন্ধ, তাই
 // এই import নিজে থেকে কোনো আচরণ পাল্টায় না — শুধু নিচের debouncedSave effect-
 // গুলোতে diff-based upsert/remove যোগ হয়েছে (দেখুন সেখানকার কমেন্ট)।
-import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite, queryPage as dsQueryPage, isProductsBootLazyEnabled, setProductsBootLazyEnabled, isProductsNeverLoadEnabled, setProductsNeverLoadEnabled, isPosOndemandCartEnabled, setPosOndemandCartEnabled, isCustomersBootLazyEnabled, isCustomersNeverLoadEnabled, reconcileStore as dsReconcileStore } from "./db/DataStore.js";
+import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite, queryPage as dsQueryPage, isProductsBootLazyEnabled, setProductsBootLazyEnabled, isProductsNeverLoadEnabled, setProductsNeverLoadEnabled, isPosOndemandCartEnabled, setPosOndemandCartEnabled, isCustomersBootLazyEnabled, setCustomersBootLazyEnabled, isCustomersNeverLoadEnabled, setCustomersNeverLoadEnabled, getDb as dsGetDb, reconcileStore as dsReconcileStore } from "./db/DataStore.js";
 // 🆕 এন্ট্রি ৩৬ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ২) — InventorySection/
 // Dashboard-এর KPI কাউন্ট + ডিটেইল লিস্ট + সাপ্লায়ার-গ্রুপিং SQL cutover
 import { getInventoryList as dsGetInventoryList, getExpiryCandidates as dsGetExpiryCandidates, getSupplierSummary as dsGetSupplierSummary, getProductsBySupplierKey as dsGetProductsBySupplierKey, getDateRangeAggregate as dsGetDateRangeAggregate, getRiskProducts as dsGetRiskProducts } from "./db/DataStore.js";
@@ -12498,6 +12498,21 @@ function SmartBusinessMgmt() {
       setLocalBusinessPrefix(_bootBizPrefix);
       FSS.setBusinessPrefix(_bootBizPrefix);
 
+      // 🆕 এন্ট্রি ১০২ (কোল্ড-স্টার্ট লেটেন্সি মিটিগেশন) — businessType জানা
+      // মাত্রই (বুটের একদম শুরুতে, splash স্ক্রিন এখনো দেখানো হচ্ছে তখন)
+      // ব্যাকগ্রাউন্ডে SQLite কানেকশন-ওপেন শুরু করে দেওয়া হচ্ছে — fire-and-forget,
+      // await করা হচ্ছে না। এই কানেকশন-ওপেন (db.open() + schema/PRAGMA/column-check)
+      // খরচ প্রতি cold-start-এ একবারই লাগে (এন্ট্রি ৫৭-৫৮ দেখুন), এতদিন এটা
+      // *প্রথম* SQL কল হওয়া পর্যন্ত (Dashboard/Customers-এর aggregate/browse
+      // হুক) অপেক্ষা করত। এখন splash-এর সময়ের সাথে ওভারল্যাপ করে — যতক্ষণে
+      // ইউজার Dashboard/Customers দেখবেন, ততক্ষণে কানেকশন হয়তো আগে থেকেই
+      // খোলা/খোলার পথে থাকবে। dsGetDb() ব্যর্থ হলেও নিরাপদ (catch করা) — পরের
+      // যেকোনো getDb() কল স্বাভাবিকভাবেই আবার চেষ্টা করবে (in-flight promise
+      // cache, এন্ট্রি ৫৭)।
+      if (isSqliteEnabled() && businessTypeVal) {
+        dsGetDb(businessTypeVal).catch(() => {});
+      }
+
       // ── ৭.৩ (নিরাপদ/সীমিত সংস্করণ) — products boot-lazy ফ্ল্যাগ ──────────────
       // ডিফল্ট বন্ধ (isProductsBootLazyEnabled() === false) হলে productsKeyLazy
       // false-ই থাকে আর CRITICAL_KEYS-এ LK(SK.products) আগের মতোই সিঙ্ক্রোনাসভাবে
@@ -12693,7 +12708,12 @@ function SmartBusinessMgmt() {
         let neverLoadHydrateOk = false;
         const _hydrateProductsByIdFromSql = async () => {
           try {
+            // 🆕 এন্ট্রি ১০২ — বাল্ক-হাইড্রেট কোয়েরি নিজে কত সময় নিচ্ছে সেটাও
+            // আলাদাভাবে মাপা হচ্ছে (getDb()-এর ভেতরের cold-start timing থেকে
+            // আলাদা, যাতে বোঝা যায় বটলনেক connection-open-এ নাকি এই SELECT-এ)
+            const _hT0 = Date.now();
             const sqlProductsForHydrate = await dsGetAllRows(businessTypeVal, "products");
+            const _hT1 = Date.now();
             // 🆕 এন্ট্রি ৮৩ — never-load মোডে blob কখনো পড়া হয় না বলে schema
             // migration (SchemaMigration.runAll) আগে কখনো ট্রিগারই হতো না —
             // productsById চিরকাল SQLite-এর raw/হয়তো-পুরনো-schema শেপেই থাকত,
@@ -12713,6 +12733,8 @@ function SmartBusinessMgmt() {
             );
             _prevProductIdsForMap = hydratedIds;
             useAppStore.getState().set("productsById", hydratedMap);
+            const _hT2 = Date.now();
+            console.log(`⏱️ [products বাল্ক-হাইড্রেট] SQL SELECT+getAllRows=${_hT1 - _hT0}ms, merge+schema-migrate+store-set=${_hT2 - _hT1}ms, মোট=${_hT2 - _hT0}ms (${sqlProductsForHydrate.length}টা রেকর্ড)`);
             if (hydrateSchemaStats.totalMigrated > 0) {
               useAppStore.getState().set("schemaMigrationStats", hydrateSchemaStats);
               // 🆕 এন্ট্রি ৮৩ — শুধু in-memory ঠিক করাই যথেষ্ট না: এই রেকর্ডগুলো
@@ -12798,7 +12820,10 @@ function SmartBusinessMgmt() {
         let customersNeverLoadHydrateOk = false;
         const _hydrateCustomersByIdFromSql = async () => {
           try {
+            // 🆕 এন্ট্রি ১০২ — একই টাইমিং প্যাটার্ন (products-এর মতো)
+            const _hT0 = Date.now();
             const sqlCustomersForHydrate = await dsGetAllRows(businessTypeVal, "customers");
+            const _hT1 = Date.now();
             const { map: hydratedCustMap, ids: hydratedCustIds } = mergeItemsIntoIdMap(
               useAppStore.getState().customersById,
               _prevCustomerIdsForMap,
@@ -12806,6 +12831,8 @@ function SmartBusinessMgmt() {
             );
             _prevCustomerIdsForMap = hydratedCustIds;
             useAppStore.getState().set("customersById", hydratedCustMap);
+            const _hT2 = Date.now();
+            console.log(`⏱️ [customers বাল্ক-হাইড্রেট] SQL SELECT+getAllRows=${_hT1 - _hT0}ms, merge+store-set=${_hT2 - _hT1}ms, মোট=${_hT2 - _hT0}ms (${sqlCustomersForHydrate.length}টা রেকর্ড)`);
             return true;
           } catch (e) {
             console.warn("customersById SQLite বাল্ক-হাইড্রেট ব্যর্থ (নন-ফেটাল, blob-load ফলব্যাক চলছে):", e);
@@ -37359,6 +37386,93 @@ function BackupDiagnosticsCard({ T, S, expanded, onToggle }) {
   );
 }
 
+// 🆕 এন্ট্রি ১০১ (বাগ ফিক্স) — এই কম্পোনেন্ট দুটো এন্ট্রি ৯৭-এই থাকা উচিত ছিল,
+// কিন্তু ব্যাকএন্ড ফাংশন (isCustomersBootLazyEnabled ইত্যাদি) বানানোর সময় UI
+// টগল কার্ড যোগ করতে ভুলে গিয়েছিলাম — শুধু getter import হয়েছিল, setter
+// (setCustomersBootLazyEnabled/setCustomersNeverLoadEnabled) কখনো App.jsx-এ
+// import-ই হয়নি। ফলে এন্ট্রি ৯৮-৯৯-এর সব কনভার্সন real-device-এ কখনো আসলে
+// কাস্টমার-নেভার-লোড মোডে টেস্ট করাই যায়নি — কোনো বাটন ছিল না। ব্যবহারকারী
+// স্ক্রিনশট দিয়ে এই ফাঁক ধরিয়ে দিলেন। ProductsBootLazyToggle/ProductsNeverLoadToggle-এর
+// হুবহু কপি, শুধু customers-এর ফাংশন/টেক্সট ব্যবহার করে।
+function CustomersBootLazyToggle({ T, showToast }) {
+  const [enabled, setEnabled] = useState(() => isCustomersBootLazyEnabled());
+
+  const handleToggle = () => {
+    const next = !enabled;
+    setCustomersBootLazyEnabled(next);
+    setEnabled(next);
+    showToast?.(
+      next
+        ? "✅ Customers boot-lazy চালু হলো — পরের অ্যাপ রিস্টার্টে কার্যকর হবে"
+        : "Customers boot-lazy বন্ধ হলো — পরের অ্যাপ রিস্টার্টে আগের (সবসময় সিঙ্ক্রোনাস) আচরণে ফিরবে"
+    );
+  };
+
+  return (
+    <div style={{ marginTop: 12, padding: 10, borderRadius: 8, border: `1.5px solid ${T.border}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: T.text }}>
+          🐢 Customers Boot-Lazy (এন্ট্রি ৯৭, পরীক্ষামূলক)
+        </div>
+        <button onClick={handleToggle} style={{
+          padding: "5px 12px", borderRadius: 20,
+          border: `1.5px solid ${enabled ? "#22c55e" : T.border}`,
+          background: enabled ? "#22c55e" : "transparent",
+          color: enabled ? "#fff" : T.sub, fontWeight: 700, fontSize: 11, cursor: "pointer",
+        }}>{enabled ? "চালু" : "বন্ধ"}</button>
+      </div>
+      <div style={{ marginTop: 6, fontSize: 10.5, color: T.sub, lineHeight: 1.7 }}>
+        চালু করলে বুটের সময় customers আর লগইন/স্প্ল্যাশ স্ক্রিনকে ব্লক করবে না —
+        ব্যাকগ্রাউন্ডে লোড হয়ে রেডি হলে state-এ বসবে। customers এখনো পুরোপুরি
+        মেমরিতে লোড হয় (কোনো কল-সাইট ভাঙবে না), শুধু কখন লোড হয় সেটাই বদলাচ্ছে।
+        ⚠️ পরিবর্তন কার্যকর হতে অ্যাপ রিস্টার্ট লাগবে। ডিফল্ট বন্ধ।
+      </div>
+    </div>
+  );
+}
+
+function CustomersNeverLoadToggle({ T, showToast }) {
+  const [bootLazyOn] = useState(() => isCustomersBootLazyEnabled());
+  const [enabled, setEnabled] = useState(() => isCustomersNeverLoadEnabled());
+
+  const handleToggle = () => {
+    const next = !enabled;
+    setCustomersNeverLoadEnabled(next);
+    setEnabled(next);
+    showToast?.(
+      next
+        ? "✅ Customers never-load চালু হলো — পরের রিস্টার্টে blob পুরোপুরি স্কিপ হওয়ার চেষ্টা করবে (SQL ব্যর্থ হলে নিরাপদে পুরনো আচরণে ফলব্যাক)"
+        : "Customers never-load বন্ধ হলো — পরের রিস্টার্টে boot-lazy (delay-only) আচরণে ফিরবে"
+    );
+  };
+
+  return (
+    <div style={{ marginTop: 12, padding: 10, borderRadius: 8, border: `1.5px solid ${enabled ? "#ef4444" : T.border}`, opacity: bootLazyOn ? 1 : 0.5 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: T.text }}>
+          🚫 Customers Never-Load (এন্ট্রি ৯৭-৯৯, ঝুঁকিপূর্ণ — শুধু টেস্ট)
+        </div>
+        <button onClick={handleToggle} disabled={!bootLazyOn} style={{
+          padding: "5px 12px", borderRadius: 20,
+          border: `1.5px solid ${enabled ? "#ef4444" : T.border}`,
+          background: enabled ? "#ef4444" : "transparent",
+          color: enabled ? "#fff" : T.sub, fontWeight: 700, fontSize: 11,
+          cursor: bootLazyOn ? "pointer" : "not-allowed",
+        }}>{enabled ? "চালু" : "বন্ধ"}</button>
+      </div>
+      <div style={{ marginTop: 6, fontSize: 10.5, color: T.sub, lineHeight: 1.7 }}>
+        {!bootLazyOn && "⚠️ আগে উপরে Customers Boot-Lazy চালু করুন — নাহলে এই ফ্ল্যাগ কিছুই করবে না। "}
+        চালু করলে `customers` React array আর কখনো IndexedDB blob থেকে লোড হবে না
+        (স্থায়ীভাবে খালি [] থাকবে) — শুধু SQLite বাল্ক-হাইড্রেট থেকেই `customersById`
+        রেডি হবে। এন্ট্রি ৯৮-৯৯-এ ৯টা bulk-scan সাইট (ডুপ্লিকেট-মোবাইল চেক, বাকি-তালিকা,
+        POS কাস্টমার-পিকার, walk-in সার্চ, Customers লিস্ট সার্চ, Invoice History
+        ফিল্টার) কনভার্ট/গার্ড করা হয়েছে (sandbox-যাচাই সম্পূর্ণ) — কিন্তু flag চালু
+        অবস্থায় real-device-এ এখনো টেস্ট হয়নি। খুব সতর্কভাবে টেস্ট করুন। ডিফল্ট বন্ধ।
+      </div>
+    </div>
+  );
+}
+
 // ── ৭.৩ (নিরাপদ/সীমিত সংস্করণ) — Products boot-lazy টগল ─────────────────────
 // SQLITE_MIGRATION_LOG.md-এর আলোচনা অনুযায়ী: এটা সম্পূর্ণ "on-demand products"
 // (৬৭টা কল-সাইট বদলাতে হতো) না — শুধু বুট-টাইম products লোডকে নন-ব্লকিং করে।
@@ -37875,6 +37989,8 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
           <ProductsBootLazyToggle T={T} showToast={showToast} />
           <ProductsNeverLoadToggle T={T} showToast={showToast} />
           <PosOndemandCartToggle T={T} showToast={showToast} />
+          <CustomersBootLazyToggle T={T} showToast={showToast} />
+          <CustomersNeverLoadToggle T={T} showToast={showToast} />
 
           <div style={{ marginTop: 12, fontSize: 10.5, color: T.sub, lineHeight: 1.7 }}>
             ⚠️ dual-write চালু থাকলেও পুরনো IndexedDB blob-array-ই একমাত্র সোর্স-অফ-ট্রুথ থাকে (App-এর
