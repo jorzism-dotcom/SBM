@@ -29735,12 +29735,22 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
   const browsePhaseRef  = useRef("common"); // "common" | "uncommon" | "done"
   const useSqliteBrowse = isSqliteEnabled() && !isSearchActive && !browseFailed;
 
+  // 🔴 ফিক্স (এন্ট্রি ১১০, ১,০০,০০০+ প্রোডাক্ট স্কেল-টার্গেট — লগ-অ্যানালাইসিসে
+  // ধরা পড়া বটলনেক) — আগে এখানে "demand_type = 'common' OR demand_type IS
+  // NULL" ছিল। এই OR SQLite-কে idx_products_demand_name_id/
+  // idx_products_deleted_demand_name_id ইনডেক্স-সিক করতে দিত না — পুরো
+  // টেবিল SCAN+SORT হতো (লগে ২৪৮৫-৩৩০১ms, ২২৩৭টা রো-তে)। DataStore.js-এর
+  // write-path এখন থেকে demand_type কখনো NULL লেখে না (সবসময় "common"
+  // ডিফল্ট), আর _initDb()-এ এক-বারের ব্যাকফিল পুরনো NULL রো-গুলোও "common"-এ
+  // নরমালাইজ করে দেয় — তাই এখন plain equality-ই যথেষ্ট ও সঠিক, যেটা
+  // deleted+demand_type equality-prefix ইনডেক্সে সরাসরি সিক হয় (ডেটাসেট
+  // ১,০০,০০০+ হলেও গতি একই)।
   const browseWhereFor = React.useCallback((phase) => {
-    if (demandFilter === "common")   return "deleted = 0 AND (demand_type = 'common' OR demand_type IS NULL)";
+    if (demandFilter === "common")   return "deleted = 0 AND demand_type = 'common'";
     if (demandFilter === "uncommon") return "deleted = 0 AND demand_type = 'uncommon'";
     return phase === "uncommon"
       ? "deleted = 0 AND demand_type = 'uncommon'"
-      : "deleted = 0 AND (demand_type = 'common' OR demand_type IS NULL)";
+      : "deleted = 0 AND demand_type = 'common'";
   }, [demandFilter]);
 
   const loadBrowsePage = React.useCallback(async (reset = false) => {
