@@ -291,6 +291,27 @@ export async function getDb(businessType) {
   return initPromise;
 }
 
+// 🆕 এন্ট্রি ১১০ — এক-বারের idempotent ব্যাকফিল হেল্পার। feature_flags টেবিলে
+// "demand_type_backfilled_v1" = "1" মার্ক থাকলে সাথে সাথে রিটার্ন করে (শুধু
+// ১টা indexed SELECT, প্রতি বুটে ~১ms)। না থাকলে (নতুন ডিভাইস বা প্রথমবার এই
+// আপডেট পাওয়া পুরনো ডিভাইস) একবার UPDATE চালিয়ে সব NULL demand_type-কে
+// "common" বানিয়ে ফ্ল্যাগ সেট করে — এরপর কখনো আর এই UPDATE চলবে না।
+async function _backfillDemandTypeNulls(db) {
+  try {
+    const flagRes = await db.query(`SELECT value FROM feature_flags WHERE key = ?`, ["demand_type_backfilled_v1"]);
+    if ((flagRes.values || []).length > 0) return; // আগেই ব্যাকফিল হয়ে গেছে
+    await db.run(`UPDATE products SET demand_type = 'common' WHERE demand_type IS NULL`);
+    await db.run(
+      `INSERT OR REPLACE INTO feature_flags (key, value, updated_at, device_id) VALUES (?, ?, ?, ?)`,
+      ["demand_type_backfilled_v1", "1", Date.now(), getEventDeviceId()]
+    );
+  } catch (_) {
+    // সাইলেন্ট-ফেইল — ব্যাকফিল না হলেও browseWhereFor() পরের বুটে আবার চেষ্টা
+    // করবে (ফ্ল্যাগ সেট না হওয়ায়), আর queryPage() নিজে ব্যর্থ হলে App.jsx-এর
+    // browseFailed ফলব্যাক (filteredAll, JS-সাইড) নিরাপদে সামলাবে।
+  }
+}
+
 async function _initDb(businessType) {
   // 🆕 এন্ট্রি ১০২ (ব্যবহারকারী-রিপোর্টেড কোল্ড-স্টার্ট লেটেন্সি ডায়াগনস্টিক) —
   // ব্যবহারকারী রিপোর্ট করেছেন প্রতি cold-start-এ ~৫ সেকেন্ড বিলম্ব (products/
@@ -398,6 +419,18 @@ async function _initDb(businessType) {
   await db.execute(restOfSchema);
   const _tSchema = Date.now();
 
+  // 🆕 এন্ট্রি ১১০ — এক-বারের ব্যাকফিল: পুরনো ইনস্টলে dual-write-এর সময় জমে
+  // থাকা demand_type IS NULL রো-গুলোকে "common"-এ নরমালাইজ করা, যাতে
+  // browseWhereFor()-এর WHERE ক্লজ plain equality (OR ছাড়া) ব্যবহার করতে পারে
+  // — এটাই ইনডেক্স-সিক (idx_products_deleted_demand_name_id) সক্রিয় করার
+  // পূর্বশর্ত। feature_flags-এ মার্ক করা থাকে বলে দ্বিতীয়/পরের বুটগুলোতে এই
+  // চেকটা একটা সস্তা SELECT-ই (~১ms), UPDATE আর চলে না। ১,০০,০০০+ প্রোডাক্টেও
+  // প্রথমবার এই UPDATE indexed WHERE (idx_products_demand_name/idx_products_deleted-
+  // এর demand_type কলামে) ব্যবহার করে, তাই এক-বারের খরচও মিলিসেকেন্ড-স্কেলেই থাকে।
+  const _tBackfillStart = Date.now();
+  await _backfillDemandTypeNulls(db);
+  const _tBackfill = Date.now();
+
   // 🆕 এন্ট্রি ১০২/১০৩ — timing ব্রেকডাউন। এন্ট্রি ১০৩-এ শুধু console.log থেকে
   // বদলে logDiag() করা হলো — এখন এই লাইন অ্যাপের ভেতরেই (সেটিংস → dev প্যানেল
   // → "⏱️ টাইমিং ডায়াগনস্টিক") দেখা যাবে, PC/adb ছাড়াই। businessType অনুযায়ী
@@ -405,7 +438,7 @@ async function _initDb(businessType) {
   logDiag(
     `⏱️ [SQL cold-start: ${businessType}] db.open()=${_tOpen - _t0}ms, ` +
     `pragma=${_tPragma - _tOpen}ms, column-check(৪টা PRAGMA table_info + দরকার হলে ALTER)=${_tColCheck - _tPragma}ms, ` +
-    `schema-execute(CREATE TABLE/INDEX/TRIGGER)=${_tSchema - _tColCheck}ms, মোট=${_tSchema - _t0}ms`
+    `schema-execute(CREATE TABLE/INDEX/TRIGGER)=${_tSchema - _tColCheck}ms, demand_type-backfill=${_tBackfill - _tBackfillStart}ms, মোট=${_tBackfill - _t0}ms`
   );
 
   // (cache-সেট এখন getDb() wrapper-এই হয় — এখানে সরাসরি সেট করার দরকার নেই)
@@ -515,7 +548,20 @@ const HOT_FIELDS = {
       numOrNull(p.price),
       p.updatedAt ?? Date.now(),
       p.deleted ? 1 : 0,
-      p.demandType ?? null, // 🆕 এন্ট্রি ৩০ — NULL হলে queryPage()-এর WHERE ক্লজে "common" হিসেবে ট্রিট হয় (JS p.demandType||"common" ডিফল্টের সাথে মিলিয়ে)
+      // 🔴 ফিক্স (এন্ট্রি ১১০, ১,০০,০০০+ প্রোডাক্ট স্কেল-টার্গেট) — আগে এখানে
+      // `p.demandType ?? null` লেখা হতো, মানে NULL DB-তে জমত। এর ফলে
+      // browseWhereFor()-কে বাধ্য হয়ে "demand_type = 'common' OR demand_type
+      // IS NULL" লিখতে হতো — এই OR SQLite-কে idx_products_demand_name_id
+      // ইনডেক্স-সিক করতে দেয় না, পুরো টেবিল SCAN+SORT করায় (লগে ধরা পড়া
+      // ২৪৮৫-৩৩০১ms বিলম্বের মূল কারণ)। এখন write-time-এই "common" ডিফল্ট
+      // বসিয়ে দেওয়া হচ্ছে (JS-সাইড p.demandType||"common" ফলব্যাকের সাথে
+      // বাইট-বাই-বাইট মিলিয়ে) — DB-তে demand_type আর কখনো NULL হবে না, তাই
+      // WHERE ক্লজ plain equality (OR ছাড়া) লিখলেই চলে, যেটা ইনডেক্স-সিকে যায়
+      // ডেটাসেট ১,০০,০০০+ হলেও। পুরনো ইনস্টলে আগে থেকে জমে থাকা NULL রো-গুলোর
+      // জন্য _initDb()-এ একবারের one-time backfill UPDATE আছে (দেখুন
+      // _backfillDemandTypeNulls() — feature_flags-এ মার্ক করা, প্রতি বুটে
+      // দ্বিতীয়বার চলবে না)।
+      p.demandType || "common",
       numOrNull(p.minStockAlert), // 🆕 এন্ট্রি ৩৬ — NULL হলে কোয়েরিতে COALESCE(min_stock_alert, 5) (JS p.minStockAlert||5-এর সাথে মিলিয়ে)
       computeNearestExpiryDate(p), // 🆕 এন্ট্রি ৩৬
       p.company || p.category || "অজ্ঞাত", // 🆕 এন্ট্রি ৩৬ — App.jsx-এর productsBySupplier/supplierMap-এর ঠিক একই key logic

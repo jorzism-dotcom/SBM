@@ -81,6 +81,17 @@ CREATE INDEX IF NOT EXISTS idx_products_updated_id ON products(updated_at, id);
 -- "WHERE demand_type = ? ORDER BY name ASC" কোয়েরিকে ইনডেক্স-সিকে নিয়ে যায়।
 CREATE INDEX IF NOT EXISTS idx_products_demand_name ON products(demand_type, name);
 CREATE INDEX IF NOT EXISTS idx_products_demand_name_id ON products(demand_type, name, id);
+-- 🆕 এন্ট্রি ১১০ (১,০০,০০০+ প্রোডাক্ট স্কেল-টার্গেট ফিক্স) — Products main-list
+-- ডিফল্ট-ব্রাউজ কোয়েরি আসলে "WHERE deleted = 0 AND demand_type = ? ORDER BY
+-- name ASC, id ASC LIMIT 40" চালায়। উপরের idx_products_demand_name_id-এ
+-- `deleted` কলাম নেই, তাই SQLite প্রতিটা ম্যাচড রো-র জন্য আলাদা করে rowid
+-- লুকআপ করে deleted চেক করত। এই কম্পোজিট ইনডেক্স-এ deleted+demand_type দুটোই
+-- সমতা (equality prefix), তারপর name+id রেঞ্জ/টাইব্রেক — পুরো WHERE+ORDER BY
+-- একটাই ইনডেক্স-সিকে সমাধান হয়, ডেটাসেট ১০০০ হোক বা ১,০০,০০০, গতি একই থাকে
+-- (লগ-অ্যানালাইসিস দ্রষ্টব্য: এই OR-বিহীন equality-prefix প্যাটার্নটাই আসল ফিক্স,
+-- আগে demand_type='common' OR demand_type IS NULL — এই OR ইনডেক্স-সিক ভেঙে
+-- পুরো টেবিল-স্ক্যান+সর্ট করাত)।
+CREATE INDEX IF NOT EXISTS idx_products_deleted_demand_name_id ON products(deleted, demand_type, name, id);
 
 -- 🆕 এন্ট্রি ৪০ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ৫) — POS product picker
 -- (SmartInvoiceBuilder) ডিফল্ট-ব্রাউজ (সার্চ নেই) মোডের pagination।
@@ -151,6 +162,12 @@ CREATE INDEX IF NOT EXISTS idx_customers_updated    ON customers(updated_at);
 CREATE INDEX IF NOT EXISTS idx_customers_deleted    ON customers(deleted);
 -- 🆕 keyset pagination কম্পোজিট ইনডেক্স — products-এর ব্যাখ্যা দ্রষ্টব্য
 CREATE INDEX IF NOT EXISTS idx_customers_updated_id ON customers(updated_at, id);
+-- 🆕 এন্ট্রি ১১০ (১০,০০০+ কাস্টমার স্কেল-টার্গেট ফিক্স) — Customers browse
+-- ("WHERE deleted = 0 ORDER BY updated_at DESC LIMIT 40") উপরের ইনডেক্সে
+-- `deleted` নেই বলে বড় স্কেলে (অনেক সফট-ডিলিটেড রো জমলে) রো-বাই-রো rowid
+-- লুকআপ লাগত। এই কম্পোজিট ইনডেক্স deleted equality-প্রিফিক্স + updated_at/id
+-- রেঞ্জ/টাইব্রেক একসাথে কভার করে — ১০,০০০ কাস্টমারেও pure index-seek।
+CREATE INDEX IF NOT EXISTS idx_customers_deleted_updated_id ON customers(deleted, updated_at, id);
 
 -- FTS5 (customers) — একই কারণে standalone (কোনো content=/content_rowid=/trigger নেই), দেখুন products_fts-এর কমেন্ট
 CREATE VIRTUAL TABLE IF NOT EXISTS customers_fts USING fts5(
