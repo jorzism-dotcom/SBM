@@ -12445,7 +12445,16 @@ function SmartBusinessMgmt() {
 
   useEffect(() => {
     (async () => {
+      // এন্ট্রি ১০৫ — সম্পূর্ণ বুট-সিকোয়েন্স ধাপে ধাপে টাইমিং। effect শুরু হওয়ার
+      // এই মুহূর্তটাই বলে দেয় React mount + module-load (window.__appBootT0 থেকে
+      // এই লাইন পর্যন্ত) কত সময় নিলো — এটাই সবচেয়ে আগের ধাপ, তারপর প্রতিটা
+      // sub-step আলাদাভাবে মাপা হচ্ছে যাতে ঠিক কোথায় সময় যাচ্ছে বোঝা যায়।
+      const _bT0 = Date.now();
+      logDiag("🚀 [বুট] effect শুরু (React mount সম্পন্ন)");
+
       await DeviceID.init(); // 🔥 ফিক্স: localStorage হারিয়ে গেলেও same device id বজায় রাখতে
+      const _bT1 = Date.now();
+      logDiag(`🚀 [বুট] DeviceID.init() সম্পন্ন — লাগলো ${_bT1 - _bT0}ms`);
 
       // ── Phase 1.1 + পারফরম্যান্স ফিক্স: batched IndexedDB read + দুই-wave লোড ──
       // আগে ৩৪টা key-ই Promise.all([load(k1), load(k2), ...]) দিয়ে একসাথে
@@ -12487,6 +12496,8 @@ function SmartBusinessMgmt() {
       // ঠিক করতে prefix লাগে)।
       const PREFIX_KEYS = [SK.businessType, SK.businessTypeLocked, SK.enabledBusinessTypes];
       const bootPrefix = await loadMany(PREFIX_KEYS);
+      const _bT2 = Date.now();
+      logDiag(`🚀 [বুট] loadMany(PREFIX_KEYS) সম্পন্ন — লাগলো ${_bT2 - _bT1}ms`);
       const businessTypeVal        = bootPrefix[SK.businessType]         || "pharmacy";
       const businessTypeLockedVal  = bootPrefix[SK.businessTypeLocked]   || false;
       const enabledBusinessTypesVal = (Array.isArray(bootPrefix[SK.enabledBusinessTypes]) && bootPrefix[SK.enabledBusinessTypes].length)
@@ -12549,6 +12560,13 @@ function SmartBusinessMgmt() {
         LK(SK.quotations), LK(SK.supplierPayments), LK(SK.staffLedger), LK(SK.serialQueue),
       ];
       const boot1 = await loadMany(CRITICAL_KEYS);
+      const _bT3 = Date.now();
+      logDiag(
+        `🚀 [বুট] loadMany(CRITICAL_KEYS) সম্পন্ন — লাগলো ${_bT3 - _bT2}ms ` +
+        `(products${productsKeyLazy ? "=লেজি-স্কিপড" : "=" + ((boot1[LK(SK.products)] || []).length) + "টা"}, ` +
+        `customers${customersKeyLazy ? "=লেজি-স্কিপড" : "=" + ((boot1[LK(SK.customers)] || []).length) + "টা"}, ` +
+        `invoices=${(boot1[LK(SK.invoices)] || []).length}টা, txns=${(boot1[LK(SK.txns)] || []).length}টা)`
+      );
       const rawCustomers    = boot1[LK(SK.customers)];
       const rawProds        = boot1[LK(SK.products)];
       const rawInvoices     = boot1[LK(SK.invoices)];
@@ -12582,6 +12600,8 @@ function SmartBusinessMgmt() {
         products: productsKeyLazy ? [] : (rawProds || SEED_PRODUCTS),
       });
       const migratedProds = migratedData.products;
+      const _bT4 = Date.now();
+      logDiag(`🚀 [বুট] SchemaMigration.runAll(products) সম্পন্ন — লাগলো ${_bT4 - _bT3}ms`);
 
       // ── Firebase init (data load করার আগে দরকার নেই, কিন্তু fssReady-র জন্য) ─
       const firebaseCfg = fbCfg || null;
@@ -12627,6 +12647,7 @@ function SmartBusinessMgmt() {
       const recentInvoicesForBoot = allInvoicesForBoot.length > 500
         ? allInvoicesForBoot.filter(i => !i.dateKey || i.dateKey >= invoiceCutoff90Key)
         : allInvoicesForBoot; // ছোট দোকানে (৫০০-এর কম ইনভয়েস) windowing-এর দরকারই নেই
+      logDiag(`🚀 [বুট] ইনভয়েস windowing হিসাব সম্পন্ন — মোট=${allInvoicesForBoot.length}টা, ৬-মাসের window-এ=${recentInvoicesForBoot.length}টা`);
 
       // ── সব state একসাথে batch update — একটাই React re-render (ক্রিটিক্যাল অংশ) ──
       _patch({
@@ -12658,6 +12679,11 @@ function SmartBusinessMgmt() {
         loaded:                true,
         schemaMigrationStats:  schemaStats.totalMigrated > 0 ? schemaStats : null, // #৭ — কিছু মাইগ্রেট হলেই শুধু দেখায়
       });
+      logDiag(
+        `✅ [বুট] প্রথম _patch সম্পন্ন — এখন loaded=true/authChecked=true, স্প্ল্যাশ স্ক্রিন লুকাবে। ` +
+        `এই effect-এ মোট লাগলো ${Date.now() - _bT0}ms। ⚠️ productsKeyLazy=${productsKeyLazy}/customersKeyLazy=${customersKeyLazy} ` +
+        `চালু থাকলে products/customers এই মুহূর্তে এখনো খালি/পুরনো থাকতে পারে — নিচে আলাদা hydrate/blob-load লগ দেখুন সেগুলো আসলে কখন রেডি হয়।`
+      );
 
       // ── recovery state (local useState — store-এর বাইরে) ───────────────────
       setRecoveryPhoneState  (recoveryPhoneVal   || "");
@@ -12783,6 +12809,7 @@ function SmartBusinessMgmt() {
         // productsNeverLoadSqlDown ফ্ল্যাগ দিয়েই গার্ডেড (এন্ট্রি ৮১-৮২)।
         if (productsNeverLoadRequested && neverLoadHydrateOk) {
           _patch({ productsNeverLoadSqlDown: false });
+          logDiag("✅ [বুট] products never-load হাইড্রেট সফল — blob-load সম্পূর্ণ স্কিপ হচ্ছে, শুধু SQL-ই একমাত্র সোর্স");
         } else {
           if (productsNeverLoadRequested) {
             // ফ্ল্যাগ চালু ছিল কিন্তু হাইড্রেট ব্যর্থ/SQL বন্ধ — never-load
@@ -12790,6 +12817,8 @@ function SmartBusinessMgmt() {
             _patch({ productsNeverLoadSqlDown: true });
           }
           setTimeout(async () => {
+            const _fpT0 = Date.now();
+            logDiag("🚀 [বুট] products blob-load ফলব্যাক শুরু (IndexedDB থেকে সরাসরি)");
             const prodBoot = await loadMany([LK(SK.products)]);
             const rawProdsLazy = prodBoot[LK(SK.products)];
             const { data: lazyMigratedData, stats: lazySchemaStats } = SchemaMigration.runAll({
@@ -12803,6 +12832,7 @@ function SmartBusinessMgmt() {
               // নোটিশ কখনো দেখানো হতো না।
               schemaMigrationStats: lazySchemaStats.totalMigrated > 0 ? lazySchemaStats : null,
             });
+            logDiag(`✅ [বুট] products blob-load ফলব্যাক সম্পন্ন — লাগলো ${Date.now() - _fpT0}ms (${(lazyMigratedData.products || []).length}টা রেকর্ড), products React state এখন আপডেট`);
           }, 0);
         }
       }
@@ -12857,14 +12887,18 @@ function SmartBusinessMgmt() {
         // স্ট্যাটাসে বিস্তারিত)।
         if (customersNeverLoadRequested && customersNeverLoadHydrateOk) {
           _patch({ customersNeverLoadSqlDown: false });
+          logDiag("✅ [বুট] customers never-load হাইড্রেট সফল — blob-load সম্পূর্ণ স্কিপ হচ্ছে, শুধু SQL-ই একমাত্র সোর্স");
         } else {
           if (customersNeverLoadRequested) {
             _patch({ customersNeverLoadSqlDown: true });
           }
           setTimeout(async () => {
+            const _fcT0 = Date.now();
+            logDiag("🚀 [বুট] customers blob-load ফলব্যাক শুরু (IndexedDB থেকে সরাসরি)");
             const custBoot = await loadMany([LK(SK.customers)]);
             const rawCustLazy = custBoot[LK(SK.customers)];
             _patch({ customers: rawCustLazy || SEED_CUSTOMERS });
+            logDiag(`✅ [বুট] customers blob-load ফলব্যাক সম্পন্ন — লাগলো ${Date.now() - _fcT0}ms (${(rawCustLazy || []).length}টা রেকর্ড), customers React state এখন আপডেট`);
           }, 0);
         }
       }
