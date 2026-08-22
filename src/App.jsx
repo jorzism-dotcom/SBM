@@ -12734,6 +12734,26 @@ function SmartBusinessMgmt() {
         const productsNeverLoadRequested = productsNeverLoadFlag;
         let neverLoadHydrateOk = false;
         const _hydrateProductsByIdFromSql = async () => {
+          // 🆕 এন্ট্রি ১০৭ — POS On-Demand Cart চালু থাকলে SmartInvoiceBuilder-এর
+          // productBatchMap/invProdMap আর কখনো পুরো productsById Map চায় না,
+          // শুধু কার্ট+গ্রিড-দৃশ্যমান id-ভিত্তিক useProductsByIds()। Products
+          // main list আর POS ব্রাউজ-গ্রিড দুটোই ইতিমধ্যে dsQueryPage()
+          // (paginated SQL browse) + useProductsByIds() (per-visible-id
+          // on-demand ফেচ, cache-এ মিস হলেই শুধু SQL কল) ব্যবহার করে — পুরো
+          // ২২৩৭-রেকর্ড আর কারো লাগে না। এই ফ্ল্যাগ চালু থাকলে (কোড-অডিটে
+          // নিশ্চিত হওয়া গেছে) তাই পুরো bulk SELECT (নেটিভ db.query() একাই
+          // ৪.৫-৫ সেকেন্ড, এন্ট্রি ১০৪-১০৬-এ real-device-এ কনফার্মড) সম্পূর্ণ
+          // স্কিপ করা হলো — productsById খালি/আংশিক থাকবে, on-demand
+          // hook-গুলো যা লাগবে নিজেই ফেচ করে ক্যাশে বসাবে (ঠিক
+          // getProductByIdWithSqlFallback-এর মতোই প্যাটার্ন, single-digit-ms)।
+          // ⚠️ POS On-Demand Cart বন্ধ থাকলে (নিরাপত্তা-ফলব্যাক অবস্থা) নিচের
+          // পুরো bulk-fetch অবিকল আগের মতোই চলে — কারণ তখন
+          // invProdMap/productBatchMap সরাসরি
+          // `Array.from(productsByIdMap.values())` থেকে পুরো ম্যাপ দাবি করে।
+          if (isPosOndemandCartEnabled()) {
+            logDiag("⚡ [বুট] products বাল্ক-হাইড্রেট স্কিপড — POS On-Demand Cart চালু, on-demand hook-ই যথেষ্ট");
+            return true;
+          }
           try {
             // 🆕 এন্ট্রি ১০২ — বাল্ক-হাইড্রেট কোয়েরি নিজে কত সময় নিচ্ছে সেটাও
             // আলাদাভাবে মাপা হচ্ছে (getDb()-এর ভেতরের cold-start timing থেকে
@@ -12850,25 +12870,41 @@ function SmartBusinessMgmt() {
         const customersNeverLoadRequested = customersNeverLoadFlag;
         let customersNeverLoadHydrateOk = false;
         const _hydrateCustomersByIdFromSql = async () => {
-          try {
-            // 🆕 এন্ট্রি ১০২ — একই টাইমিং প্যাটার্ন (products-এর মতো)
-            const _hT0 = Date.now();
-            const sqlCustomersForHydrate = await dsGetAllRows(businessTypeVal, "customers");
-            const _hT1 = Date.now();
-            const { map: hydratedCustMap, ids: hydratedCustIds } = mergeItemsIntoIdMap(
-              useAppStore.getState().customersById,
-              _prevCustomerIdsForMap,
-              sqlCustomersForHydrate
-            );
-            _prevCustomerIdsForMap = hydratedCustIds;
-            useAppStore.getState().set("customersById", hydratedCustMap);
-            const _hT2 = Date.now();
-            logDiag(`⏱️ [customers বাল্ক-হাইড্রেট] SQL SELECT+getAllRows=${_hT1 - _hT0}ms, merge+store-set=${_hT2 - _hT1}ms, মোট=${_hT2 - _hT0}ms (${sqlCustomersForHydrate.length}টা রেকর্ড)`);
-            return true;
-          } catch (e) {
-            console.warn("customersById SQLite বাল্ক-হাইড্রেট ব্যর্থ (নন-ফেটাল, blob-load ফলব্যাক চলছে):", e);
-            return false;
-          }
+          // 🆕 এন্ট্রি ১০৮ — সম্পূর্ণ কোড-অডিট করে দেখা গেছে `customersById`-এর
+          // App.jsx-এর প্রতিটা ব্যবহারই (ইনভয়েসের customerId, walk-in
+          // কাস্টমার balance, print/void/return ফ্লো ইত্যাদি) নির্দিষ্ট,
+          // ইতিমধ্যে-জানা একটা id দিয়ে `.get(id)` — কোথাও পুরো ম্যাপ
+          // iterate/values() করা হয় না (products-এর invProdMap-এর মতো কোনো
+          // full-map fallback নেই)। কাস্টমার-তালিকা ব্রাউজ স্ক্রিনও ইতিমধ্যে
+          // dsQueryPage()+useCustomersByIds() (paginated, per-visible-id
+          // on-demand) ব্যবহার করে। তাই পুরো bulk SELECT (রেকর্ড-সংখ্যা বাড়লে
+          // products-এর মতোই bridge-বাউন্ড ধীর হতে পারত) এখানে সবসময়ই
+          // অপ্রয়োজনীয় — কোনো ফ্ল্যাগ-শর্ত ছাড়াই স্কিপ করা হলো। প্রতিটা id
+          // দরকার হওয়ার সাথে সাথে (৯৪০৪ লাইনের হুক, cache-এ মিস হলেই শুধু SQL
+          // কল) নিজে থেকে ফেচ হয়ে ক্যাশে বসবে।
+          logDiag("⚡ [বুট] customers বাল্ক-হাইড্রেট স্কিপড — সব ব্যবহারই id-ভিত্তিক on-demand lookup, পুরো ম্যাপ কারো লাগে না");
+          return true;
+          // 🗄️ (এন্ট্রি ১০৮-এ নিষ্ক্রিয় করা পুরনো bulk-fetch কোড — রেফারেন্সের
+          // জন্য রাখা হলো, কোনো ভবিষ্যৎ কল-সাইট যদি সত্যিই পুরো ম্যাপ চায় তখন
+          // ফিরিয়ে আনা যাবে):
+          // try {
+          //   const _hT0 = Date.now();
+          //   const sqlCustomersForHydrate = await dsGetAllRows(businessTypeVal, "customers");
+          //   const _hT1 = Date.now();
+          //   const { map: hydratedCustMap, ids: hydratedCustIds } = mergeItemsIntoIdMap(
+          //     useAppStore.getState().customersById,
+          //     _prevCustomerIdsForMap,
+          //     sqlCustomersForHydrate
+          //   );
+          //   _prevCustomerIdsForMap = hydratedCustIds;
+          //   useAppStore.getState().set("customersById", hydratedCustMap);
+          //   const _hT2 = Date.now();
+          //   logDiag(`⏱️ [customers বাল্ক-হাইড্রেট] SQL SELECT+getAllRows=${_hT1 - _hT0}ms, merge+store-set=${_hT2 - _hT1}ms, মোট=${_hT2 - _hT0}ms (${sqlCustomersForHydrate.length}টা রেকর্ড)`);
+          //   return true;
+          // } catch (e) {
+          //   console.warn("customersById SQLite বাল্ক-হাইড্রেট ব্যর্থ (নন-ফেটাল, blob-load ফলব্যাক চলছে):", e);
+          //   return false;
+          // }
         };
         if (isSqliteEnabled() && businessTypeVal) {
           if (customersNeverLoadRequested) {
