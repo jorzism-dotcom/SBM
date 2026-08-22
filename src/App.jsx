@@ -40,6 +40,7 @@ import {
 // এই import নিজে থেকে কোনো আচরণ পাল্টায় না — শুধু নিচের debouncedSave effect-
 // গুলোতে diff-based upsert/remove যোগ হয়েছে (দেখুন সেখানকার কমেন্ট)।
 import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite, queryPage as dsQueryPage, isProductsBootLazyEnabled, setProductsBootLazyEnabled, isProductsNeverLoadEnabled, setProductsNeverLoadEnabled, isPosOndemandCartEnabled, setPosOndemandCartEnabled, isCustomersBootLazyEnabled, setCustomersBootLazyEnabled, isCustomersNeverLoadEnabled, setCustomersNeverLoadEnabled, getDb as dsGetDb, reconcileStore as dsReconcileStore } from "./db/DataStore.js";
+import { logDiag, getDiagLog, clearDiagLog } from "./db/DiagLog.js"; // এন্ট্রি ১০৩ — in-app টাইমিং ডায়াগনস্টিক প্যানেল
 // 🆕 এন্ট্রি ৩৬ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ২) — InventorySection/
 // Dashboard-এর KPI কাউন্ট + ডিটেইল লিস্ট + সাপ্লায়ার-গ্রুপিং SQL cutover
 import { getInventoryList as dsGetInventoryList, getExpiryCandidates as dsGetExpiryCandidates, getSupplierSummary as dsGetSupplierSummary, getProductsBySupplierKey as dsGetProductsBySupplierKey, getDateRangeAggregate as dsGetDateRangeAggregate, getRiskProducts as dsGetRiskProducts } from "./db/DataStore.js";
@@ -12734,7 +12735,7 @@ function SmartBusinessMgmt() {
             _prevProductIdsForMap = hydratedIds;
             useAppStore.getState().set("productsById", hydratedMap);
             const _hT2 = Date.now();
-            console.log(`⏱️ [products বাল্ক-হাইড্রেট] SQL SELECT+getAllRows=${_hT1 - _hT0}ms, merge+schema-migrate+store-set=${_hT2 - _hT1}ms, মোট=${_hT2 - _hT0}ms (${sqlProductsForHydrate.length}টা রেকর্ড)`);
+            logDiag(`⏱️ [products বাল্ক-হাইড্রেট] SQL SELECT+getAllRows=${_hT1 - _hT0}ms, merge+schema-migrate+store-set=${_hT2 - _hT1}ms, মোট=${_hT2 - _hT0}ms (${sqlProductsForHydrate.length}টা রেকর্ড)`);
             if (hydrateSchemaStats.totalMigrated > 0) {
               useAppStore.getState().set("schemaMigrationStats", hydrateSchemaStats);
               // 🆕 এন্ট্রি ৮৩ — শুধু in-memory ঠিক করাই যথেষ্ট না: এই রেকর্ডগুলো
@@ -12832,7 +12833,7 @@ function SmartBusinessMgmt() {
             _prevCustomerIdsForMap = hydratedCustIds;
             useAppStore.getState().set("customersById", hydratedCustMap);
             const _hT2 = Date.now();
-            console.log(`⏱️ [customers বাল্ক-হাইড্রেট] SQL SELECT+getAllRows=${_hT1 - _hT0}ms, merge+store-set=${_hT2 - _hT1}ms, মোট=${_hT2 - _hT0}ms (${sqlCustomersForHydrate.length}টা রেকর্ড)`);
+            logDiag(`⏱️ [customers বাল্ক-হাইড্রেট] SQL SELECT+getAllRows=${_hT1 - _hT0}ms, merge+store-set=${_hT2 - _hT1}ms, মোট=${_hT2 - _hT0}ms (${sqlCustomersForHydrate.length}টা রেকর্ড)`);
             return true;
           } catch (e) {
             console.warn("customersById SQLite বাল্ক-হাইড্রেট ব্যর্থ (নন-ফেটাল, blob-load ফলব্যাক চলছে):", e);
@@ -16178,7 +16179,13 @@ function SmartBusinessMgmt() {
 
   const showDetail = tab === "customers" && detailCId;
   // 🆕 Repository লেয়ারের মধ্য দিয়ে (Phase ২) — আচরণ অপরিবর্তিত (এখনো array.find()-ই ভেতরে), শুধু ইন্টারফেস
-  const detailCust = showDetail ? getCustomerById(customers, detailCId) : null;
+  // 🩹 (কাস্টমার Never-Load বাগফিক্স) never-load ফ্ল্যাগ চালু থাকলে `customers` prop
+  // স্থায়ীভাবে খালি [] থাকে — getCustomerById(customers,...) তখন সবসময় null দিত,
+  // ফলে কাস্টমার ডিটেইল পেজ ব্ল্যাংক দেখাত। এখন খালি হলে গ্লোবাল হাইড্রেটেড
+  // customersById (এন্ট্রি ৯৭-এর SQL বাল্ক-হাইড্রেট) থেকে ফলব্যাক করে।
+  const detailCust = showDetail
+    ? (getCustomerById(customers, detailCId) || useAppStore.getState().customersById.get(String(detailCId)) || null)
+    : null;
 
   // 🆕 (৬ আগস্ট ২০২৬, সেলুন ধাপ ১): salon-এ "products" স্ক্রিনের হেডার "সার্ভিস তালিকা" —
   // বাকি সব businessType-এর জন্য আগের মতোই "ওষুধ তালিকা" (আচরণ অপরিবর্তিত)।
@@ -19895,7 +19902,9 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
 
   // 🔎 বাকি/আংশিক বাকি ফর্মে কাস্টমার নির্বাচন — "কাস্টমার" ফিল্ড + দুটি প্রিমিয়াম বাটন (মডাল)
   const renderWalkInCustPicker = (accentColor) => {
-    const existingBal = walkInExistingId ? ((customers || []).find(c => c.id === walkInExistingId)?.balance || 0) : 0;
+    // 🩹 never-load ফ্ল্যাগে `customers` খালি [] থাকে — customersSourceForPos
+    // (গ্লোবাল হাইড্রেটেড ফলব্যাকসহ) থেকে খোঁজা দরকার, নাহলে পূর্বের বাকি সবসময় ০।
+    const existingBal = walkInExistingId ? ((customersSourceForPos || []).find(c => c.id === walkInExistingId)?.balance || 0) : 0;
     return (
     <>
       {walkInName.trim() ? (
@@ -19962,7 +19971,11 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
             </div>
             <button type="button" disabled={!walkInModalSelectedId}
               onClick={() => {
-                const c = (customers || []).find(x => x.id === walkInModalSelectedId);
+                // 🩹 never-load ফ্ল্যাগে `customers` খালি [] থাকে, কিন্তু মডালের লিস্ট
+                // (walkInModalCustList) customersSourceForPos থেকেই বানানো — তাই এখানেও
+                // customersSourceForPos থেকে খুঁজতে হবে, নাহলে সিলেক্ট করলেও কখনো মিলত না
+                // (কনফার্ম করলে "add" হতো না)।
+                const c = (customersSourceForPos || []).find(x => x.id === walkInModalSelectedId);
                 if (c) selectWalkInExistingCust(c);
                 setShowWalkInOldCustModal(false);
                 setWalkInModalSelectedId("");
@@ -20102,8 +20115,10 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
   // 🔴 ফিক্স: Walk-in ফ্লো-তে "বাকি"/"আংশিক" এর ভেতর "পুরোনো কাস্টমার" সিলেক্ট করলে
   // (walkInExistingId) সেই কাস্টমারের পূর্বের বাকিও এখানে ধরতে হবে — আগে শুধু
   // selCust (যেটা এই কেসে সবসময় "__walkin__") চেক হতো বলে পূর্বের বাকি ০ দেখাতো।
+  // 🩹 never-load ফ্ল্যাগে `customers` খালি [] থাকে — customersSourceForPos দিয়ে ফলব্যাক,
+  // নাহলে পুরোনো কাস্টমার সিলেক্ট করলেও prevBalance/newBalance হিসাব সবসময় ০ ধরত।
   const walkInExistingCust = (selCust?.id === "__walkin__" && walkInCustMode === "existing" && walkInExistingId)
-    ? (customers || []).find(c => c.id === walkInExistingId) : null;
+    ? (customersSourceForPos || []).find(c => c.id === walkInExistingId) : null;
   const prevBalance = walkInExistingCust ? (walkInExistingCust.balance || 0)
     : (!selCust || selCust.id === "__walkin__" || selCust.id === "__selfuse__") ? 0 : (selCust.balance || 0);
   const isOverpay = payType === "partial" && paidAmt > total;
@@ -37473,6 +37488,72 @@ function CustomersNeverLoadToggle({ T, showToast }) {
   );
 }
 
+// ── এন্ট্রি ১০৩ — টাইমিং ডায়াগনস্টিক in-app প্যানেল ─────────────────────────
+// ব্যবহারকারী শুধু মোবাইল থেকে কাজ করেন (PC/adb/remote-debug নেই), তাই এন্ট্রি
+// ১০২-এর console.log টাইমিং লাইন কখনো দেখা যায়নি। এখন DiagLog.js-এর
+// getDiagLog() থেকে সরাসরি অ্যাপের ভেতরেই লগ দেখানো হচ্ছে — cold-start করে এসে
+// এখানে "রিফ্রেশ" চাপলেই db.open()/pragma/column-check/schema-execute এবং
+// products/customers বাল্ক-হাইড্রেটের সময়ের ব্রেকডাউন দেখা যাবে।
+function TimingDiagPanel({ T, showToast }) {
+  const [lines, setLines] = useState(() => getDiagLog());
+
+  const refresh = () => setLines(getDiagLog());
+
+  const handleClear = () => {
+    clearDiagLog();
+    setLines([]);
+    showToast?.("টাইমিং লগ মুছে ফেলা হয়েছে");
+  };
+
+  const handleCopy = async () => {
+    const text = lines.join("\n") || "(কোনো লগ নেই)";
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        showToast?.("✅ কপি হয়েছে — এখন পেস্ট করে পাঠাতে পারবেন");
+      } else {
+        throw new Error("clipboard API নেই");
+      }
+    } catch (_) {
+      showToast?.("⚠️ কপি ব্যর্থ — নিচের লেখা সিলেক্ট করে ম্যানুয়ালি কপি করুন");
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 12, padding: 10, borderRadius: 8, border: `1.5px solid ${T.border}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, flexWrap: "wrap", gap: 6 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: T.text }}>
+          ⏱️ টাইমিং ডায়াগনস্টিক (in-app লগ)
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={refresh} style={{ padding: "4px 10px", borderRadius: 8, border: `1.5px solid ${T.border}`, background: "transparent", color: T.text, fontWeight: 700, fontSize: 10.5, cursor: "pointer" }}>🔄 রিফ্রেশ</button>
+          <button onClick={handleCopy} style={{ padding: "4px 10px", borderRadius: 8, border: "1.5px solid #6366f1", background: "rgba(99,102,241,0.12)", color: "#6366f1", fontWeight: 700, fontSize: 10.5, cursor: "pointer" }}>📋 কপি</button>
+          <button onClick={handleClear} style={{ padding: "4px 10px", borderRadius: 8, border: "1.5px solid #ef4444", background: "transparent", color: "#ef4444", fontWeight: 700, fontSize: 10.5, cursor: "pointer" }}>🗑️</button>
+        </div>
+      </div>
+      <div style={{ fontSize: 10, color: T.sub, marginBottom: 6, lineHeight: 1.6 }}>
+        অ্যাপ পুরোপুরি বন্ধ করে (task থেকে সরিয়ে/force-close) আবার খুললে (cold-start)
+        db.open()/pragma/column-check/schema-execute আর products/customers বাল্ক-হাইড্রেটের
+        সময় এখানে জমা হবে — "রিফ্রেশ" চাপলে সবচেয়ে নতুন লগ দেখাবে। অ্যাপ বন্ধ-খোলার
+        মাঝে টিকে থাকে (localStorage-এ সেভ থাকে)।
+      </div>
+      <div style={{ maxHeight: 220, overflowY: "auto", background: T.bg, borderRadius: 6, padding: 8 }}>
+        {lines.length === 0 ? (
+          <div style={{ fontSize: 11, color: T.sub, textAlign: "center", padding: "10px 0" }}>
+            কোনো লগ নেই — অ্যাপ cold-start করে এসে "রিফ্রেশ" চাপুন
+          </div>
+        ) : (
+          lines.map((line, i) => (
+            <div key={i} style={{ fontSize: 10, color: T.text, fontFamily: "monospace", marginBottom: 4, wordBreak: "break-word", userSelect: "text" }}>
+              {line}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── ৭.৩ (নিরাপদ/সীমিত সংস্করণ) — Products boot-lazy টগল ─────────────────────
 // SQLITE_MIGRATION_LOG.md-এর আলোচনা অনুযায়ী: এটা সম্পূর্ণ "on-demand products"
 // (৬৭টা কল-সাইট বদলাতে হতো) না — শুধু বুট-টাইম products লোডকে নন-ব্লকিং করে।
@@ -37985,6 +38066,8 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
               fontSize: 11.5, cursor: analyzeRunning ? "default" : "pointer", marginTop: 8,
             }}>{analyzeRunning ? "⏳ ANALYZE চলছে..." : "📊 ANALYZE চালান (ম্যানুয়াল)"}</button>
           </div>
+
+          <TimingDiagPanel T={T} showToast={showToast} />
 
           <ProductsBootLazyToggle T={T} showToast={showToast} />
           <ProductsNeverLoadToggle T={T} showToast={showToast} />
