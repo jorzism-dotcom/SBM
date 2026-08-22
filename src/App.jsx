@@ -9362,9 +9362,15 @@ function useProductsByIds(ids, businessType, productsByIdMap) {
     let cancelled = false;
     missing.forEach((id) => inFlightRef.current.add(id));
     (async () => {
+      // 🆕 এন্ট্রি ১০৯ — customers বাল্ক-হাইড্রেট স্কিপ (এন্ট্রি ১০৮) করার পর
+      // এই on-demand ব্যাচ-ফেচই একমাত্র সোর্স হয়ে গেছে, কিন্তু এটার নিজের
+      // সময় এখনো মাপা হয়নি — এই লগ সেই ফাঁক পূরণ করবে (Products list এখনো
+      // খালি দেখানোর রিপোর্টের প্রেক্ষিতে)।
+      const _bT0 = Date.now();
       try {
         const rows = await dsGetByIds(businessType, "products", missing);
         if (cancelled) return;
+        logDiag(`⏱️ [useProductsByIds ব্যাচ-ফেচ] ${missing.length}টা id, লাগলো ${Date.now() - _bT0}ms, ${rows.length}টা পাওয়া গেছে`);
         setCache((prev) => {
           const next = new Map(prev);
           for (const row of rows) next.set(String(row.id), row);
@@ -9372,6 +9378,7 @@ function useProductsByIds(ids, businessType, productsByIdMap) {
         });
         _clearProductsSqlDown(); // এন্ট্রি ৮১
       } catch (e) {
+        logDiag(`❌ [useProductsByIds ব্যাচ-ফেচ] ব্যর্থ (${missing.length}টা id, ${Date.now() - _bT0}ms পরে): ${e?.message || e}`);
         console.warn("useProductsByIds() SQL ব্যাচ-ফেচ ব্যর্থ:", e);
         _markProductsSqlDownIfRisky(); // এন্ট্রি ৮১
       } finally {
@@ -9418,15 +9425,18 @@ function useCustomersByIds(ids, businessType) {
     let cancelled = false;
     missing.forEach((id) => inFlightRef.current.add(id));
     (async () => {
+      const _bT0 = Date.now();
       try {
         const rows = await dsGetByIds(businessType, "customers", missing);
         if (cancelled) return;
+        logDiag(`⏱️ [useCustomersByIds ব্যাচ-ফেচ] ${missing.length}টা id, লাগলো ${Date.now() - _bT0}ms, ${rows.length}টা পাওয়া গেছে`);
         setCache((prev) => {
           const next = new Map(prev);
           for (const row of rows) next.set(String(row.id), row);
           return next;
         });
       } catch (e) {
+        logDiag(`❌ [useCustomersByIds ব্যাচ-ফেচ] ব্যর্থ (${missing.length}টা id, ${Date.now() - _bT0}ms পরে): ${e?.message || e}`);
         console.warn("useCustomersByIds() SQL ব্যাচ-ফেচ ব্যর্থ:", e);
       } finally {
         missing.forEach((id) => inFlightRef.current.delete(id));
@@ -28111,17 +28121,20 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
 
   const loadCustomerBrowsePage = useCallback(async (reset = false) => {
     setBrowseLoading(true);
+    const _bT0 = Date.now();
     try {
       const cursor = reset ? null : browseCursorRef.current;
       const r = await dsQueryPage(businessType, "customers", {
         where: "deleted = 0", sortColumn: "updated_at", sortDir: "DESC",
         limit: BROWSE_PAGE_SIZE, cursor,
       });
+      logDiag(`⏱️ [Customers browse] dsQueryPage() লাগলো ${Date.now() - _bT0}ms, ${(r.rows || []).length}টা রেকর্ড পাওয়া গেছে (reset=${reset})`);
       browseCursorRef.current = r.nextCursor;
       setBrowseDone(!r.hasMore);
       const ids = r.rows.map(c => String(c.id));
       setBrowseIds(prev => reset ? ids : [...prev, ...ids]);
-    } catch {
+    } catch (e) {
+      logDiag(`❌ [Customers browse] dsQueryPage() ব্যর্থ (${Date.now() - _bT0}ms পরে): ${e?.message || e}`);
       setBrowseFailed(true); // SQLite ব্যর্থ → পরের রেন্ডারে filteredCustomers ফলব্যাকে চলে যাবে
     } finally {
       setBrowseLoading(false);
@@ -29732,6 +29745,11 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
 
   const loadBrowsePage = React.useCallback(async (reset = false) => {
     setBrowseLoading(true);
+    // 🆕 এন্ট্রি ১০৯ — Products main list এখনো খালি দেখানোর রিপোর্টের পর, বুট
+    // instrumentation-এর বাইরে এই স্ক্রিন-লেভেল কল কতটা সময় নিচ্ছে সেটা
+    // মাপা হচ্ছে — dsQueryPage() নিজে (bridge+SQL) কতক্ষণ নেয় তা এখান থেকেই
+    // বোঝা যাবে।
+    const _bT0 = Date.now();
     try {
       let phase  = reset ? (demandFilter === "uncommon" ? "uncommon" : "common") : browsePhaseRef.current;
       let cursor = reset ? null : browseCursorRef.current;
@@ -29740,6 +29758,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
         where: browseWhereFor(phase), sortColumn: "name", sortDir: "ASC",
         limit: BROWSE_PAGE_SIZE, cursor,
       });
+      logDiag(`⏱️ [Products browse] dsQueryPage() লাগলো ${Date.now() - _bT0}ms, ${(r.rows || []).length}টা রেকর্ড পাওয়া গেছে (reset=${reset}, phase=${phase})`);
       let nextPhase = phase, nextCursor = r.nextCursor;
       if (!r.hasMore) {
         nextPhase = (demandFilter === "সব" && phase === "common") ? "uncommon" : "done";
@@ -29750,7 +29769,8 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       setBrowseDone(nextPhase === "done");
       const ids = r.rows.map(p => String(p.id));
       setBrowseIds(prev => reset ? ids : [...prev, ...ids]);
-    } catch {
+    } catch (e) {
+      logDiag(`❌ [Products browse] dsQueryPage() ব্যর্থ (${Date.now() - _bT0}ms পরে): ${e?.message || e}`);
       setBrowseFailed(true); // SQLite ব্যর্থ → পরের রেন্ডারে filteredAll ফলব্যাকে চলে যাবে
     } finally {
       setBrowseLoading(false);
