@@ -431,6 +431,34 @@ async function _initDb(businessType) {
   await _backfillDemandTypeNulls(db);
   const _tBackfill = Date.now();
 
+  // 🆕 এন্ট্রি ১১২ (আসল রুট-কজ, লগ দিয়ে প্রমাণিত) — এন্ট্রি ১১১-এর ডায়াগনস্টিক
+  // EXPLAIN QUERY PLAN লগ দেখিয়ে দিয়েছে: আসল SELECT (`নেটিভ db.query()`)
+  // সবসময়ই ৪ms-এ শেষ হয় — ইনডেক্স-ফিক্স (এন্ট্রি ১১০) সত্যিই কাজ করছে। কিন্তু
+  // "প্রথম কোল্ড-বুটে ধীর, তার পরের বুটে তাৎক্ষণিক" — এই প্যাটার্নটা এখনো থেকে
+  // যাচ্ছিল কারণ SQLite-এর query planner-এর প্রথমবার products/customers
+  // টেবিলের ইনডেক্স B-tree root page-গুলো ডিস্ক থেকে পড়তে হয় (OS/SQLite page
+  // cache-এ এখনো নেই — অ্যাপ কিছুক্ষণ বন্ধ থাকলে বা ডিভাইস মেমরি-প্রেশারে OS এই
+  // cache ফেলে দেয়)। এই এক-বারের ডিস্ক-I/O খরচ আগে পড়ত ব্যবহারকারী যখন Products
+  // ট্যাবে প্রথম ট্যাপ করতেন ঠিক তখনই (interactive path ব্লক করে)। এখন এখানেই,
+  // cold-start-এর ব্যাকগ্রাউন্ড সিকোয়েন্সে (স্প্ল্যাশ-হাইড ইতিমধ্যে এর জন্য অপেক্ষা
+  // করে না — উপরে effect-এর টাইমিং দেখুন) আগেভাগে "warm-up" কোয়েরি চালিয়ে এই
+  // পেজ-ফল্টগুলো সহ্য করে ফেলা হচ্ছে, যাতে ব্যবহারকারী Products/Customers
+  // ট্যাবে পৌঁছানোর সময়ের মধ্যেই (সাধারণত বুটের কয়েক সেকেন্ড পরে) ইনডেক্স
+  // পেজগুলো cache-warm হয়ে যায়।
+  const _tWarmStart = Date.now();
+  try {
+    await db.query(
+      `EXPLAIN QUERY PLAN SELECT data FROM products WHERE deleted = 0 AND demand_type = 'common' ORDER BY name ASC, id ASC LIMIT 1`
+    );
+    await db.query(
+      `EXPLAIN QUERY PLAN SELECT data FROM customers WHERE deleted = 0 ORDER BY updated_at DESC, id DESC LIMIT 1`
+    );
+  } catch (_) {
+    // সাইলেন্ট-ফেইল — warm-up ব্যর্থ হলেও এটা শুধু পারফরম্যান্স অপ্টিমাইজেশন,
+    // পরের আসল কোয়েরিগুলো এমনিতেই সঠিক ফলাফল দেবে, শুধু প্রথমটা একটু ধীর হবে।
+  }
+  const _tWarm = Date.now();
+
   // 🆕 এন্ট্রি ১০২/১০৩ — timing ব্রেকডাউন। এন্ট্রি ১০৩-এ শুধু console.log থেকে
   // বদলে logDiag() করা হলো — এখন এই লাইন অ্যাপের ভেতরেই (সেটিংস → dev প্যানেল
   // → "⏱️ টাইমিং ডায়াগনস্টিক") দেখা যাবে, PC/adb ছাড়াই। businessType অনুযায়ী
@@ -438,7 +466,8 @@ async function _initDb(businessType) {
   logDiag(
     `⏱️ [SQL cold-start: ${businessType}] db.open()=${_tOpen - _t0}ms, ` +
     `pragma=${_tPragma - _tOpen}ms, column-check(৪টা PRAGMA table_info + দরকার হলে ALTER)=${_tColCheck - _tPragma}ms, ` +
-    `schema-execute(CREATE TABLE/INDEX/TRIGGER)=${_tSchema - _tColCheck}ms, demand_type-backfill=${_tBackfill - _tBackfillStart}ms, মোট=${_tBackfill - _t0}ms`
+    `schema-execute(CREATE TABLE/INDEX/TRIGGER)=${_tSchema - _tColCheck}ms, demand_type-backfill=${_tBackfill - _tBackfillStart}ms, ` +
+    `warm-up=${_tWarm - _tWarmStart}ms, মোট=${_tWarm - _t0}ms`
   );
 
   // (cache-সেট এখন getDb() wrapper-এই হয় — এখানে সরাসরি সেট করার দরকার নেই)
