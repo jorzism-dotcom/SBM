@@ -601,15 +601,26 @@ async function _initDb(businessType) {
   // থ্রেশহোল্ড (ডিফল্ট ১০০০ পেজ — এটা কম হলে ঘনঘন auto-checkpoint স্টল হতে পারে)।
   let healthInfo = "অজানা (PRAGMA ব্যর্থ)";
   try {
-    const [jm, pc, fc, wac, cs] = await Promise.all([
+    const [jm, pc, fc, wac, cs, walChk] = await Promise.all([
       db.query(`PRAGMA journal_mode;`),
       db.query(`PRAGMA page_count;`),
       db.query(`PRAGMA freelist_count;`),
       db.query(`PRAGMA wal_autocheckpoint;`),
       db.query(`PRAGMA cache_size;`),
+      // 🆕 এন্ট্রি ১১৭ — WAL ফাইলে এই মুহূর্তে কত ফ্রেম "pending" (checkpoint
+      // হয়নি) আছে সরাসরি দেখার জন্য — PASSIVE মোড ব্লক করে না, শুধু বর্তমান
+      // অবস্থা রিপোর্ট করে। ৩টা কলাম: busy (0=সফল, 1=অন্য কানেকশন lock ধরে
+      // রেখেছিল), log (WAL ফাইলে মোট ফ্রেম), checkpointed (তার মধ্যে কতটা
+      // ইতিমধ্যে মূল DB ফাইলে ফেরত লেখা হয়েছে)। log-checkpointed-এর ফারাক বড়
+      // হলে বোঝা যাবে WAL ফাইল স্ফীত হয়ে আছে, যেকোনো মুহূর্তে বড় checkpoint-স্টল
+      // আসতে পারে।
+      db.query(`PRAGMA wal_checkpoint(PASSIVE);`).catch(() => null),
     ]);
     const v = (r) => (r.values && r.values[0] && Object.values(r.values[0])[0]);
-    healthInfo = `journal_mode=${v(jm)}, page_count=${v(pc)}, freelist_count=${v(fc)} (fragmentation), wal_autocheckpoint=${v(wac)}পেজ, cache_size=${v(cs)}`;
+    const walInfo = walChk && walChk.values && walChk.values[0]
+      ? `busy=${walChk.values[0].busy}, log=${walChk.values[0].log}ফ্রেম, checkpointed=${walChk.values[0].checkpointed}ফ্রেম`
+      : "অজানা";
+    healthInfo = `journal_mode=${v(jm)}, page_count=${v(pc)}, freelist_count=${v(fc)} (fragmentation), wal_autocheckpoint=${v(wac)}পেজ, cache_size=${v(cs)}, wal_checkpoint(${walInfo})`;
   } catch (_) { /* সাইলেন্ট — শুধু ডায়াগনস্টিক */ }
   const _tHealth = Date.now();
 
