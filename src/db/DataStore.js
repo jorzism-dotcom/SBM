@@ -272,17 +272,81 @@ async function loadSchemaSql() {
  * @param {string} businessType - যেমন "pharmacy", "veterinary", "semen"
  * @returns {Promise<import("@capacitor-community/sqlite").SQLiteDBConnection>}
  */
-// 🆕 এন্ট্রি ১১৩ — কনকারেন্সি ডায়াগনস্টিক। এন্ট্রি ১১২-এর warm-up ফিক্সের পরও
-// লগে দেখা যাচ্ছে: cold-start-এর নিজের warm-up EXPLAIN কল দ্রুত (৪-৫৫ms), কিন্তু
-// কয়েক সেকেন্ড পরে Products/Customers browse-এর EXPLAIN আবার ধীর (৭০০-৩৪০০ms)
-// — মানে page-cache warm-up নিজে থেকে টেকসই হচ্ছে না। এর মানে হতে পারে এটা
-// disk-cache সমস্যা না, বরং connection-level সিরিয়ালাইজেশন (আগেও সন্দেহ করা
-// হয়েছিল — "1 id, 0 found" কলের duration ঠিক browse কলের সাথে মিলে যাওয়া)।
-// এবার অনুমান না করে সরাসরি প্রমাণ নেওয়া হচ্ছে — getDb() থেকে যে db অবজেক্ট
-// ফেরত যায় তার db.query()-কে wrap করে প্রতিটা কলের "শুরুর মুহূর্তে ইতিমধ্যে কয়টা
-// কল চলছিল" (in-flight count) আর নিজের duration লগ করা হচ্ছে। যদি সত্যিই
-// সিরিয়ালাইজেশন হয়, তাহলে ধীর কলগুলোর ঠিক আগে/সাথে in-flight>0 দেখাবে — সরাসরি
-// প্রমাণ, অনুমান না।
+// 🆕 এন্ট্রি ১১৫ — আসল কারণ কনফার্মড লগ দিয়ে: বুটে Dashboard-এর ব্যাকগ্রাউন্ড
+// KPI অ্যাগ্রিগেট কোয়েরি (সাপ্লায়ার-ডিউ WITH-CTE, low-stock, near-expiry,
+// sold30, dosage-form distinct, customer-balance sum ইত্যাদি — একসাথে ১০-১২টা)
+// আর Products/Customers browse কোয়েরি প্রায় একই মুহূর্তে ফায়ার হয়, কিন্তু
+// @capacitor-community/sqlite bridge সব db.query() কল **সিরিয়ালি, এক এক করে**
+// প্রসেস করে (in-flight=1..12 অবস্থায় ২৫০-৪৩৫৫ms ওয়েট — নেটিভ এক্সিকিউশন নিজে
+// প্রায়ই <১০ms)। তাই Products/Customers স্ক্রিন যেই মুহূর্তে ইউজার ট্যাপ করছেন,
+// সেটা ব্যাকগ্রাউন্ড অ্যাগ্রিগেটের সারিতে "লাইনে দাঁড়িয়ে" আটকে যাচ্ছিল, যতই
+// ইনডেক্স/warm-up ফিক্স করা হোক না কেন — কারণ bottleneck আসলে queue-ordering-এ,
+// SQL প্ল্যান বা ডিস্ক-ক্যাশে না।
+//
+// ফিক্স: এখন থেকে সব db.query() কল JS-সাইড একটা priority queue দিয়ে যায় —
+// bridge-এ সত্যিকারভাবে একটাই কল কখনো একসাথে পাঠানো হয় (bridge এমনিতেই এটাই
+// করত, শুধু এলোমেলো/আগমন-ক্রমে), কিন্তু এখন *কোনটা আগে যাবে* সেটা আমরা ঠিক
+// করি — ইন্টারঅ্যাক্টিভ কল (Products/Customers browse, on-demand id lookup —
+// diagTag দিয়ে চেনা যায়) সবসময় ব্যাকগ্রাউন্ড অ্যাগ্রিগেটের আগে যাবে, ট্যাগহীন
+// কল (dashboard KPI-এর মতো ব্যাকগ্রাউন্ড কাজ) ডিফল্ট normal priority-তে থাকবে।
+// দীর্ঘ ওয়েট এড়াতে "aging" আছে — কোনো কল ২ সেকেন্ডের বেশি সারিতে দাঁড়ালে তার
+// effective priority প্রতি ২ সেকেন্ডে ১ করে বাড়ে, তাই background কাজ কখনো
+// অনির্দিষ্টকালের জন্য না খেয়ে (starve) থাকবে না।
+const HIGH_PRIORITY_TAG_PREFIXES = [
+  "queryPage:products", "queryPage:customers",
+  "queryPage-EXPLAIN:products", "queryPage-EXPLAIN:customers",
+  "getByIds:products", "getByIds:customers",
+];
+function _basePriorityForTag(tag) {
+  if (!tag) return 0; // ব্যাকগ্রাউন্ড/অ্যাগ্রিগেট কল (এখনো ট্যাগবিহীন) — normal
+  return HIGH_PRIORITY_TAG_PREFIXES.some((p) => tag.startsWith(p)) ? 10 : 0;
+}
+
+const _dbQueryQueue = []; // { sql, sqlParams, tag, basePriority, enqueuedAt, resolve, reject, origQuery }
+let _queuePumping = false;
+
+function _pickNextQueueIndex() {
+  const now = Date.now();
+  let bestIdx = 0;
+  let bestScore = -Infinity;
+  for (let i = 0; i < _dbQueryQueue.length; i++) {
+    const item = _dbQueryQueue[i];
+    const agingBonus = Math.floor((now - item.enqueuedAt) / 2000); // প্রতি ২সে অপেক্ষায় +১
+    const score = item.basePriority + agingBonus;
+    if (score > bestScore) { bestScore = score; bestIdx = i; }
+  }
+  return bestIdx;
+}
+
+async function _pumpDbQueryQueue() {
+  if (_queuePumping) return;
+  _queuePumping = true;
+  try {
+    while (_dbQueryQueue.length > 0) {
+      const idx = _pickNextQueueIndex();
+      const item = _dbQueryQueue.splice(idx, 1)[0];
+      try {
+        const res = await item.origQuery(item.sql, item.sqlParams);
+        item.resolve(res);
+      } catch (e) {
+        item.reject(e);
+      }
+    }
+  } finally {
+    _queuePumping = false;
+  }
+}
+
+function _enqueueDbQuery(origQuery, sql, sqlParams, tag) {
+  return new Promise((resolve, reject) => {
+    _dbQueryQueue.push({
+      sql, sqlParams, tag, basePriority: _basePriorityForTag(tag),
+      enqueuedAt: Date.now(), resolve, reject, origQuery,
+    });
+    _pumpDbQueryQueue();
+  });
+}
+
 let _queryCallSeq = 0;
 let _inFlightQueries = 0;
 function _wrapDbForConcurrencyDiag(db, businessType) {
@@ -294,7 +358,8 @@ function _wrapDbForConcurrencyDiag(db, businessType) {
     const _wT0 = Date.now();
     const preview = String(sql).replace(/\s+/g, " ").trim().slice(0, 70);
     try {
-      return await origQuery(sql, sqlParams);
+      // 🆕 এন্ট্রি ১১৫ — সরাসরি origQuery() কল না করে এখন priority queue দিয়ে যায়
+      return await _enqueueDbQuery(origQuery, sql, sqlParams, diagTag);
     } finally {
       _inFlightQueries--;
       const dur = Date.now() - _wT0;
