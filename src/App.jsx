@@ -6271,7 +6271,7 @@ async function getProductByIdWithSqlFallback(businessType, productId, productsBy
   if (local) return local;
   if (!isSqliteEnabled() || !businessType) return undefined;
   try {
-    const rows = await dsGetByIds(businessType, "products", [productId]);
+    const rows = await dsGetByIds(businessType, "products", [productId], "getProductByIdWithSqlFallback");
     const found = rows[0] || undefined;
     // 🆕 এন্ট্রি ৭৭ — fetch করা রেকর্ড global productsById cache-এও বসিয়ে দেওয়া
     // হলো (merge-patch subscribe-এর সাথে সামঞ্জস্যপূর্ণ, দেখুন উপরের subscribe
@@ -9368,7 +9368,7 @@ function useProductsByIds(ids, businessType, productsByIdMap) {
       // খালি দেখানোর রিপোর্টের প্রেক্ষিতে)।
       const _bT0 = Date.now();
       try {
-        const rows = await dsGetByIds(businessType, "products", missing);
+        const rows = await dsGetByIds(businessType, "products", missing, "useProductsByIds");
         if (cancelled) return;
         logDiag(`⏱️ [useProductsByIds ব্যাচ-ফেচ] ${missing.length}টা id, লাগলো ${Date.now() - _bT0}ms, ${rows.length}টা পাওয়া গেছে`);
         setCache((prev) => {
@@ -9427,7 +9427,7 @@ function useCustomersByIds(ids, businessType) {
     (async () => {
       const _bT0 = Date.now();
       try {
-        const rows = await dsGetByIds(businessType, "customers", missing);
+        const rows = await dsGetByIds(businessType, "customers", missing, "useCustomersByIds");
         if (cancelled) return;
         logDiag(`⏱️ [useCustomersByIds ব্যাচ-ফেচ] ${missing.length}টা id, লাগলো ${Date.now() - _bT0}ms, ${rows.length}টা পাওয়া গেছে`);
         setCache((prev) => {
@@ -12461,6 +12461,44 @@ function SmartBusinessMgmt() {
       // sub-step আলাদাভাবে মাপা হচ্ছে যাতে ঠিক কোথায় সময় যাচ্ছে বোঝা যায়।
       const _bT0 = Date.now();
       logDiag("🚀 [বুট] effect শুরু (React mount সম্পন্ন)");
+
+      // 🆕 এন্ট্রি ১১৪ — মেইন-থ্রেড jank মনিটর। সন্দেহ: EXPLAIN QUERY PLAN-এর
+      // ৩+ সেকেন্ডের বিলম্ব আসলে SQLite-এর নিজের ধীরতা না-ও হতে পারে — ঠিক ঐ
+      // মুহূর্তে React-এর ভারী রি-রেন্ডার (ট্যাব-সুইচ, বড় লিস্ট মাউন্ট) মেইন
+      // থ্রেড ব্যস্ত রাখলে native SQLite কাজ আগেই শেষ হলেও JS-সাইড Promise
+      // resolve-এর callback ততক্ষণ চলতে পারবে না যতক্ষণ থ্রেড ফাঁকা না হয় —
+      // সেই wait-ও db.query()-এর measured duration-এর ভেতরেই ভুলভাবে ধরা
+      // পড়ে "SQL ধীর" মনে হতে পারে। requestAnimationFrame-এর ফ্রেম-গ্যাপ মেপে
+      // (স্বাভাবিক ~১৬ms, বড় গ্যাপ = থ্রেড ব্লকড ছিল) বুটের প্রথম ৩০ সেকেন্ডে
+      // এই সন্দেহ যাচাই করা হচ্ছে — অ্যাপ বন্ধ হয়ে গেলেও ক্ষতি নেই, শুধু
+      // ডায়াগনস্টিক লগ, কোনো স্টেট/UI বদলায় না।
+      if (typeof requestAnimationFrame === "function") {
+        (function monitorMainThreadJank() {
+          let last = performance.now();
+          const startedAt = last;
+          let maxGap = 0;
+          let frameCount = 0;
+          let lastLogAt = last;
+          function tick(now) {
+            const gap = now - last;
+            last = now;
+            frameCount++;
+            if (gap > maxGap) maxGap = gap;
+            if (now - lastLogAt >= 2000) {
+              logDiag(
+                `🖥️ [মেইন-থ্রেড jank] গত ~২সে-এ সর্বোচ্চ ফ্রেম-গ্যাপ=${maxGap.toFixed(0)}ms ` +
+                `(স্বাভাবিক ~১৬ms, ১৫০ms+ মানে ঠিক তখন থ্রেড ব্লকড ছিল), ফ্রেম-সংখ্যা=${frameCount}`
+              );
+              maxGap = 0;
+              frameCount = 0;
+              lastLogAt = now;
+            }
+            if (now - startedAt < 30000) requestAnimationFrame(tick);
+            else logDiag("🖥️ [মেইন-থ্রেড jank] ৩০ সেকেন্ড পূর্ণ, মনিটরিং বন্ধ হলো");
+          }
+          requestAnimationFrame(tick);
+        })();
+      }
 
       await DeviceID.init(); // 🔥 ফিক্স: localStorage হারিয়ে গেলেও same device id বজায় রাখতে
       const _bT1 = Date.now();
@@ -19816,7 +19854,7 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
       const { where, params } = browseWhereFor(catFilter);
       const cursor = reset ? null : browseCursorRef.current;
       const r = await dsQueryPage(businessType, "products", {
-        where, params, sortColumn: "browse_rank", sortDir: "ASC", limit: 60, cursor,
+        where, params, sortColumn: "browse_rank", sortDir: "ASC", limit: 60, cursor, tag: "pos-picker",
       });
       const ids = r.rows.map(p => String(p.id));
       browseCursorRef.current = r.nextCursor;
@@ -24028,7 +24066,7 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
           const r = await dsQueryPage(businessType, "invoices", {
             where: "date_key >= ? AND date_key <= ?",
             params: [dmRange.startKey, dmRange.endKey],
-            sortColumn: "created_at", sortDir: "DESC", limit: 100000,
+            sortColumn: "created_at", sortDir: "DESC", limit: 100000, tag: "dashboard-invoice-archive",
           });
           if (!cancelled) setDmArchiveRows(r.rows || []);
           return;
@@ -28126,7 +28164,7 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
       const cursor = reset ? null : browseCursorRef.current;
       const r = await dsQueryPage(businessType, "customers", {
         where: "deleted = 0", sortColumn: "updated_at", sortDir: "DESC",
-        limit: BROWSE_PAGE_SIZE, cursor,
+        limit: BROWSE_PAGE_SIZE, cursor, tag: "customers-list-screen",
       });
       logDiag(`⏱️ [Customers browse] dsQueryPage() লাগলো ${Date.now() - _bT0}ms, ${(r.rows || []).length}টা রেকর্ড পাওয়া গেছে (reset=${reset})`);
       browseCursorRef.current = r.nextCursor;
@@ -28468,7 +28506,7 @@ function CustomerDetail({ T, S, customer, txns, invoices, customers, paymentInvo
         try {
           const r = await dsQueryPage(businessTypeForArchive, "invoices", {
             where: "customer_id = ?", params: [customer.id],
-            sortColumn: "created_at", sortDir: "DESC", limit: 100000,
+            sortColumn: "created_at", sortDir: "DESC", limit: 100000, tag: "customer-detail-invoice-archive",
           });
           if (!cancelled) setArchivedCustInvs(r.rows || []);
           return;
@@ -29766,7 +29804,7 @@ function Products({ T, S, products, setProducts, showToast, stockMovements = [],
       if (phase === "done") { setBrowseLoading(false); return; }
       const r = await dsQueryPage(businessType, "products", {
         where: browseWhereFor(phase), sortColumn: "name", sortDir: "ASC",
-        limit: BROWSE_PAGE_SIZE, cursor,
+        limit: BROWSE_PAGE_SIZE, cursor, tag: "products-list-screen",
       });
       logDiag(`⏱️ [Products browse] dsQueryPage() লাগলো ${Date.now() - _bT0}ms, ${(r.rows || []).length}টা রেকর্ড পাওয়া গেছে (reset=${reset}, phase=${phase})`);
       let nextPhase = phase, nextCursor = r.nextCursor;
