@@ -305,17 +305,43 @@ function _basePriorityForTag(tag) {
 const _dbQueryQueue = []; // { sql, sqlParams, tag, basePriority, enqueuedAt, resolve, reject, origQuery }
 let _queuePumping = false;
 
+// 🆕 এন্ট্রি ১১৬ — priority queue একাই যথেষ্ট হয়নি। লগে দেখা গেছে: বুটের প্রথম
+// ~৫ সেকেন্ডে একসাথে ~১৫-২০টা ব্যাকগ্রাউন্ড অ্যাগ্রিগেট কল এসে পড়ে (বিভিন্ন
+// Dashboard/AIPage হুকের স্বাধীন useEffect থেকে, একই মুহূর্তে মাউন্ট হওয়ায়) —
+// priority queue নতুন-আসা ইন্টারঅ্যাক্টিভ কলকে বাকি অপেক্ষমাণদের আগে বসাতে
+// পারে ঠিকই, কিন্তু যেগুলো ইতিমধ্যে native bridge-এ ডিসপ্যাচড হয়ে গেছে (এই
+// মুহূর্তে এক্সিকিউট হচ্ছে) সেগুলোকে থামানো সম্ভব না — আর কোল্ড বুটে প্রতিটা
+// ব্যাকগ্রাউন্ড কোয়েরির নিজের নেটিভ খরচও বেশি (page-cache ঠান্ডা), তাই পুরো
+// burst-টাই সিরিয়ালাইজড হয়ে কয়েক সেকেন্ড লাগিয়ে ফেলে, ব্রাউজ কল দেরিতে
+// এলেও। আসল ফিক্স: বুটের প্রথম কয়েক সেকেন্ড ("গ্রেস পিরিয়ড") ব্যাকগ্রাউন্ড
+// (ট্যাগহীন) কলগুলোকে সম্পূর্ণ *পেছনে* রাখা — যতক্ষণ সারিতে কোনো ইন্টারঅ্যাক্টিভ
+// কল অপেক্ষা করছে, ব্যাকগ্রাউন্ড কল একদমই ডিসপ্যাচ হবে না। সারিতে যদি শুধুই
+// ব্যাকগ্রাউন্ড কল থাকে (কোনো ইন্টারঅ্যাক্টিভ কল নেই), তখন স্বাভাবিকভাবেই
+// একটা ব্যাকগ্রাউন্ড কল প্রসেস হবে — তাই dashboard পুরোপুরি আটকে থাকবে না,
+// শুধু ইন্টারঅ্যাক্টিভ স্ক্রিনের পেছনে দাঁড়াবে।
+const BOOT_GRACE_MS = 4000;
+const _bootStartTs = Date.now();
+
 function _pickNextQueueIndex() {
   const now = Date.now();
-  let bestIdx = 0;
+  const inGrace = now - _bootStartTs < BOOT_GRACE_MS;
+  let bestIdx = -1;
   let bestScore = -Infinity;
-  for (let i = 0; i < _dbQueryQueue.length; i++) {
-    const item = _dbQueryQueue[i];
-    const agingBonus = Math.floor((now - item.enqueuedAt) / 2000); // প্রতি ২সে অপেক্ষায় +১
-    const score = item.basePriority + agingBonus;
-    if (score > bestScore) { bestScore = score; bestIdx = i; }
+  // গ্রেস পিরিয়ডে প্রথমে শুধু ইন্টারঅ্যাক্টিভ (basePriority>0) আইটেমগুলোর মধ্যে
+  // সেরাটা খোঁজা হয়; পাওয়া গেলে ব্যাকগ্রাউন্ড আইটেম উপেক্ষা করা হয় — না পেলে
+  // (মানে সারিতে এই মুহূর্তে শুধুই ব্যাকগ্রাউন্ড কল আছে) দ্বিতীয় পাসে সবগুলো
+  // বিবেচনা করা হয়, যাতে dashboard একেবারে না-খেয়ে না থাকে।
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < _dbQueryQueue.length; i++) {
+      const item = _dbQueryQueue[i];
+      if (inGrace && pass === 0 && item.basePriority <= 0) continue; // প্রথম পাসে ব্যাকগ্রাউন্ড স্কিপ
+      const agingBonus = Math.floor((now - item.enqueuedAt) / 2000); // প্রতি ২সে অপেক্ষায় +১
+      const score = item.basePriority + agingBonus;
+      if (score > bestScore) { bestScore = score; bestIdx = i; }
+    }
+    if (bestIdx !== -1) break; // প্রথম পাসেই কিছু পাওয়া গেলে দ্বিতীয় পাস লাগবে না
   }
-  return bestIdx;
+  return bestIdx === -1 ? 0 : bestIdx;
 }
 
 async function _pumpDbQueryQueue() {
