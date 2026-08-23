@@ -272,6 +272,47 @@ async function loadSchemaSql() {
  * @param {string} businessType - যেমন "pharmacy", "veterinary", "semen"
  * @returns {Promise<import("@capacitor-community/sqlite").SQLiteDBConnection>}
  */
+// 🆕 এন্ট্রি ১১৩ — কনকারেন্সি ডায়াগনস্টিক। এন্ট্রি ১১২-এর warm-up ফিক্সের পরও
+// লগে দেখা যাচ্ছে: cold-start-এর নিজের warm-up EXPLAIN কল দ্রুত (৪-৫৫ms), কিন্তু
+// কয়েক সেকেন্ড পরে Products/Customers browse-এর EXPLAIN আবার ধীর (৭০০-৩৪০০ms)
+// — মানে page-cache warm-up নিজে থেকে টেকসই হচ্ছে না। এর মানে হতে পারে এটা
+// disk-cache সমস্যা না, বরং connection-level সিরিয়ালাইজেশন (আগেও সন্দেহ করা
+// হয়েছিল — "1 id, 0 found" কলের duration ঠিক browse কলের সাথে মিলে যাওয়া)।
+// এবার অনুমান না করে সরাসরি প্রমাণ নেওয়া হচ্ছে — getDb() থেকে যে db অবজেক্ট
+// ফেরত যায় তার db.query()-কে wrap করে প্রতিটা কলের "শুরুর মুহূর্তে ইতিমধ্যে কয়টা
+// কল চলছিল" (in-flight count) আর নিজের duration লগ করা হচ্ছে। যদি সত্যিই
+// সিরিয়ালাইজেশন হয়, তাহলে ধীর কলগুলোর ঠিক আগে/সাথে in-flight>0 দেখাবে — সরাসরি
+// প্রমাণ, অনুমান না।
+let _queryCallSeq = 0;
+let _inFlightQueries = 0;
+function _wrapDbForConcurrencyDiag(db, businessType) {
+  const origQuery = db.query.bind(db);
+  db.query = async (sql, sqlParams, diagTag) => {
+    const seq = ++_queryCallSeq;
+    const inFlightBefore = _inFlightQueries;
+    _inFlightQueries++;
+    const _wT0 = Date.now();
+    const preview = String(sql).replace(/\s+/g, " ").trim().slice(0, 70);
+    try {
+      return await origQuery(sql, sqlParams);
+    } finally {
+      _inFlightQueries--;
+      const dur = Date.now() - _wT0;
+      // শুধু "ধীর" (>১৫০ms) অথবা "শুরুর সময় আগে থেকেই অন্য কল চলছিল" (in-flight>0,
+      // সরাসরি কনকারেন্সি/সিরিয়ালাইজেশনের প্রমাণ) — এই দুই ধরনের কলই লগ হচ্ছে,
+      // নাহলে বুট-টাইমের অসংখ্য দ্রুত pragma/lookup কলে লগ ভরে যাবে।
+      if (dur > 150 || inFlightBefore > 0) {
+        // 🆕 এন্ট্রি ১১৪ — diagTag (call-site থেকে ঐচ্ছিক ৩য় আর্গুমেন্ট, আসল
+        // db.query()-তে যায় না, শুধু ডায়াগনস্টিকে) দিয়ে এখন সরাসরি বোঝা যাবে
+        // *কে* (কোন হুক/স্ক্রিন) এই কনকারেন্ট কলটা করেছে — অনুমান না করে caller
+        // নিজেই পরিচয় দিচ্ছে।
+        logDiag(`🧵 [db.query কনকারেন্সি #${seq}, ${businessType}${diagTag ? ", " + diagTag : ""}] শুরুতে in-flight=${inFlightBefore}, লাগলো ${dur}ms — "${preview}"`);
+      }
+    }
+  };
+  return db;
+}
+
 export async function getDb(businessType) {
   if (!businessType) throw new Error("getDb(): businessType আবশ্যক");
   if (_dbCache.has(businessType)) return _dbCache.get(businessType);
@@ -280,6 +321,7 @@ export async function getDb(businessType) {
   if (_dbPromiseCache.has(businessType)) return _dbPromiseCache.get(businessType);
 
   const initPromise = _initDb(businessType).then((db) => {
+    _wrapDbForConcurrencyDiag(db, businessType); // 🆕 এন্ট্রি ১১৩
     _dbCache.set(businessType, db);
     _dbPromiseCache.delete(businessType); // সফল — resolved cache-ই যথেষ্ট এখন থেকে
     return db;
@@ -459,6 +501,27 @@ async function _initDb(businessType) {
   }
   const _tWarm = Date.now();
 
+  // 🆕 এন্ট্রি ১১৪ — DB "স্বাস্থ্য" স্ন্যাপশট, এক-বার প্রতি cold-start-এ। এখন পর্যন্ত
+  // যা যাচাই হয়নি: journal_mode আসলেই WAL হিসেবে সেট হয়েছে কিনা (pragma লাইন
+  // silent-fail করলে rollback-journal মোডে থেকে যেতে পারত, যেটা অনেক বেশি ধীর
+  // লিখতে/পড়তে), DB ফাইল কতটা fragmented (page_count বনাম freelist_count —
+  // মাসের পর মাস dual-write-এর REPLACE/DELETE-এ freelist জমে বড় হতে পারে,
+  // যেটা VACUUM ছাড়া কখনো কমে না এবং I/O-কে ধীর করে), আর wal_autocheckpoint
+  // থ্রেশহোল্ড (ডিফল্ট ১০০০ পেজ — এটা কম হলে ঘনঘন auto-checkpoint স্টল হতে পারে)।
+  let healthInfo = "অজানা (PRAGMA ব্যর্থ)";
+  try {
+    const [jm, pc, fc, wac, cs] = await Promise.all([
+      db.query(`PRAGMA journal_mode;`),
+      db.query(`PRAGMA page_count;`),
+      db.query(`PRAGMA freelist_count;`),
+      db.query(`PRAGMA wal_autocheckpoint;`),
+      db.query(`PRAGMA cache_size;`),
+    ]);
+    const v = (r) => (r.values && r.values[0] && Object.values(r.values[0])[0]);
+    healthInfo = `journal_mode=${v(jm)}, page_count=${v(pc)}, freelist_count=${v(fc)} (fragmentation), wal_autocheckpoint=${v(wac)}পেজ, cache_size=${v(cs)}`;
+  } catch (_) { /* সাইলেন্ট — শুধু ডায়াগনস্টিক */ }
+  const _tHealth = Date.now();
+
   // 🆕 এন্ট্রি ১০২/১০৩ — timing ব্রেকডাউন। এন্ট্রি ১০৩-এ শুধু console.log থেকে
   // বদলে logDiag() করা হলো — এখন এই লাইন অ্যাপের ভেতরেই (সেটিংস → dev প্যানেল
   // → "⏱️ টাইমিং ডায়াগনস্টিক") দেখা যাবে, PC/adb ছাড়াই। businessType অনুযায়ী
@@ -467,8 +530,9 @@ async function _initDb(businessType) {
     `⏱️ [SQL cold-start: ${businessType}] db.open()=${_tOpen - _t0}ms, ` +
     `pragma=${_tPragma - _tOpen}ms, column-check(৪টা PRAGMA table_info + দরকার হলে ALTER)=${_tColCheck - _tPragma}ms, ` +
     `schema-execute(CREATE TABLE/INDEX/TRIGGER)=${_tSchema - _tColCheck}ms, demand_type-backfill=${_tBackfill - _tBackfillStart}ms, ` +
-    `warm-up=${_tWarm - _tWarmStart}ms, মোট=${_tWarm - _t0}ms`
+    `warm-up=${_tWarm - _tWarmStart}ms, health-check=${_tHealth - _tWarm}ms, মোট=${_tHealth - _t0}ms`
   );
+  logDiag(`🩺 [DB স্বাস্থ্য, ${businessType}] ${healthInfo}`);
 
   // (cache-সেট এখন getDb() wrapper-এই হয় — এখানে সরাসরি সেট করার দরকার নেই)
   return db;
@@ -945,16 +1009,16 @@ export async function reconcileStore(businessType, store, currentArr) {
 // দেওয়া হয় (কলার সাধারণত queryPage()-এর id-অর্ডার বজায় রাখতে চাইবে)।
 const GET_BY_IDS_CHUNK_SIZE = 500;
 
-export async function getByIds(businessType, store, ids) {
+export async function getByIds(businessType, store, ids, tag = "") {
   const uniqueIds = [...new Set((ids || []).map(String))];
   if (uniqueIds.length === 0) return [];
 
-  // 🆕 এন্ট্রি ১১১ — লগে ধরা পড়েছে এই ফাংশনের duration প্রায় হুবহু মিলে যাচ্ছে
-  // একই মুহূর্তে চলা queryPage() browse-কলের duration-এর সাথে (৩২৪২ms ≈
-  // ৩২৪১ms) — সন্দেহ: এই দুটো কল @capacitor-community/sqlite কানেকশনে
-  // সিরিয়ালাইজড, একটা আরেকটার পেছনে লাইনে দাঁড়িয়ে আছে। getDb() (cache-hit
-  // হলে তাৎক্ষণিক হওয়ার কথা) বনাম আসল db.query() আলাদা করে মাপা হচ্ছে যাতে
-  // ওয়েট-টাইম বনাম কোয়েরি-টাইম আলাদা করে বোঝা যায়।
+  // 🆕 এন্ট্রি ১১১/১১৪ — লগে ধরা পড়েছে এই ফাংশনের duration প্রায় হুবহু মিলে
+  // যাচ্ছে একই মুহূর্তে চলা queryPage() browse-কলের duration-এর সাথে — সন্দেহ:
+  // এই দুটো কল @capacitor-community/sqlite কানেকশনে সিরিয়ালাইজড। getDb()
+  // (cache-hit হলে তাৎক্ষণিক হওয়ার কথা) বনাম আসল db.query() আলাদা করে মাপা
+  // হচ্ছে, আর `tag` (কলার নিজেই দেয়) দিয়ে বোঝা যাবে ঠিক কোন হুক/স্ক্রিন থেকে
+  // এই কল এসেছে।
   const _gT0 = Date.now();
   const db = await getDb(businessType);
   const _gTDb = Date.now();
@@ -963,14 +1027,14 @@ export async function getByIds(businessType, store, ids) {
   for (let i = 0; i < uniqueIds.length; i += GET_BY_IDS_CHUNK_SIZE) {
     const chunk = uniqueIds.slice(i, i + GET_BY_IDS_CHUNK_SIZE);
     const placeholders = chunk.map(() => "?").join(", ");
-    const res = await db.query(`SELECT data FROM ${store} WHERE id IN (${placeholders})`, chunk);
+    const res = await db.query(`SELECT data FROM ${store} WHERE id IN (${placeholders})`, chunk, `getByIds:${store}:${tag}`);
     for (const row of res.values || []) {
       const rec = JSON.parse(row.data);
       byId.set(String(rec.id), rec);
     }
   }
   if (store === "products" && uniqueIds.length <= 3) {
-    logDiag(`⏱️ [getByIds ব্রেকডাউন, ${store}] getDb()=${_gTDb - _gT0}ms, বাকি(query+parse)=${Date.now() - _gTDb}ms, মোট=${Date.now() - _gT0}ms, ids=${uniqueIds.join(",")}`);
+    logDiag(`⏱️ [getByIds ব্রেকডাউন, ${store}, ট্যাগ=${tag || "?"}] getDb()=${_gTDb - _gT0}ms, বাকি(query+parse)=${Date.now() - _gTDb}ms, মোট=${Date.now() - _gT0}ms, ids=${uniqueIds.join(",")}`);
   }
 
   // ইনপুট অর্ডার বজায় রাখা হচ্ছে (কলার-এক্সপেক্টেশন), না-পাওয়া id চুপচাপ বাদ
@@ -1093,6 +1157,7 @@ export async function queryPage(businessType, store, opts = {}) {
     sortDir = "DESC",
     limit = 50,
     cursor = null,
+    tag = "",
   } = opts;
   // 🆕 এন্ট্রি ১১১ — ফিক্স (এন্ট্রি ১১০, demand_type OR→equality + covering
   // ইনডেক্স)-এর পরও real-device লগে dsQueryPage() আগের মতোই ~২৮৭০-৩২৪০ms
@@ -1142,21 +1207,21 @@ export async function queryPage(businessType, store, opts = {}) {
   // (cursor থাকা পরের পেজ, invoices) এক্সট্রা কল এড়াতে স্কিপ।
   if (!cursor && (store === "products" || store === "customers")) {
     try {
-      const planRes = await db.query(`EXPLAIN QUERY PLAN ${sql}`, sqlParams);
+      const planRes = await db.query(`EXPLAIN QUERY PLAN ${sql}`, sqlParams, `queryPage-EXPLAIN:${store}:${tag}`);
       const planText = (planRes.values || []).map((r) => r.detail).join(" | ");
-      logDiag(`🔍 [queryPage EXPLAIN, ${store}] ${planText}`);
+      logDiag(`🔍 [queryPage EXPLAIN, ${store}, ট্যাগ=${tag || "?"}] ${planText}`);
     } catch (_) { /* সাইলেন্ট — শুধু ডায়াগনস্টিক, আসল কোয়েরি অপ্রভাবিত */ }
   }
 
   const _qTPlan = Date.now();
-  const res = await db.query(sql, sqlParams);
+  const res = await db.query(sql, sqlParams, `queryPage:${store}:${tag}`);
   const _qTQuery = Date.now();
   const rawRows = res.values || [];
   const rows = rawRows.map((r) => JSON.parse(r.data));
   const _qTParse = Date.now();
   if (store === "products" || store === "customers") {
     logDiag(
-      `⏱️ [queryPage ব্রেকডাউন, ${store}] getDb()=${_qTDb - _qT0}ms, EXPLAIN=${_qTPlan - _qTDb}ms, ` +
+      `⏱️ [queryPage ব্রেকডাউন, ${store}, ট্যাগ=${tag || "?"}] getDb()=${_qTDb - _qT0}ms, EXPLAIN=${_qTPlan - _qTDb}ms, ` +
       `নেটিভ db.query()=${_qTQuery - _qTPlan}ms, JSON.parse=${_qTParse - _qTQuery}ms, মোট=${_qTParse - _qT0}ms, ${rawRows.length}টা রো`
     );
   }
