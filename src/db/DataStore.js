@@ -351,9 +351,17 @@ async function _pumpDbQueryQueue() {
     while (_dbQueryQueue.length > 0) {
       const idx = _pickNextQueueIndex();
       const item = _dbQueryQueue.splice(idx, 1)[0];
+      // 🆕 এন্ট্রি ১১৯ — এখন প্রতিটা কলের জন্যই "সারিতে কতক্ষণ অপেক্ষা করল" আর
+      // "ডিসপ্যাচ হওয়ার পর নেটিভে আসলে কতক্ষণ লাগল" আলাদা করে মাপা হচ্ছে —
+      // আগে শুধু browse কলের জন্য এই ভাঙন ছিল, ব্যাকগ্রাউন্ড কোয়েরির নিজস্ব
+      // নেটিভ খরচ কখনো যাচাই হয়নি (অনুমান করা হয়েছিল এগুলো সবসময় দ্রুত, শুধু
+      // queue-wait-ই বড়)। এবার সরাসরি প্রমাণ।
+      const dispatchStartedAt = Date.now();
+      const queueWaitMs = dispatchStartedAt - item.enqueuedAt;
       try {
         const res = await item.origQuery(item.sql, item.sqlParams);
-        item.resolve(res);
+        const nativeExecMs = Date.now() - dispatchStartedAt;
+        item.resolve({ res, queueWaitMs, nativeExecMs });
       } catch (e) {
         item.reject(e);
       }
@@ -382,23 +390,37 @@ function _wrapDbForConcurrencyDiag(db, businessType) {
     const inFlightBefore = _inFlightQueries;
     _inFlightQueries++;
     const _wT0 = Date.now();
-    const preview = String(sql).replace(/\s+/g, " ").trim().slice(0, 70);
+    const preview = String(sql).replace(/\s+/g, " ").trim().slice(0, 90);
     try {
-      // 🆕 এন্ট্রি ১১৫ — সরাসরি origQuery() কল না করে এখন priority queue দিয়ে যায়
-      return await _enqueueDbQuery(origQuery, sql, sqlParams, diagTag);
+      const { res, queueWaitMs, nativeExecMs } = await _enqueueDbQuery(origQuery, sql, sqlParams, diagTag);
+      const totalDur = Date.now() - _wT0;
+      // শুধু "ধীর" (>১৫০ms মোট) অথবা "শুরুর সময় আগে থেকেই অন্য কল চলছিল"
+      // (in-flight>0) — এই দুই ধরনের কলই লগ হচ্ছে, নাহলে বুট-টাইমের অসংখ্য
+      // দ্রুত pragma/lookup কলে লগ ভরে যাবে।
+      if (totalDur > 150 || inFlightBefore > 0) {
+        logDiag(
+          `🧵 [db.query #${seq}, ${businessType}${diagTag ? ", " + diagTag : ", ব্যাকগ্রাউন্ড/আনট্যাগড"}] ` +
+          `queue-wait=${queueWaitMs}ms, নেটিভ-exec=${nativeExecMs}ms, মোট=${totalDur}ms — "${preview}"`
+        );
+        // 🆕 এন্ট্রি ১১৯ — যদি এই কলের *নিজের* নেটিভ এক্সিকিউশনই (queue-wait
+        // বাদ দিয়ে) ১০০ms+ হয়, তাহলে এটা queueing সমস্যা না — এই নির্দিষ্ট
+        // SQL-এরই প্ল্যান সমস্যা থাকতে পারে (মিসিং ইনডেক্স, SCAN)। EXPLAIN
+        // QUERY PLAN নিজে থেকে ক্যাপচার করে সরাসরি দেখানো হচ্ছে — কোনো
+        // অনুমান ছাড়াই। EXPLAIN/PRAGMA কলের নিজের জন্য আবার EXPLAIN চালানো
+        // এড়ানো হচ্ছে (অসীম লুপ/অপ্রয়োজনীয়)। এটা সরাসরি origQuery() দিয়ে
+        // (queue বাইপাস করে) চালানো হচ্ছে যেহেতু শুধু ডায়াগনস্টিক, ফলাফল
+        // অ্যাপের কোনো লজিকে ব্যবহার হয় না।
+        if (nativeExecMs > 100 && !/^\s*(EXPLAIN|PRAGMA)/i.test(sql)) {
+          try {
+            const planRes = await origQuery(`EXPLAIN QUERY PLAN ${sql}`, sqlParams);
+            const planText = (planRes.values || []).map((r) => r.detail).join(" | ");
+            logDiag(`🔍 [ব্যাকগ্রাউন্ড EXPLAIN, ${diagTag || "আনট্যাগড"}] নেটিভ-exec=${nativeExecMs}ms ছিল — প্ল্যান: ${planText}`);
+          } catch (_) { /* সাইলেন্ট — শুধু ডায়াগনস্টিক */ }
+        }
+      }
+      return res;
     } finally {
       _inFlightQueries--;
-      const dur = Date.now() - _wT0;
-      // শুধু "ধীর" (>১৫০ms) অথবা "শুরুর সময় আগে থেকেই অন্য কল চলছিল" (in-flight>0,
-      // সরাসরি কনকারেন্সি/সিরিয়ালাইজেশনের প্রমাণ) — এই দুই ধরনের কলই লগ হচ্ছে,
-      // নাহলে বুট-টাইমের অসংখ্য দ্রুত pragma/lookup কলে লগ ভরে যাবে।
-      if (dur > 150 || inFlightBefore > 0) {
-        // 🆕 এন্ট্রি ১১৪ — diagTag (call-site থেকে ঐচ্ছিক ৩য় আর্গুমেন্ট, আসল
-        // db.query()-তে যায় না, শুধু ডায়াগনস্টিকে) দিয়ে এখন সরাসরি বোঝা যাবে
-        // *কে* (কোন হুক/স্ক্রিন) এই কনকারেন্ট কলটা করেছে — অনুমান না করে caller
-        // নিজেই পরিচয় দিচ্ছে।
-        logDiag(`🧵 [db.query কনকারেন্সি #${seq}, ${businessType}${diagTag ? ", " + diagTag : ""}] শুরুতে in-flight=${inFlightBefore}, লাগলো ${dur}ms — "${preview}"`);
-      }
     }
   };
   return db;
