@@ -423,6 +423,63 @@ function _wrapDbForConcurrencyDiag(db, businessType) {
       _inFlightQueries--;
     }
   };
+
+  // 🆕 এন্ট্রি ১২০ — সবচেয়ে বড় ফাঁক ধরা পড়েছে: এতদিন শুধু db.query() (read)
+  // ট্র্যাক করা হয়েছিল, db.run()/db.execute() (write — upsert, delete, FTS
+  // sync, schema/ALTER, ANALYZE) সম্পূর্ণ অদৃশ্য ছিল। কিন্তু লগে প্রমাণ
+  // পাওয়া গেছে: একটা কল (queue-wait মাত্র ৬৫ms, প্রায় সাথে সাথেই ডিসপ্যাচ
+  // হয়েছে) তার নিজের নেটিভ এক্সিকিউশনেই ৪২৬৬ms নিয়েছে — মাত্র ১৮ রো-র
+  // customers টেবিলে, ইনডেক্স-সহ। এটা queueing বা মিসিং-ইনডেক্স সমস্যা না
+  // (busy_timeout=3000ms-এর কাছাকাছি সংখ্যা) — এটা সরাসরি ইঙ্গিত করে কোনো
+  // সমান্তরাল WRITE ট্রানজেকশন লক ধরে রেখেছিল আর এই READ-কে busy_timeout
+  // পর্যন্ত অপেক্ষা করতে হয়েছে। কিন্তু সেই write অপারেশনটা কোথায় ঘটছিল, তা
+  // এতদিন লগে ধরাই পড়ত না। এখন db.run()/db.execute() একই queue+timing
+  // ব্যবস্থায় ট্র্যাক হবে (✍️ আইকনে, read থেকে আলাদা করার জন্য) — পরের লগেই
+  // দেখা যাবে ঠিক কোন write অপারেশন ওই মুহূর্তে চলছিল (যদি আদৌ চলে)।
+  const origRun = db.run.bind(db);
+  db.run = async (sql, sqlParams, diagTag) => {
+    const seq = ++_queryCallSeq;
+    const inFlightBefore = _inFlightQueries;
+    _inFlightQueries++;
+    const _wT0 = Date.now();
+    const preview = String(sql).replace(/\s+/g, " ").trim().slice(0, 90);
+    try {
+      const { res, queueWaitMs, nativeExecMs } = await _enqueueDbQuery(origRun, sql, sqlParams, diagTag);
+      const totalDur = Date.now() - _wT0;
+      if (totalDur > 150 || inFlightBefore > 0) {
+        logDiag(
+          `✍️ [db.run #${seq}, ${businessType}${diagTag ? ", " + diagTag : ", আনট্যাগড"}] ` +
+          `queue-wait=${queueWaitMs}ms, নেটিভ-exec=${nativeExecMs}ms, মোট=${totalDur}ms — "${preview}"`
+        );
+      }
+      return res;
+    } finally {
+      _inFlightQueries--;
+    }
+  };
+
+  const origExecute = db.execute.bind(db);
+  db.execute = async (sql, diagTag) => {
+    const seq = ++_queryCallSeq;
+    const inFlightBefore = _inFlightQueries;
+    _inFlightQueries++;
+    const _wT0 = Date.now();
+    const preview = String(sql).replace(/\s+/g, " ").trim().slice(0, 90);
+    try {
+      const { res, queueWaitMs, nativeExecMs } = await _enqueueDbQuery((s) => origExecute(s), sql, undefined, diagTag);
+      const totalDur = Date.now() - _wT0;
+      if (totalDur > 150 || inFlightBefore > 0) {
+        logDiag(
+          `✍️ [db.execute #${seq}, ${businessType}${diagTag ? ", " + diagTag : ", আনট্যাগড"}] ` +
+          `queue-wait=${queueWaitMs}ms, নেটিভ-exec=${nativeExecMs}ms, মোট=${totalDur}ms — "${preview}"`
+        );
+      }
+      return res;
+    } finally {
+      _inFlightQueries--;
+    }
+  };
+
   return db;
 }
 
