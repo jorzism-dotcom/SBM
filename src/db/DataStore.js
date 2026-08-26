@@ -344,10 +344,41 @@ function _pickNextQueueIndex() {
   return bestIdx === -1 ? 0 : bestIdx;
 }
 
+// 🆕 এন্ট্রি ১২২ — গ্রেস-পিরিয়ড প্রায়োরিটি (এন্ট্রি ১১৬) নিজের কমেন্টেই স্বীকার
+// করা সীমাবদ্ধতাটা real-device স্ক্রিনশটে ধরা পড়েছে: পণ্য/কাস্টমার তালিকা
+// অ্যাপ খোলার পর ~৫ সেকেন্ড "০টি/০জন" দেখাচ্ছিল, তারপর ডেটা আসছিল। কারণ:
+// কোল্ড বুটে products/customers-list-screen-এর queryPage() queue-তে
+// পৌঁছানোর *আগেই* (React effect চলার আগে) queue খালি থাকা অবস্থায় প্রথম
+// ব্যাকগ্রাউন্ড (untagged) KPI কল এসে দ্বিতীয় pass-এই dispatch হয়ে যায় —
+// আর একবার native bridge-এ ডিসপ্যাচড হলে সেটাকে থামানো/রিঅর্ডার করার উপায়
+// নেই (bridge সম্পূর্ণ সিরিয়াল)। কোল্ড page-cache-এ একটা ব্যাকগ্রাউন্ড
+// অ্যাগ্রিগেট কলের নেটিভ খরচই লগে বারবার ৩৯০০-৪৩০০ms দেখা গেছে — পুরো
+// সময়টা ইন্টারঅ্যাক্টিভ কলও পেছনে আটকে থাকে।
+//
+// ফিক্স: অ্যাপের জীবনে *প্রথমবার* pump হওয়ার সময় একটা ছোট্ট settle-window
+// (INITIAL_SETTLE_MS, বা তার আগেই queue-তে কোনো ইন্টারঅ্যাক্টিভ কল এলে সাথে
+// সাথে বেরিয়ে) — এতটুকু সময়ে React-এর মাউন্ট effect (products/customers
+// list-screen-এর queryPage()) queue-তে পৌঁছানোর সুযোগ পায়, তাই প্রথম
+// dispatch-টাই সবসময় ইন্টারঅ্যাক্টিভ কল হয়, কোনো ব্যাকগ্রাউন্ড কল না। এটা
+// শুধু কোল্ড-বুটে *একবারই* প্রযোজ্য (`_firstPumpSettled` ফ্ল্যাগ) — পরের
+// প্রতিটা pump আগের মতোই তাৎক্ষণিক।
+const INITIAL_SETTLE_MS = 250;
+let _firstPumpSettled = false;
+
 async function _pumpDbQueryQueue() {
   if (_queuePumping) return;
   _queuePumping = true;
   try {
+    if (!_firstPumpSettled) {
+      _firstPumpSettled = true;
+      const settleDeadline = _bootStartTs + INITIAL_SETTLE_MS;
+      while (
+        Date.now() < settleDeadline &&
+        !_dbQueryQueue.some((it) => it.basePriority > 0)
+      ) {
+        await new Promise((r) => setTimeout(r, 15));
+      }
+    }
     while (_dbQueryQueue.length > 0) {
       const idx = _pickNextQueueIndex();
       const item = _dbQueryQueue.splice(idx, 1)[0];
@@ -1236,7 +1267,37 @@ export async function getByIds(businessType, store, ids, tag = "") {
 // হিসেবে ব্যবহার করা যায়, products in-memory-তে যতটুকুই থাকুক না কেন।
 const GET_ALL_ROWS_CHUNK_SIZE = 2000;
 
+// 🆕 এন্ট্রি ১২১ — real-device লগে ধরা পড়েছে (boot+740214ms-এর কাছাকাছি ৪-৫টা
+// getAllRows(products) ব্রেকডাউন-সমাপ্তি ১৩০ms-এর ভেতরে গাদাগাদি করে; বুট+২০১৪৪৯৯ms/
+// ১১১২০৫৩ms-এ in-flight=5): App.jsx-এর `tick()`-এ `runLocalBackup`/`runDriveBackup`/
+// `runSnapshotBackup` — তিনটাই স্বাধীনভাবে `buildBackupData()` কল করে, আর প্রতিটা
+// `buildBackupData()`-ই আলাদাভাবে এই `getAllRows(businessType, "products")` কল করে —
+// কোনো শেয়ারিং নেই। `visibilitychange`+`capacitor-resume` প্রায় একই মুহূর্তে
+// `tick()` দুইবার ডাকলে সংখ্যাটা ৬-এও পৌঁছাতে পারে। ফলাফল: একই ২২৩৭-রেকর্ড
+// পুরো-টেবিল স্ক্যান ৩-৬ বার সমান্তরালে চলে, একে অপরকে SQLite bridge-এর
+// সিরিয়াল queue-তে ব্লক করে — root cause disk-throttling/battery/write-lock
+// কোনোটাই ছিল না।
+//
+// ফিক্স: `getDb()`-এর in-flight promise cache-এর (উপরে, এন্ট্রি ৫৭) ঠিক একই
+// প্যাটার্ন এখানেও — কোনো (businessType, store) জোড়ার জন্য একটা getAllRows()
+// ইতিমধ্যে চলছে থাকলে, নতুন কল আলাদা DB স্ক্যান শুরু না করে সেই একই in-flight
+// promise-এই await করবে। Resolve/reject হওয়ার সাথে সাথে cache থেকে entry সরে
+// যায় (finally ব্লকে) — তাই ডেটা staleness নেই, শুধু "একই মুহূর্তে একাধিক কলার"
+// কেসেই deduplicate হয়, পরের tick-এ (৫+ মিনিট পরে) স্বাভাবিকভাবেই ফ্রেশ স্ক্যান হবে।
+const _getAllRowsPromiseCache = new Map(); // "businessType:store" -> Promise<Array>
+
 export async function getAllRows(businessType, store) {
+  const cacheKey = `${businessType}:${store}`;
+  const inFlight = _getAllRowsPromiseCache.get(cacheKey);
+  if (inFlight) return inFlight;
+  const p = _getAllRowsRun(businessType, store).finally(() => {
+    _getAllRowsPromiseCache.delete(cacheKey);
+  });
+  _getAllRowsPromiseCache.set(cacheKey, p);
+  return p;
+}
+
+async function _getAllRowsRun(businessType, store) {
   const db = await getDb(businessType);
   const rows = [];
   let lastId = "";
