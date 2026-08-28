@@ -132,6 +132,33 @@ export function setCustomersNeverLoadEnabled(v) {
   } catch {}
 }
 
+// ── Feature flag: Invoices windowed-boot (এন্ট্রি ১২৫, roadmap Phase ৩ ধাপ ৫) ──
+// ⚠️ products/customers-এর "never-load" থেকে ইচ্ছাকৃতভাবে আলাদা ডিজাইন —
+// invoices কখনো "সম্পূর্ণ খালি" থাকতে পারে না (invoice numbering আর অনেক
+// dashboard/রিপোর্ট হিসাব লাইভ `invoices` array-এর length/পুরো কন্টেন্টের
+// উপর নির্ভরশীল — দেখুন SQLITE_MIGRATION_LOG.md এন্ট্রি ১২৪ অডিট)। তাই এই
+// ফ্ল্যাগ চালু হলে শুধু বুট-টাইম ডিস্ক-রিড windowed হয় (SQL WHERE
+// date_key >= ৬-মাস-আগে, getAllRowsWindowed() দিয়ে) — App.jsx-এর আগে থেকেই
+// থাকা "৬-মাস windowing" JS-filter যুক্তির সাথে হুবহু সামঞ্জস্যপূর্ণ কাটঅফ,
+// শুধু এখন থেকে IndexedDB থেকে *পুরো* ব্লব পড়ে তারপর ফেলে দেওয়ার বদলে,
+// শুরু থেকেই SQL-এ windowed রিড হবে। ডিফল্ট বন্ধ — বন্ধ থাকলে ১০০% আগের
+// আচরণ (IndexedDB পুরো ব্লব লোড + JS filter, অপরিবর্তিত)।
+const INVOICES_WINDOWED_BOOT_FLAG_KEY = "sbm_invoices_windowed_boot";
+
+export function isInvoicesWindowedBootEnabled() {
+  try {
+    return localStorage.getItem(INVOICES_WINDOWED_BOOT_FLAG_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setInvoicesWindowedBootEnabled(v) {
+  try {
+    localStorage.setItem(INVOICES_WINDOWED_BOOT_FLAG_KEY, v ? "1" : "0");
+  } catch {}
+}
+
 // ── Feature flag: POS on-demand cart lookups (এন্ট্রি ৬৮, ৭.৩-এর POS অংশের
 // প্রথম real ধাপ) ───────────────────────────────────────────────────────────
 // ⚠️ এই ফ্ল্যাগ **ডিফল্ট বন্ধ**, আর `sbm_products_boot_lazy` থেকে সম্পূর্ণ
@@ -355,31 +382,47 @@ function _pickNextQueueIndex() {
 // অ্যাগ্রিগেট কলের নেটিভ খরচই লগে বারবার ৩৯০০-৪৩০০ms দেখা গেছে — পুরো
 // সময়টা ইন্টারঅ্যাক্টিভ কলও পেছনে আটকে থাকে।
 //
-// ফিক্স: অ্যাপের জীবনে *প্রথমবার* pump হওয়ার সময় একটা ছোট্ট settle-window
-// (INITIAL_SETTLE_MS, বা তার আগেই queue-তে কোনো ইন্টারঅ্যাক্টিভ কল এলে সাথে
-// সাথে বেরিয়ে) — এতটুকু সময়ে React-এর মাউন্ট effect (products/customers
-// list-screen-এর queryPage()) queue-তে পৌঁছানোর সুযোগ পায়, তাই প্রথম
-// dispatch-টাই সবসময় ইন্টারঅ্যাক্টিভ কল হয়, কোনো ব্যাকগ্রাউন্ড কল না। এটা
-// শুধু কোল্ড-বুটে *একবারই* প্রযোজ্য (`_firstPumpSettled` ফ্ল্যাগ) — পরের
-// প্রতিটা pump আগের মতোই তাৎক্ষণিক।
-const INITIAL_SETTLE_MS = 250;
-let _firstPumpSettled = false;
+// ফিক্স (মূল, এন্ট্রি ১২২): অ্যাপের জীবনে *প্রথমবার* pump হওয়ার সময় একটা
+// ছোট্ট settle-window। ⚠️ পরবর্তী real-device লগে দেখা গেছে এটা যথেষ্ট না
+// ছিল — শুধু *প্রথম* dispatch-টাই রক্ষা করে, কিন্তু যদি products/customers-
+// list-screen-এর queryPage() আরও দেরিতে (একাধিক ব্যাকগ্রাউন্ড কল ইতিমধ্যে
+// একটার-পর-একটা সিরিয়ালি ডিসপ্যাচ হয়ে যাওয়ার পর) queue-তে আসে, তাহলে
+// দ্বিতীয়/তৃতীয়... ব্যাকগ্রাউন্ড dispatch-এর সময় একই সমস্যা আবার হয় —
+// queryPage-EXPLAIN:customers/products-এর queue-wait তখনো ২-৪.৭সে দেখা গেছে।
+//
+// 🆕 এন্ট্রি ১২৩ — ফিক্স সম্প্রসারিত: এখন *প্রতিটা* ব্যাকগ্রাউন্ড dispatch-এর
+// আগে (শুধু প্রথমটার আগে না), যদি গ্রেস পিরিয়ড এখনো চলছে *এবং* এই বুটে
+// এখনো কোনো ইন্টারঅ্যাক্টিভ কল দেখাই যায়নি (`_everSeenInteractive`), তাহলে
+// একটা ছোট্ট micro-settle wait (MICRO_SETTLE_MS) হয় — যতক্ষণ না কোনো
+// ইন্টারঅ্যাক্টিভ কল queue-তে আসে বা এই wait-এর সময় শেষ হয়। এটা প্রতিটা
+// ব্যাকগ্রাউন্ড কলের সিরিয়াল চেইনের মাঝে একটা করে "ফাঁক" তৈরি করে, যাতে
+// দেরিতে মাউন্ট হওয়া ইন্টারঅ্যাক্টিভ effect-ও কোনো এক ফাঁকে queue-তে ঢুকে
+// পরবর্তী dispatch-এ প্রায়োরিটি পেয়ে যায়। একবার কোনো ইন্টারঅ্যাক্টিভ কল
+// দেখা গেলে (`_everSeenInteractive = true`) — এই সেশনে আর কখনো wait হয় না,
+// dashboard-only সেশন (কোনো products/customers স্ক্রিন কখনো খোলা হয়নি)
+// bounded MICRO_SETTLE_MS-এর বেশি কখনো আটকে থাকে না।
+const BOOT_GRACE_MS_FOR_SETTLE = BOOT_GRACE_MS;
+const MICRO_SETTLE_MS = 120;
+let _everSeenInteractive = false;
 
 async function _pumpDbQueryQueue() {
   if (_queuePumping) return;
   _queuePumping = true;
   try {
-    if (!_firstPumpSettled) {
-      _firstPumpSettled = true;
-      const settleDeadline = _bootStartTs + INITIAL_SETTLE_MS;
-      while (
-        Date.now() < settleDeadline &&
-        !_dbQueryQueue.some((it) => it.basePriority > 0)
-      ) {
-        await new Promise((r) => setTimeout(r, 15));
-      }
-    }
     while (_dbQueryQueue.length > 0) {
+      const _now0 = Date.now();
+      const _inGrace0 = _now0 - _bootStartTs < BOOT_GRACE_MS_FOR_SETTLE;
+      if (_inGrace0 && !_everSeenInteractive) {
+        const microDeadline = _now0 + MICRO_SETTLE_MS;
+        while (
+          Date.now() < microDeadline &&
+          Date.now() - _bootStartTs < BOOT_GRACE_MS_FOR_SETTLE &&
+          !_everSeenInteractive &&
+          !_dbQueryQueue.some((it) => it.basePriority > 0)
+        ) {
+          await new Promise((r) => setTimeout(r, 15));
+        }
+      }
       const idx = _pickNextQueueIndex();
       const item = _dbQueryQueue.splice(idx, 1)[0];
       // 🆕 এন্ট্রি ১১৯ — এখন প্রতিটা কলের জন্যই "সারিতে কতক্ষণ অপেক্ষা করল" আর
@@ -404,8 +447,13 @@ async function _pumpDbQueryQueue() {
 
 function _enqueueDbQuery(origQuery, sql, sqlParams, tag) {
   return new Promise((resolve, reject) => {
+    const basePriority = _basePriorityForTag(tag);
+    // 🆕 এন্ট্রি ১২৩ — এই বুটে প্রথম ইন্টারঅ্যাক্টিভ (basePriority>0) কল
+    // enqueue হওয়ামাত্র ফ্ল্যাগ সেট, যাতে _pumpDbQueryQueue()-এর micro-settle
+    // wait সাথে সাথে থেমে যায় (আর অপেক্ষা না করে)।
+    if (basePriority > 0) _everSeenInteractive = true;
     _dbQueryQueue.push({
-      sql, sqlParams, tag, basePriority: _basePriorityForTag(tag),
+      sql, sqlParams, tag, basePriority,
       enqueuedAt: Date.now(), resolve, reject, origQuery,
     });
     _pumpDbQueryQueue();
@@ -1336,6 +1384,70 @@ async function _getAllRowsRun(businessType, store) {
   }
   logDiag(
     `⏱️ [getAllRows(${store}) ব্রেকডাউন] নেটিভ db.query()=${_queryMs}ms (${_batches}টা ব্যাচ), ` +
+    `JSON.parse=${_parseMs}ms, মোট রেকর্ড=${rows.length}, মোট ডেটা=${(_totalChars / 1024).toFixed(0)}KB (গড়=${rows.length ? Math.round(_totalChars / rows.length) : 0} bytes/রেকর্ড)`
+  );
+  return rows;
+}
+
+// 🆕 এন্ট্রি ১২৫ — Invoices windowed-boot হাইড্রেশন (roadmap Phase ৩, ধাপ ৫)।
+// এখন পর্যন্ত App.jsx-এর "৬-মাস ইনভয়েস windowing" শুধু JS-সাইড filter ছিল:
+// `loadMany(CRITICAL_KEYS)` প্রথমে IndexedDB থেকে *পুরো* invoices blob-array
+// পড়ত, তারপর সেটাকে ফিল্টার করে ৬ মাসের window-এ নামানো হতো state-এর জন্য —
+// অর্থাৎ বুট-টাইম ডিস্ক-রিড নিজেই windowed ছিল না, শুধু memory-তে যা বসত
+// (state.invoices) তা ছোট ছিল। বড় দোকানে (লাখ-লাখ ইনভয়েস) এই "পুরো ব্লব
+// একবার পড়ে তারপর ফেলে দাও" ধাঁচটাই বুট-টাইম নষ্ট করে।
+//
+// এই ফাংশন সেই একই ৬-মাস কাটঅফ যুক্তি SQL WHERE ক্লজে ঠেলে দেয় —
+// `date_key >= ?` (ইনডেক্স আছে, `idx_invoices_date_key`) — তাই ডিস্ক থেকে
+// শুরু থেকেই শুধু window-এর ভেতরের রো পড়া হয়, ৬ মাসের বেশি পুরনো রেকর্ড
+// কখনো মেমরিতে আসেই না (products/customers never-load-এর সাথে সঙ্গতিপূর্ণ
+// নীতি, কিন্তু invoices-এর জন্য "কখনো না" না — "windowed" — কারণ invoice
+// numbering আর অনেক dashboard হিসাব ইতিমধ্যে-লোড থাকা invoices array-এর ওপর
+// নির্ভর করে, তাই পুরো array-টাই দরকার, শুধু সেটা windowed রাখা হচ্ছে)।
+//
+// `getAllRows()`-এর মতোই id-cursor keyset pagination (OFFSET না, বড় স্কেলে
+// ধীর হওয়া এড়াতে) আর একই in-flight promise cache প্যাটার্ন (এন্ট্রি ১২১) —
+// একই (businessType, store, sinceDateKey) জোড়ায় সমান্তরাল কল হলে ডিডুপ হবে।
+export async function getAllRowsWindowed(businessType, store, sinceDateKey) {
+  const cacheKey = `${businessType}:${store}:since:${sinceDateKey}`;
+  const inFlight = _getAllRowsPromiseCache.get(cacheKey);
+  if (inFlight) return inFlight;
+  const p = _getAllRowsWindowedRun(businessType, store, sinceDateKey).finally(() => {
+    _getAllRowsPromiseCache.delete(cacheKey);
+  });
+  _getAllRowsPromiseCache.set(cacheKey, p);
+  return p;
+}
+
+async function _getAllRowsWindowedRun(businessType, store, sinceDateKey) {
+  const db = await getDb(businessType);
+  const rows = [];
+  let lastId = "";
+  let _queryMs = 0;
+  let _parseMs = 0;
+  let _batches = 0;
+  let _totalChars = 0;
+  for (;;) {
+    const _qT0 = Date.now();
+    const res = await db.query(
+      `SELECT data, id FROM ${store} WHERE date_key >= ? AND id > ? ORDER BY id ASC LIMIT ?`,
+      [sinceDateKey, lastId, GET_ALL_ROWS_CHUNK_SIZE]
+    );
+    _queryMs += Date.now() - _qT0;
+    _batches += 1;
+    const batch = res.values || [];
+    if (batch.length === 0) break;
+    const _pT0 = Date.now();
+    for (const row of batch) {
+      _totalChars += (row.data || "").length;
+      rows.push(JSON.parse(row.data));
+    }
+    _parseMs += Date.now() - _pT0;
+    lastId = String(batch[batch.length - 1].id);
+    if (batch.length < GET_ALL_ROWS_CHUNK_SIZE) break;
+  }
+  logDiag(
+    `⏱️ [getAllRowsWindowed(${store}) ব্রেকডাউন] sinceDateKey=${sinceDateKey}, নেটিভ db.query()=${_queryMs}ms (${_batches}টা ব্যাচ), ` +
     `JSON.parse=${_parseMs}ms, মোট রেকর্ড=${rows.length}, মোট ডেটা=${(_totalChars / 1024).toFixed(0)}KB (গড়=${rows.length ? Math.round(_totalChars / rows.length) : 0} bytes/রেকর্ড)`
   );
   return rows;
