@@ -36,9 +36,9 @@
 3. 🟢 Never-load flag + boot hydration infrastructure — **এন্ট্রি ৯৭-এ তৈরি, এন্ট্রি ৯৮-৯৯-এ পুরো কোড-লেভেল bulk-scan অডিট শেষ (সব রিস্কি সাইট গার্ড/কনভার্ট হয়েছে)। ফ্ল্যাগ এখনো ডিফল্ট বন্ধ — চালু করার আগে real-device স্মোক-টেস্ট বাধ্যতামূলক, কিন্তু কোনো পরিচিত কোড-লেভেল ব্লকার আর বাকি নেই**
 
 **B. Invoices (বড় স্কেল, ভিন্ন ডিজাইন — customers-এর পরে শুরু করা ভালো)**
-4. ⬜ ৩৫টা সাইটের পূর্ণ ক্যাটাগরি অডিট (lookup/aggregate/list ভাগ করা) *(১ সেশন)*
-5. ⬜ Windowed-boot ডিজাইন (never-load না — ৬-মাস কাটঅফ লজিক, প্ল্যান ডকের মূল যুক্তি অনুযায়ী) *(২-৩ সেশন)*
-6. ⬜ Category A+B কনভার্সন (lookup + aggregate — KPI, রিপোর্ট) *(৩-৪ সেশন)*
+4. ✅ ৩৫টা সাইটের পূর্ণ ক্যাটাগরি অডিট (lookup/aggregate/list ভাগ করা) — **এন্ট্রি ১২৪-এ সম্পূর্ণ। ফলাফল: Category A (lookup) নেই, Category B (aggregate) ১০টা সাইট, Category C (list) ৩টা সাইট (Dashboard KPI-modal, Invoice History main list, invoice numbering)**
+5. 🟡 Windowed-boot ডিজাইন (never-load না — ৬-মাস কাটঅফ লজিক) — **এন্ট্রি ১২৫-এ কোড সম্পূর্ণ, ফ্ল্যাগ ডিফল্ট বন্ধ, real-device স্মোক-টেস্ট বাকি**
+6. 🟡 Category A+B কনভার্সন (lookup + aggregate — KPI, রিপোর্ট) — **শুরু হয়েছে: ১০টার মধ্যে ১টা (paymentTypeTotals) shadow-verify মোডে, এন্ট্রি ১২৬। বাকি ৯টা + cutover পরের সেশনে** *(৩-৪ সেশন)*
 7. ⬜ Category C — invoice history list + ইনভয়েস-নম্বরিং (`INV-${count+1}`) — **সবচেয়ে ঝুঁকিপূর্ণ ধাপ, টাকার রেকর্ড সরাসরি প্রভাবিত করে, প্রতিটা সাব-স্টেপে real-device টেস্ট বাধ্যতামূলক** *(৩-৪ সেশন)*
 8. ⬜ Windowed boot হাইড্রেশন + flag *(২-৩ সেশন)*
 
@@ -50,7 +50,109 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ১২২-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ১২৬-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟡 এন্ট্রি ১২৬ — Phase ৩ ধাপ ৬ শুরু: Category B-এর প্রথম সাইট (`paymentTypeTotals`) SQL shadow-verify মোডে**
+
+**সততার সাথে scope-নোট**: এন্ট্রি ১২৪-এ চিহ্নিত ১০টা Category B সাইটের মধ্যে **শুধু ১টা** (AnalyticsSection_-এর `paymentTypeTotals`, পেমেন্ট-টাইপ পাই চার্ট) এই সেশনে ছোঁয়া হয়েছে — বাকি ৯টা (todayBaki ×২, analyticsProductIds, মাসিক chart, topProducts/topCustomers, pnlProductIds, activityDateKeys, today-filter সেট, repData, getStaffStats) এখনো JS-only, পরের সেশনগুলোতে একই প্যাটার্নে করা হবে।
+
+**যা করা হলো (shadow-verify, ⚠️ এখনো ডিসপ্লে-ভ্যালু বদলায়নি)**:
+- `dsAggregate(businessType, "invoices", { select: conditional-SUM by pay_type, where: "status='active'" })` — `idx_invoices_pay_type` ইনডেক্স ব্যবহার করে, একটাই SQL round-trip
+- এই SQL ফলাফল আর আগের JS `.filter().reduce()` ফলাফল **দুটোই** এখন প্যারালালে কম্পিউট হয়, আর মিলছে কিনা `console.warn` দিয়ে চেক হয় (১ টাকার বেশি পার্থক্য হলে)
+- **ডিসপ্লে-তে এখনো JS ফলাফলই ব্যবহার হচ্ছে** (`paymentTypeTotals = paymentTypeTotalsJs`) — SQL-টা শুধু "শ্যাডো" মোডে যাচাইয়ের জন্য চলছে, ব্যবহারকারীর দেখা সংখ্যা এই সেশনে বদলায়নি
+
+**কেন এইভাবে (dual-compute, cutover না)**: Products/Customers migration-এর প্রতিষ্ঠিত discipline অনুসরণ করা হলো — আগে dual-write/dual-compute দিয়ে real-device-এ প্রমাণ করা যে নতুন পথ পুরনো পথের সাথে হুবহু মেলে, *তারপরই* পুরনো পথ সরিয়ে cutover করা। এখানে ঝুঁকি: windowed-invoices (এন্ট্রি ১২৫) চালু থাকলে JS ফলাফল ৬-মাস-সীমিত ডেটার ওপর ভিত্তি করে হবে, কিন্তু SQL ফলাফল পুরো টেবিলের ওপর (যেহেতু `where` ক্লজে কোনো date-cutoff নেই) — তাই দুটো *ইচ্ছাকৃতভাবেই* ভিন্ন হতে পারে যদি windowed-boot ফ্ল্যাগও চালু থাকে। এই মিসম্যাচ-ই real-device console-এ ধরা পড়বে, আর সেটা বুঝেই পরের সেশনে ঠিক করা হবে (SQL-এও date-window যোগ করা হবে, অথবা windowed-boot বন্ধ অবস্থায় প্রথমে যাচাই)।
+
+**যাচাই (sandbox)**: esbuild দিয়ে সিনট্যাক্স-ভ্যালিডেট — `SYNTAX OK`।
+
+**real-device-এ যা টেস্ট করা লাগবে**: dev console খুলে (Products/Customers Never-Load ফ্ল্যাগ যেভাবে টেস্ট করছেন সেভাবেই) Home → Analytics সেকশন খুলে `⚠️ [এন্ট্রি ১২৬] paymentTypeTotals SQL vs JS মিসম্যাচ` ওয়ার্নিং আসে কিনা দেখুন — **windowed-boot ফ্ল্যাগ বন্ধ রেখে** প্রথমে টেস্ট করবেন (তাহলে JS আর SQL দুটোই একই ফুল-হিস্ট্রি ডেটার ওপর হবে, তুলনা পরিষ্কার হবে)।
+
+**পরবর্তী ধাপ**: এই সাইটের mismatch-check ক্লিন হলে (১) ডিসপ্লে-ভ্যালু SQL-এ cutover করা (JS ফলব্যাক কোড রেখে দেওয়া, শুধু primary source বদলানো) এবং (২) বাকি ৯টা সাইট একই প্যাটার্নে একে একে কনভার্ট।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**: `src/App.jsx` (`AnalyticsSection_`-এর `paymentTypeTotals`), `SQLITE_MIGRATION_LOG.md`
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ১২৫-এ আপডেট)
+
+**🟡 এন্ট্রি ১২৫ — Phase ৩ ধাপ ৫: Invoices Windowed-Boot ডিজাইন + কোড সম্পূর্ণ, ফ্ল্যাগ ডিফল্ট বন্ধ, real-device টেস্ট বাকি**
+
+**যা তৈরি হলো**:
+1. **`src/db/DataStore.js`**: নতুন `getAllRowsWindowed(businessType, store, sinceDateKey)` ফাংশন — `getAllRows()`-এর ঠিক একই id-cursor keyset pagination প্যাটার্ন (OFFSET না, `GET_ALL_ROWS_CHUNK_SIZE=2000` ব্যাচে), কিন্তু `WHERE date_key >= ? AND id > ?` (ইনডেক্স `idx_invoices_date_key` ব্যবহার হবে)। এন্ট্রি ১২১-এর in-flight promise cache প্যাটার্নও অনুসরণ করা হয়েছে (cache key-তে `sinceDateKey`-ও যোগ, যাতে ভিন্ন window-এর কল ভুলবশত একে অপরের ফলাফল শেয়ার না করে)।
+2. **নতুন ফ্ল্যাগ** `sbm_invoices_windowed_boot` (`isInvoicesWindowedBootEnabled()`/`setInvoicesWindowedBootEnabled()`) — ডিফল্ট বন্ধ, single-tier (products/customers-এর দুই-স্তরের boot-lazy+never-load থেকে ইচ্ছাকৃতভাবে সরল, কারণ invoices কখনো "never-load" হবে না)।
+3. **`src/App.jsx` বুট-সিকোয়েন্স**: ফ্ল্যাগ চালু থাকলে `CRITICAL_KEYS` থেকে `LK(SK.invoices)` বাদ (পুরো IndexedDB ব্লব বুটে পড়া হবে না), বদলে `getAllRowsWindowed(businessTypeVal, "invoices", ৬-মাস-কাটঅফ)` সরাসরি windowed SQL রিড করে `state.invoices` বসায়। **নিরাপদ ফলব্যাক**: SQL ব্যর্থ হলে (SQLite বন্ধ/এরর) সাথে সাথে পুরনো IndexedDB-পথে (`loadMany([LK(SK.invoices)])` + JS filter) ফিরে যায় — products/customers never-load-এর একই "ব্যর্থ হলে নিরাপদ" নীতি। ফ্ল্যাগ বন্ধ থাকলে ১০০% আগের আচরণ অপরিবর্তিত (কোড-পাথ স্পর্শই হয় না)।
+4. **UI টগল**: সেটিংসে নতুন "🪟 Invoices Windowed-Boot (এন্ট্রি ১২৫, পরীক্ষামূলক)" কার্ড (Customers Boot-Lazy কার্ডের ঠিক নিচে), Products/Customers Boot-Lazy কার্ডের একই ভিজ্যুয়াল প্যাটার্নে।
+
+**ডিজাইন সিদ্ধান্ত (কেন never-load না)**: এন্ট্রি ১২৪-এর অডিটে কনফার্মড — invoice numbering (`INV-${length+1}`) আর একাধিক Dashboard/রিপোর্ট হিসাব সরাসরি লাইভ `invoices` array-এর length/কন্টেন্টের উপর নির্ভরশীল, তাই সেটা কখনো সম্পূর্ণ খালি রাখা যাবে না — শুধু windowed (৬ মাস) রাখা হচ্ছে, যেটা App.jsx-এ আগে থেকেই থাকা JS-filter windowing যুক্তির (এন্ট্রি ২৩+) সাথে হুবহু সামঞ্জস্যপূর্ণ কাটঅফ — শুধু এখন ডিস্ক-রিড নিজেই windowed, "সব পড়ে তারপর ফেলে দাও" প্যাটার্ন না।
+
+**যাচাই (sandbox)**: esbuild দিয়ে `DataStore.js` আর `App.jsx` দুটোই সিনট্যাক্স-ভ্যালিডেট — `SYNTAX OK`। sandbox-এ আসল SQL রান/ডেটা-সহ টেস্ট করা যায়নি (device/build পরিবেশ নেই)।
+
+**⚠️ real-device-এ যা টেস্ট করা লাগবে (ফ্ল্যাগ চালু করার আগে/পরে)**:
+- বুট লগে `✅ [বুট] ইনভয়েস windowed-hydrate (SQL) সফল` লাইন আসছে কিনা, আর `window-এ=` সংখ্যা IndexedDB-ভিত্তিক পুরনো হিসাবের সাথে মিলছে কিনা
+- ৬ মাসের বেশি পুরনো ইনভয়েস খোঁজা/দেখা (কাস্টমার হিস্ট্রি, রিটার্ন সার্চ, ভয়েড হিস্ট্রি) — এন্ট্রি ১২৪-এ ইতিমধ্যে নোট করা InvoiceArchive fallback-নির্ভর কল-সাইটগুলো ঠিকমতো কাজ করছে কিনা
+- নতুন ইনভয়েস তৈরি + নম্বরিং সঠিক ধারাবাহিক থাকছে কিনা (windowed array-এর length window-সীমিত, তাই যদি কোনো কোড ভুলবশত "windowed length"-কে "lifetime total" ভেবে বসে, নম্বর ভুল হতে পারে — এটাই সবচেয়ে সতর্কতার জায়গা)
+- ফ্ল্যাগ বন্ধ রেখে (ডিফল্ট) স্বাভাবিক ব্যবহার অপরিবর্তিত থাকছে কিনা (রিগ্রেশন-চেক)
+
+**পরবর্তী ধাপ (roadmap ধাপ ৬)**: এন্ট্রি ১২৪-এ চিহ্নিত ১০টা Category B (aggregate) সাইট SQL-ভিত্তিক অ্যাগ্রিগেট কোয়েরিতে রূপান্তর — কিন্তু real-device স্মোক-টেস্ট (উপরের ৪টা পয়েন্ট) সফল হওয়ার পরই এগোনো উচিত, কারণ ধাপ ৬-এর অনেক সাইট এই windowed `invoices` state-এর উপরই দাঁড়াবে।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**: `src/db/DataStore.js` (`getAllRowsWindowed()` + ফ্ল্যাগ), `src/App.jsx` (বুট-সিকোয়েন্স + `InvoicesWindowedBootToggle` UI), `SQLITE_MIGRATION_LOG.md`
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ১২৪-এ আপডেট)
+
+**🔵 এন্ট্রি ১২৪ — Phase ৩ ধাপ ৪: Invoices-এর সব bulk-scan সাইট ক্যাটাগরি অডিট সম্পূর্ণ (শুধু অডিট, কোনো কোড বদলায়নি)**
+
+**প্রেক্ষাপট**: roadmap ধাপ ৪ ("৩৫টা সাইটের পূর্ণ ক্যাটাগরি অডিট") এই সেশনে করা হলো — App.jsx-এ `invoices.map/filter/find/forEach/reduce/some/every/sort(` সব মিলিয়ে গ্রেপ করে প্রতিটা সাইট সরাসরি কোড খুলে পড়ে ক্যাটাগরাইজ করা হয়েছে। মোট **১৪টা লজিক্যাল সাইট** (কিছু ফাংশনে একাধিক `.filter()` কল, একই ক্যাটাগরির — তাই "৩৫টা লাইন" আসল সংখ্যা `.filter/.map/.forEach` উপ-এক্সপ্রেশন গুনলে মেলে, কিন্তু স্বাধীন রূপান্তরযোগ্য ইউনিট ১৪টা)।
+
+**Category A (lookup — bounded single/few-record)**: 🟢 **কোনোটাই নেই** — invoices-এর কোনো সাইটই একক id দিয়ে lookup করে না (products-এর `getProductByIdWithSqlFallback()`-এর সমতুল্য প্যাটার্ন invoices-এ অনুপস্থিত, কারণ invoice view/void সবসময় ইতিমধ্যেই হাতে-থাকা object নিয়ে কাজ করে, id দিয়ে আলাদা lookup লাগে না)।
+
+**Category B (aggregate — date-range/status ফিল্টার করে sum/count/group, ফলাফল ছোট কিন্তু ইনপুট পুরো array)**: ১০টা সাইট —
+1. `todayBaki` (App() + ViewerDashboard দুই কপি, লাইন ১৫৯১৪/১৮৬৮৭) — voided invoice ID সেট
+2. `paymentTypeTotals` (লাইন ২২২৪২-২২৪৬) — payType অনুযায়ী cash/baki/partial sum
+3. `analyticsProductIds` (লাইন ২২২৬০) — সব ইনভয়েস-আইটেম থেকে distinct productId সেট
+4. মাসিক revenue/profit চার্ট (লাইন ২২২৯৮) — গত ১২ মাস group-by
+5. `topProducts`/`topCustomers` (৩০ দিন, লাইন ২২৩২০/২২৩৩৮)
+6. `pnlProductIds` (লাইন ২৩০৬৩) — ইতিমধ্যে "কম-ঝুঁকির" হিসেবে চিহ্নিত, PNL কার্ডে read-only
+7. `activityDateKeys` (লাইন ২৪২০০) — opening-balance carry-forward, সব ইনভয়েসের dateKey স্ক্যান
+8. `todaySelfUseInvs`/`todayVoidedInvs`/`todayBakiInvs` (লাইন ২৪৪০৫-২৪৪২০) — আজকের-তারিখ ফিল্টার
+9. `repData` (লাইন ২৪৪৭৯-২৪৫১৮) — কাস্টম-রেঞ্জ রিপোর্ট (invs/bakiInvs/selfUseInvs/voidedInvs)
+10. `getStaffStats` (লাইন ৩৬২০৭) — প্রতি-স্টাফ কমিশন hisab, সব ইনভয়েস স্ক্যান করে staffId ফিল্টার
+
+**Category C (list — UI-তে সরাসরি ইনভয়েসের তালিকা দেখানো, pagination/scroll প্রয়োজন)**: ৩টা সাইট —
+11. Dashboard KPI কার্ড ক্লিকে মডাল (লাইন ২৭৭০৪-২৭৭৪১, ৬টা `allItems: invoices.filter(...)`) — KPI-তে ক্লিক করলে সেই সাব-সেটের পুরো ইনভয়েস-লিস্ট মডালে দেখায়
+12. **Invoice History main list** (লাইন ২৮৪৮৪ এলাকা, Virtuoso-ভিত্তিক) — ইতিমধ্যে per-row O(1) lookup-এ অপ্টিমাইজড (Map ব্যবহার করে, পুরনো `.find()` লিনিয়ার-স্ক্যান বাদ) কিন্তু আন্ডারলাইং `invoices` array এখনো পুরোপুরি in-memory — **এটাই roadmap-এর সবচেয়ে বড় Category C কাজ**
+13. **Invoice numbering** (লাইন ২০৩৭৪) — `` `INV-${invoices.length + 1}` `` — **সবচেয়ে ঝুঁকিপূর্ণ একক সাইট**, টাকার রেকর্ডের ধারাবাহিক নম্বরিং সরাসরি নির্ভর করে পুরো in-memory array-এর length-এর ওপর
+
+**মূল পর্যবেক্ষণ**: Category B (১০টা)-এর বেশিরভাগই ইতিমধ্যে-প্রতিষ্ঠিত SQL অ্যাগ্রিগেট প্যাটার্নে (customers/products migration-এর মতোই — `getSupplierDueRows()`, `useKpiStats` ইত্যাদির precedent অনুসরণ করে) রূপান্তরযোগ্য, তুলনামূলক কম-ঝুঁকির (read-only রিপোর্ট/ড্যাশবোর্ড)। Category C-এর ২টা (Invoice History list, invoice numbering) roadmap-এ আগেই "সবচেয়ে ঝুঁকিপূর্ণ ধাপ" হিসেবে চিহ্নিত ছিল — এই অডিটে সেটাই কনফার্মড, বিশেষত invoice numbering-এ কোনো race-condition/concurrency বাগ ছাড়া SQL-ভিত্তিক sequence-এ যাওয়া সাবধানে ডিজাইন করতে হবে (দুইটা ডিভাইস/ট্যাব একসাথে ইনভয়েস তৈরি করলে duplicate নম্বর না হয়)।
+
+**পরবর্তী ধাপ (roadmap ধাপ ৫)**: Windowed-boot ডিজাইন — invoices কখনো "never-load" না (customers/products-এর মতো), বরং প্ল্যান ডকের মূল যুক্তি অনুযায়ী ৬-মাস কাটঅফ উইন্ডো বজায় রেখে বুট করা। এটার পরই ধাপ ৬ (Category B কনভার্সন, উপরের ১০টা সাইট) নিরাপদে শুরু করা যাবে।
+
+**যাচাই**: কোনো কোড বদলায়নি (শুধু অডিট) — তাই test/lint/build রি-রান করা হয়নি।
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**: `SQLITE_MIGRATION_LOG.md` (এই এন্ট্রি) — কোনো src ফাইল বদলায়নি
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ১২৩-এ আপডেট)
+
+**✅ এন্ট্রি ১২৩ — এন্ট্রি ১২২-এর ফিক্স যথেষ্ট ছিল না, সম্প্রসারিত করা হলো (head-of-line blocking, পার্ট ২)**
+
+**উপসর্গ**: এন্ট্রি ১২২-এর ফিক্স (প্রথমবার pump-এ ২৫০ms settle) দেওয়ার পরও পরের real-device লগে `queryPage-EXPLAIN:customers`/`products`-এর queue-wait তখনো ২১৮০-৪৭১৩ms দেখা গেছে একাধিক সেশনে — উন্নতি হয়নি।
+
+**কারণ**: এন্ট্রি ১২২-এর settle শুধু *প্রথম* pump-এর আগে একবারই কাজ করে। যদি products/customers-list-screen-এর `queryPage()` আরও দেরিতে (একাধিক ব্যাকগ্রাউন্ড কল ইতিমধ্যে একটার-পর-একটা সিরিয়ালি ডিসপ্যাচ শুরু হয়ে যাওয়ার পর) queue-তে আসে, তাহলে দ্বিতীয়/তৃতীয়... ব্যাকগ্রাউন্ড dispatch-এর সময় একই head-of-line blocking আবার ঘটে — একবারের settle সেটা ঠেকাতে পারে না।
+
+**ফিক্স**: `_pumpDbQueryQueue()`-এ settle এখন *প্রতিটা* ব্যাকগ্রাউন্ড dispatch-এর আগে প্রযোজ্য (শুধু প্রথমটার আগে না) — যতক্ষণ এই বুটে এখনো কোনো ইন্টারঅ্যাক্টিভ কল দেখাই যায়নি (`_everSeenInteractive` ফ্ল্যাগ, প্রথম ইন্টারঅ্যাক্টিভ enqueue-এই সেট হয়)। প্রতিটা ব্যাকগ্রাউন্ড dispatch-এর আগে ছোট্ট micro-settle wait (`MICRO_SETTLE_MS = 120`) — এটা সিরিয়াল ব্যাকগ্রাউন্ড চেইনের প্রতিটা লিঙ্কের মাঝে একটা করে "ফাঁক" তৈরি করে, যাতে দেরিতে মাউন্ট হওয়া ইন্টারঅ্যাক্টিভ effect-ও কোনো এক ফাঁকে ঢুকে পরের dispatch-এ প্রায়োরিটি পায়। **বাউন্ডেড**: `BOOT_GRACE_MS` (৪সে) পার হলে বা কোনো ইন্টারঅ্যাক্টিভ কল একবার দেখা গেলে সাথে সাথে এই wait চিরতরে বন্ধ — dashboard-only সেশন (products/customers স্ক্রিন কখনো খোলা হয়নি) সর্বোচ্চ ১২০ms এক্সট্রা প্রতি ব্যাকগ্রাউন্ড কলে, কখনো পুরোপুরি আটকে থাকবে না।
+
+**যাচাই (sandbox)**: esbuild দিয়ে সিনট্যাক্স-ভ্যালিডেট — `SYNTAX OK`।
+
+**real-device-এ এখন যা করবেন**: নতুন বিল্ড দিয়ে কোল্ড-স্টার্ট করুন, সাথে সাথে পণ্য/কাস্টমার ট্যাবে যান, টাইমিং লগ পাঠান — এবার `queryPage-EXPLAIN:customers`/`products`-এর queue-wait কয়েকশ ms-এর মধ্যে থাকা উচিত, সেশনের কোথায় ব্যাকগ্রাউন্ড কল কতগুলো আগে এসেছে তা নির্বিশেষে।
+
+**📁 ফাইল বদলেছে**: `src/db/DataStore.js` (`_pumpDbQueryQueue()`/`_enqueueDbQuery()`), `SQLITE_MIGRATION_LOG.md`
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ১২২-এ আপডেট)
 
 **✅ এন্ট্রি ১২২ — কোল্ড-বুটে "প্রথম ৫ সেকেন্ড পণ্য/কাস্টমার তালিকা ০টি দেখায়" ফিক্স করা হয়েছে (head-of-line blocking)**
 
