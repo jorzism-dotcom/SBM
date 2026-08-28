@@ -39,7 +39,7 @@ import {
 // তৈরি DataStore abstraction layer। isSqliteEnabled() ফ্ল্যাগ ডিফল্ট বন্ধ, তাই
 // এই import নিজে থেকে কোনো আচরণ পাল্টায় না — শুধু নিচের debouncedSave effect-
 // গুলোতে diff-based upsert/remove যোগ হয়েছে (দেখুন সেখানকার কমেন্ট)।
-import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite, queryPage as dsQueryPage, isProductsBootLazyEnabled, setProductsBootLazyEnabled, isProductsNeverLoadEnabled, setProductsNeverLoadEnabled, isPosOndemandCartEnabled, setPosOndemandCartEnabled, isCustomersBootLazyEnabled, setCustomersBootLazyEnabled, isCustomersNeverLoadEnabled, setCustomersNeverLoadEnabled, getDb as dsGetDb, reconcileStore as dsReconcileStore } from "./db/DataStore.js";
+import { upsertMany, remove as dsRemove, isSqliteEnabled, setSqliteEnabled, aggregate as dsAggregate, migrateStoreResumable, getAllMigrationStates, resetMigrationState, analyzeDb, logEventsMany, mirrorFlagToSqlite, queryPage as dsQueryPage, isProductsBootLazyEnabled, setProductsBootLazyEnabled, isProductsNeverLoadEnabled, setProductsNeverLoadEnabled, isPosOndemandCartEnabled, setPosOndemandCartEnabled, isCustomersBootLazyEnabled, setCustomersBootLazyEnabled, isCustomersNeverLoadEnabled, setCustomersNeverLoadEnabled, isInvoicesWindowedBootEnabled, setInvoicesWindowedBootEnabled, getAllRowsWindowed, getDb as dsGetDb, reconcileStore as dsReconcileStore } from "./db/DataStore.js";
 import { logDiag, getDiagLog, clearDiagLog } from "./db/DiagLog.js"; // এন্ট্রি ১০৩ — in-app টাইমিং ডায়াগনস্টিক প্যানেল
 // 🆕 এন্ট্রি ৩৬ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ধাপ ২) — InventorySection/
 // Dashboard-এর KPI কাউন্ট + ডিটেইল লিস্ট + সাপ্লায়ার-গ্রুপিং SQL cutover
@@ -12592,8 +12592,14 @@ function SmartBusinessMgmt() {
       // পুরো বুট-সিকোয়েন্স ১০০% অপরিবর্তিত।
       const customersKeyLazy = isCustomersBootLazyEnabled();
       const customersNeverLoadFlag = customersKeyLazy && isCustomersNeverLoadEnabled();
+      // 🆕 এন্ট্রি ১২৫ — invoices-এর জন্য "windowed" ফ্ল্যাগ (never-load না —
+      // দেখুন DataStore.js-এর ফ্ল্যাগ কমেন্ট)। চালু থাকলে CRITICAL_KEYS থেকে
+      // invoices বাদ যায় (পুরো IndexedDB ব্লব বুটে পড়া হবে না), বদলে নিচে
+      // getAllRowsWindowed() দিয়ে SQL থেকে সরাসরি ৬-মাসের windowed রিড হবে।
+      const invoicesWindowedFlag = isInvoicesWindowedBootEnabled();
       const CRITICAL_KEYS = [
-        ...(customersKeyLazy ? [] : [LK(SK.customers)]), ...(productsKeyLazy ? [] : [LK(SK.products)]), LK(SK.invoices), LK(SK.txns), SK.users,
+        ...(customersKeyLazy ? [] : [LK(SK.customers)]), ...(productsKeyLazy ? [] : [LK(SK.products)]),
+        ...(invoicesWindowedFlag ? [] : [LK(SK.invoices)]), LK(SK.txns), SK.users,
         SK.shopName, LK(SK.darkMode), LK(SK.activeTheme), LK(SK.fontSize),
         LK(SK.paymentInvoices), SK.firebaseConfig, SK.firebaseEnabled,
         SK.authSession, SK.devContact, SK.masterResetHash,
@@ -12613,7 +12619,7 @@ function SmartBusinessMgmt() {
         `🚀 [বুট] loadMany(CRITICAL_KEYS) সম্পন্ন — লাগলো ${_bT3 - _bT2}ms ` +
         `(products${productsKeyLazy ? "=লেজি-স্কিপড" : "=" + ((boot1[LK(SK.products)] || []).length) + "টা"}, ` +
         `customers${customersKeyLazy ? "=লেজি-স্কিপড" : "=" + ((boot1[LK(SK.customers)] || []).length) + "টা"}, ` +
-        `invoices=${(boot1[LK(SK.invoices)] || []).length}টা, txns=${(boot1[LK(SK.txns)] || []).length}টা)`
+        `invoices${invoicesWindowedFlag ? "=windowed-স্কিপড" : "=" + ((boot1[LK(SK.invoices)] || []).length) + "টা"}, txns=${(boot1[LK(SK.txns)] || []).length}টা)`
       );
       const rawCustomers    = boot1[LK(SK.customers)];
       const rawProds        = boot1[LK(SK.products)];
@@ -12688,13 +12694,36 @@ function SmartBusinessMgmt() {
       // fallback-এ ঠিকমতো পড়ে। বড় স্কেলে (১ কোটি ইনভয়েস) real-device টেস্টের
       // সময় বিশেষভাবে "৬ মাসের বেশি পুরনো ইনভয়েস খোঁজা/দেখা" প্রতিটা স্ক্রিনে
       // (ইনভয়েস হিস্ট্রি, কাস্টমার ডিটেইল, রিটার্ন, ভয়েড হিস্ট্রি) যাচাই করা উচিত।
-      const allInvoicesForBoot = rawInvoices || [];
       const invoiceCutoff90 = new Date();
       invoiceCutoff90.setMonth(invoiceCutoff90.getMonth() - 6); // archiveOldInvoices()-এর সাথে সিঙ্কড কাটঅফ
       const invoiceCutoff90Key = _dateKeyOf(invoiceCutoff90);
-      const recentInvoicesForBoot = allInvoicesForBoot.length > 500
-        ? allInvoicesForBoot.filter(i => !i.dateKey || i.dateKey >= invoiceCutoff90Key)
-        : allInvoicesForBoot; // ছোট দোকানে (৫০০-এর কম ইনভয়েস) windowing-এর দরকারই নেই
+      let allInvoicesForBoot;
+      let recentInvoicesForBoot;
+      if (invoicesWindowedFlag) {
+        // 🆕 এন্ট্রি ১২৫ — CRITICAL_KEYS থেকে invoices বাদ দেওয়া হয়েছে (rawInvoices
+        // undefined), তাই এখানে সরাসরি SQL থেকে windowed রিড — পুরো IndexedDB
+        // ব্লব বুটে কখনো পড়া হয়নি। ব্যর্থ হলে (SQLite বন্ধ/এরর) নিরাপদে পুরনো
+        // IndexedDB-পথে fallback (products/customers never-load-এর একই নীতি)।
+        try {
+          if (!isSqliteEnabled() || !businessTypeVal) throw new Error("SQLite enabled না বা businessType অনুপস্থিত");
+          recentInvoicesForBoot = await getAllRowsWindowed(businessTypeVal, "invoices", invoiceCutoff90Key);
+          allInvoicesForBoot = recentInvoicesForBoot; // windowed মোডে "মোট" মানেই window (ইচ্ছাকৃতভাবে সম্পূর্ণ ইতিহাস বুটে গোনা হয় না)
+          logDiag(`✅ [বুট] ইনভয়েস windowed-hydrate (SQL) সফল — window-এ=${recentInvoicesForBoot.length}টা, cutoff=${invoiceCutoff90Key}`);
+        } catch (e) {
+          logDiag(`⚠️ [বুট] ইনভয়েস windowed-hydrate ব্যর্থ (${e?.message || e}) — IndexedDB fallback-এ যাচ্ছে`);
+          const fallbackBoot = await loadMany([LK(SK.invoices)]);
+          const rawInvoicesFallback = fallbackBoot[LK(SK.invoices)] || [];
+          allInvoicesForBoot = rawInvoicesFallback;
+          recentInvoicesForBoot = allInvoicesForBoot.length > 500
+            ? allInvoicesForBoot.filter(i => !i.dateKey || i.dateKey >= invoiceCutoff90Key)
+            : allInvoicesForBoot;
+        }
+      } else {
+        allInvoicesForBoot = rawInvoices || [];
+        recentInvoicesForBoot = allInvoicesForBoot.length > 500
+          ? allInvoicesForBoot.filter(i => !i.dateKey || i.dateKey >= invoiceCutoff90Key)
+          : allInvoicesForBoot; // ছোট দোকানে (৫০০-এর কম ইনভয়েস) windowing-এর দরকারই নেই
+      }
       logDiag(`🚀 [বুট] ইনভয়েস windowing হিসাব সম্পন্ন — মোট=${allInvoicesForBoot.length}টা, ৬-মাসের window-এ=${recentInvoicesForBoot.length}টা`);
 
       // ── সব state একসাথে batch update — একটাই React re-render (ক্রিটিক্যাল অংশ) ──
@@ -22239,12 +22268,54 @@ function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [],
 
   const { start, end } = getRange();
 
-  // ── পেমেন্ট-টাইপ পাই চার্টের জন্য টোটাল — memo করা, প্রতি render-এ ৩বার invoices.filter() এড়াতে ──
-  const paymentTypeTotals = useMemo(() => ({
+  // ── পেমেন্ট-টাইপ পাই চার্টের জন্য টোটাল ──────────────────────────────────
+  // 🆕 এন্ট্রি ১২৬ (Phase ৩ ধাপ ৬, Category B কনভার্সন-এর প্রথম সাইট) — আগে এখানে
+  // শুধু JS `.filter().reduce()` ছিল (৩বার পুরো in-memory `invoices` array স্ক্যান,
+  // প্রতিটা re-render/নতুন বিক্রয়ে)। এখন SQL অ্যাগ্রিগেট (`idx_invoices_pay_type`
+  // ইনডেক্স ব্যবহার করে conditional SUM, একটাই round-trip) প্যারালালে চেষ্টা করা
+  // হয়, রেজাল্ট এলে সেটাই ব্যবহার হয়। ⚠️ **সততার সাথে নোট**: এই ধাপে এখনো JS
+  // হিসাবও (নিচে) সবসময় চলছে — সেফটি-নেট হিসেবে (SQL ব্যর্থ হলে/এখনো লোড না
+  // হলে সাথে সাথে সঠিক ফলাফল দেখানোর জন্য, "০ থেকে সঠিক সংখ্যায় জাম্প" এড়াতে)।
+  // তাই এই মুহূর্তে এখনো পূর্ণ perf-লাভ (JS স্ক্যান বাদ) হয়নি — শুধু "SQL ফলাফল
+  // IndexedDB/JS ফলাফলের সাথে মেলে" এটা real-device-এ প্রমাণিত হলে (products/
+  // customers migration-এর একই দুই-ধাপ discipline: আগে dual-compute দিয়ে
+  // যাচাই, পরে পুরনো পথ সরানো) পরের সেশনে JS ফলব্যাক বাদ দেওয়া হবে।
+  const [paymentTypeTotalsSql, setPaymentTypeTotalsSql] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (isSqliteEnabled() && businessType) {
+      dsAggregate(businessType, "invoices", {
+        select: "SUM(CASE WHEN pay_type='cash' THEN total ELSE 0 END) AS cash, " +
+                "SUM(CASE WHEN pay_type='baki' THEN total ELSE 0 END) AS baki, " +
+                "SUM(CASE WHEN pay_type='partial' THEN total ELSE 0 END) AS part",
+        where: "status = 'active'",
+      }).then((row) => {
+        if (!cancelled && row) {
+          setPaymentTypeTotalsSql({ cash: row.cash || 0, baki: row.baki || 0, part: row.part || 0 });
+        }
+      }).catch(() => { /* নিরাপদে নিচের JS ফলব্যাকেই থেকে যাবে */ });
+    }
+    return () => { cancelled = true; };
+  }, [businessType, invoices.length]);
+
+  const paymentTypeTotalsJs = useMemo(() => ({
     cash: invoices.filter(i => i.payType==="cash").reduce((s,i)=>s+(i.total||0),0),
     baki: invoices.filter(i => i.payType==="baki").reduce((s,i)=>s+(i.total||0),0),
     part: invoices.filter(i => i.payType==="partial").reduce((s,i)=>s+(i.total||0),0),
   }), [invoices]);
+
+  // real-device-এ dev-console-এ পার্থক্য ধরার জন্য (SQL windowed-invoices না
+  // দেখলে, বা status='active' ফিল্টার IndexedDB-এর voided-বাদ যুক্তির থেকে
+  // ভিন্ন হলে সংখ্যা মিসম্যাচ হতে পারে — সেটা এখানেই ধরা পড়বে)।
+  if (paymentTypeTotalsSql && (
+    Math.abs(paymentTypeTotalsSql.cash - paymentTypeTotalsJs.cash) > 1 ||
+    Math.abs(paymentTypeTotalsSql.baki - paymentTypeTotalsJs.baki) > 1 ||
+    Math.abs(paymentTypeTotalsSql.part - paymentTypeTotalsJs.part) > 1
+  )) {
+    console.warn("⚠️ [এন্ট্রি ১২৬] paymentTypeTotals SQL vs JS মিসম্যাচ:", paymentTypeTotalsSql, paymentTypeTotalsJs);
+  }
+
+  const paymentTypeTotals = paymentTypeTotalsJs;
 
   // 🆕 এন্ট্রি ৬৯ (৭.৩, POS-বহির্ভূত, read-only রিপোর্ট — সবচেয়ে কম-ঝুঁকির
   // ক্যাটাগরি) — নিচের chartData আগে পুরো `products` অ্যারে থেকে `prodMap`
@@ -37584,6 +37655,46 @@ function CustomersBootLazyToggle({ T, showToast }) {
   );
 }
 
+function InvoicesWindowedBootToggle({ T, showToast }) {
+  const [enabled, setEnabled] = useState(() => isInvoicesWindowedBootEnabled());
+
+  const handleToggle = () => {
+    const next = !enabled;
+    setInvoicesWindowedBootEnabled(next);
+    setEnabled(next);
+    showToast?.(
+      next
+        ? "✅ Invoices windowed-boot চালু হলো — পরের অ্যাপ রিস্টার্টে কার্যকর হবে"
+        : "Invoices windowed-boot বন্ধ হলো — পরের অ্যাপ রিস্টার্টে আগের (পুরো IndexedDB ব্লব লোড + JS filter) আচরণে ফিরবে"
+    );
+  };
+
+  return (
+    <div style={{ marginTop: 12, padding: 10, borderRadius: 8, border: `1.5px solid ${T.border}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: T.text }}>
+          🪟 Invoices Windowed-Boot (এন্ট্রি ১২৫, পরীক্ষামূলক)
+        </div>
+        <button onClick={handleToggle} style={{
+          padding: "5px 12px", borderRadius: 20,
+          border: `1.5px solid ${enabled ? "#22c55e" : T.border}`,
+          background: enabled ? "#22c55e" : "transparent",
+          color: enabled ? "#fff" : T.sub, fontWeight: 700, fontSize: 11, cursor: "pointer",
+        }}>{enabled ? "চালু" : "বন্ধ"}</button>
+      </div>
+      <div style={{ marginTop: 6, fontSize: 10.5, color: T.sub, lineHeight: 1.7 }}>
+        চালু করলে বুটে invoices-এর পুরো IndexedDB ব্লব আর পড়া হবে না — বদলে সরাসরি
+        SQLite থেকে ৬-মাসের windowed রিড হবে (`date_key &gt;= কাটঅফ`, ইনডেক্স-ব্যবহৃত)।
+        products/customers "never-load"-এর মতো "কখনো না" না — invoices সবসময় ৬-মাসের
+        ডেটা নিয়ে state-এ থাকবে (invoice numbering/dashboard এখনো পুরো window array-এর
+        উপর নির্ভরশীল)। SQL হাইড্রেট ব্যর্থ হলে নিরাপদে পুরনো IndexedDB-পথে ফলব্যাক করে।
+        ⚠️ পরিবর্তন কার্যকর হতে অ্যাপ রিস্টার্ট লাগবে। real-device-এ ইনভয়েস হিস্ট্রি,
+        রিপোর্ট, ৬-মাসের বেশি পুরনো ইনভয়েস সার্চ ভালোভাবে টেস্ট করুন। ডিফল্ট বন্ধ।
+      </div>
+    </div>
+  );
+}
+
 function CustomersNeverLoadToggle({ T, showToast }) {
   const [bootLazyOn] = useState(() => isCustomersBootLazyEnabled());
   const [enabled, setEnabled] = useState(() => isCustomersNeverLoadEnabled());
@@ -38212,6 +38323,7 @@ function SqliteMigrationCard({ T, S, expanded, onToggle, businessType, products,
           <PosOndemandCartToggle T={T} showToast={showToast} />
           <CustomersBootLazyToggle T={T} showToast={showToast} />
           <CustomersNeverLoadToggle T={T} showToast={showToast} />
+          <InvoicesWindowedBootToggle T={T} showToast={showToast} />
 
           <div style={{ marginTop: 12, fontSize: 10.5, color: T.sub, lineHeight: 1.7 }}>
             ⚠️ dual-write চালু থাকলেও পুরনো IndexedDB blob-array-ই একমাত্র সোর্স-অফ-ট্রুথ থাকে (App-এর
