@@ -736,8 +736,9 @@ async function _initDb(businessType) {
   // পেজ-ফল্টগুলো সহ্য করে ফেলা হচ্ছে, যাতে ব্যবহারকারী Products/Customers
   // ট্যাবে পৌঁছানোর সময়ের মধ্যেই (সাধারণত বুটের কয়েক সেকেন্ড পরে) ইনডেক্স
   // পেজগুলো cache-warm হয়ে যায়।
+  const SQL_BOOT_DIAGNOSTICS = false;
   const _tWarmStart = Date.now();
-  try {
+  if (SQL_BOOT_DIAGNOSTICS) try {
     await db.query(
       `EXPLAIN QUERY PLAN SELECT data FROM products WHERE deleted = 0 AND demand_type = 'common' ORDER BY name ASC, id ASC LIMIT 1`
     );
@@ -757,8 +758,8 @@ async function _initDb(businessType) {
   // মাসের পর মাস dual-write-এর REPLACE/DELETE-এ freelist জমে বড় হতে পারে,
   // যেটা VACUUM ছাড়া কখনো কমে না এবং I/O-কে ধীর করে), আর wal_autocheckpoint
   // থ্রেশহোল্ড (ডিফল্ট ১০০০ পেজ — এটা কম হলে ঘনঘন auto-checkpoint স্টল হতে পারে)।
-  let healthInfo = "অজানা (PRAGMA ব্যর্থ)";
-  try {
+  let healthInfo = "production diagnostics disabled";
+  if (SQL_BOOT_DIAGNOSTICS) try {
     const [jm, pc, fc, wac, cs, walChk] = await Promise.all([
       db.query(`PRAGMA journal_mode;`),
       db.query(`PRAGMA page_count;`),
@@ -1559,12 +1560,16 @@ export async function queryPage(businessType, store, opts = {}) {
   // নেই, সবচেয়ে বেশি রিপোর্ট হওয়া ধীর কল-সাইট) EXPLAIN QUERY PLAN ক্যাপচার —
   // real DB-তে ঠিক কোন প্ল্যান বাছা হচ্ছে সরাসরি দেখার জন্য। অন্য কল-সাইটে
   // (cursor থাকা পরের পেজ, invoices) এক্সট্রা কল এড়াতে স্কিপ।
-  if (!cursor && (store === "products" || store === "customers")) {
+  // ⚡ Production boot optimization: EXPLAIN QUERY PLAN is diagnostic-only and
+  // must never sit in the first-page critical path. Enable it explicitly from a
+  // developer diagnostic build when query-plan inspection is needed.
+  const SQL_QUERY_PLAN_DIAGNOSTICS = false;
+  if (SQL_QUERY_PLAN_DIAGNOSTICS && !cursor && (store === "products" || store === "customers")) {
     try {
       const planRes = await db.query(`EXPLAIN QUERY PLAN ${sql}`, sqlParams, `queryPage-EXPLAIN:${store}:${tag}`);
       const planText = (planRes.values || []).map((r) => r.detail).join(" | ");
       logDiag(`🔍 [queryPage EXPLAIN, ${store}, ট্যাগ=${tag || "?"}] ${planText}`);
-    } catch (_) { /* সাইলেন্ট — শুধু ডায়াগনস্টিক, আসল কোয়েরি অপ্রভাবিত */ }
+    } catch (_) { /* diagnostic only */ }
   }
 
   const _qTPlan = Date.now();
