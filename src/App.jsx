@@ -245,32 +245,60 @@ async function checkLicenseClockTamper() {
 // Snapshot কখনো database নয় — এটি শুধু paint-time cache। কোনো write-path এতে
 // নির্ভর করে না এবং boot শেষে actual store data দিয়ে replace হয়।
 // ════════════════════════════════════════════════════════════════════════════════
-const INSTANT_BOOT_CACHE_KEY = "sbm_instant_boot_v4";
-const INSTANT_BOOT_CACHE_LEGACY_KEY = "sbm_instant_boot_v3";
-const INSTANT_BOOT_CACHE_VERSION = 4;
+const INSTANT_BOOT_CACHE_KEY = "sbm_instant_boot_v5";
+const INSTANT_BOOT_CACHE_VERSION = 5;
+const INSTANT_BOOT_PRODUCTS_KEY = "sbm_boot_v5_products";
+const INSTANT_BOOT_CUSTOMERS_KEY = "sbm_boot_v5_customers";
+const INSTANT_BOOT_DASHBOARD_KEY = "sbm_boot_v5_dashboard";
+const INSTANT_BOOT_META_KEY = "sbm_boot_v5_meta";
+const INSTANT_BOOT_CHUNK = 700000;
+
+function _readJsonChunks(prefix) {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const metaRaw = localStorage.getItem(`${prefix}:meta`);
+    if (!metaRaw) return null;
+    const meta = JSON.parse(metaRaw);
+    if (!meta || meta.version !== INSTANT_BOOT_CACHE_VERSION || !Number.isFinite(meta.chunks)) return null;
+    let raw = "";
+    for (let i = 0; i < meta.chunks; i++) {
+      const part = localStorage.getItem(`${prefix}:${i}`);
+      if (part == null) return null;
+      raw += part;
+    }
+    return JSON.parse(raw);
+  } catch { return null; }
+}
 
 function _readInstantBootCache(businessTypeHint = null) {
   try {
     if (typeof localStorage === "undefined") return null;
-    const bizHint = businessTypeHint || null;
-    const keys = bizHint
-      ? [`${INSTANT_BOOT_CACHE_KEY}:${bizHint}`, INSTANT_BOOT_CACHE_KEY, INSTANT_BOOT_CACHE_LEGACY_KEY]
-      : [INSTANT_BOOT_CACHE_KEY, INSTANT_BOOT_CACHE_LEGACY_KEY];
-    for (const key of keys) {
-      const raw = localStorage.getItem(key);
-      if (!raw) continue;
-      const parsed = JSON.parse(raw);
-      if (!parsed || !parsed.businessType) continue;
-      if (parsed.version === INSTANT_BOOT_CACHE_VERSION && (!bizHint || parsed.businessType === bizHint)) return parsed;
-      // One-time upgrade of the V3 snapshot, but never use it for a different business.
-      if (parsed.version === 3 && (!bizHint || parsed.businessType === bizHint)) return { ...parsed, version: INSTANT_BOOT_CACHE_VERSION };
-    }
-    return null;
+    const metaRaw = localStorage.getItem(INSTANT_BOOT_META_KEY);
+    if (!metaRaw) return null;
+    const meta = JSON.parse(metaRaw);
+    if (!meta || meta.version !== INSTANT_BOOT_CACHE_VERSION) return null;
+    if (businessTypeHint && meta.businessType && meta.businessType !== businessTypeHint) return null;
+    const products = _readJsonChunks(INSTANT_BOOT_PRODUCTS_KEY) || [];
+    const customers = _readJsonChunks(INSTANT_BOOT_CUSTOMERS_KEY) || [];
+    const dashboard = _readJsonChunks(INSTANT_BOOT_DASHBOARD_KEY) || null;
+    if (!products.length && !customers.length && !dashboard) return null;
+    return {
+      version: INSTANT_BOOT_CACHE_VERSION,
+      businessType: meta.businessType || "pharmacy",
+      businessTypeLocked: !!meta.businessTypeLocked,
+      enabledBusinessTypes: meta.enabledBusinessTypes || [meta.businessType || "pharmacy"],
+      shopName: meta.shopName || "SBM",
+      currentUser: meta.currentUser || null,
+      authSession: meta.authSession || null,
+      darkMode: meta.darkMode ?? true,
+      activeTheme: meta.activeTheme || "linearvoid",
+      fontSize: meta.fontSize ?? 15,
+      products, customers,
+      dashboardBootSnapshot: dashboard,
+    };
   } catch { return null; }
 }
 
-// Read once, synchronously, before React mounts. This is the critical path that
-// makes a warm app paint with real data instead of waiting for SQLite.
 const _instantBootCache = _readInstantBootCache();
 
 function _trimBootRows(rows, days = 90, max = 1500) {
@@ -290,69 +318,55 @@ function _trimBootRows(rows, days = 90, max = 1500) {
 
 function _buildInstantBootSnapshot(state) {
   const biz = state.businessType || "pharmacy";
-  // Products/customers are the two primary list screens. Keep the full arrays
-  // when they fit; quota protection below progressively shrinks them.
-  const snap = {
+  return {
     version: INSTANT_BOOT_CACHE_VERSION,
     savedAt: new Date().toISOString(),
     businessType: biz,
     businessTypeLocked: !!state.businessTypeLocked,
-    enabledBusinessTypes: Array.isArray(state.enabledBusinessTypes) && state.enabledBusinessTypes.length
-      ? state.enabledBusinessTypes : [biz],
+    enabledBusinessTypes: Array.isArray(state.enabledBusinessTypes) && state.enabledBusinessTypes.length ? state.enabledBusinessTypes : [biz],
     shopName: state.shopName || "SBM",
     currentUser: state.currentUser || null,
     authSession: state.authSession || null,
     darkMode: state.darkMode ?? true,
     activeTheme: state.activeTheme || "linearvoid",
     fontSize: state.fontSize ?? 15,
-    customers: Array.isArray(state.customers) ? state.customers : [],
     products: Array.isArray(state.products) ? state.products : [],
-    // Dashboard only needs a recent operational window for instant paint.
-    invoices: _trimBootRows(state.invoices, 90, 2000),
-    txns: _trimBootRows(state.txns, 90, 3000),
-    returns: _trimBootRows(state.returns, 90, 1000),
-    cashLogs: _trimBootRows(state.cashLogs, 90, 1000),
-    expenses: _trimBootRows(state.expenses, 90, 1000),
-    purchaseOrders: _trimBootRows(state.purchaseOrders, 90, 1000),
-    stockMovements: _trimBootRows(state.stockMovements, 90, 1000),
-    supplierPayments: _trimBootRows(state.supplierPayments, 90, 1000),
-    paymentInvoices: _trimBootRows(state.paymentInvoices, 90, 1000),
-    users: Array.isArray(state.users) ? state.users : [],
-    // Precomputed dashboard primitives let the first dashboard paint without
-    // waiting for secondary SQL aggregate hooks. The dashboard still recomputes
-    // from authoritative arrays after SQLite refresh.
-    dashboardSnapshot: {
-      todayCashSale: Number(state.todayCashSale || 0),
-      todayProfit: Number(state.todayProfit || 0),
-      savedAt: new Date().toISOString(),
-    },
+    customers: Array.isArray(state.customers) ? state.customers : [],
   };
-  return snap;
 }
 
-function _writeInstantBootCache(state) {
+function _writeJsonChunks(prefix, value) {
   try {
     if (typeof localStorage === "undefined") return false;
-    let snap = _buildInstantBootSnapshot(state);
-    let raw = JSON.stringify(snap);
-    // Android WebView localStorage is commonly quota-limited. Keep the most
-    // useful data first: customers + products + recent dashboard records.
-    if (raw.length > 4_000_000) {
-      snap.products = snap.products.slice(0, 1500);
-      snap.customers = snap.customers.slice(0, 1500);
-      raw = JSON.stringify(snap);
-    }
-    if (raw.length > 4_000_000) {
-      snap.products = snap.products.slice(0, 800);
-      snap.customers = snap.customers.slice(0, 800);
-      raw = JSON.stringify(snap);
-    }
-    if (raw.length > 4_000_000) return false;
-    const scopedKey = `${INSTANT_BOOT_CACHE_KEY}:${snap.businessType}`;
-    localStorage.setItem(scopedKey, raw);
-    // Keep the most recently used business as a small discovery pointer.
-    localStorage.setItem(INSTANT_BOOT_CACHE_KEY, raw);
+    const raw = JSON.stringify(value ?? null);
+    const chunks = Math.max(1, Math.ceil(raw.length / INSTANT_BOOT_CHUNK));
+    const oldMetaRaw = localStorage.getItem(`${prefix}:meta`);
+    let oldChunks = 0;
+    try { oldChunks = JSON.parse(oldMetaRaw || "{}").chunks || 0; } catch {}
+    for (let i = 0; i < chunks; i++) localStorage.setItem(`${prefix}:${i}`, raw.slice(i * INSTANT_BOOT_CHUNK, (i + 1) * INSTANT_BOOT_CHUNK));
+    for (let i = chunks; i < oldChunks; i++) localStorage.removeItem(`${prefix}:${i}`);
+    localStorage.setItem(`${prefix}:meta`, JSON.stringify({ version: INSTANT_BOOT_CACHE_VERSION, chunks, savedAt: Date.now() }));
     return true;
+  } catch { return false; }
+}
+
+function _writeInstantBootCache(state, dashboardBootSnapshot = null) {
+  try {
+    if (typeof localStorage === "undefined") return false;
+    const snap = _buildInstantBootSnapshot(state);
+    const productsOk = _writeJsonChunks(INSTANT_BOOT_PRODUCTS_KEY, snap.products);
+    const customersOk = _writeJsonChunks(INSTANT_BOOT_CUSTOMERS_KEY, snap.customers);
+    const dashboardOk = _writeJsonChunks(INSTANT_BOOT_DASHBOARD_KEY, dashboardBootSnapshot);
+    const meta = {
+      version: INSTANT_BOOT_CACHE_VERSION, savedAt: Date.now(),
+      businessType: snap.businessType, businessTypeLocked: snap.businessTypeLocked,
+      enabledBusinessTypes: snap.enabledBusinessTypes, shopName: snap.shopName,
+      currentUser: snap.currentUser, authSession: snap.authSession, darkMode: snap.darkMode,
+      activeTheme: snap.activeTheme, fontSize: snap.fontSize,
+    };
+    localStorage.setItem(INSTANT_BOOT_META_KEY, JSON.stringify(meta));
+    localStorage.setItem(INSTANT_BOOT_CACHE_KEY, JSON.stringify({ version: INSTANT_BOOT_CACHE_VERSION, businessType: snap.businessType, savedAt: Date.now() }));
+    return productsOk && customersOk && dashboardOk;
   } catch { return false; }
 }
 
@@ -12271,6 +12285,7 @@ function SmartBusinessMgmt() {
   const masterResetHash  = useAppStore(s => s.masterResetHash);
   const users            = useAppStore(s => s.users);
   const loaded           = useAppStore(s => s.loaded);
+  const dashboardBootSnapshot = useAppStore(s => s.dashboardBootSnapshot);
   const settingsLoaded   = useAppStore(s => s.settingsLoaded); // 🔴 wave-2 (deferred keys) লোড শেষ হলে true
   const authChecked      = useAppStore(s => s.authChecked);
   // Group C: UI state
@@ -14189,16 +14204,18 @@ function SmartBusinessMgmt() {
   useEffect(() => { if (loaded && bootHydrationCompleteRef.current) debouncedSave(LK(SK.auditLogs),        auditLogs,        2000); }, [auditLogs,        loaded]);
   useEffect(() => { if (loaded && bootHydrationCompleteRef.current) debouncedSave(LK(SK.quotations),       quotations,       1500); }, [quotations,       loaded]);
   useEffect(() => { if (loaded && bootHydrationCompleteRef.current) { debouncedSave(LK(SK.supplierPayments), supplierPayments, 1500); dualWriteSqlite(businessType, "supplierPayments", _dsSupplierPaymentsRef, supplierPayments); } }, [supplierPayments, loaded]);
-  // ⚡ Instant boot snapshot — authoritative boot শেষ হওয়ার পরই write করা হয়.
-  // Debounced + quota-safe; এটি কখনো SQLite/IndexedDB-এর source of truth নয়।
+  // ⚡ Instant boot v5 — products/customers আলাদা chunk-এ, dashboard-এর ছোট snapshot আলাদা।
+  // বড় invoices/txns কখনো boot-cache-এ ঢোকে না, তাই quota-এর কারণে পুরো cache বাতিল হয় না।
   useEffect(() => {
     if (!loaded || !bootHydrationCompleteRef.current) return;
     const t = setTimeout(() => {
-      const ok = _writeInstantBootCache(useAppStore.getState());
-      if (!ok) logDiag("⚠️ [InstantBoot] snapshot save skipped (quota/serialization)");
-    }, 250);
+      const state = useAppStore.getState();
+      const dashboard = state.dashboardBootSnapshot || null;
+      const ok = _writeInstantBootCache(state, dashboard);
+      if (!ok) logDiag("⚠️ [InstantBoot v5] dedicated cache save failed");
+    }, 300);
     return () => clearTimeout(t);
-  }, [loaded, businessType, shopName, currentUser, customers, products, invoices, txns, returns, cashLogs, expenses, purchaseOrders, stockMovements, supplierPayments, paymentInvoices, users]);
+  }, [loaded, businessType, shopName, currentUser, customers, products, dashboardBootSnapshot, authSession, darkMode, activeTheme, fontSize]);
 
   // 🔴 ফিক্স: "ব্যাকআপ প্রয়োজন" ব্যাজ আগে শুধু customers/products/invoices/txns
   // বদলালে জ্বলত — বাকি ব্যাকআপযোগ্য ফিল্ডগুলো বদলালে জ্বলত না।
@@ -16124,6 +16141,34 @@ function SmartBusinessMgmt() {
   const todayProfit = useMemo(() => {
     return calcProfitTotal(todayInvs, globalProdMap) - todayReturnsProfitImpact;
   }, [todayInvs, globalProdMap, todayReturnsProfitImpact]);
+  // ⚡ Dashboard paint cache: only the small, already-computed home values and
+  // today's bounded operational rows are persisted synchronously for the next boot.
+  useEffect(() => {
+    if (!loaded || !bootHydrationCompleteRef.current || !businessType) return;
+    const snapshot = {
+      version: INSTANT_BOOT_CACHE_VERSION, savedAt: new Date().toISOString(),
+      dateKey: todayEn(),
+      todayTotal: Number(todayTotal || 0), todayBaki: Number(todayBaki || 0),
+      todayJoma: Number(todayJoma || 0), totalBaki: Number(totalBaki || 0),
+      todayCashSale: Number(todayCashSale || 0), todayProfit: Number(todayProfit || 0),
+      todayInvs: (todayInvs || []).slice(0, 200),
+      todayTxns: (txns || []).filter(t => t?.dateKey === todayEn()).slice(0, 500),
+      todayReturns: (todayReturns || []).slice(0, 200),
+      todayCashLogs: (cashLogs || []).filter(x => x?.dateKey === todayEn()).slice(0, 200),
+    };
+    useAppStore.getState().set("dashboardBootSnapshot", snapshot);
+  }, [loaded, businessType, todayTotal, todayBaki, todayJoma, totalBaki, todayCashSale, todayProfit, todayInvs, todayReturns, txns, cashLogs]);
+
+  // ⚡ If authoritative arrays are still empty on the first paint, use the synchronous
+  // dashboard snapshot for the home KPI props. The SQL/IDB boot will replace it later.
+  const _bootDash = dashboardBootSnapshot && dashboardBootSnapshot.dateKey === todayEn() ? dashboardBootSnapshot : null;
+  const displayTodayTotal = (_bootDash && invoices.length === 0) ? _bootDash.todayTotal : todayTotal;
+  const displayTodayBaki = (_bootDash && invoices.length === 0) ? _bootDash.todayBaki : todayBaki;
+  const displayTodayJoma = (_bootDash && txns.length === 0) ? _bootDash.todayJoma : todayJoma;
+  const displayTotalBaki = (_bootDash && customers.length === 0) ? _bootDash.totalBaki : totalBaki;
+  const displayTodayCashSale = (_bootDash && invoices.length === 0) ? _bootDash.todayCashSale : todayCashSale;
+  const displayTodayProfit = (_bootDash && invoices.length === 0) ? _bootDash.todayProfit : todayProfit;
+  const displayTodayInvs = (_bootDash && invoices.length === 0) ? (_bootDash.todayInvs || []) : todayInvs;
 
   // ── S (styles) এবং navItems — conditional return এর আগে রাখতে হবে (Rules of Hooks) ──
   const S = React.useMemo(() => makeS(T), [activeTheme, darkMode, fontSize]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -17070,17 +17115,17 @@ function SmartBusinessMgmt() {
             })()}
             <MemoDashboard T={T} S={S}
               businessType={businessType}
-              customers={customers} invoices={invoices} totalBaki={totalBaki}
-              todayBaki={todayBaki} todayJoma={todayJoma} todayTotal={todayTotal}
-              todayInvs={todayInvs} setTab={setTab} txns={txns}
+              customers={customers} invoices={invoices} totalBaki={displayTotalBaki}
+              todayBaki={displayTodayBaki} todayJoma={displayTodayJoma} todayTotal={displayTodayTotal}
+              todayInvs={displayTodayInvs} setTab={setTab} txns={txns}
               dashModal={dashModal} setDashModal={setDashModal}
               invModal={invModal} setInvModal={setInvModal}
               cashModal={cashModal} setCashModal={setCashModal}
               paymentInvoices={paymentInvoices}
               shopName={shopName}
               showToast={showToast}
-              todayCashSale={todayCashSale}
-              todayProfit={todayProfit}
+              todayCashSale={displayTodayCashSale}
+              todayProfit={displayTodayProfit}
               products={products}
               purchaseOrders={purchaseOrders}
               voidInvoice={voidInvoice}
