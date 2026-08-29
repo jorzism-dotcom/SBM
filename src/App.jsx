@@ -278,8 +278,18 @@ function _readInstantBootCache(businessTypeHint = null) {
     const meta = JSON.parse(metaRaw);
     if (!meta || meta.version !== INSTANT_BOOT_CACHE_VERSION) return null;
     if (businessTypeHint && meta.businessType && meta.businessType !== businessTypeHint) return null;
-    const products = _readJsonChunks(INSTANT_BOOT_PRODUCTS_KEY) || [];
-    const customers = _readJsonChunks(INSTANT_BOOT_CUSTOMERS_KEY) || [];
+    // V6: dashboard cache is optional. Products/customers are the paint-critical
+    // payloads. Also recover legacy unprefixed localStorage snapshots when a V5
+    // cache was never successfully written (e.g. quota/upgrade edge cases).
+    const _readLegacy = (key) => {
+      try {
+        const raw = localStorage.getItem(key);
+        const v = raw ? JSON.parse(raw) : null;
+        return Array.isArray(v) ? v : [];
+      } catch { return []; }
+    };
+    const products = _readJsonChunks(INSTANT_BOOT_PRODUCTS_KEY) || _readLegacy("sbm-products");
+    const customers = _readJsonChunks(INSTANT_BOOT_CUSTOMERS_KEY) || _readLegacy("sbm-customers");
     const dashboard = _readJsonChunks(INSTANT_BOOT_DASHBOARD_KEY) || null;
     if (!products.length && !customers.length && !dashboard) return null;
     return {
@@ -449,6 +459,9 @@ const useAppStore = create(subscribeWithSelector((set) => ({
   // পারত (wave-2 read এর সাথে race করে)। তাই এই দুইটার persistence effect
   // এখন থেকে `settingsLoaded` (wave-2 শেষ হলে true) দিয়ে গার্ড হবে।
   settingsLoaded:    false,
+  // V6: dashboard paint snapshot must be part of the initial Zustand state;
+  // otherwise the snapshot exists in localStorage but is invisible on first render.
+  dashboardBootSnapshot: _instantBootCache?.dashboardBootSnapshot || null,
   authChecked:       !!_instantBootCache,
   toast:             null,
   modal:             null,
@@ -12595,6 +12608,12 @@ function SmartBusinessMgmt() {
   // back into IndexedDB/SQLite and accidentally overwrite newer database data.
   const bootHydrationCompleteRef = useRef(false);
 
+  // V6: HTML splash is branding only, never a data-loading gate. The app shell
+  // must be visible immediately; cached state paints first and async boot runs behind it.
+  useEffect(() => {
+    try { if (typeof window.__hideSplash === "function") window.__hideSplash(); } catch {}
+  }, []);
+
   useEffect(() => {
     (async () => {
       // এন্ট্রি ১০৫ — সম্পূর্ণ বুট-সিকোয়েন্স ধাপে ধাপে টাইমিং। effect শুরু হওয়ার
@@ -12871,8 +12890,10 @@ function SmartBusinessMgmt() {
       // ── সব state একসাথে batch update — একটাই React re-render (ক্রিটিক্যাল অংশ) ──
       bootHydrationCompleteRef.current = true;
       _patch({
-        customers:             rawCustomers        || SEED_CUSTOMERS,
-        products:              migratedProds,
+        // V6: never replace a valid paint-cache with [] while lazy hydration is
+        // running. The authoritative async read will replace it when ready.
+        customers:             (customersKeyLazy && customers.length > 0 && !rawCustomers) ? customers : (rawCustomers || SEED_CUSTOMERS),
+        products:              (productsKeyLazy && products.length > 0 && !rawProds) ? products : migratedProds,
         invoices:              recentInvoicesForBoot,
         txns:                  rawTxns             || [],
         users:                 rawUsers            || SEED_USERS,
@@ -16470,24 +16491,8 @@ function SmartBusinessMgmt() {
     <ViewerModeContainer onExit={exitViewerMode} />
   );
 
-  if (!loaded || !authChecked) return (
-    <div style={{ ...makeS(DARK).loadScreen, background: "radial-gradient(ellipse at 50% 40%,#001a2c 0%,#000d18 70%)" }}>
-      <div style={{ position: "relative", width: 110, height: 110, display: "flex", alignItems: "center", justifyContent: "center", animation: "fadeUp 0.6s ease" }}>
-        <SBMLogo size={100} />
-        <div style={{ position: "absolute", inset: -8, borderRadius: "50%", border: "2px solid transparent", borderTopColor: "#00e5ff", borderRightColor: "rgba(0,229,255,0.12)", animation: "spin 1.2s cubic-bezier(0.4,0,0.6,1) infinite" }} />
-        <div style={{ position: "absolute", inset: -16, borderRadius: "50%", border: "1px solid transparent", borderTopColor: "rgba(0,229,255,0.35)", animation: "spin 2s cubic-bezier(0.4,0,0.6,1) infinite reverse" }} />
-      </div>
-      <div style={{ color: "#e0f9ff", fontWeight: 800, fontSize: 18, letterSpacing: 2, fontFamily: "'Courier New',monospace", textShadow: "0 0 24px rgba(0,229,255,0.5)" }}>Smart Business Management</div>
-      <div style={{ color: "rgba(0,229,255,0.55)", fontSize: 12, fontWeight: 700, letterSpacing: 3, fontFamily: "'Courier New',monospace" }}>SBM</div>
-      <span style={{ color: "rgba(0,229,255,0.45)", fontSize: 13, animation: "pulse 1.5s ease-in-out infinite" }}>লোড হচ্ছে...</span>
-      <style>{`
-        @keyframes spin{to{transform:rotate(360deg)}}
-        @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-        @keyframes pulse{0%,100%{opacity:0.4}50%{opacity:1}}
-      `}</style>
-    </div>
-  );
-
+  // V6: no full-screen loading gate. Existing cache/default shell renders immediately;
+  // business selection/login gates below remain authoritative for first-time installs.
   // 🆕 (২৭ জুলাই ২০২৬ — মাল্টি-বিজনেস অফলাইন অ্যাক্টিভেশন, ধাপ B): লগইনের আগেই
   // এই গেট — businessTypeLocked false থাকলে (নতুন ইনস্টল বা আগে-থেকে-চলা শপ,
   // দুটোতেই) বিজনেস-সিলেক্ট স্ক্রিন দেখাবে। একবার নিশ্চিত করে লক হয়ে গেলে আর
@@ -20105,7 +20110,9 @@ function SmartInvoiceBuilder({ T, S, isDark = false, customers, products, setCus
 
   // useSqliteBrowse সত্যি হলেও browseProducts প্রথম রেন্ডারে null থাকতে পারে
   // (state আপডেট হওয়ার আগে) — তাই null-চেক দিয়ে filteredProducts ফলব্যাক
-  const gridProducts = (useSqliteBrowse && browseProducts) ? browseProducts : filteredProducts;
+  // V6: SQL browse is background hydration, not the first-paint source.
+  // Until its first page is ready, keep showing the already-hydrated cache/state.
+  const gridProducts = (useSqliteBrowse && browseProducts.length > 0) ? browseProducts : filteredProducts;
   const gridEndReached = useSqliteBrowse
     ? () => { if (!browseDone && !browseLoading) loadBrowsePage(false); }
     : undefined;
@@ -28492,7 +28499,9 @@ function Customers({ T, S, customers, setCustomers, showToast, setModal, onOpenD
   const filteredCustomers = bySearch;
   // 🆕 এন্ট্রি ৯৬ — SQL browse চালু ও ব্যর্থ না হলে browseCustomers, নাহলে
   // আগের মতোই filteredCustomers (search-mode বা SQL বন্ধ/ব্যর্থ অবস্থায়)।
-  const gridCustomers = useSqliteBrowse ? browseCustomers : filteredCustomers;
+  // V6: don't turn the first render into an empty list while SQL pagination is
+  // still fetching its first page.
+  const gridCustomers = (useSqliteBrowse && browseCustomers.length > 0) ? browseCustomers : filteredCustomers;
 
   // L5 fix: render-এ side effect না করে useEffect ব্যবহার
   useEffect(() => {
