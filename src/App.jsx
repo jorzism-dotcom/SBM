@@ -273,14 +273,11 @@ function _readJsonChunks(prefix) {
 function _readInstantBootCache(businessTypeHint = null) {
   try {
     if (typeof localStorage === "undefined") return null;
-    const metaRaw = localStorage.getItem(INSTANT_BOOT_META_KEY);
-    if (!metaRaw) return null;
-    const meta = JSON.parse(metaRaw);
-    if (!meta || meta.version !== INSTANT_BOOT_CACHE_VERSION) return null;
-    if (businessTypeHint && meta.businessType && meta.businessType !== businessTypeHint) return null;
-    // V6: dashboard cache is optional. Products/customers are the paint-critical
-    // payloads. Also recover legacy unprefixed localStorage snapshots when a V5
-    // cache was never successfully written (e.g. quota/upgrade edge cases).
+
+    // V7: NEVER require the V5/V6 meta record in order to paint. A previous
+    // cache write can fail after writing the payload chunks (quota/interrupted
+    // write), and the old implementation then discarded perfectly usable
+    // legacy/local payloads and booted from SQLite instead. Read payloads first.
     const _readLegacy = (key) => {
       try {
         const raw = localStorage.getItem(key);
@@ -288,10 +285,24 @@ function _readInstantBootCache(businessTypeHint = null) {
         return Array.isArray(v) ? v : [];
       } catch { return []; }
     };
+
     const products = _readJsonChunks(INSTANT_BOOT_PRODUCTS_KEY) || _readLegacy("sbm-products");
     const customers = _readJsonChunks(INSTANT_BOOT_CUSTOMERS_KEY) || _readLegacy("sbm-customers");
     const dashboard = _readJsonChunks(INSTANT_BOOT_DASHBOARD_KEY) || null;
-    if (!products.length && !customers.length && !dashboard) return null;
+
+    let meta = {};
+    try {
+      const metaRaw = localStorage.getItem(INSTANT_BOOT_META_KEY);
+      const parsed = metaRaw ? JSON.parse(metaRaw) : {};
+      if (parsed && typeof parsed === "object") meta = parsed;
+    } catch {}
+
+    // If the cache is business-scoped, never paint another business's data.
+    // Legacy unprefixed data is only used when there is no reliable V5/V6 meta.
+    if (businessTypeHint && meta.businessType && meta.businessType !== businessTypeHint) return null;
+    const hasPayload = products.length > 0 || customers.length > 0 || !!dashboard;
+    if (!hasPayload) return null;
+
     return {
       version: INSTANT_BOOT_CACHE_VERSION,
       businessType: meta.businessType || "pharmacy",
@@ -376,6 +387,13 @@ function _writeInstantBootCache(state, dashboardBootSnapshot = null) {
     };
     localStorage.setItem(INSTANT_BOOT_META_KEY, JSON.stringify(meta));
     localStorage.setItem(INSTANT_BOOT_CACHE_KEY, JSON.stringify({ version: INSTANT_BOOT_CACHE_VERSION, businessType: snap.businessType, savedAt: Date.now() }));
+    // V7 durable emergency mirror. These keys are intentionally small in the
+    // normal case and let the next launch paint even if the chunk meta record
+    // was interrupted or localStorage quota changed between launches.
+    try {
+      localStorage.setItem("sbm-products", JSON.stringify(snap.products));
+      localStorage.setItem("sbm-customers", JSON.stringify(snap.customers));
+    } catch {}
     return productsOk && customersOk && dashboardOk;
   } catch { return false; }
 }
@@ -12616,6 +12634,15 @@ function SmartBusinessMgmt() {
 
   useEffect(() => {
     (async () => {
+      // V7: if a known-good paint cache exists, it is already in the initial
+      // Zustand state. Mark the UI ready immediately instead of making the
+      // first paint wait for DeviceID/IndexedDB/SQLite. The authoritative boot
+      // below still runs and replaces the snapshot when real data is ready.
+      if (_instantBootCache && _instantBootCache.products?.length > 0 && _instantBootCache.customers?.length > 0) {
+        bootHydrationCompleteRef.current = false;
+        _patch({ loaded: true, authChecked: true });
+        try { if (typeof window.__hideSplash === "function") window.__hideSplash(); } catch {}
+      }
       // এন্ট্রি ১০৫ — সম্পূর্ণ বুট-সিকোয়েন্স ধাপে ধাপে টাইমিং। effect শুরু হওয়ার
       // এই মুহূর্তটাই বলে দেয় React mount + module-load (window.__appBootT0 থেকে
       // এই লাইন পর্যন্ত) কত সময় নিলো — এটাই সবচেয়ে আগের ধাপ, তারপর প্রতিটা
