@@ -235,13 +235,135 @@ async function checkLicenseClockTamper() {
 // তাই স্ট্যাটিক import না রেখে নিচে lazy dynamic import() দিয়ে লোড করা হচ্ছে (useRecharts হুক) —
 // প্রতি অ্যাপ-ওপেনে এই চার্ট লাইব্রেরির parse/eval খরচ আর বহন করতে হবে না।
 
+// ════════════════════════════════════════════════════════════════════════════════
+// ⚡ INSTANT BOOT CACHE v2
+// SQLite/IndexedDB দুটোই asynchronous। তাই cold-start-এ UI-কে কোনো database
+// read-এর জন্য অপেক্ষা না করিয়ে সর্বশেষ known-good UI snapshot localStorage-এ
+// synchronousভাবে hydrate করা হয়। SQLite/IndexedDB পরে authoritative source
+// হিসেবে silently refresh করে।
+//
+// Snapshot কখনো database নয় — এটি শুধু paint-time cache। কোনো write-path এতে
+// নির্ভর করে না এবং boot শেষে actual store data দিয়ে replace হয়।
+// ════════════════════════════════════════════════════════════════════════════════
+const INSTANT_BOOT_CACHE_KEY = "sbm_instant_boot_v4";
+const INSTANT_BOOT_CACHE_LEGACY_KEY = "sbm_instant_boot_v3";
+const INSTANT_BOOT_CACHE_VERSION = 4;
+
+function _readInstantBootCache(businessTypeHint = null) {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const bizHint = businessTypeHint || null;
+    const keys = bizHint
+      ? [`${INSTANT_BOOT_CACHE_KEY}:${bizHint}`, INSTANT_BOOT_CACHE_KEY, INSTANT_BOOT_CACHE_LEGACY_KEY]
+      : [INSTANT_BOOT_CACHE_KEY, INSTANT_BOOT_CACHE_LEGACY_KEY];
+    for (const key of keys) {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !parsed.businessType) continue;
+      if (parsed.version === INSTANT_BOOT_CACHE_VERSION && (!bizHint || parsed.businessType === bizHint)) return parsed;
+      // One-time upgrade of the V3 snapshot, but never use it for a different business.
+      if (parsed.version === 3 && (!bizHint || parsed.businessType === bizHint)) return { ...parsed, version: INSTANT_BOOT_CACHE_VERSION };
+    }
+    return null;
+  } catch { return null; }
+}
+
+// Read once, synchronously, before React mounts. This is the critical path that
+// makes a warm app paint with real data instead of waiting for SQLite.
+const _instantBootCache = _readInstantBootCache();
+
+function _trimBootRows(rows, days = 90, max = 1500) {
+  const arr = Array.isArray(rows) ? rows : [];
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
+  const cutoffKey = cutoff.toISOString().slice(0, 10);
+  return arr
+    .filter(r => {
+      const k = r?.dateKey || (r?.createdAt ? String(r.createdAt).slice(0, 10) : "");
+      return !k || k >= cutoffKey;
+    })
+    .slice()
+    .sort((a, b) => String(b?.createdAt || b?.date || b?.dateKey || "").localeCompare(String(a?.createdAt || a?.date || a?.dateKey || "")))
+    .slice(0, max);
+}
+
+function _buildInstantBootSnapshot(state) {
+  const biz = state.businessType || "pharmacy";
+  // Products/customers are the two primary list screens. Keep the full arrays
+  // when they fit; quota protection below progressively shrinks them.
+  const snap = {
+    version: INSTANT_BOOT_CACHE_VERSION,
+    savedAt: new Date().toISOString(),
+    businessType: biz,
+    businessTypeLocked: !!state.businessTypeLocked,
+    enabledBusinessTypes: Array.isArray(state.enabledBusinessTypes) && state.enabledBusinessTypes.length
+      ? state.enabledBusinessTypes : [biz],
+    shopName: state.shopName || "SBM",
+    currentUser: state.currentUser || null,
+    authSession: state.authSession || null,
+    darkMode: state.darkMode ?? true,
+    activeTheme: state.activeTheme || "linearvoid",
+    fontSize: state.fontSize ?? 15,
+    customers: Array.isArray(state.customers) ? state.customers : [],
+    products: Array.isArray(state.products) ? state.products : [],
+    // Dashboard only needs a recent operational window for instant paint.
+    invoices: _trimBootRows(state.invoices, 90, 2000),
+    txns: _trimBootRows(state.txns, 90, 3000),
+    returns: _trimBootRows(state.returns, 90, 1000),
+    cashLogs: _trimBootRows(state.cashLogs, 90, 1000),
+    expenses: _trimBootRows(state.expenses, 90, 1000),
+    purchaseOrders: _trimBootRows(state.purchaseOrders, 90, 1000),
+    stockMovements: _trimBootRows(state.stockMovements, 90, 1000),
+    supplierPayments: _trimBootRows(state.supplierPayments, 90, 1000),
+    paymentInvoices: _trimBootRows(state.paymentInvoices, 90, 1000),
+    users: Array.isArray(state.users) ? state.users : [],
+    // Precomputed dashboard primitives let the first dashboard paint without
+    // waiting for secondary SQL aggregate hooks. The dashboard still recomputes
+    // from authoritative arrays after SQLite refresh.
+    dashboardSnapshot: {
+      todayCashSale: Number(state.todayCashSale || 0),
+      todayProfit: Number(state.todayProfit || 0),
+      savedAt: new Date().toISOString(),
+    },
+  };
+  return snap;
+}
+
+function _writeInstantBootCache(state) {
+  try {
+    if (typeof localStorage === "undefined") return false;
+    let snap = _buildInstantBootSnapshot(state);
+    let raw = JSON.stringify(snap);
+    // Android WebView localStorage is commonly quota-limited. Keep the most
+    // useful data first: customers + products + recent dashboard records.
+    if (raw.length > 4_000_000) {
+      snap.products = snap.products.slice(0, 1500);
+      snap.customers = snap.customers.slice(0, 1500);
+      raw = JSON.stringify(snap);
+    }
+    if (raw.length > 4_000_000) {
+      snap.products = snap.products.slice(0, 800);
+      snap.customers = snap.customers.slice(0, 800);
+      raw = JSON.stringify(snap);
+    }
+    if (raw.length > 4_000_000) return false;
+    const scopedKey = `${INSTANT_BOOT_CACHE_KEY}:${snap.businessType}`;
+    localStorage.setItem(scopedKey, raw);
+    // Keep the most recently used business as a small discovery pointer.
+    localStorage.setItem(INSTANT_BOOT_CACHE_KEY, raw);
+    return true;
+  } catch { return false; }
+}
+
 // ─── Zustand Store — 48 useState → একটি কেন্দ্রীয় store ─────────────────────
 // prop drilling ছাড়াই যেকোনো component থেকে state access করা যাবে
 const useAppStore = create(subscribeWithSelector((set) => ({
   // ── App Data ──────────────────────────────────────────────────────────────
-  customers:         [],
-  products:          [],
-  invoices:          [],
+  // ⚡ Instant boot: synchronous last-known snapshot; real boot overwrites these.
+  customers:         _instantBootCache?.customers || [],
+  products:          _instantBootCache?.products || [],
+  invoices:          _instantBootCache?.invoices || [],
   // 🆕 Phase ৫ (write-through Map, getState()-সিঙ্কড) — নিচে subscribeWithSelector
   // দিয়ে products/customers/invoices বদলালেই স্বয়ংক্রিয় রিবিল্ড হয় (set()/patch()
   // দুটোর মাধ্যমেই বদলালেও ধরবে, কারণ এটা action-এর ভেতরে না বসিয়ে বাইরে থেকে
@@ -260,19 +382,19 @@ const useAppStore = create(subscribeWithSelector((set) => ({
   customersNeverLoadSqlDown: false,
   customersById:     new Map(),
   invoicesById:      new Map(),
-  txns:              [],
+  txns:              _instantBootCache?.txns || [],
   smsLog:            [],
-  users:             [],
+  users:             _instantBootCache?.users || [],
   suppliers:         [],
-  purchaseOrders:    [],
-  stockMovements:    [],
-  cashLogs:          [], // 💰 ওপেনিং ক্যাশ ও মালিকের উইথড্রয়াল লগ
-  expenses:          [], // 🧾 দোকানের খরচ (ভাড়া, বিদ্যুৎ, বেতন...)
-  returns:           [], // 🔄 পণ্য ফেরত ও রিফান্ড
+  purchaseOrders:    _instantBootCache?.purchaseOrders || [],
+  stockMovements:    _instantBootCache?.stockMovements || [],
+  cashLogs:          _instantBootCache?.cashLogs || [], // 💰 ওপেনিং ক্যাশ ও মালিকের উইথড্রয়াল লগ
+  expenses:          _instantBootCache?.expenses || [], // 🧾 দোকানের খরচ (ভাড়া, বিদ্যুৎ, বেতন...)
+  returns:           _instantBootCache?.returns || [], // 🔄 পণ্য ফেরত ও রিফান্ড
   auditLogs:         [], // 📋 কে কখন কী করলো — security audit trail
   quotations:        [], // 📋 কোটেশন / এস্টিমেট
-  supplierPayments:  [], // 🏭 সাপ্লায়ার পেমেন্ট লগ
-  paymentInvoices:   [],
+  supplierPayments:  _instantBootCache?.supplierPayments || [], // 🏭 সাপ্লায়ার পেমেন্ট লগ
+  paymentInvoices:   _instantBootCache?.paymentInvoices || [],
   deletedCustomers:  [],
   deletedProducts:   [],
   smsTemplates:      null,
@@ -289,22 +411,22 @@ const useAppStore = create(subscribeWithSelector((set) => ({
   serialQueue:       [],
 
   // ── Shop / Auth ───────────────────────────────────────────────────────────
-  shopName:          "SBM",
-  businessType:      "pharmacy", // এখন থেকে এটাই "active" business type — একাধিক enabled থাকলে owner এটার মধ্যেই সুইচ করে
-  businessTypeLocked: false, // 🔒 একবার সিলেক্ট করলে আর বদলানো যাবে না (দুই মোডের ডেটাসেট/পণ্য যাতে মিশে না যায়)
+  shopName:          _instantBootCache?.shopName || "SBM",
+  businessType:      _instantBootCache?.businessType || "pharmacy", // এখন থেকে এটাই "active" business type — একাধিক enabled থাকলে owner এটার মধ্যেই সুইচ করে
+  businessTypeLocked: _instantBootCache?.businessTypeLocked ?? false, // 🔒 একবার সিলেক্ট করলে আর বদলানো যাবে না (দুই মোডের ডেটাসেট/পণ্য যাতে মিশে না যায়)
   // 🆕 ধাপ ২ (Multi-Business System Plan): admin.html নির্ধারণ করে এই শপের জন্য
   // কোন কোন বিজনেস টাইপ চালু আছে। ডিফল্ট/মাইগ্রেটেড single-business শপে সবসময়
   // [businessType]-ই থাকে — length 1 থাকলে FSS কোনো collection-prefix লাগায় না,
   // তাই existing শপের ডেটা/আচরণ এতটুকুও বদলায় না (দেখুন FSS._prefixed)।
-  enabledBusinessTypes: ["pharmacy"],
-  currentUser:       null,
-  authSession:       null,
+  enabledBusinessTypes: _instantBootCache?.enabledBusinessTypes || ["pharmacy"],
+  currentUser:       _instantBootCache?.currentUser || null,
+  authSession:       _instantBootCache?.authSession || null,
   devContact:        null,
   masterResetHash:   null,
 
   // ── UI State ──────────────────────────────────────────────────────────────
   tab:               "dashboard",
-  loaded:            false,
+  loaded:            !!_instantBootCache,
   // 🔴 ফিক্স (Auto Sync/Auto Backup toggle নিজে নিজে অফ): `loaded` wave-1 এ
   // তাড়াতাড়ি true হয়ে যায়, কিন্তু autoBackupEnabled/autoMasterSyncEnabled
   // real value আসে wave-2 তে (দেরিতে, setTimeout 0)। এই মাঝের সময়ে persistence
@@ -313,7 +435,7 @@ const useAppStore = create(subscribeWithSelector((set) => ({
   // পারত (wave-2 read এর সাথে race করে)। তাই এই দুইটার persistence effect
   // এখন থেকে `settingsLoaded` (wave-2 শেষ হলে true) দিয়ে গার্ড হবে।
   settingsLoaded:    false,
-  authChecked:       false,
+  authChecked:       !!_instantBootCache,
   toast:             null,
   modal:             null,
   detailCId:         null,
@@ -12453,6 +12575,11 @@ function SmartBusinessMgmt() {
   // 🆕 এন্ট্রি ৬৪: productsById-এর সাথে ডুপ্লিকেট ছিল (একই key/value) — এখন সরাসরি সেটাই পুনর্ব্যবহার
   const globalProdMap = productsById;
 
+  // ⚡ Instant boot safety: cached state is paint-only. Until the authoritative
+  // async boot finishes, persistence/dual-write effects must not write the cache
+  // back into IndexedDB/SQLite and accidentally overwrite newer database data.
+  const bootHydrationCompleteRef = useRef(false);
+
   useEffect(() => {
     (async () => {
       // এন্ট্রি ১০৫ — সম্পূর্ণ বুট-সিকোয়েন্স ধাপে ধাপে টাইমিং। effect শুরু হওয়ার
@@ -12727,6 +12854,7 @@ function SmartBusinessMgmt() {
       logDiag(`🚀 [বুট] ইনভয়েস windowing হিসাব সম্পন্ন — মোট=${allInvoicesForBoot.length}টা, ৬-মাসের window-এ=${recentInvoicesForBoot.length}টা`);
 
       // ── সব state একসাথে batch update — একটাই React re-render (ক্রিটিক্যাল অংশ) ──
+      bootHydrationCompleteRef.current = true;
       _patch({
         customers:             rawCustomers        || SEED_CUSTOMERS,
         products:              migratedProds,
@@ -13839,9 +13967,9 @@ function SmartBusinessMgmt() {
   // 🆕 এন্ট্রি ৪১
   const _dsSupplierPaymentsRef = useRef(new Map());
 
-  useEffect(() => { if (loaded) { debouncedSave(LK(SK.customers), customers, 1500); setBackupNeeded(true); dualWriteSqlite(businessType, "customers", _dsCustomersRef, customers); } }, [customers, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) { debouncedSave(LK(SK.customers), customers, 1500); setBackupNeeded(true); dualWriteSqlite(businessType, "customers", _dsCustomersRef, customers); } }, [customers, loaded]);
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || !bootHydrationCompleteRef.current) return;
     // 🔴 এন্ট্রি ৮৬ — গুরুত্বপূর্ণ ফিক্স: never-load মোডে (`sbm_products_boot_never`)
     // `products` React array ইচ্ছাকৃতভাবে স্থায়ীভাবে খালি রাখা হয় (SQLite-ই
     // read-path-এর একমাত্র সোর্স)। কিন্তু এই effect আগে সেই খালি array-ই
@@ -13858,15 +13986,15 @@ function SmartBusinessMgmt() {
     setBackupNeeded(true);
     dualWriteSqlite(businessType, "products", _dsProductsRef, products);
   }, [products, loaded]);
-  useEffect(() => { if (loaded) { debouncedSave(LK(SK.invoices),  invoices,  1500); setBackupNeeded(true); dualWriteSqlite(businessType, "invoices",  _dsInvoicesRef,  invoices);  } }, [invoices, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) { debouncedSave(LK(SK.invoices),  invoices,  1500); setBackupNeeded(true); dualWriteSqlite(businessType, "invoices",  _dsInvoicesRef,  invoices);  } }, [invoices, loaded]);
   // 🆕 এন্ট্রি ৪৮ — invoiceItems টেবিল dual-write (invoices dual-write-এর ঠিক পাশে, স্বাধীন diff)
-  useEffect(() => { if (loaded) { dualWriteInvoiceItems(businessType, _dsInvoiceItemsRef, invoices, globalProdMap); } }, [invoices, loaded]);
-  useEffect(() => { if (loaded) { debouncedSave(LK(SK.txns),      txns,      2000); setBackupNeeded(true); dualWriteSqlite(businessType, "txns", _dsTxnsRef, txns); } }, [txns, loaded]);
-  useEffect(() => { if (loaded) debouncedSave(LK(SK.smsLog), smsLog, 2000); }, [smsLog, loaded]);
-  useEffect(() => { if (loaded) save(SK.users,     users);     }, [users, loaded]);
-  useEffect(() => { if (loaded) save(SK.shopName,  shopName);  }, [shopName, loaded]);
-  useEffect(() => { if (loaded) save(LK(SK.darkMode),  darkMode);  }, [darkMode, loaded]);
-  useEffect(() => { if (loaded) save(LK(SK.activeTheme), activeTheme); }, [activeTheme, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) { dualWriteInvoiceItems(businessType, _dsInvoiceItemsRef, invoices, globalProdMap); } }, [invoices, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) { debouncedSave(LK(SK.txns),      txns,      2000); setBackupNeeded(true); dualWriteSqlite(businessType, "txns", _dsTxnsRef, txns); } }, [txns, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) debouncedSave(LK(SK.smsLog), smsLog, 2000); }, [smsLog, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) save(SK.users,     users);     }, [users, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) save(SK.shopName,  shopName);  }, [shopName, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) save(LK(SK.darkMode),  darkMode);  }, [darkMode, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) save(LK(SK.activeTheme), activeTheme); }, [activeTheme, loaded]);
   // ── Status Bar color sync ──────────────────────────────────────────────────────
   useEffect(() => {
     if (!currentPreset) return;
@@ -13923,9 +14051,9 @@ function SmartBusinessMgmt() {
     const retry2 = setTimeout(applyNativeStatusBar, 600);
     return () => { cancelled = true; clearTimeout(retry1); clearTimeout(retry2); };
   }, [activeTheme, currentPreset]);
-  useEffect(() => { if (loaded) save(LK(SK.fontSize), fontSize); }, [fontSize, loaded]);
-  useEffect(() => { if (loaded) save(LK(SK.deletedCustomers), deletedCustomers); }, [deletedCustomers, loaded]);
-  useEffect(() => { if (loaded) save(LK(SK.deletedProducts),  deletedProducts);  }, [deletedProducts,  loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) save(LK(SK.fontSize), fontSize); }, [fontSize, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) save(LK(SK.deletedCustomers), deletedCustomers); }, [deletedCustomers, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) save(LK(SK.deletedProducts),  deletedProducts);  }, [deletedProducts,  loaded]);
   // 🗑️ Recycle Bin auto-cleanup — ৩০ দিনের বেশি পুরনো এন্ট্রি স্থায়ীভাবে সরিয়ে দেয়
   // (_deletedAt না থাকা পুরনো এন্ট্রি স্পর্শ করে না — শুধু নতুন টাইমস্ট্যাম্প-যুক্ত এন্ট্রি চেক করে)
   useEffect(() => {
@@ -13942,10 +14070,10 @@ function SmartBusinessMgmt() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
-  useEffect(() => { if (loaded) debouncedSave(LK(SK.paymentInvoices), paymentInvoices, 1500); }, [paymentInvoices, loaded]);
-  useEffect(() => { if (loaded) save(SK.smsGateway, smsGateway); }, [smsGateway, loaded]);
-  useEffect(() => { if (loaded) save(SK.anthropicKey, anthropicKey); }, [anthropicKey, loaded]);
-  useEffect(() => { if (loaded) save(SK.smsTemplates, smsTemplates); }, [smsTemplates, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) debouncedSave(LK(SK.paymentInvoices), paymentInvoices, 1500); }, [paymentInvoices, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) save(SK.smsGateway, smsGateway); }, [smsGateway, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) save(SK.anthropicKey, anthropicKey); }, [anthropicKey, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) save(SK.smsTemplates, smsTemplates); }, [smsTemplates, loaded]);
   // 🔴 ফিক্স: এই দুইটা `loaded`-এর বদলে `settingsLoaded` দিয়ে গার্ড করা হলো —
   // কারণ এদের real value wave-2 তে (দেরিতে) লোড হয়, `loaded` তার আগেই true
   // হয়ে যায়। আগে `loaded` দেখে save করলে boot-এর প্রথম মুহূর্তে এখনো-default
@@ -13962,10 +14090,10 @@ function SmartBusinessMgmt() {
   // (সেই onChange handler-ই সরাসরি setBusinessTypeLocked(true) করে)।
   useEffect(() => { if (settingsLoaded) save(SK.autoMasterSyncEnabled, autoMasterSyncEnabled); }, [autoMasterSyncEnabled, settingsLoaded]);
   useEffect(() => { if (loaded && lastMasterSync) save(SK.lastMasterSync, lastMasterSync); }, [lastMasterSync, loaded]);
-  useEffect(() => { if (loaded) save(SK.firebaseConfig,  firebaseConfig);  }, [firebaseConfig, loaded]);   // 🔥
-  useEffect(() => { if (loaded) save(SK.firebaseEnabled, firebaseEnabled); }, [firebaseEnabled, loaded]);
-  useEffect(() => { if (loaded) save(SK.recoveryPhone,   recoveryPhone);   }, [recoveryPhone, loaded]);
-  useEffect(() => { if (loaded) save(SK.recoveryPinHash, recoveryPinHash); }, [recoveryPinHash, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) save(SK.firebaseConfig,  firebaseConfig);  }, [firebaseConfig, loaded]);   // 🔥
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) save(SK.firebaseEnabled, firebaseEnabled); }, [firebaseEnabled, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) save(SK.recoveryPhone,   recoveryPhone);   }, [recoveryPhone, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) save(SK.recoveryPinHash, recoveryPinHash); }, [recoveryPinHash, loaded]);
   // 🔐 Recovery PIN সেট থাকলে, config/users পরিবর্তন হলে central-এ auto-backup
   useEffect(() => {
     if (!loaded || !recoveryPhone || !recoveryPinHash) return;
@@ -14048,19 +14176,30 @@ function SmartBusinessMgmt() {
       }
     })();
   }, [currentUser?.role, loaded]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (loaded) debouncedSave(LK(SK.suppliers),      suppliers,      1500); }, [suppliers,      loaded]);
-  useEffect(() => { if (loaded) { debouncedSave(LK(SK.purchaseOrders), purchaseOrders, 1500); dualWriteSqlite(businessType, "purchaseOrders", _dsPurchaseOrdersRef, purchaseOrders); } }, [purchaseOrders, loaded]);
-  useEffect(() => { if (loaded) { debouncedSave(LK(SK.stockMovements), stockMovements, 1500); dualWriteSqlite(businessType, "stockMovements", _dsStockMovementsRef, stockMovements); } }, [stockMovements, loaded]);
-  useEffect(() => { if (loaded) { debouncedSave(LK(SK.cashLogs),       cashLogs,       1500); dualWriteSqlite(businessType, "cashLogs", _dsCashLogsRef, cashLogs); } }, [cashLogs,       loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) debouncedSave(LK(SK.suppliers),      suppliers,      1500); }, [suppliers,      loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) { debouncedSave(LK(SK.purchaseOrders), purchaseOrders, 1500); dualWriteSqlite(businessType, "purchaseOrders", _dsPurchaseOrdersRef, purchaseOrders); } }, [purchaseOrders, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) { debouncedSave(LK(SK.stockMovements), stockMovements, 1500); dualWriteSqlite(businessType, "stockMovements", _dsStockMovementsRef, stockMovements); } }, [stockMovements, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) { debouncedSave(LK(SK.cashLogs),       cashLogs,       1500); dualWriteSqlite(businessType, "cashLogs", _dsCashLogsRef, cashLogs); } }, [cashLogs,       loaded]);
   // 🔴 ফিক্স: এই ৫টা কালেকশনের আগে কোনো লোকাল পার্সিস্টেন্স ছিল না — Firebase বন্ধ
   // থাকা (local-only) দোকানে প্রতি রিলোডে এই ডেটা হারিয়ে যেত।
-  useEffect(() => { if (loaded) { debouncedSave(LK(SK.expenses),         expenses,         1500); dualWriteSqlite(businessType, "expenses", _dsExpensesRef, expenses); } }, [expenses,         loaded]);
-  useEffect(() => { if (loaded) debouncedSave(LK(SK.staffLedger),      staffLedger,      1500); }, [staffLedger,      loaded]);
-  useEffect(() => { if (loaded) debouncedSave(LK(SK.serialQueue),      serialQueue,      1500); }, [serialQueue,      loaded]);
-  useEffect(() => { if (loaded) { debouncedSave(LK(SK.returns),          returns,          1500); dualWriteSqlite(businessType, "returns", _dsReturnsRef, returns); } }, [returns,          loaded]);
-  useEffect(() => { if (loaded) debouncedSave(LK(SK.auditLogs),        auditLogs,        2000); }, [auditLogs,        loaded]);
-  useEffect(() => { if (loaded) debouncedSave(LK(SK.quotations),       quotations,       1500); }, [quotations,       loaded]);
-  useEffect(() => { if (loaded) debouncedSave(LK(SK.supplierPayments), supplierPayments, 1500); dualWriteSqlite(businessType, "supplierPayments", _dsSupplierPaymentsRef, supplierPayments); }, [supplierPayments, loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) { debouncedSave(LK(SK.expenses),         expenses,         1500); dualWriteSqlite(businessType, "expenses", _dsExpensesRef, expenses); } }, [expenses,         loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) debouncedSave(LK(SK.staffLedger),      staffLedger,      1500); }, [staffLedger,      loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) debouncedSave(LK(SK.serialQueue),      serialQueue,      1500); }, [serialQueue,      loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) { debouncedSave(LK(SK.returns),          returns,          1500); dualWriteSqlite(businessType, "returns", _dsReturnsRef, returns); } }, [returns,          loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) debouncedSave(LK(SK.auditLogs),        auditLogs,        2000); }, [auditLogs,        loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) debouncedSave(LK(SK.quotations),       quotations,       1500); }, [quotations,       loaded]);
+  useEffect(() => { if (loaded && bootHydrationCompleteRef.current) { debouncedSave(LK(SK.supplierPayments), supplierPayments, 1500); dualWriteSqlite(businessType, "supplierPayments", _dsSupplierPaymentsRef, supplierPayments); } }, [supplierPayments, loaded]);
+  // ⚡ Instant boot snapshot — authoritative boot শেষ হওয়ার পরই write করা হয়.
+  // Debounced + quota-safe; এটি কখনো SQLite/IndexedDB-এর source of truth নয়।
+  useEffect(() => {
+    if (!loaded || !bootHydrationCompleteRef.current) return;
+    const t = setTimeout(() => {
+      const ok = _writeInstantBootCache(useAppStore.getState());
+      if (!ok) logDiag("⚠️ [InstantBoot] snapshot save skipped (quota/serialization)");
+    }, 250);
+    return () => clearTimeout(t);
+  }, [loaded, businessType, shopName, currentUser, customers, products, invoices, txns, returns, cashLogs, expenses, purchaseOrders, stockMovements, supplierPayments, paymentInvoices, users]);
+
   // 🔴 ফিক্স: "ব্যাকআপ প্রয়োজন" ব্যাজ আগে শুধু customers/products/invoices/txns
   // বদলালে জ্বলত — বাকি ব্যাকআপযোগ্য ফিল্ডগুলো বদলালে জ্বলত না।
   useEffect(() => { if (loaded) setBackupNeeded(true); }, [suppliers, purchaseOrders, stockMovements, cashLogs, expenses, returns, auditLogs, quotations, supplierPayments, paymentInvoices, staffLedger, serialQueue, loaded]);
