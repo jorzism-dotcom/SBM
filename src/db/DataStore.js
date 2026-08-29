@@ -21,6 +21,8 @@ import { logDiag } from "./DiagLog.js"; // এন্ট্রি ১০৩ — i
 // এন্ট্রি ২-এ ধরা পড়া টাইমজোন বাগের ফিক্স)।
 import { _bdParts, getSellableStock, normalizeSupplierKey, calcLineDiscountedRevenue, _itemCostPrice } from "../logic.js";
 
+const SQL_RUNTIME_DIAGNOSTICS = false;
+
 // ── Feature flag ─────────────────────────────────────────────────────────
 // এই ফ্ল্যাগ বন্ধ থাকলে (ডিফল্ট) পুরো অ্যাপ আগের মতোই IndexedDB blob-array
 // দিয়ে চলবে — DataStore-এর কোনো ফাংশন কল না করাই App.jsx-এর নিজের দায়িত্ব,
@@ -489,7 +491,7 @@ function _wrapDbForConcurrencyDiag(db, businessType) {
         // এড়ানো হচ্ছে (অসীম লুপ/অপ্রয়োজনীয়)। এটা সরাসরি origQuery() দিয়ে
         // (queue বাইপাস করে) চালানো হচ্ছে যেহেতু শুধু ডায়াগনস্টিক, ফলাফল
         // অ্যাপের কোনো লজিকে ব্যবহার হয় না।
-        if (nativeExecMs > 100 && !/^\s*(EXPLAIN|PRAGMA)/i.test(sql)) {
+        if (SQL_RUNTIME_DIAGNOSTICS && nativeExecMs > 100 && !/^\s*(EXPLAIN|PRAGMA)/i.test(sql)) {
           try {
             const planRes = await origQuery(`EXPLAIN QUERY PLAN ${sql}`, sqlParams);
             const planText = (planRes.values || []).map((r) => r.detail).join(" | ");
