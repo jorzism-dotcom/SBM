@@ -12882,6 +12882,84 @@ function SmartBusinessMgmt() {
       // fallback-এ ঠিকমতো পড়ে। বড় স্কেলে (১ কোটি ইনভয়েস) real-device টেস্টের
       // সময় বিশেষভাবে "৬ মাসের বেশি পুরনো ইনভয়েস খোঁজা/দেখা" প্রতিটা স্ক্রিনে
       // (ইনভয়েস হিস্ট্রি, কাস্টমার ডিটেইল, রিটার্ন, ভয়েড হিস্ট্রি) যাচাই করা উচিত।
+      // ⚡ V9 ROOT FIX — never let the slow invoice/dashboard SQL boot block the
+      // first useful paint. The previous boot sequence waited for
+      // getAllRowsWindowed(invoices) before the lazy Products/Customers reads
+      // were even STARTED. On the real device that made the app show 0 products
+      // / 0 customers for ~4-5 seconds. Start the two small UI-critical reads
+      // immediately and patch them independently. `loaded` is only a UI-shell
+      // readiness flag here; `bootHydrationCompleteRef` remains false until the
+      // authoritative boot below finishes, so persistence effects cannot write
+      // partial state back to storage/SQLite.
+      let _fastUiHydrationDone = false;
+      const _fastUiHydration = (async () => {
+        try {
+          const fastKeys = [];
+          if (productsKeyLazy) fastKeys.push(LK(SK.products));
+          if (customersKeyLazy) fastKeys.push(LK(SK.customers));
+          if (fastKeys.length) {
+            const fast = await loadMany(fastKeys);
+            const patch = {};
+            if (productsKeyLazy) {
+              const v = fast[LK(SK.products)];
+              if (Array.isArray(v) && v.length) {
+                const { data: md } = SchemaMigration.runAll({ products: v });
+                patch.products = md.products;
+              }
+            }
+            if (customersKeyLazy) {
+              const v = fast[LK(SK.customers)];
+              if (Array.isArray(v) && v.length) patch.customers = v;
+            }
+            if (Object.keys(patch).length) {
+              _patch(patch);
+              logDiag(`⚡ [V9 fast UI hydrate] products=${patch.products?.length ?? useAppStore.getState().products.length}, customers=${patch.customers?.length ?? useAppStore.getState().customers.length}`);
+            }
+          }
+          _fastUiHydrationDone = true;
+        } catch (e) {
+          logDiag(`⚠️ [V9 fast UI hydrate] ব্যর্থ: ${e?.message || e}`);
+        }
+      })();
+
+      // ⚡ V9: publish the app shell immediately after the small settings/auth
+      // reads above. Do NOT wait for the invoice SQL window, dashboard
+      // aggregates, deferred collections, or SQLite browse queries.
+      // Products/Customers arrive through _fastUiHydration above (or were
+      // already present in _instantBootCache / boot1 when non-lazy).
+      if (!_instantBootCache || !_instantBootCache.products?.length || !_instantBootCache.customers?.length) {
+        const earlyState = {};
+        if (!productsKeyLazy) {
+          const v = boot1[LK(SK.products)];
+          if (Array.isArray(v) && v.length) {
+            const { data: md } = SchemaMigration.runAll({ products: v });
+            earlyState.products = md.products;
+          }
+        }
+        if (!customersKeyLazy) {
+          const v = boot1[LK(SK.customers)];
+          if (Array.isArray(v) && v.length) earlyState.customers = v;
+        }
+        _patch({
+          ...earlyState,
+          businessType: businessTypeVal,
+          businessTypeLocked: businessTypeLockedVal,
+          enabledBusinessTypes: enabledBusinessTypesVal,
+          shopName: shopNameVal || "SBM",
+          darkMode: darkModeVal ?? true,
+          activeTheme: (activeThemeVal && activeThemeVal !== "dark") ? activeThemeVal : (businessTypeVal === "salon" ? "threadsink" : "linearvoid"),
+          fontSize: fontSizeVal ?? 15,
+          currentUser: savedUser?.id ? savedUser : null,
+          authSession: savedUser || null,
+          firebaseConfig: fbCfg || null,
+          firebaseEnabled: fbOn ?? false,
+          authChecked: true,
+          loaded: true,
+        });
+        try { if (typeof window.__hideSplash === "function") window.__hideSplash(); } catch {}
+        logDiag(`⚡ [V9 early UI paint] loaded=true; products=${earlyState.products?.length ?? useAppStore.getState().products.length}, customers=${earlyState.customers?.length ?? useAppStore.getState().customers.length}; invoice SQL এখনো শুরু/শেষের ওপর UI নির্ভর করছে না`);
+      }
+
       const invoiceCutoff90 = new Date();
       invoiceCutoff90.setMonth(invoiceCutoff90.getMonth() - 6); // archiveOldInvoices()-এর সাথে সিঙ্কড কাটঅফ
       const invoiceCutoff90Key = _dateKeyOf(invoiceCutoff90);
@@ -13105,8 +13183,12 @@ function SmartBusinessMgmt() {
             _patch({ productsNeverLoadSqlDown: true });
           }
           setTimeout(async () => {
+            // V9: fast UI hydration above may already have populated products.
+            // Do not perform a second full IndexedDB read unless the fast path
+            // actually produced no product data.
+            if (Array.isArray(useAppStore.getState().products) && useAppStore.getState().products.length > 0) return;
             const _fpT0 = Date.now();
-            logDiag("🚀 [বুট] products blob-load ফলব্যাক শুরু (IndexedDB থেকে সরাসরি)");
+            logDiag("🚀 [বুট] products blob-load fallback শুরু (IndexedDB থেকে সরাসরি)");
             const prodBoot = await loadMany([LK(SK.products)]);
             const rawProdsLazy = prodBoot[LK(SK.products)];
             const { data: lazyMigratedData, stats: lazySchemaStats } = SchemaMigration.runAll({
@@ -13197,8 +13279,10 @@ function SmartBusinessMgmt() {
             _patch({ customersNeverLoadSqlDown: true });
           }
           setTimeout(async () => {
+            // V9: fast UI hydration above may already have populated customers.
+            if (Array.isArray(useAppStore.getState().customers) && useAppStore.getState().customers.length > 0) return;
             const _fcT0 = Date.now();
-            logDiag("🚀 [বুট] customers blob-load ফলব্যাক শুরু (IndexedDB থেকে সরাসরি)");
+            logDiag("🚀 [বুট] customers blob-load fallback শুরু (IndexedDB থেকে সরাসরি)");
             const custBoot = await loadMany([LK(SK.customers)]);
             const rawCustLazy = custBoot[LK(SK.customers)];
             _patch({ customers: rawCustLazy || SEED_CUSTOMERS });
