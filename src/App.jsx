@@ -12785,9 +12785,11 @@ function SmartBusinessMgmt() {
       // invoices বাদ যায় (পুরো IndexedDB ব্লব বুটে পড়া হবে না), বদলে নিচে
       // getAllRowsWindowed() দিয়ে SQL থেকে সরাসরি ৬-মাসের windowed রিড হবে।
       const invoicesWindowedFlag = isInvoicesWindowedBootEnabled();
-      const CRITICAL_KEYS = [
-        ...(customersKeyLazy ? [] : [LK(SK.customers)]), ...(productsKeyLazy ? [] : [LK(SK.products)]),
-        ...(invoicesWindowedFlag ? [] : [LK(SK.invoices)]), LK(SK.txns), SK.users,
+      // V10 ROOT FIX: restore the original fast IndexedDB-first boot.
+      // Products, customers, invoices and transactions are all local UI-critical
+      // data. The first paint must NEVER wait for SQLite window queries.
+      const UI_CRITICAL_KEYS = [
+        LK(SK.customers), LK(SK.products), LK(SK.invoices), SK.txns, SK.users,
         SK.shopName, LK(SK.darkMode), LK(SK.activeTheme), LK(SK.fontSize),
         LK(SK.paymentInvoices), SK.firebaseConfig, SK.firebaseEnabled,
         SK.authSession, SK.devContact, SK.masterResetHash,
@@ -12801,18 +12803,16 @@ function SmartBusinessMgmt() {
         LK(SK.stockMovements), LK(SK.cashLogs), LK(SK.expenses), LK(SK.returns), LK(SK.auditLogs),
         LK(SK.quotations), LK(SK.supplierPayments), LK(SK.staffLedger), LK(SK.serialQueue),
       ];
-      const boot1 = await loadMany(CRITICAL_KEYS);
+      const boot1 = await loadMany(UI_CRITICAL_KEYS);
       const _bT3 = Date.now();
       logDiag(
-        `🚀 [বুট] loadMany(CRITICAL_KEYS) সম্পন্ন — লাগলো ${_bT3 - _bT2}ms ` +
-        `(products${productsKeyLazy ? "=লেজি-স্কিপড" : "=" + ((boot1[LK(SK.products)] || []).length) + "টা"}, ` +
-        `customers${customersKeyLazy ? "=লেজি-স্কিপড" : "=" + ((boot1[LK(SK.customers)] || []).length) + "টা"}, ` +
-        `invoices${invoicesWindowedFlag ? "=windowed-স্কিপড" : "=" + ((boot1[LK(SK.invoices)] || []).length) + "টা"}, txns=${(boot1[LK(SK.txns)] || []).length}টা)`
+        `🚀 [বুট] loadMany(UI_CRITICAL_KEYS) সম্পন্ন — লাগলো ${_bT3 - _bT2}ms ` +
+        `(products=${((boot1[LK(SK.products)] || []).length)}টা, customers=${((boot1[LK(SK.customers)] || []).length)}টা)`
       );
       const rawCustomers    = boot1[LK(SK.customers)];
       const rawProds        = boot1[LK(SK.products)];
-      const rawInvoices     = boot1[LK(SK.invoices)];
-      const rawTxns         = boot1[LK(SK.txns)];
+      let rawInvoices       = boot1[LK(SK.invoices)] || [];
+      let rawTxns           = boot1[SK.txns] || [];
       const rawUsers        = boot1[SK.users];
       const shopNameVal     = boot1[SK.shopName];
       const darkModeVal     = boot1[LK(SK.darkMode)];
@@ -12882,64 +12882,28 @@ function SmartBusinessMgmt() {
       // fallback-এ ঠিকমতো পড়ে। বড় স্কেলে (১ কোটি ইনভয়েস) real-device টেস্টের
       // সময় বিশেষভাবে "৬ মাসের বেশি পুরনো ইনভয়েস খোঁজা/দেখা" প্রতিটা স্ক্রিনে
       // (ইনভয়েস হিস্ট্রি, কাস্টমার ডিটেইল, রিটার্ন, ভয়েড হিস্ট্রি) যাচাই করা উচিত।
-      // ⚡ V9 ROOT FIX — never let the slow invoice/dashboard SQL boot block the
-      // first useful paint. The previous boot sequence waited for
-      // getAllRowsWindowed(invoices) before the lazy Products/Customers reads
-      // were even STARTED. On the real device that made the app show 0 products
-      // / 0 customers for ~4-5 seconds. Start the two small UI-critical reads
-      // immediately and patch them independently. `loaded` is only a UI-shell
-      // readiness flag here; `bootHydrationCompleteRef` remains false until the
-      // authoritative boot below finishes, so persistence effects cannot write
-      // partial state back to storage/SQLite.
-      let _fastUiHydrationDone = false;
-      const _fastUiHydration = (async () => {
-        try {
-          const fastKeys = [];
-          if (productsKeyLazy) fastKeys.push(LK(SK.products));
-          if (customersKeyLazy) fastKeys.push(LK(SK.customers));
-          if (fastKeys.length) {
-            const fast = await loadMany(fastKeys);
-            const patch = {};
-            if (productsKeyLazy) {
-              const v = fast[LK(SK.products)];
-              if (Array.isArray(v) && v.length) {
-                const { data: md } = SchemaMigration.runAll({ products: v });
-                patch.products = md.products;
-              }
-            }
-            if (customersKeyLazy) {
-              const v = fast[LK(SK.customers)];
-              if (Array.isArray(v) && v.length) patch.customers = v;
-            }
-            if (Object.keys(patch).length) {
-              _patch(patch);
-              logDiag(`⚡ [V9 fast UI hydrate] products=${patch.products?.length ?? useAppStore.getState().products.length}, customers=${patch.customers?.length ?? useAppStore.getState().customers.length}`);
-            }
-          }
-          _fastUiHydrationDone = true;
-        } catch (e) {
-          logDiag(`⚠️ [V9 fast UI hydrate] ব্যর্থ: ${e?.message || e}`);
-        }
-      })();
-
+      // V10: UI-critical IndexedDB data is already available above.
+      // No second products/customers read is necessary.
       // ⚡ V9: publish the app shell immediately after the small settings/auth
       // reads above. Do NOT wait for the invoice SQL window, dashboard
       // aggregates, deferred collections, or SQLite browse queries.
       // Products/Customers arrive through _fastUiHydration above (or were
       // already present in _instantBootCache / boot1 when non-lazy).
-      if (!_instantBootCache || !_instantBootCache.products?.length || !_instantBootCache.customers?.length) {
+      { // V10: always publish the fresh IndexedDB UI snapshot; never wait for SQL.
         const earlyState = {};
-        if (!productsKeyLazy) {
+        {
           const v = boot1[LK(SK.products)];
           if (Array.isArray(v) && v.length) {
             const { data: md } = SchemaMigration.runAll({ products: v });
             earlyState.products = md.products;
           }
         }
-        if (!customersKeyLazy) {
+        {
           const v = boot1[LK(SK.customers)];
           if (Array.isArray(v) && v.length) earlyState.customers = v;
         }
+        if (Array.isArray(boot1[LK(SK.invoices)])) earlyState.invoices = boot1[LK(SK.invoices)];
+        if (Array.isArray(boot1[SK.txns])) earlyState.txns = boot1[SK.txns];
         _patch({
           ...earlyState,
           businessType: businessTypeVal,
@@ -12957,7 +12921,7 @@ function SmartBusinessMgmt() {
           loaded: true,
         });
         try { if (typeof window.__hideSplash === "function") window.__hideSplash(); } catch {}
-        logDiag(`⚡ [V9 early UI paint] loaded=true; products=${earlyState.products?.length ?? useAppStore.getState().products.length}, customers=${earlyState.customers?.length ?? useAppStore.getState().customers.length}; invoice SQL এখনো শুরু/শেষের ওপর UI নির্ভর করছে না`);
+        logDiag(`⚡ [V10 early UI paint] loaded=true; products=${earlyState.products?.length ?? useAppStore.getState().products.length}, customers=${earlyState.customers?.length ?? useAppStore.getState().customers.length}, invoices=${earlyState.invoices?.length ?? useAppStore.getState().invoices.length}; SQLite refresh এখন background`);
       }
 
       const invoiceCutoff90 = new Date();
