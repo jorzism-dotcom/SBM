@@ -151,9 +151,8 @@
     <div id="root"></div>
     <script>
       window.__appBootT0 = Date.now(); // এন্ট্রি ১০৫ — একদম শুরুর টাইমস্ট্যাম্প
-      // V7: splash is branding only; never keep the user behind a data-loading
-      // overlay. React/local boot cache owns the real first paint.
-      window.__hideSplash(); (WebView-এ JS পার্স হওয়ার সাথে সাথেই), যাতে DiagLog.js-এর প্রতিটা লগ লাইন "অ্যাপ চালু করা থেকে কত সময়" হিসেবে দেখাতে পারে
+      // V8: splash is branding only; never keep the user behind a data-loading
+      // overlay. Define the helper before using it.
       window.__hideSplash = function() {
         var s = document.getElementById('splash');
         if (s) {
@@ -161,6 +160,9 @@
           setTimeout(function(){ s.style.display = 'none'; }, 500);
         }
       };
+      // V8: do not wait for SQL/IndexedDB/auth to finish before removing the
+      // branding splash. The app shell must be visible immediately.
+      window.__hideSplash();
       window.__showSplashError = function(msg) {
         var p = document.querySelector('#splash p');
         if (p) {
