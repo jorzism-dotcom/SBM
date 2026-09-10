@@ -62,6 +62,10 @@ import { getByIds as dsGetByIds, getAllRows as dsGetAllRows } from "./db/DataSto
 import { getCustomerById } from "./db/Repository.js";
 // 🆕 Phase ৪ (হাইব্রিড সার্চ) — শুধু বড় ডেটাসেটে candidate-narrowing চালু হবে
 import { hybridSearchCandidateIds } from "./db/DataStore.js";
+// 🆕 এন্ট্রি ১২৭ (SQLITE_MIGRATION_LOG.md Phase ৩ ধাপ ৬ — Invoices Category B) —
+// AnalyticsSection_ (topProducts/topCustomers) ও Dashboard (auto-carry lastDateKey)
+// shadow-verify হেল্পার। কোনো ডিসপ্লে-ভ্যালু এগুলো থেকে আসে না, শুধু তুলনা।
+import { getTopProductRevenueByDateRange as dsGetTopProductRevenue, getTopCustomerTotalsByDateRange as dsGetTopCustomerTotals, getLastActivityDateKey as dsGetLastActivityDateKey } from "./db/DataStore.js";
 // 🆕 [বাগ-ফিক্স, migration log এন্ট্রি ২০] আগে এটা SmartInvoiceBuilder-এর ভেতরে
 // component-local const হিসেবে ডিফাইন করা ছিল — বাকি productMatchScore() কল-সাইট
 // (Dashboard, Products) আলাদা কম্পোনেন্ট হওয়ায় এটা রেফারেন্স করতে পারত না (ঠিক
@@ -9439,6 +9443,34 @@ function useTxnTotals(txns, invoices, businessType, todayKey) {
   return sql ? sql : { todayBakiIncurred: jsBaki, todayJoma: jsJoma };
 }
 
+// 🆕 এন্ট্রি ১২৭ (Phase ৩ ধাপ ৬, সাইট #1/#2) — হোম ড্যাশবোর্ডের "আজকের বাকি"/"আজকের জমা"
+// (App()-এর todayBaki/todayJoma) এখনো পুরো `txns` অ্যারে JS-স্ক্যান। এখানে ঠিক একই
+// হিসাবের SQL ভার্সন (dsGetTxnTotals — useKpiStats/AI-পেজে ইতিমধ্যে ব্যবহৃত, অর্থাৎ
+// কোয়েরি নিজে real-device-ভেরিফায়েড পাথের) প্যারালালে চালিয়ে তুলনা করা হয়, আর
+// ১ টাকার বেশি ফারাক হলে console.warn। ⚠️ ডিসপ্লে-ভ্যালু এখনো JS-ই — মিসম্যাচ না ধরা
+// পড়লে পরের সেশনে cutover (এন্ট্রি ১২৬-এর discipline), এখন শুধু প্রমাণ সংগ্রহ।
+function useTxnTotalsShadowVerify(txns, invoices, businessType, todayKey, label) {
+  const sqliteOn = isSqliteEnabled();
+  useEffect(() => {
+    if (!sqliteOn || !businessType || !todayKey) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const sql = await dsGetTxnTotals(businessType, todayKey);
+        if (cancelled || !sql) return;
+        const voidedIds = new Set((invoices || []).filter((i) => i.status === "voided").map((i) => i.id));
+        const all = txns || [];
+        const jsBaki = all.filter((t) => t.dateKey === todayKey && t.type === "baki" && t.invoiceId && !voidedIds.has(t.invoiceId)).reduce((sm, t) => sm + (t.amount || 0), 0);
+        const jsJoma = all.filter((t) => t.dateKey === todayKey && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((sm, t) => sm + (t.amount || 0), 0);
+        if (Math.abs((sql.todayBakiIncurred || 0) - jsBaki) > 1 || Math.abs((sql.todayJoma || 0) - jsJoma) > 1) {
+          console.warn(`⚠️ [এন্ট্রি ১২৭] ${label || "todayBaki/todayJoma"} SQL vs JS মিসম্যাচ:`, sql, { jsBaki, jsJoma });
+        }
+      } catch { /* shadow চেক কখনো UI ভাঙবে না — JS পাথই চলতে থাকবে */ }
+    })();
+    return () => { cancelled = true; };
+  }, [sqliteOn, businessType, todayKey, txns, invoices, label]);
+}
+
 function useReturnsTotals(returns, invoices, businessType, todayKey, monthStartKey) {
   const sqliteOn = isSqliteEnabled();
   const [sql, setSql] = useState(null);
@@ -16199,6 +16231,12 @@ function SmartBusinessMgmt() {
     return txnBaki;
   }, [txns, invoices]);
   const todayJoma  = useMemo(() => { const key = todayEn(); return txns.filter(t => t.dateKey === key && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((s, t) => s + t.amount, 0); }, [txns]);
+  // 🆕 এন্ট্রি ১২৭ — উপরের todayBaki + todayJoma-র SQL parity চেক (ডিসপ্লে অপরিবর্তিত)।
+  // ⚠️ ViewerDashboardScreen-এর একই-ধরনের todayBaki (লাইন ~১৮৯৭৮) ইচ্ছা করে হাত
+  // দেওয়া হয়নি: ওই স্ক্রিন snapshot-ভিত্তিক, সেখানে businessType ভ্যারিয়েবলটাই নেই
+  // (এন্ট্রি ৫৯-এ সেখানে useLowStockItems() বসিয়ে ReferenceError ক্র্যাশ হয়েছিল,
+  // এন্ট্রি ৬০-তে ফিরিয়ে নেওয়া হয়) — তাই ওই সাইটটা Category B তালিকা থেকে বাদ।
+  useTxnTotalsShadowVerify(txns, invoices, businessType, todayEn(), "হোম ড্যাশবোর্ড todayBaki/todayJoma");
   const todayInvs  = useMemo(() => { const key = todayEn(); return filterTodayInvoices(invoices, key); }, [invoices]);
   // 🔴 ফিক্স (রুট কজ — আংশিক ফেরত নিলে ড্যাশবোর্ডের কোনো সংখ্যাই কমে না): আগে
   // todayTotal/todayCashSale/todayProfit কোনোটাই `returns` অ্যারে ব্যবহার করত না —
@@ -22683,6 +22721,69 @@ function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [],
     return Object.values(map).sort((a, b) => b.total - a.total).slice(0, 5);
   }, [invoices]);
 
+  // 🆕 এন্ট্রি ১২৭ (Phase ৩ ধাপ ৬, সাইট #4/#5) — উপরের topProducts/topCustomers দুটোই
+  // প্রতি useMemo-তে পুরো invoices অ্যারে (topProducts-এর ক্ষেত্রে প্রতিটা items[]-ও)
+  // স্ক্যান করে ৩০ দিনের জন্য। সমতুল্য SQL (invoiceItems GROUP BY product_name /
+  // invoices GROUP BY customer_id) প্যারালালে চালিয়ে তুলনা হচ্ছে; ডিসপ্লে-তে এখনো
+  // JS-ই বসে। সেমান্টিক ভিন্নতার ৩টা জানা উৎস DataStore.js-এর হেল্পার কমেন্টে লেখা
+  // (self-use ইনভয়েস SQLite-তে লেখেই না, SQL revenue-তে ছাড় ভাগ করা, আর SQL দিন-কী
+  // বনাম JS createdAt-ভিত্তিক bucket) — তাই এখানে ছোট পার্থক্য "বাগ" না, সেটাই
+  // shadow-চেকের ফল; কনসোলে যা দেখা যাক সেটা পরের সেশনে cutover সিদ্ধান্তে যাবে।
+  useEffect(() => {
+    if (!isSqliteEnabled() || !businessType) return undefined;
+    let cancelled = false;
+    const s30Key = _dateKeyOf(new Date(Date.now() - 29 * 24 * 60 * 60 * 1000));
+    (async () => {
+      try {
+        const [topP, topC] = await Promise.all([
+          dsGetTopProductRevenue(businessType, { sinceDateKey: s30Key, limit: 5, includeVoided: true }),
+          dsGetTopCustomerTotals(businessType, { sinceDateKey: s30Key, limit: 5, includeVoided: true }),
+        ]);
+        if (cancelled) return;
+        // JS-এর হুবহু ফিল্টার (status/voided/self-use কোনোটাই বাদ দেয় না) — id/name
+        // ধরে আলাদাভাবে সাজিয়ে নেওয়া হচ্ছে যাতে SQL রো-র সাথে মেলানো যায়।
+        const s30 = new Date(); s30.setDate(s30.getDate() - 29);
+        const byName = new Map();
+        const byCust = new Map();
+        invoices.forEach((inv) => {
+          const dateStr = inv.createdAt || inv.dateKey;
+          const d = dateStr ? new Date(dateStr) : null;
+          if (!d || isNaN(d.getTime()) || d < s30) return;
+          (inv.items || []).forEach((it) => {
+            const k = it.name ?? "";
+            const cur = byName.get(k) || { qty: 0, revenue: 0 };
+            cur.qty += (it.qty || 1);
+            cur.revenue += (it.qty || 1) * (it.price || 0);
+            byName.set(k, cur);
+          });
+          if (!inv.customerId) return;
+          const cc = byCust.get(inv.customerId) || { total: 0, count: 0 };
+          cc.total += (inv.total || 0);
+          cc.count += 1;
+          byCust.set(inv.customerId, cc);
+        });
+        for (const r of topP) {
+          const js = byName.get(r.name);
+          if (!js || Math.abs(js.revenue - r.revenue) > 1 || js.qty !== r.qty) {
+            console.warn("⚠️ [এন্ট্রি ১২৭] topProducts SQL vs JS মিসম্যাচ (" + (r.name || "(নাম-বিহীন)") + "):", { sql: r, js });
+            break;
+          }
+        }
+        for (const r of topC) {
+          const js = byCust.get(r.customerId);
+          if (!js || Math.abs(js.total - r.total) > 1 || js.count !== r.count) {
+            console.warn("⚠️ [এন্ট্রি ১২৭] topCustomers SQL vs JS মিসম্যাচ:", { sql: r, js });
+            break;
+          }
+        }
+      } catch { /* shadow চেক কখনো UI ভাঙবে না — JS হিসাবই দেখানো হচ্ছে */ }
+    })();
+    return () => { cancelled = true; };
+    // এন্ট্রি ১২৬-এর একই প্যাটার্ন: পুরো অ্যারে-স্ক্যান ডিপ না, শুধু দৈর্ঘ্য বদলালে
+    // (নতুন বিক্রি/এডিট) parity রি-রান — তাই exhaustive-deps-এর "invoices" দাবি এখানে ইচ্ছাকৃত
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [businessType, invoices.length]);
+
   const fmt = n => fmtMoney(n);
 
   // ── Gradient Bar Row ──────────────────────────────────────────────────────
@@ -24541,6 +24642,20 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     if (activityDateKeys.length === 0) return; // প্রথমবার — ক্যারি করার আগের হিসাব নেই
 
     const lastDateKey = activityDateKeys.reduce((a, b) => (b > a ? b : a));
+    // 🆕 এন্ট্রি ১২৭ (Phase ৩ ধাপ ৬, সাইট #6) — উপরের স্ক্যানটা invoices+txns+cashLogs
+    // তিনটেই পুরো অ্যারে ঘোরে শুধু "সর্বশেষ কার্যক্রমের দিন" একটা স্ট্রিং পাওয়ার জন্য।
+    // SQL সমতুল্য = তিনটা MAX(date_key) কোয়েরি (date_key ইনডেক্সড)। carry-forward
+    // এখনো JS-এর lastDateKey দিয়েই হয় — এটা শুধু তুলনা (real-device-এ SQL পাথের
+    // বৈধতা প্রমাণের জন্য)। নোট: windowed-boot চালু থাকলে JS পাথ ৬ মাসের ভেতরের
+    // দিনগুলোই দেখে, SQL পুরো টেবিল দেখে — সেদিক থেকে SQL-ই বেশি নির্ভুল, তাই
+    // SQL>JS দিকে মিসম্যাচ দেখলে সেটাই কারণ।
+    if (isSqliteEnabled() && businessType) {
+      dsGetLastActivityDateKey(businessType, todayKeyStr)
+        .then((k) => {
+          if (k !== lastDateKey) console.warn("⚠️ [এন্ট্রি ১২৭] activityDateKeys lastDateKey SQL vs JS মিসম্যাচ:", { sql: k, js: lastDateKey });
+        })
+        .catch(() => { /* আগের মতোই JS হিসাবেই ক্যারি হবে */ });
+    }
 
     const prevSummary = buildDailySummaryData({
       invoices, txns, customers, products, cashLogs: cashLogsAll,
