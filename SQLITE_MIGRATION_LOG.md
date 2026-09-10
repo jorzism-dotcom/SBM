@@ -38,7 +38,7 @@
 **B. Invoices (বড় স্কেল, ভিন্ন ডিজাইন — customers-এর পরে শুরু করা ভালো)**
 4. ✅ ৩৫টা সাইটের পূর্ণ ক্যাটাগরি অডিট (lookup/aggregate/list ভাগ করা) — **এন্ট্রি ১২৪-এ সম্পূর্ণ। ফলাফল: Category A (lookup) নেই, Category B (aggregate) ১০টা সাইট, Category C (list) ৩টা সাইট (Dashboard KPI-modal, Invoice History main list, invoice numbering)**
 5. 🟡 Windowed-boot ডিজাইন (never-load না — ৬-মাস কাটঅফ লজিক) — **এন্ট্রি ১২৫-এ কোড সম্পূর্ণ, ফ্ল্যাগ ডিফল্ট বন্ধ, real-device স্মোক-টেস্ট বাকি**
-6. 🟡 Category A+B কনভার্সন (lookup + aggregate — KPI, রিপোর্ট) — **শুরু হয়েছে: ১০টার মধ্যে ১টা (paymentTypeTotals) shadow-verify মোডে, এন্ট্রি ১২৬। বাকি ৯টা + cutover পরের সেশনে** *(৩-৪ সেশন)*
+6. 🟡 Category A+B কনভার্সন (lookup + aggregate — KPI, রিপোর্ট) — **শুরু হয়েছে: ১০টা সাইটের মধ্যে ৪টা shadow-verify মোডে (①`paymentTypeTotals` — এন্ট্রি ১২৬, ②`todayBaki`+`todayJoma`, ③`topProducts`+`topCustomers`, ④`activityDateKeys` — এন্ট্রি ১২৭)। বাকি ৬টার প্রতিরোধ/অবস্থা এন্ট্রি ১২৭-এর "কেন বাকি ৬টা সাইট এই এন্ট্রিতে করা হয়নি" + "নতুন পাওয়া তথ্য" সেকশনে একটা-একটা করে লেখা (২টার জন্য invoiceItems-এ `product_id`, ১টার জন্য invoices-এ `staff_id`+`staff_commission_rate` হট-কলাম লাগবে; ১টা বিজনেস-রুল সিদ্ধান্ত দরকার; ১টা আসলে লিস্ট = Category C)। **এখনো কোনো সাইটেরই cutover হয়নি — ডিসপ্লে সব জায়গাতেই JS; real-device parity দেখার পরেই cutover** *(৩-৪ সেশন)*
 7. ⬜ Category C — invoice history list + ইনভয়েস-নম্বরিং (`INV-${count+1}`) — **সবচেয়ে ঝুঁকিপূর্ণ ধাপ, টাকার রেকর্ড সরাসরি প্রভাবিত করে, প্রতিটা সাব-স্টেপে real-device টেস্ট বাধ্যতামূলক** *(৩-৪ সেশন)*
 8. ⬜ Windowed boot হাইড্রেশন + flag *(২-৩ সেশন)*
 
@@ -50,7 +50,56 @@
 
 ---
 
-## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ১২৬-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+## 🎯 মাস্টার স্ট্যাটাস (এন্ট্রি ১২৭-এ আপডেট — নতুন সেশনে প্রথমে এই সেকশনটাই পড়ুন)
+
+**🟡 এন্ট্রি ১২৭ — Phase ৩ ধাপ ৬ চালিয়ে যাওয়া: Category B-এর আরও ৩টা সাইট (মোট ৫টা কল-সাইট) shadow-verify মোডে + ৩টা নতুন DataStore হেল্পার + নতুন টেস্ট সুইট**
+
+**কেন**: ব্যবহারকারী বলেছেন "SQLite মাইগ্রেশন কমপ্লিট করুন আগে" — অর্থাৎ ধাপ ৬-এর বাকি ৯টা Category B সাইট (এন্ট্রি ১২৪-এর তালিকা) এগোনো। পাশাপাশি `SBM_ULTIMATE_MASTER_PLAN_v10` স্পেকের §159 ("current code and tests" প্রায়োরিটি-২) আর §160 ("implement one bounded capability at a time, run focused tests after each capability") — দুটোই একই শৃঙ্খলা দাবি করে, তাই এন্ট্রি ১২৬-এর discipline হুবহু অনুসরণ করা হয়েছে: **আগে dual-compute দিয়ে parity প্রমাণ, তারপরেই পুরনো JS পাথ সরানো**।
+
+**⚠️ এই এন্ট্রিতে কোনো ডিসপ্লে-ভ্যালু বদলায়নি।** নিচের ৩ জায়গাতেই JS হিসাবই দেখানো হচ্ছে, SQL পাশাপাশি চালিয়ে মেলে কিনা দেখা হয়; মিসম্যাচ হলে `console.warn("⚠️ [এন্ট্রি ১২৭] …")`। মানে লাইভ দোকানে **কোনো সংখ্যার আচরণগত পরিবর্তন শূন্য** — ফ্ল্যাগ চালু থাকলেও শুধু কনসোলে লগ বাড়বে।
+
+**কী করা হলো (সাইট ধরে)**:
+
+1. **`todayBaki` + `todayJoma` (`SmartBusinessMgmt()`, লাইন ~১৬১৯২)** — নতুন কোনো SQL লেখা হয়নি, ইতিমধ্যে-বিদ্যমান ও (useKpiStats-এ) ব্যবহৃত `getTxnTotals()` রিইউজ করা হয়েছে। নতুন হুক `useTxnTotalsShadowVerify()` (App.jsx:~৯৪৪৬) SQL `todayBakiIncurred`/`todayJoma` বনাম হুবহু একই JS ফিল্টার (dateKey+type, `invoiceId` থাকতে হবে, voided-ইনভয়েসের বাকি বাদ; joma-র source-ব্ল্যাকলিস্ট `partial-sale`/`void-reversal`/`cash-sale`/`return-adjust`) তুলনা করে, ১ টাকার বেশি ফারাকে ওয়ার্ন দেয়। এই সাইটে JS/SQL-এর সেমান্টিক ফারাক থিওরিটিক্যালি **শূন্য** — তাই এটাই সবচেয়ে পরিষ্কার signal দেবে (মিসম্যাচ = প্রকৃত বাগ)।
+2. **`topProducts` + `topCustomers` (`AnalyticsSection_`, লাইন ~২২৬৯১/২২৭০৯)** — ২টা নতুন হেল্পার: `getTopProductRevenueByDateRange()` (invoiceItems-এ `product_name` ধরে `SUM(qty)/SUM(revenue)`, `idx_invoiceitems_status_date_name`) আর `getTopCustomerTotalsByDateRange()` (invoices-এ `customer_id` ধরে `SUM(total)/COUNT(*)`)। `includeVoided: true` দিয়ে ডাকা হয়েছে কারণ **JS সাইটগুলো এখন কোনো status ফিল্টারই করে না** (ভয়েড বিক্রিও "সেরা পণ্য"এ গোনা হয়) — না দিলে shadow-চেক শুরুতেই কৃত্রিম মিসম্যাচ দেখাত।
+3. **`activityDateKeys` (`Dashboard`-এর auto-carry-forward ইফেক্ট, লাইন ~২৪৫৩৬)** — তৃতীয় নতুন হেল্পার `getLastActivityDateKey()`: invoices+txns+cashLogs তিনটে পুরো অ্যারে মেমরিতে স্ক্যান করার বদলে তিনটা `MAX(date_key)` কোয়েরি (`date_key IS NOT NULL AND date_key <> '' AND date_key < ?`)। carry-forward এখনো JS-এর `lastDateKey` দিয়েই হয় — এটা শুধু তুলনা।
+
+**যাচাই (sandbox, সবুজ)**: নতুন সুইট `tests/datastore-analytics-parity-tests.mjs` — **১১ কেস, ০ ফেইল** (cutoff, গ্রুপিং/SUM/COUNT, ORDER+LIMIT, voided ফিল্টার vs `includeVoided`, self-use ইনভয়েস SQLite-তে লেখেই না সেই নথিভূত আচরণ, খালি `date_key` যেন MAX-কে দূষিত না করে, `sinceDateKey`/`beforeDateKey` ছাড়া throw, খালি ডেটাবেসে `null`)। সুইটটা `package.json`-এর `test` স্ক্রিপ্টে যোগ → এখন **১৭ সুইট / ২৬২ কেস** (আগে ১৬ / ২৫১)। `npm test` exit 0 · `npm run lint` **০ errors / ৫৭৭ warnings** (App.jsx আলাদা করে লিন্ট করলে BASE ৫৬২ = NEW ৫৬২ — নতুন কোনো ওয়েনিং যোগ হয়নি) · `npm run typecheck` পরিষ্কার · `npm run build` ✓ ৮.৭৬s · `npm run test:fuzz` (প্রতি প্রপার্টি ১০০০ রান) ও `npm run test:golden-master` পাস।
+
+**নতুন পাওয়া তথ্য (এন্ট্রি ১২৪-এর তালিকার ৩টা ধারণা কোড পড়ে সংশোধন হয়েছে)**:
+- **`todayBaki`-র "দুই কপি"-র দ্বিতীয়টা কনভার্টযোগ্য না।** `ViewerDashboardScreen`-এ (লাইন ~১৮৯৭৮) `businessType` ভ্যারিয়েবলটাই নেই — ওই স্ক্রিন snapshot-ভিত্তিক আলাদা ডেটা-সোর্স। এন্ট্রি ৫৯-এ ঠিক এই ভুলে `useLowStockItems()` বসিয়ে `ReferenceError` ক্র্যাশ হয়েছিল, এন্ট্রি ৬০-তে ফিরিয়ে নেওয়া হয় (কোডেই লেখা আছে)। তাই এন্ট্রি ১২৪-এর "দুই কপি"র মধ্যে **একটাই** সাইট কনভার্টযোগ্য।
+- **`analyticsProductIds` (#3) আর `pnlProductIds` (#6) এখন কনভার্ট করা যাবে না** — `invoiceItems` টেবিলে **`product_id` কলাম নেই** (গ্রুপিং শুধু `product_name`-এ, এন্ট্রি ৬২/৬৫-এর ডিজাইন)। লাগবে এন্ট্রি ৬৬-এর `pay_type` precedent মতো additive হট-কলাম + একবার backfill, তারপর SQL distinct id-সেট। `json_extract`-এ যাওয়া যাবে না — এই repo-তে কোথাও সেই প্রেসিডেন্ট নেই (মাপা: DataStore.js+schema.sql-এ ০ হিট) আর Android-এ json1 availability অপ্রমাণিত।
+- **`getStaffStats` (#10)-এর দরকার invoices-এ `staff_id` + `staff_commission_rate` হট-কলাম** (দুটোই `data` JSON-এ আছে, টেবিলে নেই)। এটা ছাড়া SQL GROUP BY সম্ভব না; সাশ্রয়টা বড় কারণ ফাংশনটা প্রতি-স্টাফ রেন্ডারে পুরো `invoices` স্ক্যান করে — O(staff × invoices)।
+
+**কেন বাকি ৬টা সাইট এই এন্ট্রিতে করা হয়নি (সময়ের অভাব না, সচেতন সিদ্ধান্ত)**: #2 (মাসিক revenue/profit চার্ট) bucket বায় `new Date(inv.createdAt || inv.dateKey)` থেকে, আর SQL-এর প্রাকৃতিক bucket হলো `date_key` — এটা এন্ট্রি ৪৮/৬৫-এর `inv.date` (M/D/YYYY) বনাম `date_key` বাগ-ক্লাসেরই একটা রূপ, তাই কনভার্ট করার আগে **সিদ্ধান্ত দরকার কোন ভিত্তিটাই সঠিক** (বিজনেস-রুল, সিলেন্টলি ফিক্স করা যাবে না)। #8 (`todaySelfUseInvs`/`todayVoidedInvs`/`todayBakiInvs`) আসলে **লিস্ট**, aggregate না — UI পুরো ইনভয়েস-অবজেক্ট দেখায়, সঠিক প্যাটার্ন POS-এর `id+hydrate` (`dsGetByIds`), মানে Category C-এর কাজ। #9 (`repData`) ওপরের `today*` সব রিইউজ করে + returns-netting (#2-এর একই তারিখ-ভিত্তি প্রশ্ন) — #2 সিদ্ধান্তের পর স্বয়ংক্রিয়ভাবে সহজ হয়ে যাবে। বাকি দুটো (#3/#6) কলাম-নির্ভর, উপরে লেখা।
+
+**🔎 ফোনে কীভাবে দেখা যাবে (এন্ট্রি ১০৩-এর in-app DiagLog-এর ওপর ভিত্তি করে, PC/adb ছাড়াই)**: প্রথম রান শেষে ব্যবহারকারী জানিয়েছিলেন `console.log` টাইমিং লাইন ফোনে "চোখেই পড়েনি" (কোনো PC/adb নেই) — তাই সেই এন্ট্রিতে সেটিংস → dev প্যানেলে **"⏱️ টাইমিং ডায়াগনস্টিক"** কার্ড এসেছিল। এই এন্ট্রিতে সেই প্যানেলেই shadow-ওয়ার্নিংগুলো DiagLog-এ মিরর করা হয়েছে: `logDiag(line, { quiet: true })` — নতুন `quiet` অপশন (`src/db/DiagLog.js`) শুধু কনসোলে ছাপা বন্ধ করে, রিং-বাফার+localStorage-ে লাইনটা থাকেই। অর্থাৎ **সেটিংস → (নিচের dev প্যানেল) → "⏱️ টাইমিং ডায়াগনস্টিক" → 🔄 রিফ্রেশ → 📋 কপি** — এতে `⚠️ [এন্ট্রি ১২৬] …` / `⚠️ [এন্ট্রি ১২৭] …` লাইনগুলো (SQL ও JS দুটো মানই লাইনেই লেখা থাকে) সরাসরি পাঠানো যাবে। `console.warn` আগের মতোই আছে (যাদের Chrome remote-debug আছে তাদের জন্য)। প্যানেলের বর্ণনায়ও এটা লেখা হয়েছে।
+
+**real-device-এ এখন যা দেখতে হবে (এটাই এই এন্ট্রির gating ভেরিফিকেশন)**:
+1. SQLite চালু থাকা টেস্ট শপে (আপনার ফার্মেসি) হোম ড্যাশবোর্ডে ১-২টা বিক্রি/বাকি এন্ট্রি দিন → কনসোলে `⚠️ [এন্ট্রি ১২৭] হোম ড্যাশবোর্ড todayBaki/todayJoma …` আসছে কিনা। **এটা এলে সেটাই প্রকৃত বাগ** (এই সাইটে JS/SQL ফারাক থাকা উচিত না)।
+2. **Home → Analytics** খুলে `⚠️ [এন্ট্রি ১২৭] topProducts …` / `topCustomers …` দেখুন — এখানে মিসম্যাচ **প্রত্যাশিত, আর সেটাই এই ধাপের ফল**: self-use বিক্রি JS গোনে কিন্তু SQLite-তে সেই লাইন-রো নেই; discount SQL-তে লাইন-প্রতি ভাগ করা JS-তে না; SQL দিন-কী বনাম JS ওয়াল-ক্লক `createdAt`। প্রতিটা ওয়ার্নে `{sql, js}` দুটোই ছাপা হয় — সেগুলো পাঠালে পরের সেশনে "কোন পাথ সঠিক"-এর সিদ্ধান্ত নেওয়া যাবে।
+3. এক দিন ব্যবহার বন্ধ রেখে পরের দিন খুললে (ক্যাশ ওপেনিং auto-carry) `⚠️ [এন্ট্রি ১২৭] activityDateKeys lastDateKey SQL vs JS মিসম্যাচ` — windowed-boot চালু থাকলে SQL-এর পক্ষে বেশি সঠিক হওয়ার কথা, সেটাই কনফার্ম হবে।
+4. নিয়ম অনুযায়ী রিগ্রেশন-চেক: **ফ্ল্যাগ বন্ধ রেখে** স্বাভাবিক ব্যবহারে কোনো পরিবর্তন দেখা উচিত না।
+5. প্যানেলটি অ্যাপের নিজস্ব কোনো UI পরিবর্তন করে না — শুধু Settings → dev প্যানেলের বিদ্যমান কার্ডে লাইন যোগ হয়। কোনো লাইন না এলে মানে **সব সাইটে SQL ও JS মিলে গেছে** (এটাও তথ্য, ফাঁকা প্যানেল নয়) — তখন cutover-এর জন্য সবুজ সংকেত।
+
+**এন্ট্রি ১২৭-এর পর এই সেশনেই যোগ করা হালকা সংশোধনী (ব্যবহারকারীর প্রশ্ন "অ্যাপে চেক করব কীভাবে"-এর উত্তরে)**: উপরের DiagLog-এ মিরিং — `src/db/DiagLog.js`-এ `quiet` অপশন, App.jsx-এর **৫টা** ওয়ার্নিং সাইটে (এন্ট্রি ১২৬-এর `paymentTypeTotals` + এন্ট্রি ১২৭-এর ৪টা) `logDiag(_msg, { quiet: true })`, আর প্যানেলের বর্ণনায় একটা ব্যাখ্যা-লাইন। প্রতিটা ওয়ার্নিং এখন এক লাইনেই দুটো মান দেখায় (`SQL=… / JS=…`), কারণ প্যানেলে অবজেক্ট প্রিন্ট করা যায় না। ভেরিফিকেশন: টেস্ট সুইটে **৩টা নতুন কেস** (DiagLog: লাইন জমা হওয়া / `quiet` হলে কনসোলে ছাপে না কিন্তু বাফারে থাকে / রিং-বাফার ক্যাপ ৪০০) → সুইট এখন **১৪ কেস**, রিপো **১৭ সুইট / ২৬৫ কেস**, lint **০ errors / ৫৭৭ warnings** (App.jsx ৫৬২ = বেসলাইন, DiagLog ৩ = বেসলাইন — net-zero), typecheck পরিষ্কার, build ✓ ৮.৮৫s। কোনো ডিসপ্লে-ভ্যালু এখনো অপরিবর্তিত।
+
+**পরবর্তী ধাপ (ক্রম)**: (১) real-device parity ডেটা সংগ্রহ (উপরের ৩ পয়েন্ট), (২) যেখানে JS/SQL মিলে গেছে (সম্ভাব্য: `todayBaki`/`todayJoma`, `activityDateKeys`) শুধু সেখানে **cutover** — JS ফলব্যাক কোড রেখে শুধু primary সোর্স SQL করা (এন্ট্রি ১২৬-এর "পরবর্তী ধাপ"-এর একই সংজ্ঞা), (৩) `invoiceItems.product_id` + `invoices.staff_id`/`staff_commission_rate` additive কলাম + backfill (`PRAGMA table_info()` গার্ড, এন্ট্রি ৫৮-এর sequential-ALTER লেটেন্সি ফিক্স মেনে), (৪) #2/#9-এর তারিখ-ভিত্তির সিদ্ধান্ত (এন্ট্রি ১২৭-এর নোট দেখুন), (৫) #8 → Category C (id+hydrate) আলাদা ধাপে, (৬) তারপরই roadmap ধাপ ৭ (invoice numbering — সবচেয়ে ঝুঁকিপূর্ণ, `sequences` টেবিল)।
+
+**ঝুঁকি**: কোড-লেভেলে কম, শূন্য না। (ক) ৩টা নতুন SQL কোয়েরি যোগ হয়েছে — DataStore-এর boot-grace/priority queue (এন্ট্রি ১২২/১২৩) অনুযায়ী এগুলো ব্যাকগ্রাউন্ড/আনট্যাগড ট্যাগে চলে, তাই কোল্ড-বুটে ইন্টারঅ্যাক্টিভ পাথ আটকানোর ঝুঁকি কমেই; তবু টাইমিং লগ দেখা যাবে। (খ) `AnalyticsSection_`-এর ইফেক্ট ডিপ `[businessType, invoices.length]` — প্রতি নতুন বিক্রিতে ২টা বাউন্ডেড GROUP BY কোয়েরি; ১ লাখ স্কেলে ইনডেক্স-ব্যাকড (এন্ট্রি ১১৯/১২০-এর EXPLAIN প্রেসিডেন্ট)। (গ) কোনো write পাথ/স্কিমা/পুরনো পাথ স্পর্শ করা হয়নি — IndexedDB blob-array ১০০% অক্ষত (চিরস্থায়ী নিয়ম #১)। **যাচাই করে প্রমাণিত: টেস্ট+lint+typecheck+build+fuzz+golden-master সবুজ। যা শুধু কোড-রিভিউ দিয়ে অনুমান, প্রমাণ নয়: real Android-এ Capacitor SQLite প্লাগইনে এই কোয়েরিগুলোর লেটেন্সি ও parity — সেটা শুধু ডিভাইসেই দেখা যাবে।**
+
+**📁 এই সেশনে যেসব ফাইল বদলেছে**:
+- `src/db/DataStore.js` — ৩টা নতুন export: `getTopProductRevenueByDateRange()`, `getTopCustomerTotalsByDateRange()`, `getLastActivityDateKey()`
+- `src/db/DiagLog.js` — `logDiag(line, opts)`-এ ঐচ্ছিক `{ quiet: true }` (ব্যাকওয়ার্ড-কম্প্যাটিবল, বিদ্যমান ৩০+ কল-সাইট অপরিবর্তিত)
+- `src/App.jsx` — নতুন হুক `useTxnTotalsShadowVerify()` + তার কল (`SmartBusinessMgmt()`); `AnalyticsSection_`-এ topProducts/topCustomers parity ইফেক্ট; `Dashboard`-এর auto-carry ইফেক্টে lastDateKey parity চেক; এন্ট্রি ১২৭-এর নতুন import লাইন
+- `tests/datastore-analytics-parity-tests.mjs` — **নতুন** ফাইল (১৪ কেস — শেষ ৩টা DiagLog-এর)
+- `package.json` — শুধু `scripts.test`-এ নতুন সুইট যোগ; কোনো ডিপেন্ডেন্সি বদলায়নি; `package-lock.json` **অপরিবর্তিত**
+- `SQLITE_MIGRATION_LOG.md` — এই এন্ট্রি (১২৭) + Phase ৩ roadmap-এর ধাপ ৬ লাইন আপডেট
+- `docs/**` (ARCHITECTURE/DATA_MODEL/PHASE_0_AUDIT/SYNC_CONTRACT/CLAUDE_PROGRESS/ADR ইত্যাদি, স্পেক §161/§163 অনুযায়ী Phase 0 অডিট) — কোনো `src/` কোড ওই অংশে বদলায়নি; এখানে শুধু টেবিল-নাম সংশোধন (আসল নাম camelCase: `invoiceItems`/`cashLogs`/`purchaseOrders`/`supplierPayments`/`stockMovements`; `suppliers` নামে কোনো টেবিল নেই)
+
+---
+
+## 🎯 আগের মাস্টার স্ট্যাটাস (এন্ট্রি ১২৬-এ আপডেট)
 
 **🟡 এন্ট্রি ১২৬ — Phase ৩ ধাপ ৬ শুরু: Category B-এর প্রথম সাইট (`paymentTypeTotals`) SQL shadow-verify মোডে**
 

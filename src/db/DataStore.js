@@ -2150,6 +2150,96 @@ export async function getSupplierDueRows(businessType) {
   }));
 }
 
+// ─── 🆕 এন্ট্রি ১২৭ (SQLITE_MIGRATION_LOG.md Phase ৩ ধাপ ৬ — Invoices Category B) ──
+// নিচের তিনটা হেল্পার AnalyticsSection_/Dashboard-এর তিনটা পুরো-অ্যারে JS-স্ক্যানের
+// SQL সমতুল্য, **shadow-verify** মোডে ব্যবহারের জন্য (এন্ট্রি ১২৬-এর discipline: আগে
+// dual-compute দিয়ে real-device-এ প্রমাণ, তারপরেই পুরনো JS পাথ সরানো)।
+// ⚠️ প্রতিটা হেল্পারের নিচে সেই জায়গাগুলো স্পষ্ট লেখা যেখানে SQL আর JS-এর সেমান্টিক
+// ভিন্ন — এগুলো shadow-চেকে ধরা পড়লে সেটাই আসল ফল (আচরণ গুপ্ত বাগ প্রকাশ), তাই
+// "মিসম্যাচ মানে বাজে" না ভেবে নিচের নোট পড়া যাবে।
+
+/** ৩০-দিনের "সেরা পণ্য" (AnalyticsSection_-এর topProducts) — invoiceItems-এর
+ * write-time প্রিকম্পিউটেড লাইন-রো থেকে product_name ধরে SUM(qty)/SUM(revenue)।
+ *
+ *জানা সেমান্টিক ভিন্নতা (JS বনাম SQL) — shadow-লগে এগুলোই প্রথমে দেখাবে:
+ *  ১. self-use ইনভয়েস: extractInvoiceItemRows() শুরুতেই `if (inv.isSelfUse) return []`,
+ *     মানে SQLite-তে সেই লাইনগুলো লেখাই হয় না; JS topProducts সেগুলোও গোনে।
+ *  ২. revenue: SQL কলাম `revenue` = calcLineDiscountedRevenue() (লাইনে ছাড় ভাগ করা),
+ *     JS = qty*price (ছাড় বাদ) — discount থাকা ইনভয়েস থাকলে SQL সামান্য কম দেখাবে।
+ *  ৩. key: JS `it.name || it.productId` দিয়ে আলাদা করে; SQL product_name ("" ) ধরে
+ *     গ্রুপ করে, তাই নাম-বিহীন পুরনো লাইটেমগুলো SQL-তে এক bucket-এ জমে।
+ * ১ ও ২-ই প্রমাণ করে কোন্ পাথ বেশি নির্ভুল — কিন্তু এই ধাপে ডিসপ্লে-ভ্যালু বদলানো হয় না। */
+export async function getTopProductRevenueByDateRange(businessType, opts = {}) {
+  const { sinceDateKey, limit = 5, includeVoided = false } = opts;
+  if (!sinceDateKey) throw new Error("getTopProductRevenueByDateRange(): sinceDateKey আবশ্যক");
+  const db = await getDb(businessType);
+  // includeVoided: JS-এর বর্তমান আচরণের সাথে তুলনা করার জন্য (JS কোনো status ফিল্টার
+  // করে না) — cutover-এর দিন ডিফল্ট (active only)-ই থাকবে।
+  const where = includeVoided ? `date_key >= ?` : `status = 'active' AND date_key >= ?`;
+  const res = await db.query(
+    `SELECT product_name AS name, SUM(qty) AS qty, SUM(revenue) AS revenue
+       FROM invoiceItems
+      WHERE ${where}
+      GROUP BY product_name
+      ORDER BY revenue DESC
+      LIMIT ?`,
+    [sinceDateKey, Number(limit) || 5],
+  );
+  return (res.values || []).map((r) => ({ name: r.name || "", qty: r.qty || 0, revenue: r.revenue || 0 }));
+}
+
+/** ৩০-দিনের "শীর্ষ কাস্টমার" (AnalyticsSection_-এর topCustomers) — invoices টেবিলে
+ * customer_id ধরে SUM(total)/COUNT(*), idx_invoices_date_key ব্যবহার হবে।
+ * সেমান্টিক নোট: JS bucket বায় `new Date(inv.createdAt || inv.dateKey)` (ওয়াল-ক্লক
+ * টাইমস্ট্যাম্প) আর `d >= s30` (মুহূর্ত-ভিত্তিক কাট), SQL bucket বায় `date_key`
+ * (GMT+6 দিন-কী) — মধ্যরাতের আশপাশে লেনদেন থাকলে দুটো ১-২ দিনের মধ্যে ফেরত/আগের
+ * দিনের হিসাব ঘুরে যেতে পারে। এটা এন্ট্রি ৪৮/৬৫-এর `inv.date` (M/D/YYYY) বনাম
+ * date_key বাগ-ক্লাসেরই একটা রূপ, তাই shadow-চেক এখানেই সবচেয়ে দরকারি। */
+export async function getTopCustomerTotalsByDateRange(businessType, opts = {}) {
+  const { sinceDateKey, limit = 5, includeVoided = false } = opts;
+  if (!sinceDateKey) throw new Error("getTopCustomerTotalsByDateRange(): sinceDateKey আবশ্যক");
+  const db = await getDb(businessType);
+  const clauses = ["customer_id IS NOT NULL", "customer_id <> ''", "date_key >= ?"];
+  if (!includeVoided) clauses.unshift("status = 'active'");
+  const res = await db.query(
+    `SELECT customer_id AS customerId, SUM(COALESCE(total, 0)) AS total, COUNT(*) AS count
+       FROM invoices
+      WHERE ${clauses.join(" AND ")}
+      GROUP BY customer_id
+      ORDER BY total DESC
+      LIMIT ?`,
+    [sinceDateKey, Number(limit) || 5],
+  );
+  return (res.values || []).map((r) => ({ customerId: r.customerId, total: r.total || 0, count: r.count || 0 }));
+}
+
+/** "সর্বশেষ কার্যক্রমের দিন" (Dashboard-এর opening-balance auto-carry-ফরোয়ার্ডের
+ * activityDateKeys স্ক্যান) — invoices/txns/cashLogs তিনটেতেই `date_key < ?` দিয়ে
+ * MAX(date_key), পুরো অ্যারে মেমরিতে স্ক্যান না করে তিনটা ছোট ইনডেক্সড কোয়েরি।
+ * null ফেরত দিলে মানে কোনো পুরনো দিনে কার্যক্রম নেই (JS-এর `length === 0` রিটার্নের
+ * সমতুল্য)। ⚠️ JS ভার্সন `k && k < todayKeyStr` ফিল্টার করে — খালি/অনুপস্থিত date_key
+ * বাদ; SQL-এ সেটা `date_key IS NOT NULL AND date_key <> ''` দিয়ে মকল করা হয়েছে। */
+export async function getLastActivityDateKey(businessType, beforeDateKey) {
+  if (!beforeDateKey) throw new Error("getLastActivityDateKey(): beforeDateKey আবশ্যক");
+  const db = await getDb(businessType);
+  const tables = ["invoices", "txns", "cashLogs"];
+  const rows = await Promise.all(
+    tables.map((t) =>
+      db.query(
+        `SELECT MAX(date_key) AS k FROM ${t} WHERE date_key IS NOT NULL AND date_key <> '' AND date_key < ?`,
+        [beforeDateKey],
+      ),
+    ),
+  );
+  let best = null;
+  for (const r of rows) {
+    const k = r.values?.[0]?.k;
+    if (k && (!best || k > best)) best = k;
+  }
+  return best;
+}
+
+
 // 🆕 এন্ট্রি ৪৪ (PRODUCTS_ONDEMAND_MIGRATION_PLAN.md ৭.৩-এর ব্লকার, ক্যাটাগরি ③
 // FULL-SCAN — ৪টার মধ্যে ৩টা এখানে, dup-name check নিচে আলাদা কারণ ওটা লিস্ট না
 // একক-রেকর্ড lookup)। প্রতিটাই পুরো `products` অ্যারে JS-স্ক্যানের বদলে DISTINCT

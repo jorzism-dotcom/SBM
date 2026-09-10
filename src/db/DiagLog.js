@@ -72,10 +72,15 @@ export function bootElapsedMs() {
  * সময়) জুড়ে দেওয়া হয় — আলাদা করে প্রতিটা কল-সাইটে হিসাব করা লাগে না।
  * @param {string} line
  */
-export function logDiag(line) {
+export function logDiag(line, opts) {
+  // 🆕 এন্ট্রি ১২৭ — `opts.quiet: true` দিলে console.log-এ ছাপা হয় না, শুধু in-app
+  // প্যানেলের রিং-বাফারে জমা হয়। দরকারটা এই: SQL-banam-JS parity চেকগুলোর
+  // (এন্ট্রি ১২৬/১২৭) লাইন আগে থেকেই `console.warn(...)`-এ যাচ্ছে, তাই এখানে
+  // আবার console.log করলে একই লাইন দুবার ছাপা হতো — অপ্রয়োজনীয় কনসোল নয়েজ।
+  const quiet = !!(opts && opts.quiet === true);
   const elapsed = bootElapsedMs();
   const full = elapsed !== null ? `${line} [boot+${elapsed}ms]` : line;
-  console.log(full);
+  if (!quiet) console.log(full);
   const entry = `[${_stamp()}] ${full}`;
   _entries.unshift(entry);
   if (_entries.length > MAX_ENTRIES) _entries.length = MAX_ENTRIES;
