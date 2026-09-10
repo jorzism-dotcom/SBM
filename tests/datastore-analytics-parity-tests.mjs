@@ -200,6 +200,45 @@ await t("getLastActivityDateKey", "beforeDateKey ছাড়া Error ছোড
   return { pass: threw, expected: "thrown", actual: threw };
 });
 
+// ── ১২-১৪. in-app দৃশ্যতা (DiagLog) — ব্যবহারকারীর কাছে PC/adb নেই, তাই shadow
+//     ওয়ার্নিংগুলো অ্যাপের ভেতরেই (সেটিংস → "⏱️ টাইমিং ডায়াগনস্টিক") জমা হতে হবে।
+//     { quiet: true } মানে কনসোলে ছাপা হবে না (লাইনটা ইতিমধ্যে console.warn-এ গেছে),
+//     কিন্তু রিং-বাফারে থাকবে — এই দুটো আচরণই এখানে আটকানো হলো।
+const { logDiag, getDiagLog, clearDiagLog } = await import("../src/db/DiagLog.js");
+
+await t("DiagLog", "logDiag() → প্যানেলে লাইন জমা হয় (সময়-স্ট্যাম্পসহ)", () => {
+  clearDiagLog();
+  logDiag("⚠️ [টেস্ট] parity লাইন ১");
+  const lines = getDiagLog();
+  const ok = lines.length === 1 && lines[0].includes("⚠️ [টেস্ট] parity লাইন ১") && /^\[\d{2}:\d{2}:\d{2}\] /.test(lines[0]);
+  return { pass: ok, expected: "1টা স্ট্যাম্প-সহ লাইন", actual: lines[0] };
+});
+
+await t("DiagLog", "{ quiet: true } → রিং-বাফারে জমা, কিন্তু console.log-এ ছাপে না", () => {
+  clearDiagLog();
+  const orig = console.log;
+  let printed = 0;
+  console.log = (...args) => { if (String(args[0] || "").includes("quiet টেস্ট")) printed++; };
+  try {
+    logDiag("⚠️ [টেস্ট] quiet লাইন", { quiet: true });
+    logDiag("⚠️ [টেস্ট] quiet টেস্ট লাইন");
+  } finally {
+    console.log = orig;
+  }
+  const lines = getDiagLog();
+  // দুটোই বাফারে আছে, কিন্তু শুধু দ্বিতীয়টা console.log-এ গেছে (printed===1)
+  return { pass: lines.length === 2 && printed === 1, expected: "বাফার=২, console=১", actual: `বাফার=${lines.length}, console=${printed}` };
+});
+
+await t("DiagLog", "রিং-বাফার ক্যাপ ৪০০ — পুরনো লাইন বাদ যায়, নতুন সবার উপরে", () => {
+  clearDiagLog();
+  for (let i = 0; i < 450; i++) logDiag(`টেস্ট লাইন ${i}`, { quiet: true });
+  const lines = getDiagLog();
+  const ok = lines.length === 400 && lines[0].includes("টেস্ট লাইন 449") && lines[399].includes("টেস্ট লাইন 50");
+  clearDiagLog();
+  return { pass: ok, expected: "400 (সর্বশেষ ৪৪৯ → ৫০)", actual: `${lines.length} টা; প্রথমে=${lines[0] || "—"}${lines[0] ? "" : ""}` };
+});
+
 console.log(`\ndatastore-analytics-parity-tests.mjs (এন্ট্রি ১২৭): ${passCount} পাস, ${failCount} ফেইল\n`);
 if (failCount) {
   console.log(failures.join("\n"));

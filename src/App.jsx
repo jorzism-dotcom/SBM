@@ -9463,7 +9463,10 @@ function useTxnTotalsShadowVerify(txns, invoices, businessType, todayKey, label)
         const jsBaki = all.filter((t) => t.dateKey === todayKey && t.type === "baki" && t.invoiceId && !voidedIds.has(t.invoiceId)).reduce((sm, t) => sm + (t.amount || 0), 0);
         const jsJoma = all.filter((t) => t.dateKey === todayKey && t.type === "joma" && t.source !== "partial-sale" && t.source !== "void-reversal" && t.source !== "cash-sale" && t.source !== "return-adjust").reduce((sm, t) => sm + (t.amount || 0), 0);
         if (Math.abs((sql.todayBakiIncurred || 0) - jsBaki) > 1 || Math.abs((sql.todayJoma || 0) - jsJoma) > 1) {
-          console.warn(`⚠️ [এন্ট্রি ১২৭] ${label || "todayBaki/todayJoma"} SQL vs JS মিসম্যাচ:`, sql, { jsBaki, jsJoma });
+          const _msg = `⚠️ [এন্ট্রি ১২৭] ${label || "todayBaki/todayJoma"} SQL vs JS মিসম্যাচ — baki: SQL=${sql.todayBakiIncurred || 0} / JS=${jsBaki}, joma: SQL=${sql.todayJoma || 0} / JS=${jsJoma} (দিন=${todayKey})`;
+          console.warn(_msg, sql, { jsBaki, jsJoma });
+          // PC/adb ছাড়াও দেখা যাক — সেটিংস → dev প্যানেল → "⏱️ টাইমিং ডায়াগনস্টিক"
+          logDiag(_msg, { quiet: true });
         }
       } catch { /* shadow চেক কখনো UI ভাঙবে না — JS পাথই চলতে থাকবে */ }
     })();
@@ -22616,7 +22619,9 @@ function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [],
     Math.abs(paymentTypeTotalsSql.baki - paymentTypeTotalsJs.baki) > 1 ||
     Math.abs(paymentTypeTotalsSql.part - paymentTypeTotalsJs.part) > 1
   )) {
-    console.warn("⚠️ [এন্ট্রি ১২৬] paymentTypeTotals SQL vs JS মিসম্যাচ:", paymentTypeTotalsSql, paymentTypeTotalsJs);
+    const _msg = `⚠️ [এন্ট্রি ১২৬] paymentTypeTotals SQL vs JS মিসম্যাচ — cash: ${paymentTypeTotalsSql.cash} / ${paymentTypeTotalsJs.cash}, baki: ${paymentTypeTotalsSql.baki} / ${paymentTypeTotalsJs.baki}, part: ${paymentTypeTotalsSql.part} / ${paymentTypeTotalsJs.part} (SQL / JS)`;
+    console.warn(_msg, paymentTypeTotalsSql, paymentTypeTotalsJs);
+    logDiag(_msg, { quiet: true }); // এন্ট্রি ১২৭-anুযায়ী in-app প্যানেলেও
   }
 
   const paymentTypeTotals = paymentTypeTotalsJs;
@@ -22765,14 +22770,18 @@ function AnalyticsSection_({ T, S, invoices = [], products = [], customers = [],
         for (const r of topP) {
           const js = byName.get(r.name);
           if (!js || Math.abs(js.revenue - r.revenue) > 1 || js.qty !== r.qty) {
-            console.warn("⚠️ [এন্ট্রি ১২৭] topProducts SQL vs JS মিসম্যাচ (" + (r.name || "(নাম-বিহীন)") + "):", { sql: r, js });
+            const _msg = `⚠️ [এন্ট্রি ১২৭] topProducts SQL vs JS মিসম্যাচ (${r.name || "(নাম-বিহীন)"}) — SQL: qty=${r.qty} revenue=${r.revenue} | JS: ` + (js ? `qty=${js.qty} revenue=${js.revenue}` : "এই পণ্য নেই");
+            console.warn(_msg, { sql: r, js });
+            logDiag(_msg, { quiet: true });
             break;
           }
         }
         for (const r of topC) {
           const js = byCust.get(r.customerId);
           if (!js || Math.abs(js.total - r.total) > 1 || js.count !== r.count) {
-            console.warn("⚠️ [এন্ট্রি ১২৭] topCustomers SQL vs JS মিসম্যাচ:", { sql: r, js });
+            const _msg = `⚠️ [এন্ট্রি ১২৭] topCustomers SQL vs JS মিসম্যাচ (${r.customerId}) — SQL: total=${r.total} count=${r.count} | JS: ` + (js ? `total=${js.total} count=${js.count}` : "এই কাস্টমার নেই");
+            console.warn(_msg, { sql: r, js });
+            logDiag(_msg, { quiet: true });
             break;
           }
         }
@@ -24652,7 +24661,11 @@ function Dashboard({ T, S, businessType = "pharmacy", customers, totalBaki, toda
     if (isSqliteEnabled() && businessType) {
       dsGetLastActivityDateKey(businessType, todayKeyStr)
         .then((k) => {
-          if (k !== lastDateKey) console.warn("⚠️ [এন্ট্রি ১২৭] activityDateKeys lastDateKey SQL vs JS মিসম্যাচ:", { sql: k, js: lastDateKey });
+          if (k !== lastDateKey) {
+            const _msg = `⚠️ [এন্ট্রি ১২৭] activityDateKeys lastDateKey SQL vs JS মিসম্যাচ — SQL=${k} / JS=${lastDateKey}`;
+            console.warn(_msg, { sql: k, js: lastDateKey });
+            logDiag(_msg, { quiet: true });
+          }
         })
         .catch(() => { /* আগের মতোই JS হিসাবেই ক্যারি হবে */ });
     }
@@ -38168,6 +38181,10 @@ function TimingDiagPanel({ T, showToast }) {
         db.open()/pragma/column-check/schema-execute আর products/customers বাল্ক-হাইড্রেটের
         সময় এখানে জমা হবে — "রিফ্রেশ" চাপলে সবচেয়ে নতুন লগ দেখাবে। অ্যাপ বন্ধ-খোলার
         মাঝে টিকে থাকে (localStorage-এ সেভ থাকে)।
+        {" "}🔎 <b>এন্ট্রি ১২৬/১২৭:</b> <code>⚠️ [এন্ট্রি …] … SQL vs JS মিসম্যাচ</code> দিয়ে শুরু
+        হওয়া লাইনগুলোও এখানেই জমা হয় — মানে SQLite-র হিসাব আর আগের JS-এর হিসাব কোথায়
+        ১ টাকার বেশি আলাদা, সেটা PC/adb ছাড়াই এখানে দেখা যাবে (📋 কপি চেপে পাঠিয়ে দিলেই
+        পরের সেশনে cutover-এর সিদ্ধান্ত নেওয়া যাবে)।
       </div>
       <div style={{ maxHeight: 220, overflowY: "auto", background: T.bg, borderRadius: 6, padding: 8 }}>
         {lines.length === 0 ? (
