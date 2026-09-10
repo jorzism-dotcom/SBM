@@ -38,8 +38,8 @@ Capacitor 6 Android-only (`appId com.protik.sbm`, `webDir dist`, `androidScheme 
 - **Authoritative at boot today**: IndexedDB JSON blob per key (`LK(SK.<collection>)`) — still the fallback path for every collection.
 - **New layer**: SQLite, **one DB file per `businessType`** (tenant isolation by file).
 - `src/db/schema.sql` measured: **14 `CREATE TABLE`**, **48 indexes**, **2 FTS5 virtual tables**, **0 triggers**.
-  Tables: `products`(20 cols) `customers`(8) `invoices`(9) `invoice_items` `expenses`(6) `cash_logs` `purchase_orders` `suppliers` `txns`(9) `returns`(9) `stock_movements` `events`(8) `feature_flags`(4) `_migration_state`(7).
-  Index distribution: products 17 · invoices 8 · customers 7 · txns 3 · events 3 · returns 2 · purchase_orders 2 · invoice_items 2 · (supplier_payments/stock_movements/expenses/cash_logs) 1 each.
+  Tables: `products`(20 cols) `customers`(8) `invoices`(9) `invoiceItems` `expenses`(6) `cashLogs` `purchaseOrders` `txns`(9) `returns`(9) `stockMovements` `events`(8) `feature_flags`(4) `_migration_state`(7).
+  Index distribution: products 17 · invoices 8 · customers 7 · txns 3 · events 3 · returns 2 · purchaseOrders 2 · invoiceItems 2 · (supplierPayments/stockMovements/expenses/cashLogs) 1 each.
   Hot columns + a `data` JSON column per row (so full records round-trip without column-by-column modeling).
 - Migration: additive `PRAGMA table_info()` guarded `ALTER TABLE` only; **no `PRAGMA user_version` schema-version number**; resumable data backfill via `_migration_state` (`migrateStoreResumable()`); `ANALYZE` available (`analyzeDb()`), documented as mandatory after bulk backfill.
 - `src/db/DataStore.js` exports **65** functions (typed query helpers + **7 boot/feature flags exposed as 14 getter/setter functions** (`isSqliteEnabled`, `isProductsBootLazyEnabled`, `isProductsNeverLoadEnabled`, `isCustomersBootLazyEnabled`, `isCustomersNeverLoadEnabled`, `isInvoicesWindowedBootEnabled`, `isPosOndemandCartEnabled` + setters, plus `mirrorFlagToSqlite()`) + `reconcileStore()` content-level drift checker).

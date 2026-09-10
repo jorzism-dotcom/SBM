@@ -8,7 +8,7 @@ idempotency identities, and schema versioning. Measured at `e2dc756`:
 
 1. **No SQLite transaction usage at all.** `grep -E "BEGIN IMMEDIATE|executeTransaction|isTransactionActive"` over `src/db/` → 0 hits.
    Writes go through single statements: `db.run(...)` (`DataStore.js:596-597`, `upsertMany` batching via `db.executeSet(set)` at `DataStore.js:249`, `266`).
-   An invoice + its `invoice_items` + stock decrements + `txns` rows are therefore **not** atomic: a crash between statements can leave a
+   An invoice + its `invoiceItems` + stock decrements + `txns` rows are therefore **not** atomic: a crash between statements can leave a
    half-applied sale. Only IndexedDB access uses `db.transaction(...)` (App.jsx:4409-5607).
 2. **Queue serialization interaction.** All `db.query()` **and** (since migration log entry 120) `db.run()/db.execute()` calls are routed through a
    JS-side priority queue (`DataStore.js:308-315`, `_pumpDbQueryQueue`, `_enqueueDbQuery`) because the Capacitor native bridge is fully serial.
@@ -61,7 +61,7 @@ idempotency identities, and schema versioning. Measured at `e2dc756`:
 
 ## Test plan
 - **Atomicity on device**: kill the app mid-`executeSet` (invoice with 20 lines), restart, assert all-or-nothing; same for `BEGIN IMMEDIATE` numbering under two simultaneous tabs.
-- Sandbox parity: `node:sqlite` suites asserting before/after row-count invariants (`stock` deltas == sum of movements; invoice ↔ invoice_items ↔ txns totals equal) — extend the 16 existing suites.
+- Sandbox parity: `node:sqlite` suites asserting before/after row-count invariants (`stock` deltas == sum of movements; invoice ↔ invoiceItems ↔ txns totals equal) — extend the 16 existing suites.
 - Property test (`fast-check`, existing): random sale/return/void sequences → ledger invariants hold, no negative drift.
 - Perf gate: S-2/S-4 budgets must not regress (DiagLog `queue-wait` p95 before/after); `executeSet` for N statements must beat N×`run` on device.
 - Fuzz + golden-master (already CI-blocking) stay green.
